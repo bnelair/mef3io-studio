@@ -26,10 +26,30 @@ def test_only_declared_preferences_can_be_stored(settings):
         settings.set("ui/activity_visible", "yes")
 
 
-def test_preferences_are_ui_only():
-    # A guard against someone adding a key that could hold recording content.
-    for key in PREFERENCES:
-        assert key.split("/")[0] in {"appearance", "ui"}, key
+def test_preferences_are_exactly_the_reviewed_list():
+    # Adding a preference means updating this list in review: anything that
+    # could hold a path, a name or recording content does not belong here.
+    assert set(PREFERENCES) == {
+        "appearance/theme",
+        "ui/module",
+        "ui/window_geometry",
+        "ui/window_state",
+        "ui/main_splitter",
+        "ui/activity_visible",
+    }
+
+
+def test_qt_file_dialog_history_is_cleared(tmp_path):
+    from PySide6.QtCore import QSettings
+
+    from mef3io_studio.common.settings import clear_qt_dialog_history
+
+    store = QSettings(str(tmp_path / "QtProject.ini"), QSettings.Format.IniFormat)
+    store.setValue("FileDialog/lastVisited", "file:///data/Jane Doe")
+    store.setValue("FileDialog/history", ["file:///data/Jane Doe"])
+    store.setValue("Other/keep", 1)
+    clear_qt_dialog_history(store)
+    assert store.allKeys() == ["Other/keep"]
 
 
 def test_window_stores_only_declared_keys(window, settings):

@@ -97,3 +97,23 @@ class Settings:
 
     def stored_keys(self) -> list[str]:
         return list(self._qs.allKeys())
+
+
+def clear_qt_dialog_history(store: QSettings | None = None) -> None:
+    """Remove the folder history Qt's own (non-native) file dialog keeps in
+    the shared "QtProject" settings — it would record where recordings live.
+
+    The app uses the platform's native file dialogs, without saving any
+    history of its own; this is a safety net in case a Qt dialog is ever
+    shown (e.g. on a platform without a native one). Called at start and exit.
+    """
+    store = store or QSettings(
+        QSettings.Format.NativeFormat, QSettings.Scope.UserScope, "QtProject"
+    )
+    for key in list(store.allKeys()):
+        top = key.split("/")[0]
+        if top in ("FileDialog", "Qt") and any(
+            word in key for word in ("lastVisited", "history", "FileDialog")
+        ):
+            store.remove(key)
+    store.sync()

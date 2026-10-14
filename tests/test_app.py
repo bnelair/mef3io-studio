@@ -108,18 +108,90 @@ def test_no_fixed_pixel_font_sizes():
         assert "font:" not in style_sheet(theme)
 
 
-def test_close_saves_and_cancels_jobs(window, qtbot):
+def _slow(ctx):
     import time
 
-    def slow(ctx):
-        for _ in range(1000):
-            ctx.check_cancelled()
-            time.sleep(0.01)
+    for _ in range(1000):
+        ctx.check_cancelled()
+        time.sleep(0.01)
 
-    handle = window.jobs.submit("Long", slow)
+
+def test_close_with_running_job_asks_and_can_keep_working(window, qtbot, monkeypatch):
+    window.show()
+    monkeypatch.setattr(window, "confirm_stop_running", lambda: False)
+    handle = window.jobs.submit("Long", _slow)
     qtbot.waitUntil(lambda: handle.record.status is JobStatus.RUNNING, timeout=5000)
-    window.close()
+    assert window.close() is False
+    assert window.isVisible()
+    assert not handle.record.cancel_requested
+    handle.cancel()
     qtbot.waitUntil(lambda: handle.is_finished, timeout=5000)
+
+
+def test_close_with_running_job_stops_it_without_blocking(window, qtbot, monkeypatch):
+    import time
+
+    window.show()
+    monkeypatch.setattr(window, "confirm_stop_running", lambda: True)
+    handle = window.jobs.submit("Long", _slow)
+    qtbot.waitUntil(lambda: handle.record.status is JobStatus.RUNNING, timeout=5000)
+    start = time.monotonic()
+    window.close()  # returns at once; the window stays while the task stops
+    assert time.monotonic() - start < 0.5
+    assert window._stopping_dialog is not None
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=10_000)
     assert handle.record.status is JobStatus.CANCELLED
     assert window.settings.stored_keys()
-    assert Qt  # keep import used
+
+
+def test_close_without_jobs_saves(window, qtbot):
+    window.show()
+    assert window.close()
+    assert window.settings.stored_keys()
+
+
+def test_borders_and_focus_are_visible():
+    """Control outlines and progress tracks: >= 3:1 contrast (WCAG 1.4.11);
+    keyboard focus always has a visible outline."""
+    from mef3io_studio.common.theme import contrast_ratio, style_sheet
+
+    for theme in (LIGHT, DARK):
+        for background in (theme.window, theme.surface, theme.surface_alt):
+            assert contrast_ratio(theme.border, background) >= 3.0, (theme.name, background)
+        assert contrast_ratio(theme.accent, theme.surface) >= 3.0
+        assert contrast_ratio(theme.text, theme.surface) >= 7.0
+        assert contrast_ratio(theme.muted, theme.window) >= 4.5
+        qss = style_sheet(theme)
+        assert "outline: 0" not in qss
+        for selector in ("QPushButton:focus", "::item:focus", "QTableView:focus"):
+            assert selector in qss
+
+
+def test_theme_tells_qt_the_colour_scheme(window, monkeypatch):
+    # The offscreen platform ignores the request, so record what is asked.
+    from PySide6.QtGui import QStyleHints
+
+    asked = []
+    monkeypatch.setattr(QStyleHints, "setColorScheme", lambda self, s: asked.append(s))
+    for mode in ("dark", "light", "system"):
+        window.set_theme_mode(mode)
+    assert asked == [Qt.ColorScheme.Dark, Qt.ColorScheme.Light, Qt.ColorScheme.Unknown]
+
+
+def test_about_states_the_lgpl_terms():
+    text = about_text()
+    assert "Lesser General Public" in text and "replace the Qt libraries" in text
+    assert "https://download.qt.io" in text
+
+
+def test_error_dialog_hides_technical_details(window, qtbot):
+    from mef3io_studio.model.errors import UserMessage
+
+    window.show_error(UserMessage("Title", "Plain words.", "IoError: /x/y.tdat"))
+    dialog = window._last_dialog
+    assert dialog.details is not None
+    assert not dialog.details.box.isVisible()
+    assert dialog.details.toggle.text() == "Technical details"
+    dialog.details.toggle.setChecked(True)
+    assert dialog.details.box.isVisibleTo(dialog)
+    dialog.close()

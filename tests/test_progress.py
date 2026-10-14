@@ -2,7 +2,7 @@ from mef3io_studio.model.cancel import CancelToken, JobCancelled
 from mef3io_studio.model.progress import (
     EtaEstimator,
     Progress,
-    ProgressThrottle,
+    ProgressSlot,
     format_duration,
 )
 
@@ -22,23 +22,16 @@ def test_progress_fraction_and_determinate():
     assert Progress(20, 10).fraction == 1.0
 
 
-def test_throttle_limits_to_ten_per_second():
-    clock = Clock()
-    throttle = ProgressThrottle(0.1, clock)
-    emitted = 0
-    for i in range(10_000):  # 10k reports over 1 simulated second
-        clock.t = i / 10_000
-        emitted += throttle.should_emit(Progress(i, 20_000, "x"))
-    assert 9 <= emitted <= 11
-
-
-def test_throttle_always_lets_through_phase_change_and_completion():
-    clock = Clock()
-    throttle = ProgressThrottle(0.1, clock)
-    assert throttle.should_emit(Progress(0, 10, "a"))
-    assert not throttle.should_emit(Progress(1, 10, "a"))
-    assert throttle.should_emit(Progress(1, 10, "b"))
-    assert throttle.should_emit(Progress(10, 10, "b"))
+def test_slot_keeps_only_the_latest_report():
+    slot = ProgressSlot()
+    assert slot.take() is None
+    for i in range(100_000):  # alternating phases must not queue anything
+        slot.put(Progress(i, 100_000, "a" if i % 2 else "b"))
+    latest = slot.take()
+    assert latest == Progress(99_999, 100_000, "a")
+    assert slot.take() is None  # nothing new since
+    slot.put(Progress(100_000, 100_000, "b"))
+    assert slot.take().done == 100_000
 
 
 def test_eta_only_when_meaningful():

@@ -31,6 +31,9 @@ class RecordingSummary:
     (mef3io#67) in the Explorer step."""
 
     channels: tuple[ChannelSummary, ...]
+    #: The recording leaves some size declarations unset (common in files
+    #: from older tools). Reading is unaffected; other programs may struggle.
+    declarations_incomplete: bool = False
 
     @property
     def channel_count(self) -> int:
@@ -42,6 +45,10 @@ class RecordingSource(abc.ABC):
 
     #: Shown to users, e.g. "This computer".
     display_name: str = ""
+    #: Run calls in a separate helper process. Needed while mef3io holds the
+    #: Python GIL for a whole open (bnelair/mef3io#79): on a thread that would
+    #: freeze the window. The source object must then be picklable.
+    isolate: bool = False
 
     @abc.abstractmethod
     def summarize(
@@ -55,6 +62,7 @@ class LocalRecordingSource(RecordingSource):
     """Recordings on this computer (``.mefd`` folders or ``.mefd.tar`` files)."""
 
     display_name = "This computer"
+    isolate = True  # until bnelair/mef3io#79 releases the GIL during an open
 
     def summarize(
         self, location: str | os.PathLike, password: str = "", cancel: CancelToken | None = None
@@ -64,9 +72,15 @@ class LocalRecordingSource(RecordingSource):
         cancel = cancel or CancelToken()
         cancel.raise_if_cancelled()
         channels: list[ChannelSummary] = []
-        with mef3io.Reader(os.fspath(location), password=password) as reader:
+        # warn_declarations=False: mef3io's warning text starts with the full
+        # path, which must not reach the log. The same fact is returned as a
+        # flag and logged by the caller in fixed, path-free words.
+        with mef3io.Reader(
+            os.fspath(location), password=password, warn_declarations=False
+        ) as reader:
             for name in reader.channels:
                 cancel.raise_if_cancelled()
                 info = reader.info(name)
                 channels.append(ChannelSummary(name, float(info["sampling_frequency"])))
-        return RecordingSummary(tuple(channels))
+            incomplete = bool(reader.declaration_issues)
+        return RecordingSummary(tuple(channels), declarations_incomplete=incomplete)

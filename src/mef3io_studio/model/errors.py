@@ -28,9 +28,31 @@ def _mef3io_errors():
 
 
 def describe_error(exc: BaseException) -> UserMessage:
+    """Every message says what happened, what it means for the user's data,
+    and what to do next — in everyday words (see docs/ui-language.md). The
+    technical wording goes only into ``detail``, shown behind "Technical
+    details"."""
+    try:
+        return _describe(exc)
+    except Exception:  # never let the error path itself fail
+        return UserMessage(
+            "Something went wrong",
+            "The task stopped because of an unexpected problem. Your recordings were "
+            "not changed. Try again; if it keeps happening, report it and include the "
+            "technical details.",
+            "",
+        )
+
+
+def _describe(exc: BaseException) -> UserMessage:
     detail = f"{type(exc).__name__}: {exc}"
     if isinstance(exc, JobCancelled):
-        return UserMessage("Cancelled", "The task was cancelled. Nothing was changed.", detail)
+        return UserMessage(
+            "Stopped",
+            "The task was stopped before it finished. Your recordings were not changed, "
+            "and anything it had started to write was removed.",
+            detail,
+        )
 
     m = _mef3io_errors()
     # Without the C++ backend mef3io aliases all of these to RuntimeError,
@@ -39,61 +61,70 @@ def describe_error(exc: BaseException) -> UserMessage:
         # Order matters: the mef3io error classes share a base class.
         if isinstance(exc, m.PasswordError):
             return UserMessage(
-                "Password needed",
-                "This recording is protected by a password, and the password given "
-                "did not unlock it. Check the password and try again.",
+                "This recording needs its password",
+                "The recording is password-protected, and the password given did not "
+                "open it. The recording was not changed. Check the password (it is "
+                "case-sensitive) and try again.",
                 detail,
             )
         if isinstance(exc, m.CrcError):
             return UserMessage(
-                "Part of the recording looks damaged",
-                "A check on the file contents failed, so part of this recording may be "
-                "damaged. Running an integrity check will show which part.",
+                "Part of this recording looks damaged",
+                "Some of the data did not pass the built-in check, so part of the "
+                "recording may be damaged or incomplete. Nothing was changed. Use "
+                '"Check for problems" to see which part, and keep a copy of the original.',
                 detail,
             )
         if isinstance(exc, m.FormatError):
             return UserMessage(
-                "Not a readable MEF 3.0 recording",
-                "This does not look like a MEF 3.0 recording that can be read. "
-                "Recordings are folders ending in .mefd, or single files ending in .mefd.tar.",
+                "This is not a recording the app can read",
+                "The file or folder does not look like a MEF 3.0 recording, or it is "
+                "incomplete. Nothing was changed. Choose a recording instead: a folder "
+                "ending in .mefd, or a single file ending in .mefd.tar.",
                 detail,
             )
         if isinstance(exc, m.IoError):
             return UserMessage(
                 "The recording could not be opened",
-                "The recording could not be read from disk. Check that it still exists, "
-                "that its name ends in .mefd or .mefd.tar, and that the drive is connected.",
+                "The app could not read the recording from the disk. Nothing was changed. "
+                "Check that it still exists, that its name ends in .mefd or .mefd.tar, "
+                "and that the drive is connected.",
                 detail,
             )
     if isinstance(exc, PermissionError):
         return UserMessage(
             "Access denied",
-            "Your account is not allowed to read or write this location. "
-            "Ask your IT team, or choose a different folder.",
+            "Your account is not allowed to use this location, so nothing was read or "
+            "written there. Choose a different folder, or ask your IT team for access.",
             detail,
         )
     if isinstance(exc, FileNotFoundError):
         return UserMessage(
             "Not found",
             "The file or folder could not be found. It may have been moved, renamed or "
-            "deleted, or the drive may be disconnected.",
+            "deleted, or the drive may be disconnected. Nothing was changed. Check where "
+            "it is now, reconnect the drive if needed, and try again.",
             detail,
         )
     if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
         return UserMessage(
             "The disk is full",
-            "There is not enough free space to finish. Free some space or choose another drive.",
+            "There was not enough free space to finish. The unfinished copy was removed "
+            "and the originals were not changed. Free some space or choose another drive, "
+            "then try again.",
             detail,
         )
     if isinstance(exc, MemoryError):
         return UserMessage(
             "Not enough memory",
-            "The computer ran out of memory for this task. Close other programs and try again.",
+            "The computer ran out of memory for this task. Your recordings were not "
+            "changed. Close other programs and try again.",
             detail,
         )
     return UserMessage(
         "Something went wrong",
-        "The task could not be finished because of an unexpected problem. "
-        "The technical details below can help when reporting it.",
+        "The task stopped because of an unexpected problem. Your recordings were not "
+        "changed. Try again; if it keeps happening, report it and include the "
+        "technical details.",
         detail,
     )

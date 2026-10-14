@@ -35,7 +35,7 @@ def test_wrong_password_gives_plain_message(tmp_path):
     with pytest.raises(mef3io.PasswordError) as info:
         LocalRecordingSource().summarize(path, password="wrong")
     message = describe_error(info.value)
-    assert message.title == "Password needed"
+    assert message.title == "This recording needs its password"
     assert "password" in message.text.lower()
     assert "PasswordError" in message.detail
 
@@ -53,7 +53,7 @@ def test_missing_recording_gives_plain_message(tmp_path):
         (FileNotFoundError("x"), "Not found"),
         (OSError(errno.ENOSPC, "full"), "The disk is full"),
         (MemoryError(), "Not enough memory"),
-        (JobCancelled(), "Cancelled"),
+        (JobCancelled(), "Stopped"),
         (ValueError("boom"), "Something went wrong"),
     ],
 )

@@ -1,12 +1,13 @@
-"""Progress bookkeeping: throttling and time-remaining estimates.
+"""Progress bookkeeping: the latest-report slot and time-remaining estimates.
 
-Kept free of Qt so the rules (at most N updates a second, when an ETA is
+Kept free of Qt so the rules (only the newest report matters, when an ETA is
 meaningful) are tested directly.
 """
 
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,34 +33,45 @@ class Progress:
         return min(1.0, max(0.0, self.done / self.total))
 
 
-class ProgressThrottle:
-    """Lets through at most one update per ``min_interval`` seconds (default
-    0.1 s, i.e. 10 updates a second), so a job reporting per block can never
-    flood the UI event loop.
+class ProgressSlot:
+    """Holds a job's latest progress report, written by the worker thread and
+    read by the UI thread on its own timer.
 
-    Always let through: the first update, a phase change, and completion
-    (``done >= total``) — those are the updates a user would notice missing.
+    This is how progress is throttled: the worker may report a million times a
+    second (including alternating phases) and it only overwrites one slot;
+    the UI picks up the newest report at most :data:`UI_UPDATES_PER_SECOND`
+    times a second. Nothing is queued, so nothing can flood the event loop,
+    and the latest report is never lost — :meth:`take` after the job ends
+    always returns the final one.
     """
 
-    def __init__(self, min_interval: float = 0.1, clock: Callable[[], float] = time.monotonic):
-        self.min_interval = min_interval
-        self._clock = clock
-        self._last_time: float | None = None
-        self._last_phase: str | None = None
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._latest: Progress | None = None
+        self._version = 0
+        self._taken = 0
 
-    def should_emit(self, progress: Progress) -> bool:
-        now = self._clock()
-        finished = progress.determinate and progress.done >= progress.total
-        if (
-            self._last_time is None
-            or progress.phase != self._last_phase
-            or finished
-            or now - self._last_time >= self.min_interval
-        ):
-            self._last_time = now
-            self._last_phase = progress.phase
-            return True
-        return False
+    def put(self, progress: Progress) -> None:
+        with self._lock:
+            self._latest = progress
+            self._version += 1
+
+    def take(self) -> Progress | None:
+        """The newest report if it changed since the last take, else None."""
+        with self._lock:
+            if self._version == self._taken:
+                return None
+            self._taken = self._version
+            return self._latest
+
+    @property
+    def latest(self) -> Progress | None:
+        with self._lock:
+            return self._latest
+
+
+#: How often the UI pulls progress from running jobs.
+UI_UPDATES_PER_SECOND = 10
 
 
 class EtaEstimator:

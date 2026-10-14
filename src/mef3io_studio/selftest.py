@@ -33,13 +33,25 @@ class SelfTestResult:
 
 
 def run_self_test(
-    report: ReportFn | None = None, cancel: CancelToken | None = None
+    report: ReportFn | None = None,
+    cancel: CancelToken | None = None,
+    run: Callable[..., object] | None = None,
 ) -> SelfTestResult:
+    """``run(fn, *args)`` executes the read-back; by default in a helper
+    process exactly as the app opens recordings, so the packaged app's
+    helper-process start-up is tested too."""
     import mef3io
     import numpy as np
 
+    from .workers.isolated import run_isolated
+
     report = report or (lambda done, total, phase: None)
     cancel = cancel or CancelToken()
+    if run is None:
+
+        def run(fn, *args):
+            return run_isolated(fn, *args, cancel=cancel)
+
     steps = len(CHANNELS) + 1
     n = int(SAMPLING_FREQUENCY * SECONDS)
     signal = 50.0 * np.sin(2 * np.pi * 7.0 * np.arange(n) / SAMPLING_FREQUENCY)
@@ -52,7 +64,7 @@ def run_self_test(
                 report(i, steps, "Writing a small test recording")
                 writer.write(name, signal * (i + 1), START_UUTC, SAMPLING_FREQUENCY)
         report(len(CHANNELS), steps, "Reading it back")
-        summary = LocalRecordingSource().summarize(session, cancel=cancel)
+        summary = run(LocalRecordingSource().summarize, str(session))
         if summary.channel_count != len(CHANNELS):
             raise RuntimeError(
                 f"wrote {len(CHANNELS)} channels but read back {summary.channel_count}"

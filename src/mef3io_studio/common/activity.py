@@ -59,8 +59,10 @@ class JobTableModel(QAbstractTableModel):
         super().__init__(parent)
         self._manager = manager
         self._handles: list[JobHandle] = list(manager.handles)
+        self._rows: dict[int, int] = {id(h): i for i, h in enumerate(self._handles)}
         manager.job_added.connect(self._on_added)
         manager.job_changed.connect(self._on_changed)
+        manager.jobs_removed.connect(self._reset)
 
     # -- Qt model API ---------------------------------------------------
     def rowCount(self, parent=QModelIndex()):  # noqa: B008, N802
@@ -103,20 +105,23 @@ class JobTableModel(QAbstractTableModel):
         row = len(self._handles)
         self.beginInsertRows(QModelIndex(), row, row)
         self._handles.append(handle)
+        self._rows[id(handle)] = row
         self.endInsertRows()
 
     def _on_changed(self, handle: JobHandle) -> None:
-        try:
-            row = self._handles.index(handle)
-        except ValueError:
+        row = self._rows.get(id(handle))
+        if row is None:
             return
         self.dataChanged.emit(self.index(row, 0), self.index(row, len(COLUMNS) - 1))
 
-    def clear_finished(self) -> None:
+    def _reset(self) -> None:
         self.beginResetModel()
-        self._manager.clear_finished()
         self._handles = list(self._manager.handles)
+        self._rows = {id(h): i for i, h in enumerate(self._handles)}
         self.endResetModel()
+
+    def clear_finished(self) -> None:
+        self._manager.clear_finished()  # emits jobs_removed -> _reset
 
     def has_indeterminate_running(self) -> bool:
         return any(
@@ -188,12 +193,12 @@ class ActivityPanel(QWidget):
         row_height = self.fontMetrics().height() + 18
         self.table.verticalHeader().setDefaultSectionSize(row_height)
 
-        self.empty = QLabel("Nothing has run yet. Long tasks appear here while they work.", self)
+        self.empty = QLabel("Nothing has run yet. Longer tasks appear here while they work.", self)
         self.empty.setObjectName("Muted")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setWordWrap(True)
 
-        self.cancel_button = QPushButton("Cancel task", self)
+        self.cancel_button = QPushButton("Stop task", self)
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel_selected)
         self.clear_button = QPushButton("Clear finished", self)
@@ -323,7 +328,7 @@ class JobProgressWidget(QWidget):
         self.bar = QProgressBar(self)
         self.bar.setTextVisible(False)
         self.bar.setRange(0, 0)
-        self.cancel_button = QPushButton("Cancel", self)
+        self.cancel_button = QPushButton("Stop", self)
         self.cancel_button.clicked.connect(handle.cancel)
         top = QHBoxLayout()
         top.addWidget(self.label, 1)

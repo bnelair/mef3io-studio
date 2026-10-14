@@ -1,23 +1,34 @@
 """Test setup: headless Qt, an isolated log folder, and a network guard.
 
-The network guard makes ANY socket connection or DNS lookup during the suite
-raise and fail the test that tried it: the app must make no network
-connections (issue #2). It patches Python's socket layer, which is what
-mef3io, numpy and the app would use; the app also never imports QtNetwork
-(tests/test_no_network.py checks that).
+The network guard makes ANY socket connection, bind, send or name lookup
+during the suite raise and fail the test that tried it: the app must make no
+network connections (issue #2). It patches Python's socket layer (what
+mef3io, numpy and the app would use) in this process, and — through
+tests/netguard/sitecustomize.py on PYTHONPATH — in every Python child process
+too. Starting any program other than this Python interpreter is also refused.
+The app never imports QtNetwork (tests/test_no_network.py), and the packaged
+Linux app is additionally run under strace in CI.
 """
 
 from __future__ import annotations
 
 import os
 import socket
+import subprocess
+import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _LOG_DIR = tempfile.mkdtemp(prefix="mef3io-studio-test-logs-")
 os.environ["MEF3IO_STUDIO_LOG_DIR"] = _LOG_DIR
+_NETGUARD_DIR = str(Path(__file__).parent / "netguard")
+os.environ["PYTHONPATH"] = os.pathsep.join(
+    [_NETGUARD_DIR, *filter(None, [os.environ.get("PYTHONPATH")])]
+)
+os.environ["MEF3IO_STUDIO_NETGUARD"] = "1"
 
 
 class NetworkAccessError(AssertionError):
@@ -29,19 +40,42 @@ NETWORK_ATTEMPTS: list[str] = []
 
 def _blocked(name):
     def guard(*args, **kwargs):
-        NETWORK_ATTEMPTS.append(f"{name}{args[1:] if name.startswith('socket.') else args}")
+        NETWORK_ATTEMPTS.append(name)
         raise NetworkAccessError(f"network access attempted during tests: {name}")
 
     return guard
 
 
+_RealPopen = subprocess.Popen
+
+
+class _GuardedPopen(_RealPopen):
+    """Only this Python interpreter may be started (it inherits the guard)."""
+
+    def __init__(self, args, *a, **kw):
+        argv = [args] if isinstance(args, (str, bytes, os.PathLike)) else list(args)
+        program = os.path.realpath(os.fspath(argv[0])) if argv else ""
+        allowed = {os.path.realpath(sys.executable)}
+        if program not in allowed:
+            NETWORK_ATTEMPTS.append(f"subprocess {argv[:1]}")
+            raise NetworkAccessError(f"tests may only start this Python, not {argv[:1]}")
+        super().__init__(args, *a, **kw)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def no_network():
     mp = pytest.MonkeyPatch()
-    mp.setattr(socket.socket, "connect", _blocked("socket.connect"))
-    mp.setattr(socket.socket, "connect_ex", _blocked("socket.connect_ex"))
-    mp.setattr(socket, "create_connection", _blocked("create_connection"))
-    mp.setattr(socket, "getaddrinfo", _blocked("getaddrinfo"))
+    for name in ("connect", "connect_ex", "bind", "sendto", "sendmsg"):
+        mp.setattr(socket.socket, name, _blocked(f"socket.{name}"))
+    for name in (
+        "create_connection",
+        "getaddrinfo",
+        "gethostbyname",
+        "gethostbyname_ex",
+        "gethostbyaddr",
+    ):
+        mp.setattr(socket, name, _blocked(name))
+    mp.setattr(subprocess, "Popen", _GuardedPopen)
     yield
     mp.undo()
 
@@ -77,7 +111,7 @@ def jobs(qapp):
 
     manager = JobManager()
     yield manager
-    manager.shutdown()
+    manager.dispose()
 
 
 @pytest.fixture
@@ -88,7 +122,8 @@ def window(qtbot, qapp, settings):
     win = build_main_window(qapp, settings)
     qtbot.addWidget(win)
     yield win
-    win.jobs.shutdown()
+    win._closing = True
+    win.jobs.dispose()
 
 
 @pytest.fixture
@@ -101,4 +136,25 @@ def synthetic_session(tmp_path):
     with mef3io.Writer(str(path), overwrite=True, units="uV") as w:
         for name in ("a1", "a2", "a3"):
             w.write(name, np.sin(np.arange(2560) / 10.0), 946_684_800_000_000, 256.0)
+    return path
+
+
+@pytest.fixture(scope="session")
+def multisegment_session(tmp_path_factory):
+    """64 channels x 60 parts: large enough that opening it takes a while
+    (the case bnelair/mef3io#79 is about). Synthetic zeros."""
+    import mef3io
+    import numpy as np
+
+    path = tmp_path_factory.mktemp("big") / "multisegment.mefd"
+    with mef3io.Writer(str(path), overwrite=True) as w:
+        for seg in range(60):
+            for ch in range(64):
+                w.write(
+                    f"c{ch:02d}",
+                    np.zeros(256),
+                    946_684_800_000_000 + seg * 10_000_000,
+                    256.0,
+                    new_segment=True,
+                )
     return path

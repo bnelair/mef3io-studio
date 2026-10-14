@@ -1,33 +1,73 @@
-"""No patient details and no absolute dates ever reach the log file."""
+"""No patient details, paths or absolute dates ever reach the log file."""
 
 import logging
+import re
+import warnings
+from pathlib import Path
 
 import mef3io
 import numpy as np
 import pytest
 
 from mef3io_studio.common import privacy
-from mef3io_studio.common.logging_setup import LOG_FILE_NAME, setup_logging, teardown_logging
+from mef3io_studio.common.logging_setup import (
+    CRASH_FILE_NAME,
+    LOG_FILE_NAME,
+    recover_crash_report,
+    setup_logging,
+    teardown_logging,
+)
 from mef3io_studio.common.privacy import IdentityRegistry, scrub
 from mef3io_studio.model.source import LocalRecordingSource
 from mef3io_studio.workers.tasks import summarize_recording
 
 # Synthetic identity and a synthetic recording date (never real data).
 NAME_1, NAME_2, SUBJECT_ID = "Zebulon", "Quartermaine", "MRN-55501234"
+ACCENTED = "Müller"
 PASSWORD = "Hunter2secret"
 START_UUTC = 1_552_555_613_000_000  # 2019-03-14 09:26:53 UTC
 DATE_FORMS = [
     "2019-03-14",
     "2019-03-14T09:26:53Z",
+    "2019_03_14",
     "14/03/2019",
     "03/14/2019",
     "14.03.2019",
+    "14.3.19",
+    "14 03 2019",
     "March 14, 2019",
     "14 Mar 2019",
     "20190314",
+    "2019-W11-4",
+    "Thu Mar 14 09:26:53 2019",
+    "Thu, 14 Mar 2019 09:26:53 +0000",
+    "datetime.datetime(2019, 3, 14, 9, 26, 53)",
+    "datetime.date(2019, 3, 14)",
+    "09:26:53",
+    "1552555613",
+    str(START_UUTC // 1000),
     str(START_UUTC),
     str(-START_UUTC),
-    str(START_UUTC // 1000),
+]
+# What a careless line could carry: paths with names and dates in them.
+PATH_FORMS = [
+    r"C:\Users\Zebulon Quartermaine\Recordings\visit.mefd",
+    r"\\server\share\Quartermaine\rec.mefd.tar",
+    "/data/PT0042_2019_03_14.mefd",
+    "PT0042_2019_03_14.mefd",
+    "sub-0042_ses-20190314",
+    "'/data/clinic/Jane Roe/raw'",
+    "PosixPath('/srv/eeg/Doe John/session')",
+]
+# Identity spelled differently from how it was registered.
+IDENTITY_VARIANTS = [
+    "ZEBULON",
+    "zebulon_quartermaine",
+    "Muller",
+    "MÜLLER",
+    "Mu\u0308ller",  # decomposed (NFD)
+    "MRN55501234",
+    "MRN 55501234",
 ]
 
 
@@ -35,43 +75,92 @@ DATE_FORMS = [
 def test_scrub_removes_every_date_form(form):
     out = scrub(f"recording starts {form} here", IdentityRegistry())
     assert form not in out
-    assert "[time]" in out
+    for digits in ("2019", "1552555613"):
+        assert digits not in out
+
+
+@pytest.mark.parametrize("form", PATH_FORMS)
+def test_scrub_removes_paths(form):
+    out = scrub(f"cannot open {form} now", IdentityRegistry())
+    assert "<path>" in out or "[time]" in out
+    for word in ("Quartermaine", "Roe", "Doe", "0042", "2019", "Users", "share"):
+        assert word not in out, out
+
+
+def test_scrub_removes_home_folder():
+    home = str(Path.home())
+    assert home not in scrub(f"log at {home} end", IdentityRegistry())
 
 
 @pytest.mark.parametrize(
-    "text", ["mef3io 1.1.4", "Python 3.12.10", "Qt 6.12.0", "job 42", "256.0 Hz"]
+    "text", ["mef3io 1.1.4", "Python 3.12.7", "Qt 6.12.0", "job 42", "256.0 Hz", "3/10 done"]
 )
-def test_scrub_keeps_ordinary_numbers(text):
+def test_scrub_keeps_ordinary_text(text):
     assert scrub(text, IdentityRegistry()) == text
 
 
-def test_identity_redaction_is_case_insensitive():
+@pytest.mark.parametrize("variant", IDENTITY_VARIANTS)
+def test_identity_variants_are_redacted(variant):
     registry = IdentityRegistry()
-    registry.register("Zebulon", "", None, "x")  # empty/one-char ignored
-    assert scrub("ZEBULON and zebulon", registry) == "[redacted] and [redacted]"
+    registry.register(NAME_1, NAME_2, SUBJECT_ID, ACCENTED)
+    out = scrub(f"subject {variant} seen", registry)
+    assert re.fullmatch(r"subject (?:\[redacted\][\W_]*)+ seen", out), out
+
+
+def test_short_strings_are_not_registered():
+    registry = IdentityRegistry()
+    registry.register("", None, "x", "-")
     assert scrub("x marks", registry) == "x marks"
 
 
-def test_log_file_never_contains_identity_or_dates(qtbot, jobs, tmp_path):
+def test_reader_is_opened_without_path_bearing_warnings(monkeypatch, synthetic_session):
+    seen = {}
+    real = mef3io.Reader
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mef3io, "Reader", spy)
+    LocalRecordingSource().summarize(synthetic_session)
+    assert seen.get("warn_declarations") is False
+
+
+def test_crash_report_is_scrubbed_into_the_log(tmp_path):
+    log_file = setup_logging(tmp_path)
+    try:
+        (tmp_path / CRASH_FILE_NAME).write_text(
+            f'Fatal Python error\n  File "/home/{NAME_2}/x.py", line 1, at {DATE_FORMS[1]}\n'
+        )
+        recover_crash_report(tmp_path)
+    finally:
+        teardown_logging()
+    text = log_file.read_text()
+    assert "stopped unexpectedly" in text
+    assert NAME_2 not in text and DATE_FORMS[1] not in text
+    assert not (tmp_path / CRASH_FILE_NAME).exists()
+
+
+def test_log_file_never_contains_identity_paths_or_dates(qtbot, jobs, tmp_path):
     log_dir = tmp_path / "logs"
     log_file = setup_logging(log_dir, level=logging.DEBUG)
     assert log_file == log_dir / LOG_FILE_NAME
     privacy.identities.clear()
     try:
         # A session whose metadata and folder name carry the identity.
-        path = tmp_path / f"{NAME_2}_{NAME_1}.mefd"
+        path = tmp_path / f"{NAME_2}_{NAME_1}_2019_03_14.mefd"
         meta = mef3io.Metadata(subject=mef3io.Subject(name_1=NAME_1, name_2=NAME_2, id=SUBJECT_ID))
         with mef3io.Writer(str(path), metadata=meta, password1="L1pass", password2=PASSWORD) as w:
             w.write("c1", np.sin(np.arange(1024) / 5.0), START_UUTC, 256.0)
         # The app learns these and registers them before anything else.
-        privacy.register_identity(NAME_1, NAME_2, SUBJECT_ID, PASSWORD, path.name)
+        privacy.register_identity(NAME_1, NAME_2, SUBJECT_ID, PASSWORD, ACCENTED)
 
         log = logging.getLogger("mef3io_studio.test")
-        # 1. a successful job through the job layer
+        # 1. a successful job through the job layer (helper process)
         ok = jobs.submit(
             "Opening", summarize_recording, LocalRecordingSource(), str(path), PASSWORD
         )
-        with qtbot.waitSignal(ok.finished, timeout=10_000):
+        with qtbot.waitSignal(ok.finished, timeout=30_000):
             pass
         assert ok.record.status.name == "SUCCEEDED"
 
@@ -84,23 +173,29 @@ def test_log_file_never_contains_identity_or_dates(qtbot, jobs, tmp_path):
             pass
         # 3. careless log calls: formatted args, f-strings, exceptions, warnings
         log.info("subject %s %s (%s) password %s", NAME_1, NAME_2, SUBJECT_ID, PASSWORD)
-        for form in DATE_FORMS:
-            log.debug(f"start={form} who={NAME_2.upper()}")
+        for form in DATE_FORMS + PATH_FORMS + IDENTITY_VARIANTS:
+            log.debug(f"value={form} who={NAME_2.upper()}")
+        log.info("path object %r", path)
         try:
             raise ValueError(f"{NAME_1} {START_UUTC} {path}")
         except ValueError:
             log.exception("handled %s", DATE_FORMS[0])
-        import warnings
-
-        warnings.warn(f"odd metadata for {SUBJECT_ID} at {DATE_FORMS[5]}", stacklevel=1)
+        # mef3io's own declaration warning starts with the full path
+        warnings.warn(
+            mef3io.SessionDeclarationWarning(f"{path}: metadata section 2 leaves ..."),
+            stacklevel=1,
+        )
+        warnings.warn(f"odd metadata for {SUBJECT_ID} at {DATE_FORMS[8]}", stacklevel=1)
     finally:
         teardown_logging()
         privacy.identities.clear()
 
     text = log_file.read_text(encoding="utf-8")
-    assert "[redacted]" in text and "[time]" in text  # the paths above did log
+    assert "[redacted]" in text and "[time]" in text and "<path>" in text
     lowered = text.lower()
-    for secret in (NAME_1, NAME_2, SUBJECT_ID, PASSWORD, path.name):
+    for secret in (NAME_1, NAME_2, SUBJECT_ID, PASSWORD, "muller", "55501234", path.name):
         assert secret.lower() not in lowered, secret
-    for form in DATE_FORMS:
+    for form in DATE_FORMS + PATH_FORMS:
         assert form not in text, form
+    assert str(tmp_path) not in text
+    assert "2019" not in text

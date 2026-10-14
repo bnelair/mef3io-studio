@@ -27,8 +27,8 @@ MODULES = (
         "explorer",
         "Explore recordings",
         "Open MEF 3.0 recordings and see what is in them: channels, sampling rates, "
-        "start, duration, gaps, annotations and an integrity check. Nothing is "
-        "changed and no signal is loaded.",
+        "when they start, how long they run, gaps, notes, and a check for problems. "
+        "Opening a recording never changes it.",
     ),
     (
         "anonymizer",
@@ -36,8 +36,8 @@ MODULES = (
         "anonymizer",
         "Anonymize recordings",
         "Make copies of recordings with the patient details removed and every time "
-        "shifted. Each copy is checked before it is kept, and the originals are "
-        "never changed.",
+        "moved by the same amount. Each copy is checked before it is kept, and the "
+        "originals are never changed.",
     ),
 )
 
@@ -51,6 +51,22 @@ def qt_version() -> str:
         return "not available"
 
 
+def licenses_dir():
+    """The bundled third-party licence texts (packaged builds only)."""
+    from pathlib import Path
+
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        folder = Path(base) / "THIRD_PARTY_LICENSES"
+        if folder.is_dir():
+            return folder
+    return None
+
+
+QT_SOURCE_URL = "https://download.qt.io/official_releases/qt/"
+PYSIDE_SOURCE_URL = "https://code.qt.io/cgit/pyside/pyside-setup.git/"
+
+
 def about_text() -> str:
     return (
         f"<h3>mef3io-studio {app_version()}</h3>"
@@ -62,8 +78,14 @@ def about_text() -> str:
         f"<tr><td>Qt&nbsp;&nbsp;</td><td>{qt_version()}</td></tr>"
         f"<tr><td>Python&nbsp;&nbsp;</td><td>{platform.python_version()}</td></tr>"
         "</table>"
-        "<p>Apache License 2.0. Developed at the Mayo Clinic Bioelectronics "
-        "Neurophysiology and Engineering Lab (BNEL).</p>"
+        "<p>mef3io-studio is free software under the Apache License 2.0. Developed at "
+        "the Mayo Clinic Bioelectronics Neurophysiology and Engineering Lab (BNEL).</p>"
+        "<p>It uses <b>Qt 6</b> (through PySide6) under the GNU Lesser General Public "
+        "License version 3. You may replace the Qt libraries in the app's folder with "
+        "your own build of them. The source code of Qt and PySide6 is available from "
+        f"{QT_SOURCE_URL} and {PYSIDE_SOURCE_URL}. The full licence texts of every "
+        "bundled component are in the THIRD_PARTY_LICENSES folder next to the app "
+        '("Show licences" below).</p>'
     )
 
 
@@ -74,7 +96,7 @@ def about_text() -> str:
 
 def _build_main_window_class():
     # Qt is imported lazily so `--version` and argument errors stay fast.
-    from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QUrl
+    from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QTimer, QUrl
     from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
     from PySide6.QtWidgets import (
         QDockWidget,
@@ -84,6 +106,7 @@ def _build_main_window_class():
         QListWidgetItem,
         QMainWindow,
         QMessageBox,
+        QProgressDialog,
         QSplitter,
         QStackedWidget,
         QVBoxLayout,
@@ -92,9 +115,10 @@ def _build_main_window_class():
 
     from .common import icons
     from .common.activity import ActivityIndicator, ActivityPanel
+    from .common.dialogs import MessageDialog
     from .common.logging_setup import log_dir
     from .common.pages import PlaceholderPage, scaled_font
-    from .common.settings import Settings
+    from .common.settings import Settings, clear_qt_dialog_history
     from .common.theme import Theme, ThemeManager
     from .workers.jobs import JobManager
     from .workers.tasks import self_check
@@ -105,6 +129,8 @@ def _build_main_window_class():
             self.settings = settings
             self.themes = themes
             self.jobs = jobs
+            self._closing = False
+            self._stopping_dialog = None
             self.setWindowTitle("mef3io-studio")
             self.setWindowIcon(icons.app_icon())
             em = self.fontMetrics().height()
@@ -273,13 +299,9 @@ def _build_main_window_class():
             return handle
 
         def show_error(self, message) -> None:
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setWindowTitle(message.title)
-            box.setText(message.text)
-            if message.detail:
-                box.setDetailedText(message.detail)
-            box.open()
+            dialog = MessageDialog(message, self)
+            dialog.open()
+            self._last_dialog = dialog
 
         def open_log_folder(self) -> None:
             directory = log_dir()
@@ -292,6 +314,14 @@ def _build_main_window_class():
             box.setIconPixmap(icons.app_icon().pixmap(64, 64))
             box.setTextFormat(Qt.TextFormat.RichText)
             box.setText(about_text())
+            box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            folder = licenses_dir()
+            if folder is not None:
+                show = box.addButton("Show licences", QMessageBox.ButtonRole.ActionRole)
+                show.clicked.connect(
+                    lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+                )
+            box.addButton(QMessageBox.StandardButton.Close)
             box.open()
             self._about_box = box
 
@@ -322,12 +352,73 @@ def _build_main_window_class():
             self.settings.set("ui/activity_visible", self.activity_dock.isVisible())
             self.settings.sync()
 
+        # -- closing ------------------------------------------------------------
+        def confirm_stop_running(self) -> bool:
+            """Ask before stopping running tasks. Default answer: keep working."""
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("A task is still running")
+            box.setText("A task is still running. Stop it and quit?")
+            box.setInformativeText(
+                "Stopping removes anything the task had started to write. "
+                "Your original recordings are not affected."
+            )
+            stop = box.addButton("Stop and quit", QMessageBox.ButtonRole.DestructiveRole)
+            keep = box.addButton("Keep working", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(keep)
+            box.exec()
+            return box.clickedButton() is stop
+
         def closeEvent(self, event) -> None:  # noqa: N802
-            self.save_preferences()
+            if self._closing:
+                event.accept()
+                return
             if self.jobs.running_count():
-                log.info("closing with %d running job(s); cancelling", self.jobs.running_count())
-            self.jobs.shutdown()
-            super().closeEvent(event)
+                event.ignore()
+                if self._stopping_dialog is None and self.confirm_stop_running():
+                    self._begin_stopping()
+                return
+            self._finish_close()
+            event.accept()
+
+        def _begin_stopping(self) -> None:
+            """Cancel every job and wait for them WITHOUT blocking the window."""
+            log.info("stopping %d running job(s) before quitting", self.jobs.running_count())
+            self.jobs.cancel_all()
+            dialog = QProgressDialog("Stopping…", "Quit now", 0, 0, self)
+            dialog.setWindowTitle("Stopping tasks")
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.canceled.connect(self._quit_now)
+            dialog.show()
+            self._stopping_dialog = dialog
+            self._stop_timer = QTimer(self)
+            self._stop_timer.setInterval(100)
+            self._stop_timer.timeout.connect(self._check_stopped)
+            self._stop_timer.start()
+
+        def _check_stopped(self) -> None:
+            if self.jobs.is_idle():
+                self._stop_timer.stop()
+                if self._stopping_dialog is not None:
+                    self._stopping_dialog.canceled.disconnect(self._quit_now)
+                    self._stopping_dialog.close()
+                self._finish_close()
+                self.close()
+
+        def _quit_now(self) -> None:
+            """The user would rather not wait: leave immediately."""
+            log.warning("quitting without waiting for tasks to stop")
+            self.save_preferences()
+            logging.shutdown()
+            os._exit(0)
+
+        def _finish_close(self) -> None:
+            self._closing = True
+            self.save_preferences()
+            self.jobs.dispose(timeout_ms=2000)
+            clear_qt_dialog_history()
 
     return MainWindow
 
@@ -342,7 +433,7 @@ def main_window_class():
     return _main_window_class
 
 
-def create_application(argv: Sequence[str] | None = None):
+def create_application(argv: Sequence[str] | None = None):  # noqa: ARG001
     """The QApplication with high-DPI rounding, names and theme set up."""
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QGuiApplication
@@ -356,7 +447,9 @@ def create_application(argv: Sequence[str] | None = None):
         QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
-        app = QApplication(list(argv) if argv is not None else sys.argv[:1])
+        # Only the program name: no command-line argument ever reaches Qt
+        # (e.g. "-platform vnc" would start a network server).
+        app = QApplication(sys.argv[:1] or ["mef3io-studio"])
     app.setOrganizationName(ORGANIZATION)
     app.setApplicationName(APPLICATION)
     app.setApplicationDisplayName("mef3io-studio")
@@ -402,40 +495,121 @@ def _emit(line: str) -> None:
             kernel32.WriteFile(handle, data, len(data), ctypes.byref(written), None)
 
 
-def self_test(report_path: str | None = None) -> int:
-    """Run the installation check without UI. Returns the exit code."""
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    try:
-        from .common.settings import Settings
-        from .selftest import run_self_test
+ALLOWED_PLATFORMS = {
+    "linux": {"xcb", "wayland", "wayland-egl", "offscreen"},
+    "win32": {"windows", "offscreen"},
+    "darwin": {"cocoa", "offscreen"},
+}
+FORBIDDEN_ARGS = (
+    "-platform",
+    "-platformpluginpath",
+    "-platformtheme",
+    "-plugin",
+    "-qwindowgeometry",
+    "-display",
+)
 
-        result = run_self_test()
-        # Also prove the bundled Qt works: build the main window offscreen,
-        # with throwaway settings so the user's preferences are untouched.
-        import tempfile
 
-        app = create_application([sys.argv[0]])
-        with tempfile.TemporaryDirectory() as tmp:
-            window = build_main_window(app, Settings(os.path.join(tmp, "s.ini")))
-            app.processEvents()
-            window.jobs.shutdown()
-            window.deleteLater()
-            app.processEvents()
-        line = (
-            f"mef3io-studio self-test OK: wrote and read {result.channel_count} channels "
-            f"(app {app_version()}, mef3io {result.mef3io_version}, Qt {qt_version()})"
-        )
-        code = 0
-    except Exception as exc:  # report, never crash silently
-        line = f"mef3io-studio self-test FAILED: {type(exc).__name__}: {exc}"
-        log.exception("self-test failed")
-        code = 1
+def allowed_platforms() -> set[str]:
+    key = "linux" if sys.platform.startswith("linux") else sys.platform
+    return ALLOWED_PLATFORMS.get(key, {"offscreen"})
+
+
+def sanitize_qt_environment() -> None:
+    """Ignore a QT_QPA_PLATFORM outside the allow-list (e.g. "vnc", which
+    would serve the window over the network)."""
+    value = os.environ.get("QT_QPA_PLATFORM")
+    if not value:
+        return
+    names = {part.split(":")[0].strip().lower() for part in value.split(";") if part.strip()}
+    if not names <= allowed_platforms():
+        del os.environ["QT_QPA_PLATFORM"]
+        log.warning("ignored an unsupported display setting (QT_QPA_PLATFORM)")
+
+
+def forbidden_argument(argv: Sequence[str]) -> str | None:
+    for arg in argv:
+        name = arg.split("=", 1)[0].lower()
+        if name in FORBIDDEN_ARGS or name.lstrip("-") in {a.lstrip("-") for a in FORBIDDEN_ARGS}:
+            return arg.split("=", 1)[0]
+    return None
+
+
+def _finish_self_test(line: str, code: int, report_path: str | None) -> int:
     _emit(line)
     if report_path:
         with open(report_path, "w", encoding="utf-8") as fh:
             fh.write(line + "\n")
     log.info("self-test %s", "passed" if code == 0 else "failed")
     return code
+
+
+def self_test(report_path: str | None = None, gui: bool = False) -> int:
+    """Run the installation check. Returns the exit code.
+
+    Without ``gui``: no window, Qt's offscreen platform (works on a headless
+    machine). With ``gui``: the platform's real display plugin; the main
+    window is shown for a moment, which proves the bundled plugin loads.
+    """
+    import tempfile
+
+    if gui:
+        if os.environ.get("QT_QPA_PLATFORM", "").startswith("offscreen"):
+            return _finish_self_test(
+                "mef3io-studio self-test FAILED: --self-test-gui needs a real display, "
+                "but QT_QPA_PLATFORM=offscreen is set",
+                1,
+                report_path,
+            )
+    else:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtCore import QTimer
+
+        from .common.settings import Settings
+        from .selftest import run_self_test
+
+        result = run_self_test()
+        app = create_application()
+        with tempfile.TemporaryDirectory() as tmp:
+            # Throwaway settings, so the user's preferences are untouched.
+            window = build_main_window(app, Settings(os.path.join(tmp, "s.ini")))
+            shown = True
+            if gui:
+                state = {"shown": False}
+
+                def check_and_quit():
+                    # Checked before quitting: in Qt 6, quit() closes windows.
+                    handle = window.windowHandle()
+                    state["shown"] = bool(
+                        window.isVisible() and handle is not None and handle.isExposed()
+                    )
+                    app.quit()
+
+                window.show()
+                QTimer.singleShot(800, check_and_quit)
+                app.exec()
+                shown = state["shown"]
+            else:
+                app.processEvents()
+            platform_name = app.platformName()
+            window.jobs.dispose()
+            window.hide()
+            window.deleteLater()
+            app.processEvents()
+        if not shown:
+            raise RuntimeError("the main window could not be shown")
+        line = (
+            f"mef3io-studio self-test OK: wrote and read {result.channel_count} channels "
+            f"(app {app_version()}, mef3io {result.mef3io_version}, Qt {qt_version()}, "
+            f"display {platform_name})"
+        )
+        code = 0
+    except Exception as exc:  # report, never crash silently
+        line = f"mef3io-studio self-test FAILED: {type(exc).__name__}: {exc}"
+        log.exception("self-test failed")
+        code = 1
+    return _finish_self_test(line, code, report_path)
 
 
 def parse_args(argv: Sequence[str] | None):
@@ -450,22 +624,37 @@ def parse_args(argv: Sequence[str] | None):
         help="check that this installation works (no window), print OK and exit",
     )
     parser.add_argument(
+        "--self-test-gui",
+        action="store_true",
+        help="like --self-test, but show the window briefly using the real display",
+    )
+    parser.add_argument(
         "--self-test-report",
         metavar="FILE",
         help="also write the self-test result line to FILE",
     )
-    # Qt and macOS add their own arguments (e.g. -psn_...); ignore them.
+    # macOS may add its own arguments (e.g. -psn_...); ignore them.
     args, _unknown = parser.parse_known_args(argv)
     return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # A helper-process start must never open the app (freeze_support in the
+    # packaged launcher normally handles these before we get here).
+    if any(a.startswith("--multiprocessing-fork") for a in argv):
+        return 0
+    bad = forbidden_argument(argv)
+    if bad:
+        print(f"mef3io-studio: the option {bad} is not supported", file=sys.stderr)
+        return 2
     args = parse_args(argv)
 
-    from .common.logging_setup import setup_logging
+    from .common.logging_setup import close_crash_file, install_qt_message_handler, setup_logging
 
-    setup_logging()
+    setup_logging(hooks=True)
+    sanitize_qt_environment()
+    install_qt_message_handler()
     log.info(
         "mef3io-studio %s starting (mef3io %s, Python %s, %s)",
         app_version(),
@@ -474,15 +663,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         platform.system(),
     )
 
-    if args.self_test:
-        return self_test(args.self_test_report)
+    try:
+        if args.self_test or args.self_test_gui:
+            return self_test(args.self_test_report, gui=args.self_test_gui)
 
-    app = create_application([sys.argv[0], *argv])
-    window = build_main_window(app)
-    window.show()
-    code = app.exec()
-    log.info("mef3io-studio exiting")
-    return int(code)
+        from .common.settings import clear_qt_dialog_history
+
+        clear_qt_dialog_history()
+        app = create_application()
+        window = build_main_window(app)
+        window.show()
+        code = app.exec()
+        log.info("mef3io-studio exiting")
+        return int(code)
+    finally:
+        close_crash_file()
 
 
 if __name__ == "__main__":

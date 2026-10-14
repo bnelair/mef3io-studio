@@ -68,5 +68,9 @@ ignore = ["TID252"]
 "mef3io._writer".msg = "Use mef3io's public API only."
 "mef3io._archive".msg = "Use mef3io's public API only."
 
+[tool.ruff.lint.per-file-ignores]
+# The style sheet is a long template string; wrapping it would hurt readability.
+"src/mef3io_studio/common/theme.py" = ["E501"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["mef3io_studio", "conftest"]
