@@ -1,10 +1,20 @@
 name: Build installers
 
 # Builds the desktop app with PyInstaller on Windows, macOS and Linux, wraps it
-# into an installer per platform, and smoke-tests each packaged app with
-# `--self-test` (writes and reads a tiny synthetic recording with the bundled
-# mef3io, and builds the main window offscreen). On a `v*` tag the installers
-# are attached to a GitHub Release. The app is NOT published to PyPI.
+# into an installer per platform, and smoke-tests each packaged app:
+#   --self-test      writes and reads a tiny synthetic recording with the
+#                    bundled mef3io (through a helper process, as the app
+#                    does) and builds the main window offscreen;
+#   --self-test-gui  the same with the platform's real display plugin
+#                    (Windows/macOS natively, Linux under Xvfb).
+# The bundle is also checked for files that must not ship (network plugins,
+# GPL readline, ...) and for the licence folder; on Linux the app runs under
+# strace and must not open an internet socket. On a `v*` tag the installers
+# and a SHA256SUMS file are attached to a GitHub Release.
+# The app is NOT published to PyPI.
+#
+# Reproducible inputs: Python packages from requirements/build.lock (hashed),
+# appimagetool + AppImage runtime and Inno Setup pinned by version and SHA-256.
 #
 # TODO(signing): nothing is code-signed yet (certificates undecided, #3). The
 # hooks are marked "TODO(signing)" below and in packaging/.
@@ -12,26 +22,29 @@ name: Build installers
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ["v*"]
-  # Also on PRs that change what goes into the installers, so packaging
-  # breakage is caught before merge (the release job only runs on tags).
   pull_request:
     paths:
+      - "src/**"
       - "packaging/**"
+      - "requirements/**"
+      - "scripts/render_icons.py"
       - ".github/workflows/build.yml"
       - "pyproject.toml"
       - "VERSION"
-      - "scripts/render_icons.py"
+
+permissions:
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-
 env:
   PYTHON_VERSION: "3.12"
+  INNO_SETUP_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+  INNO_SETUP_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
 
 jobs:
   windows:
@@ -42,40 +55,69 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install
+      - name: Install (hashed lock file)
         run: |
           python -m pip install --upgrade pip
-          pip install ".[build]"
+          pip install --require-hashes -r requirements/build.lock
+          pip install --no-deps --no-build-isolation .
       - name: App icon
         run: python scripts/render_icons.py --ico packaging/windows/mef3io-studio.ico
       - name: PyInstaller
         run: pyinstaller --noconfirm --clean packaging/mef3io-studio.spec
-      - name: Smoke-test the onedir app
-        shell: pwsh
-        run: ./packaging/windows/selftest.ps1 -Exe "dist\mef3io-studio\mef3io-studio.exe"
-      # TODO(signing): Authenticode-sign dist\mef3io-studio\mef3io-studio.exe here.
-      - name: Inno Setup installer
+      - name: Check the bundle contents
+        run: python packaging/check_bundle.py dist/mef3io-studio
+      - name: Smoke-test the onedir app (offscreen, then the real display)
         shell: pwsh
         run: |
-          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
-          if (-not $iscc) {
-            choco install innosetup -y --no-progress
-            $env:Path += ";${env:ProgramFiles(x86)}\Inno Setup 6"
-          }
+          ./packaging/windows/selftest.ps1 -Exe "dist\mef3io-studio\mef3io-studio.exe"
+          ./packaging/windows/selftest.ps1 -Exe "dist\mef3io-studio\mef3io-studio.exe" -Gui
+      # TODO(signing): Authenticode-sign dist\mef3io-studio\mef3io-studio.exe here.
+      - name: Inno Setup (pinned)
+        shell: pwsh
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP "innosetup.exe"
+          Invoke-WebRequest -Uri $env:INNO_SETUP_URL -OutFile $setup
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:INNO_SETUP_SHA256) { throw "Inno Setup hash mismatch: $hash" }
+          $dir = Join-Path $env:RUNNER_TEMP "inno"
+          $p = Start-Process $setup -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CURRENTUSER", "/DIR=`"$dir`""
+          if ($p.ExitCode -ne 0) { throw "Inno Setup install failed: $($p.ExitCode)" }
+          "$dir" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Build the installer
+        shell: pwsh
+        run: |
           $version = (Get-Content VERSION -Raw).Trim()
           iscc /DAppVersion=$version /DSourceDir="$PWD\dist\mef3io-studio" /DOutputDir="$PWD\dist" `
                /DSetupIcon="$PWD\packaging\windows\mef3io-studio.ico" packaging\windows\mef3io-studio.iss
           if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
       # TODO(signing): Authenticode-sign the setup .exe here.
-      - name: Install silently and smoke-test the installed app
+      - name: Install, upgrade and uninstall (smoke-testing each step)
         shell: pwsh
         run: |
-          $setup = Get-ChildItem dist\mef3io-studio-*-windows-x64-setup.exe | Select-Object -First 1
+          $setup = (Get-ChildItem dist\mef3io-studio-*-windows-x64-setup.exe | Select-Object -First 1).FullName
           $target = Join-Path $env:RUNNER_TEMP "mef3io-studio-installed"
-          $p = Start-Process -FilePath $setup.FullName -Wait -PassThru `
-               -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$target`""
-          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          $args = "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$target`""
+          # 1. fresh install
+          $p = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList $args
+          if ($p.ExitCode -ne 0) { throw "install exited with $($p.ExitCode)" }
           ./packaging/windows/selftest.ps1 -Exe (Join-Path $target "mef3io-studio.exe")
+          # 2. upgrade over it: a file the old version had must disappear
+          $stale = Join-Path $target "_internal\left-over-from-old-version.dll"
+          "stale" | Out-File $stale
+          $p = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList $args
+          if ($p.ExitCode -ne 0) { throw "upgrade exited with $($p.ExitCode)" }
+          if (Test-Path $stale) { throw "upgrade left an old file behind" }
+          ./packaging/windows/selftest.ps1 -Exe (Join-Path $target "mef3io-studio.exe")
+          # 3. uninstall, removing preferences and logs
+          $logs = Join-Path $env:LOCALAPPDATA "BNEL\mef3io-studio"
+          if (-not (Test-Path $logs)) { throw "expected the app's log folder at $logs" }
+          $p = Start-Process -FilePath (Join-Path $target "unins000.exe") -Wait -PassThru `
+               -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/REMOVEUSERDATA=1"
+          if ($p.ExitCode -ne 0) { throw "uninstall exited with $($p.ExitCode)" }
+          Start-Sleep -Seconds 3   # the uninstaller finishes from a temp copy
+          if (Test-Path (Join-Path $target "mef3io-studio.exe")) { throw "uninstall left the app behind" }
+          if (Test-Path $logs) { throw "uninstall with /REMOVEUSERDATA=1 left the user data" }
+          Write-Host "install -> upgrade -> uninstall OK"
       - name: Portable zip
         shell: pwsh
         run: |
@@ -105,21 +147,26 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install
+      - name: Install (hashed lock file)
         run: |
           python -m pip install --upgrade pip
-          pip install ".[build]"
+          pip install --require-hashes -r requirements/build.lock
+          pip install --no-deps --no-build-isolation .
       - name: App icon
         run: |
           python scripts/render_icons.py --iconset build/mef3io-studio.iconset
           iconutil -c icns build/mef3io-studio.iconset -o packaging/macos/mef3io-studio.icns
       - name: PyInstaller
         run: pyinstaller --noconfirm --clean packaging/mef3io-studio.spec
-      - name: Smoke-test the .app
+      - name: Check the bundle contents
+        run: python packaging/check_bundle.py dist/mef3io-studio.app
+      - name: Smoke-test the .app (offscreen, then the real display)
         run: |
-          out="$(dist/mef3io-studio.app/Contents/MacOS/mef3io-studio --self-test)"
-          echo "$out"
+          app=dist/mef3io-studio.app/Contents/MacOS/mef3io-studio
+          out="$("$app" --self-test)"; echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
+          out="$(env -u QT_QPA_PLATFORM "$app" --self-test-gui)"; echo "$out"
+          echo "$out" | grep -q "^mef3io-studio self-test OK.*display cocoa"
       # TODO(signing): codesign with Developer ID + notarize + staple (see packaging/macos/make_dmg.sh).
       - name: Disk image
         run: packaging/macos/make_dmg.sh
@@ -139,43 +186,40 @@ jobs:
           if-no-files-found: error
 
   linux:
-    name: Linux x64
-    # The oldest supported runner: the bundle needs a glibc at least as new as
-    # the build machine's, so building on 22.04 runs on more distributions.
-    runs-on: ubuntu-22.04
+    name: Linux x64 (built on AlmaLinux 9)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Build in AlmaLinux 9 (glibc 2.34 floor)
+        run: |
+          docker run --rm -v "$PWD":/src -w /src almalinux:9 \
+            bash -c "packaging/linux/build-in-container.sh; rc=\$?; chown -R $(id -u):$(id -g) dist build; exit \$rc"
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Qt runtime libraries (collected into the bundle)
+      - name: Tools for the checks (Xvfb, strace) and an icon renderer
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 libxcb-render-util0 \
-            libxcb-shape0 libxcb-randr0 libxcb-xinerama0 libxcb-xfixes0
-      - name: Install
-        run: |
+          sudo apt-get install -y --no-install-recommends xvfb xauth strace \
+            libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
           python -m pip install --upgrade pip
-          pip install ".[build]"
-      - name: PyInstaller
-        run: pyinstaller --noconfirm --clean packaging/mef3io-studio.spec
-      - name: Smoke-test the onedir app
+          pip install --require-hashes -r requirements/build.lock
+      - name: Check the bundle contents
+        run: python packaging/check_bundle.py dist/mef3io-studio
+      - name: Smoke-test (offscreen)
         run: |
-          out="$(env -u QT_QPA_PLATFORM dist/mef3io-studio/mef3io-studio --self-test)"
-          echo "$out"
+          out="$(env -u QT_QPA_PLATFORM dist/mef3io-studio/mef3io-studio --self-test)"; echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
-      - name: Tarball and AppImage
+      - name: Smoke-test the real display under Xvfb, and prove no internet socket is opened
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x "$RUNNER_TEMP/appimagetool"
-          APPIMAGETOOL="$RUNNER_TEMP/appimagetool" packaging/linux/package.sh
+          xvfb-run -a packaging/linux/no_network_check.sh \
+            env -u QT_QPA_PLATFORM dist/mef3io-studio/mef3io-studio --self-test-gui | tee gui.txt
+          grep -q "^mef3io-studio self-test OK.*display xcb" gui.txt
+      - name: AppImage (pinned appimagetool and runtime)
+        run: PYTHON=python packaging/linux/make_appimage.sh
       - name: Smoke-test the AppImage
         run: |
-          out="$(dist/*.AppImage --appimage-extract-and-run --self-test)"
-          echo "$out"
+          out="$(dist/*.AppImage --appimage-extract-and-run --self-test)"; echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
       - uses: actions/upload-artifact@v7
         with:
@@ -185,10 +229,37 @@ jobs:
             dist/*.AppImage
           if-no-files-found: error
 
+  linux-distros:
+    name: Linux on ${{ matrix.image }}
+    needs: linux
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "rockylinux:9", "fedora:latest"]
+    steps:
+      - name: Desktop OpenGL libraries (present on any desktop install)
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update && apt-get install -y libgl1 libegl1
+          else
+            dnf -y install libglvnd-glx libglvnd-egl
+          fi
+      - uses: actions/download-artifact@v8
+        with:
+          name: mef3io-studio-linux-x86_64
+          path: dist
+      - name: Self-test the tarball
+        run: |
+          tar -C /tmp -xzf dist/*.tar.gz
+          out="$(/tmp/mef3io-studio/mef3io-studio --self-test)"; echo "$out"
+          echo "$out" | grep -q "^mef3io-studio self-test OK"
+
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos, linux]
+    needs: [windows, macos, linux, linux-distros]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -202,13 +273,17 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
       - name: Create the release and attach the installers
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -la artifacts
-          notes="Installers for Windows, macOS and Linux. These builds are NOT code-signed yet:
-          Windows SmartScreen and macOS Gatekeeper will ask you to confirm the first launch."
+          notes="Installers for Windows, macOS (14 or later) and Linux. Verify downloads against SHA256SUMS.
+          These builds are NOT code-signed yet: Windows SmartScreen and macOS Gatekeeper will ask you to confirm the first launch."
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
           else
