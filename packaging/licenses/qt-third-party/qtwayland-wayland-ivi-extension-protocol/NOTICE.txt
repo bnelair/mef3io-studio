@@ -1,0 +1,7 @@
+Name: Wayland IVI Extension Protocol
+Qt module: qtwayland (Used in the Qt Wayland Compositor, and the Qt Wayland platform plugin.)
+License: MIT License (MIT)
+Copyright: Copyright (C) 2013 DENSO CORPORATION
+Copyright (c) 2013 BMW Car IT GmbH
+Version: 1.9.1
+Homepage: https://at.projects.genivi.org/wiki/display/WIE/Wayland+IVI+Extension+Home

@@ -1,0 +1,6 @@
+Name: Efficient Binary-Decimal and Decimal-Binary Conversion Routines for IEEE Doubles
+Qt module: qtbase (Used in Qt Core. Configure with -system-doubleconversion or -no-doubleconversion to avoid.)
+License: BSD 3-clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: Copyright 2006-2012, the V8 project authors
+Version: 3.4.0
+Homepage: https://github.com/google/double-conversion

@@ -1,0 +1,6 @@
+Name: Wayland xdg-decoration Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor API, and the Qt Wayland platform plugin.)
+License: MIT License (MIT)
+Copyright: Copyright © 2018 Simon Ser
+Version: unstable v1, version 1
+Homepage: https://wayland.freedesktop.org

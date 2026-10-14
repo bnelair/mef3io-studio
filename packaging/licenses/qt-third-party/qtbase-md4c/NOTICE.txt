@@ -1,0 +1,6 @@
+Name: MD4C
+Qt module: qtbase (Optionally used in QTextDocument if configured with textmarkdownreader.)
+License: MIT License (MIT)
+Copyright: Copyright © 2016-2024 Martin Mitáš
+Version: 0.5.3
+Homepage: https://github.com/mity/md4c

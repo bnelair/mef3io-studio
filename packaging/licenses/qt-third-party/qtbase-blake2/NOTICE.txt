@@ -1,0 +1,6 @@
+Name: BLAKE2 (reference implementation)
+Qt module: qtbase (Used in Qt Core (QCryptographicHash).)
+License: Creative Commons Zero v1.0 Universal or Apache License 2.0 (CC0-1.0 OR Apache-2.0)
+Copyright: Copyright 2012, Samuel Neves <sneves@dei.uc.pt>
+Version: ed1974ea83433eba7b2d95c5dcd9ac33cb847913
+Homepage: https://blake2.net/

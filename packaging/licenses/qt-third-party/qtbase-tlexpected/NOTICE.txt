@@ -1,0 +1,6 @@
+Name: tl::expected
+Qt module: qtbase (Available as a private type in all Qt modules)
+License: Creative Commons Zero v1.0 Universal (CC0-1.0)
+Copyright: To the extent possible under law, Sy Brand has waived all copyright and related or neighboring rights to the expected library. This work is published from: United Kingdom.
+Version: 41d3e1f48d682992a2230b2a715bca38b848b269
+Homepage: https://github.com/TartanLlama/expected/

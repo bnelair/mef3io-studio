@@ -1,0 +1,6 @@
+Name: Wayland Pointer Gestures Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: MIT License (MIT)
+Copyright: Copyright © 2015, 2016 Red Hat
+Version: unstable v1, version 2
+Homepage: https://wayland.freedesktop.org

@@ -1,0 +1,6 @@
+Name: Cocoa Platform Plugin
+Qt module: qtbase (Code used in the Qt Platform Abstraction (QPA) for macOS.)
+License: BSD 3-clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: Copyright (c) 2007-2008, Apple, Inc.
+Version: 
+Homepage: 

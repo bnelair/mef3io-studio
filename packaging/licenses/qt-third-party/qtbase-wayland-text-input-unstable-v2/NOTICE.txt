@@ -1,0 +1,7 @@
+Name: Wayland Text Input Protocol v2
+Qt module: qtbase (Used in the Qt Wayland Compositor, and the Qt Wayland platform plugin.)
+License: HPND License (HPND)
+Copyright: Copyright © 2012, 2013 Intel Corporation
+Copyright © 2015, 2016 Jan Arne Petersen
+Version: unstable v2
+Homepage: https://wayland.freedesktop.org

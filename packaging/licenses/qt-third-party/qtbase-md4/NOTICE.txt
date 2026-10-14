@@ -1,0 +1,6 @@
+Name: MD4
+Qt module: qtbase (Used in Qt Core (QCryptographicHash).)
+License: Public Domain (CC0-1.0)
+Copyright: Written by Alexander Peslyak - better known as Solar Designer <solar@openwall.com> - in 2001, and placed in the public domain. There's absolutely no warranty.
+Version: 
+Homepage: 

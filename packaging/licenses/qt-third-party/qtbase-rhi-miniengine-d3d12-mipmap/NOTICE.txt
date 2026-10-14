@@ -1,0 +1,6 @@
+Name: Mipmap generator for D3D12
+Qt module: qtbase (Compute shader for mipmap generation with Direct 3D 12)
+License: MIT License (MIT)
+Copyright: Copyright (c) 2015 Microsoft
+Version: 0aa79bad78992da0b6a8279ddb9002c1753cb849
+Homepage: https://github.com/microsoft/DirectX-Graphics-Samples

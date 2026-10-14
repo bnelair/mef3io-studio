@@ -1,0 +1,6 @@
+Name: Valgrind
+Qt module: qtbase (Used on Linux ond MacOS in the Qt Test module.)
+License: BSD 4-clause "Original" or "Old" License (BSD-4-Clause)
+Copyright: ['Copyright (C) 2000-2017 Julian Seward', 'Copyright (C) 2003-2017 Josef Weidendorfer.']
+Version: 3.25.1
+Homepage: http://valgrind.org/

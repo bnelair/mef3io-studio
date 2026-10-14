@@ -1,0 +1,6 @@
+Name: KWin
+Qt module: qtbase (Used as part of the build system.)
+License: BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: ['Copyright 2014 Alex Merry <alex.merry@kde.org>', 'Copyright 2014 Martin Gräßlin <mgraesslin@kde.org>', 'Copyright (c) 2006,2007 Laurent Montel, <montel@kde.org>']
+Version: 5.13.4
+Homepage: https://www.kde.org/

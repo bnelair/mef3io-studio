@@ -1,0 +1,8 @@
+Name: Wayland Session Management Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin.)
+License: MIT License (MIT)
+Copyright: Copyright 2018 Mike Blumenkrantz
+Copyright 2018 Samsung Electronics Co., Ltd
+Copyright 2018 Red Hat Inc.
+Version: experimental V1
+Homepage: https://wayland.freedesktop.org

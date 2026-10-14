@@ -1,0 +1,7 @@
+Name: forkfd
+Qt module: qtbase (Used on most Unix platforms in Qt Core.)
+License: MIT License (MIT)
+Copyright: Copyright (C) 2016 Intel Corporation
+Copyright (C) 2015 Klarälvdalens Datakonsult AB, a KDAB Group company, info@kdab.com
+Version: 
+Homepage: 

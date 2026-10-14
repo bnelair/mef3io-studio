@@ -1,0 +1,6 @@
+Name: Wayland XDG Output Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor API, and the Qt Wayland platform plugin.)
+License: MIT License (MIT)
+Copyright: Copyright © 2017 Red Hat Inc.
+Version: unstable v1, version 3
+Homepage: https://wayland.freedesktop.org

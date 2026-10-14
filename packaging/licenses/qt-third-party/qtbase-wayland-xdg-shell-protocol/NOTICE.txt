@@ -1,0 +1,12 @@
+Name: Wayland XDG Shell Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor, and the Qt Wayland platform plugin.)
+License: MIT License (MIT)
+Copyright: Copyright © 2008-2013 Kristian Høgsberg
+Copyright © 2013      Rafael Antognolli
+Copyright © 2013      Jasper St. Pierre
+Copyright © 2010-2013 Intel Corporation
+Copyright © 2015-2017 Samsung Electronics Co., Ltd
+Copyright © 2015-2017 Red Hat Inc.
+
+Version: 1.18
+Homepage: https://gitlab.freedesktop.org/wayland/wayland-protocols/

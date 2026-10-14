@@ -1,0 +1,6 @@
+Name: X Server helper
+Qt module: qtbase (Used in Qt GUI (QRegion).)
+License: X11 License and Historical Permission Notice and Disclaimer (X11 AND HPND)
+Copyright: ['Copyright (c) 1987, 1988 X Consortium', 'Copyright 1987, 1988 by Digital Equipment Corporation, Maynard, Massachusetts.']
+Version: 
+Homepage: https://www.x.org/

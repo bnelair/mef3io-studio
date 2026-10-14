@@ -1,0 +1,6 @@
+Name: Wayland EGLStream Controller Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor)
+License: MIT License (MIT)
+Copyright: Copyright (c) 2017, NVIDIA CORPORATION. All rights reserved.
+Version: 1.1.1
+Homepage: https://github.com/NVIDIA/egl-wayland

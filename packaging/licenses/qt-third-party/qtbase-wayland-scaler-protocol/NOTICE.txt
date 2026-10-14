@@ -1,0 +1,6 @@
+Name: Wayland Scaler Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor API)
+License: MIT License (MIT)
+Copyright: Copyright © 2013-2014 Collabora, Ltd.
+Version: 2
+Homepage: https://wayland.freedesktop.org

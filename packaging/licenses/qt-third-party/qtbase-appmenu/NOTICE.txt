@@ -1,0 +1,6 @@
+Name: Wayland KDE DBus Menu Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: GNU Lesser General Public License 2.1 or later (LGPL-2.1-or-later)
+Copyright: Copyright 2017 David Edmundson
+Version: 1
+Homepage: https://kde.org

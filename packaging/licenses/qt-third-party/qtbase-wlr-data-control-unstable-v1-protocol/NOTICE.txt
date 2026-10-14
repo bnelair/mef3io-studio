@@ -1,0 +1,7 @@
+Name: Wlr Data Control Unstable V1 Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: MIT License (MIT)
+Copyright: Copyright © 2018 Simon Ser
+Copyright © 2019 Ivan Molodetskikht
+Version: 2
+Homepage: https://gitlab.freedesktop.org/wlroots/wlr-protocols/

@@ -1,0 +1,6 @@
+Name: Secure Hash Algorithms SHA-384 and SHA-512
+Qt module: qtbase (Used in Qt Core (QCryptographicHash and QMessageAuthenticationCode))
+License: BSD 3-clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: Copyright (c) 2011 IETF Trust and the persons identified as authors of the code.
+Version: 
+Homepage: 

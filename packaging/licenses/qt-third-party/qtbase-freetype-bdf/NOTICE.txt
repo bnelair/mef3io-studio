@@ -1,0 +1,6 @@
+Name: Freetype 2 - Bitmap Distribution Format (BDF) support
+Qt module: qtbase (Optionally used in Qt GUI and platform plugins. Configure with -no-freetype, or -system-freetype to avoid.)
+License: MIT License (MIT)
+Copyright: ['Copyright (c) 2000 Computing Research Labs, New Mexico State University', 'Copyright (c) 2001-2014 Francesco Zappa Nardelli']
+Version: 
+Homepage: http://www.freetype.org

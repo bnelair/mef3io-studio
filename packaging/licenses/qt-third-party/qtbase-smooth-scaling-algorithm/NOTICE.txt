@@ -1,0 +1,6 @@
+Name: Smooth Scaling Algorithm
+Qt module: qtbase (Used in Qt Gui (QImage::transformed() functions).)
+License: BSD 2-clause "Simplified" License and Imlib2 License (BSD-2-Clause AND Imlib2)
+Copyright: ['Copyright (C) 2004, 2005 Daniel M. Duley.', '(C) Carsten Haitzler and various contributors.', '(C) Willem Monsuwe <willem@stack.nl>']
+Version: 
+Homepage: 

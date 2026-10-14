@@ -1,0 +1,6 @@
+Name: cmake-runcmake-test-modules
+Qt module: qtbase (Used as part of the build system.)
+License: BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: Copyright © 2000-2024 Kitware, Inc. and Contributors
+Version: 3.31.5
+Homepage: https://cmake.org/

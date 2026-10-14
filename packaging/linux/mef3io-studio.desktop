@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=mef3io-studio
+GenericName=MEF 3.0 recording explorer
+Comment=Explore and anonymize MEF 3.0 recordings
+Exec=mef3io-studio %F
+Icon=mef3io-studio
+Terminal=false
+Categories=Science;MedicalSoftware;

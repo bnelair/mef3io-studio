@@ -1,0 +1,6 @@
+Name: Freetype 2 - Portable Compiled Format (PCF) support
+Qt module: qtbase (Optionally used in Qt GUI and platform plugins. Configure with -no-freetype, or -system-freetype to avoid.)
+License: MIT License and MIT Open Group variant (MIT AND MIT-open-group)
+Copyright: ['Copyright (c) 2001, 2012 David Turner, Robert Wilhelm, and Werner Lemberg', 'Copyright (c) 2000-2014 Francesco Zappa Nardelli', 'Copyright (c) 1990, 1994, 1998 The Open Group']
+Version: 
+Homepage: http://www.freetype.org

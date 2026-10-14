@@ -1,0 +1,6 @@
+Name: Pixman
+Qt module: qtbase (Used in Qt GUI on ARM NEON.)
+License: MIT License (MIT)
+Copyright: Copyright © 2009 Nokia Corporation
+Version: 0.17.12
+Homepage: http://www.pixman.org/

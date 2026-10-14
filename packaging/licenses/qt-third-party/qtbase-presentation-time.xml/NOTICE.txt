@@ -1,0 +1,6 @@
+Name: Presentation Time Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor)
+License: MIT License (MIT)
+Copyright: Copyright © 2013, 2014 Collabora, Ltd.
+Version: 1
+Homepage: https://wayland.freedesktop.org

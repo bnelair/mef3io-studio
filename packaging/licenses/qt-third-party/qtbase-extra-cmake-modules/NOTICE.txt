@@ -1,0 +1,6 @@
+Name: extra-cmake-modules
+Qt module: qtbase (Used as part of the build system.)
+License: BSD-3-Clause (BSD-3-Clause)
+Copyright: Copyright © 2011-2018 The KDE community
+Version: 5.84.0
+Homepage: https://api.kde.org/ecm/

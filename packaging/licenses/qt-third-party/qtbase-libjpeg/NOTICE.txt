@@ -1,0 +1,6 @@
+Name: LibJPEG-turbo
+Qt module: qtbase (Used in the qjpeg image plugin. Configure with -system-libjpeg or -no-libjpeg to avoid.)
+License: Independent JPEG Group License and BSD 3-Clause "New" or "Revised" License (IJG AND BSD-3-Clause)
+Copyright: 
+Version: 3.2.0
+Homepage: http://libjpeg-turbo.virtualgl.org/

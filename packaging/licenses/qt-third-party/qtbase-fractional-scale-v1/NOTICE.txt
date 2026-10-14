@@ -1,0 +1,6 @@
+Name: Wayland Fractional Scale Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: MIT License (MIT)
+Copyright: Copyright © 2022 Kenny Levinsen
+Version: 1
+Homepage: https://wayland.freedesktop.org

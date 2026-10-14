@@ -1,0 +1,7 @@
+OpenSSL (libcrypto) — bundled with the Python runtime
+=====================================================
+
+Copyright (c) 1998-2024 The OpenSSL Project Authors.
+Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson.
+Licensed under the Apache License, Version 2.0 (OpenSSL-LICENSE.txt).
+Source: https://www.openssl.org/source/

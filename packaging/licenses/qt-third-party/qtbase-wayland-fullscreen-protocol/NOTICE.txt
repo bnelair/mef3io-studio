@@ -1,0 +1,8 @@
+Name: Wayland Fullscreen Shell Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin.)
+License: MIT License (MIT)
+Copyright: Copyright © 2016 Yong Bakos
+Copyright © 2015 Jason Ekstrand
+Copyright © 2015 Jonas Ådahl
+Version: unstable v1
+Homepage: https://wayland.freedesktop.org

@@ -1,0 +1,8 @@
+Name: Secure Hash Algorithm SHA-3 - Keccak
+Qt module: qtbase (Used in Qt Core (QCryptographicHash).)
+License: Creative Commons Zero v1.0 Universal (CC0-1.0)
+Copyright: Guido Bertoni, Joan Daemen, Michaël Peeters and Gilles Van Assche.
+To the extent possible under law, the implementers have waived all copyright
+and related or neighboring rights to the source code in this file.
+Version: 3.2
+Homepage: 

@@ -1,0 +1,6 @@
+Name: TinyCBOR
+Qt module: qtbase (Used for QCborStreamReader and QCborStreamWriter.)
+License: MIT License (MIT)
+Copyright: Copyright (C) 2015-2025 Intel Corporation
+Version: 7.0
+Homepage: https://github.com/intel/tinycbor

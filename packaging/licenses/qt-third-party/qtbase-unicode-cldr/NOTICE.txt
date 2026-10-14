@@ -1,0 +1,6 @@
+Name: Unicode Common Locale Data Repository (CLDR)
+Qt module: qtbase (Used in Qt Core (QTimeZone, QLocale).)
+License: Unicode License v3 (Unicode-3.0)
+Copyright: Copyright (C) 2004-2025 Unicode, Inc.
+Version: v48.2
+Homepage: https://cldr.unicode.org/

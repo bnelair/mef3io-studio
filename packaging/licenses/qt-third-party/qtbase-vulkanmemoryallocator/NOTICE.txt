@@ -1,0 +1,6 @@
+Name: Vulkan Memory Allocator
+Qt module: qtbase (Memory management for the Vulkan backend of QRhi.)
+License: MIT License (MIT)
+Copyright: Copyright (c) 2017-2025 Advanced Micro Devices, Inc. All rights reserved.
+Version: 3.3.0
+Homepage: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator

@@ -1,0 +1,6 @@
+Name: Wayland Viewporter Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor API)
+License: MIT License (MIT)
+Copyright: Copyright © 2013-2016 Collabora, Ltd.
+Version: 1
+Homepage: https://wayland.freedesktop.org

@@ -1,0 +1,7 @@
+Name: Wayland xdg-activation Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: MIT License (MIT)
+Copyright: Copyright © 2020 Aleix Pol Gonzalez &lt;aleixpol@kde.org&gt;
+Copyright © 2020 Carlos Garnacho &lt;carlosg@gnome.org&gt;
+Version: unstable v1, version 1
+Homepage: https://wayland.freedesktop.org

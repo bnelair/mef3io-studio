@@ -1,0 +1,22 @@
+Qt 6 and Qt for Python (PySide6, shiboken6)
+===========================================
+
+mef3io-studio uses the Qt 6 libraries through PySide6 and shiboken6
+(Copyright (C) The Qt Company Ltd. and other contributors), under the
+GNU Lesser General Public License version 3 (LGPL-3.0-only, see
+LGPL-3.0.txt, which supplements GPL-3.0.txt).
+
+* The Qt and PySide6 libraries are included UNMODIFIED, as separate
+  shared libraries (Qt6*.dll / libQt6*.so* / QtCore.framework..., and the
+  PySide6 / shiboken6 modules) in the app's folder.
+* You may replace them with your own (modified) build of the same Qt and
+  PySide6 version: replace the files in the app's PySide6 folder (on macOS,
+  inside mef3io-studio.app/Contents/Frameworks/PySide6).
+* Source code:
+    Qt:       https://download.qt.io/official_releases/qt/
+              (the exact version is shown in Help > About)
+    PySide6:  https://code.qt.io/cgit/pyside/pyside-setup.git/
+              (tag v<version>, matching the version in Help > About)
+  If you cannot download it, ask the mef3io-studio maintainers
+  (https://github.com/bnelair/mef3io-studio/issues) for a copy; this offer is
+  valid for three years from the release you received.
