@@ -13,6 +13,19 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  # Also on PRs that change what goes into the installers, so packaging
+  # breakage is caught before merge (the release job only runs on tags).
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/build.yml"
+      - "pyproject.toml"
+      - "VERSION"
+      - "scripts/render_icons.py"
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
