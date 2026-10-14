@@ -1,0 +1,95 @@
+Third-party code inside Qt 6.12.0 (from the qt_attribution.json files)
+
+qtbase-extra-cmake-modules: extra-cmake-modules — BSD-3-Clause
+qtbase-kwin: KWin — BSD-3-Clause
+qtbase-d3d12memoryallocator: D3D12 Memory Allocator — MIT
+qtbase-vulkanmemoryallocator: Vulkan Memory Allocator — MIT
+qtbase-android-native-style: Native Style for Android — Apache-2.0
+qtbase-blake2: BLAKE2 (reference implementation) — CC0-1.0 OR Apache-2.0
+qtbase-doubleconversion: Efficient Binary-Decimal and Decimal-Binary Conversion Routines for IEEE Doubles — BSD-3-Clause
+qtbase-easing: Easing Equations by Robert Penner — BSD-3-Clause
+qtbase-emoji-segmenter: Emoji Segmenter — Apache-2.0
+qtbase-forkfd: forkfd — MIT
+qtbase-freetype: Freetype 2 — FTL OR GPL-2.0-only
+qtbase-freetype-zlib: Freetype 2 - zlib — Zlib
+qtbase-freetype-bdf: Freetype 2 - Bitmap Distribution Format (BDF) support — MIT
+qtbase-freetype-pcf: Freetype 2 - Portable Compiled Format (PCF) support — MIT AND MIT-open-group
+qtbase-android-gradle-wrapper: Gradle wrapper — Apache-2.0
+qtbase-harfbuzz-ng: HarfBuzz-NG — MIT
+qtbase-icc-srgb-color-profile: sRGB color profile icc file — LicenseRef-ICC-License
+qtbase-libjpeg: LibJPEG-turbo — IJG AND BSD-3-Clause
+qtbase-libpng: LibPNG — Libpng AND libpng-2.0
+qtbase-psl-data: The Public Suffix List — MPL-2.0
+qtbase-libpsl: libpsl - C library to handle the Public Suffix List — BSD-3-Clause
+qtbase-md4: MD4 — CC0-1.0
+qtbase-md4c: MD4C — MIT
+qtbase-md5: MD5 — CC0-1.0
+qtbase-pcre2: PCRE2 — LicenseRef-BSD-3-Clause-with-PCRE2-Binary-Like-Packages-Exception
+qtbase-pcre2-sljit: PCRE2 - Stack-less Just-In-Time Compiler — BSD-2-Clause
+qtbase-pixman: Pixman — MIT
+qtbase-rfc6234: Secure Hash Algorithms SHA-384 and SHA-512 — BSD-3-Clause
+qtbase-sha1: Secure Hash Algorithm SHA-1 — LicenseRef-SHA1-Public-Domain
+qtbase-sha3_endian: Secure Hash Algorithm SHA-3 - brg_endian — BSD-2-Clause
+qtbase-sha3_keccak: Secure Hash Algorithm SHA-3 - Keccak — CC0-1.0
+qtbase-siphash: SipHash Algorithm — CC0-1.0
+qtbase-sqlite: SQLite — blessing
+qtbase-tinycbor: TinyCBOR — MIT
+qtbase-dejayvu: DejaVu Fonts — Bitstream-Vera
+qtbase-appmenu: Wayland KDE DBus Menu Protocol — LGPL-2.1-or-later
+qtbase-wayland-color-management-protocol: Wayland Color Management Protocol — MIT
+qtbase-fractional-scale-v1: Wayland Fractional Scale Protocol — MIT
+qtbase-wayland-fullscreen-protocol: Wayland Fullscreen Shell Protocol — MIT
+qtbase-wayland-linux-dmabuf-v1: Wayland Linux Dmabuf V1 Protocol — MIT
+qtbase-wayland-linux-dmabuf-unstable-v1: Wayland Linux Dmabuf Unstable V1 Protocol — MIT
+qtbase-wayland-pointer-gestures-protocol: Wayland Pointer Gestures Protocol — MIT
+qtbase-wayland-pointer-warp-protocol: Wayland Pointer Warp Protocol — MIT
+qtbase-presentation-time.xml: Presentation Time Protocol — MIT
+qtbase-wayland-scaler-protocol: Wayland Scaler Protocol — MIT
+qtbase-wayland-session-management-protocol: Wayland Session Management Protocol — MIT
+qtbase-wayland-tablet-protocol: Wayland Tablet Protocol — MIT
+qtbase-wayland-text-input-unstable-v1: Wayland Text Input Protocol v1 — MIT
+qtbase-wayland-text-input-unstable-v2: Wayland Text Input Protocol v2 — HPND
+qtbase-wayland-text-input-unstable-v3: Wayland Text Input Protocol — MIT
+qtbase-wayland-viewporter-protocol: Wayland Viewporter Protocol — MIT
+qtbase-wayland-protocol: Wayland Protocol — MIT
+qtbase-wayland-eglstream-controller: Wayland EGLStream Controller Protocol — MIT
+qtbase-wlr-data-control-unstable-v1-protocol: Wlr Data Control Unstable V1 Protocol — MIT
+qtbase-wayland-primary-selection-protocol: Wayland Primary Selection Protocol — MIT
+qtbase-wayland-xdg-activation: Wayland xdg-activation Protocol — MIT
+qtbase-wayland-xdg-decoration-protocol: Wayland xdg-decoration Protocol — MIT
+qtbase-xdg-dialog-v1: Wayland Dialog Protocol — MIT
+qtbase-xdg-foreign-unstable-v2: Wayland XDG Foreign Protocol — MIT
+qtbase-wayland-xdg-output-protocol: Wayland XDG Output Protocol — MIT
+qtbase-wayland-xdg-shell-protocol: Wayland XDG Shell Protocol — MIT
+qtbase-wayland-xdg-system-bell-protocol: Wayland XDG System Bell Protocol — MIT
+qtbase-wayland-xdg-toplevel-icon-protocol: Wayland xdg-toplevel-icon Protocol — MIT
+qtbase-wintab: Wintab API — LicenseRef-Lcs-Telegraphics
+qtbase-xcb-xinput: XCB-XInput — MIT
+qtbase-zlib: Data Compression Library (zlib) — Zlib
+qtbase-tlexpected: tl::expected — CC0-1.0
+qtbase-qeventdispatcher_cf: QEventDispatcher on macOS — BSD-3-Clause
+qtbase-tika-mimetypes: Apache Tika MimeType Definitions — Apache-2.0
+qtbase-unicode-character-database: Unicode Character Database (UCD) — Unicode-3.0
+qtbase-unicode-cldr: Unicode Common Locale Data Repository (CLDR) — Unicode-3.0
+qtbase-libdbus-1-headers: libdbus-1 headers — AFL-2.1 OR GPL-2.0-or-later
+qtbase-opengl-headers: OpenGL Headers — MIT
+qtbase-opengl-es2-headers: OpenGL ES 2 Headers — MIT
+qtbase-grayraster: Anti-aliasing rasterizer from FreeType 2 — FTL OR GPL-2.0-only
+qtbase-smooth-scaling-algorithm: Smooth Scaling Algorithm — BSD-2-Clause AND Imlib2
+qtbase-xserverhelper: X Server helper — X11 AND HPND
+qtbase-rhi-miniengine-d3d12-mipmap: Mipmap generator for D3D12 — MIT
+qtbase-aglfn: Adobe Glyph List For New Fonts — BSD-3-Clause
+qtbase-xsvg: XSVG — HPND-sell-variant
+qtbase-vulkan-xml-spec: Vulkan API Registry — Apache-2.0 OR MIT
+qtbase-cocoa-platform-plugin: Cocoa Platform Plugin — BSD-3-Clause
+qtbase-cmake-runcmake-test-modules: cmake-runcmake-test-modules — BSD-3-Clause
+qtbase-catch2: Catch2 — BSL-1.0
+qtbase-cycle: Cycle — MIT
+qtbase-linuxperf: Linux Performance Events — GPL-2.0-only WITH Linux-syscall-note
+qtbase-valgrind: Valgrind — BSD-4-Clause
+qtbase-webgradients: WebGradients — MIT
+qtimageformats-libtiff: TIFF Software Distribution (libtiff) — libtiff
+qtimageformats-libwebp: WebP (libwebp) — BSD-3-Clause
+qtwayland-wayland-ivi-extension-protocol: Wayland IVI Extension Protocol — MIT
+
+ICU: the Unicode/ICU licence (libicu*.so / icu*.dll bundled with PySide6)

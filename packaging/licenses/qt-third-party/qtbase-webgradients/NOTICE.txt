@@ -1,0 +1,6 @@
+Name: WebGradients
+Qt module: qtbase (Used in Qt GUI to provide presets for QGradient.)
+License: MIT License (MIT)
+Copyright: Copyright (c) 2017 itmeo
+Version: 
+Homepage: https://webgradients.com/

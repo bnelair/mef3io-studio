@@ -1,0 +1,6 @@
+Name: PCRE2
+Qt module: qtbase (Used in Qt Core (QRegularExpression).)
+License: BSD 3-clause "New" or "Revised" License with PCRE2 binary-like Packages Exception (LicenseRef-BSD-3-Clause-with-PCRE2-Binary-Like-Packages-Exception)
+Copyright: ['Copyright (c) 1997-2007 University of Cambridge', 'Copyright (c) 2007-2024 Philip Hazel', 'Copyright (c) 2010-2024 Zoltan Herczeg']
+Version: 10.48
+Homepage: http://www.pcre.org/

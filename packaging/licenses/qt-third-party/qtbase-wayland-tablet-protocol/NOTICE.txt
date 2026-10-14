@@ -1,0 +1,7 @@
+Name: Wayland Tablet Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: MIT License (MIT)
+Copyright: Copyright 2014 © Stephen "Lyude" Chandler Paul
+Copyright 2015-2016 © Red Hat, Inc.
+Version: unstable v2, version 1
+Homepage: https://wayland.freedesktop.org

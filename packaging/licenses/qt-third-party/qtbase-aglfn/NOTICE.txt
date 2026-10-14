@@ -1,0 +1,6 @@
+Name: Adobe Glyph List For New Fonts
+Qt module: qtbase (Used by PDF generator to make it easier for reader applications to resolve  the original contents of rendered text.)
+License: BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: Copyright 2002, 2003, 2005, 2006, 2008, 2010, 2015 Adobe Systems
+Version: 1.7
+Homepage: https://github.com/adobe-type-tools/agl-aglfn

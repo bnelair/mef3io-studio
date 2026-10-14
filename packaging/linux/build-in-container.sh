@@ -7,11 +7,17 @@
 # Run as root inside an almalinux:9 container with the repo at $PWD.
 # Produces dist/mef3io-studio-<version>-linux-x86_64.tar.gz (permissions kept).
 set -euo pipefail
+# Container images install packages without documentation ("nodocs"), which
+# also drops many licence files; collect_licenses.py must copy those into the
+# bundle, so turn it off and reinstall what the base image already had.
+sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf
 dnf -y -q install epel-release dnf-plugins-core && dnf config-manager --set-enabled crb
 dnf -y -q install python3.12 python3.12-devel binutils tar gzip findutils \
   libxkbcommon libxkbcommon-x11 fontconfig freetype dbus-libs libX11 libX11-xcb \
   xcb-util xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor \
   libglvnd-egl libglvnd-glx mesa-libGL libwayland-client libwayland-cursor
+rpm -qf --qf '%{NAME}\n' /usr/lib64/*.so* 2>/dev/null | grep -v "not owned" | sort -u \
+  | xargs dnf -y -q reinstall >/dev/null
 python3.12 -m venv /tmp/venv
 /tmp/venv/bin/python -m pip install -q --upgrade pip==25.2
 /tmp/venv/bin/pip install -q --require-hashes -r requirements/build.lock

@@ -1,0 +1,6 @@
+Name: Easing Equations by Robert Penner
+Qt module: qtbase (Used in Qt Core (QEasingCurve).)
+License: BSD 3-clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: Copyright (c) 2001 Robert Penner
+Version: 
+Homepage: http://robertpenner.com/easing/

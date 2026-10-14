@@ -1,0 +1,6 @@
+Name: Unicode Character Database (UCD)
+Qt module: qtbase (Qt Core uses data obtained from UCD files for working with characters and strings.)
+License: Unicode License Agreement - Data Files and Software (2016) (Unicode-3.0)
+Copyright: Copyright (C) 1991-2025 Unicode, Inc.
+Version: 36
+Homepage: https://www.unicode.org/ucd/

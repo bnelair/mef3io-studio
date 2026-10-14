@@ -1,0 +1,6 @@
+Name: Wayland Dialog Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: MIT License (MIT)
+Copyright: Copyright © 2023 Carlos Garnacho
+Version: 1
+Homepage: https://wayland.freedesktop.org

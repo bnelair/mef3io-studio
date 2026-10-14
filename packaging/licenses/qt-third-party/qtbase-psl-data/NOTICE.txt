@@ -1,0 +1,8 @@
+Name: The Public Suffix List
+Qt module: qtbase (Used in Qt Network to avoid setting "supercookies" in the cookie jar
+supported by Qt (by the QNetworkCookieJar class).)
+License: Mozilla Public License 2.0 (MPL-2.0)
+Copyright: The list was originally provided by Jo Hermans <jo.hermans@gmail.com>.
+It is now maintained on github (https://github.com/publicsuffix/list).
+Version: 2026-05-14_08-35-31_UTC
+Homepage: http://publicsuffix.org/

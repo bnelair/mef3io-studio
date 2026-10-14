@@ -1,0 +1,6 @@
+Name: Wayland Linux Dmabuf V1 Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor)
+License: MIT License (MIT)
+Copyright: Copyright © 2014, 2015 Collabora, Ltd.
+Version: v1, version 5
+Homepage: https://wayland.freedesktop.org

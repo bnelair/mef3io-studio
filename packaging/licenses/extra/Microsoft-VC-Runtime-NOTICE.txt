@@ -1,0 +1,12 @@
+Microsoft Visual C++ Runtime and Universal C Runtime (Windows only)
+===================================================================
+
+Files: VCRUNTIME140*.dll, MSVCP140*.dll, ucrtbase.dll, api-ms-win-*.dll
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+These files are Microsoft "Distributable Code". They are redistributed
+unmodified, as permitted by the Microsoft Visual Studio license terms
+(https://visualstudio.microsoft.com/license-terms/) and the Universal C
+Runtime redistribution terms. They are also available from Microsoft as the
+"Microsoft Visual C++ Redistributable":
+https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist

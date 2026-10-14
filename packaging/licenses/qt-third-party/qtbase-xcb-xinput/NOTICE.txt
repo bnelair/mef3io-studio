@@ -1,0 +1,8 @@
+Name: XCB-XInput
+Qt module: qtbase (Used in XCB platform plugin if xcb-xinput was not present on the system
+ during Qt configuration or -bundled-xcb-xinput switch was used. To force using xcb-xinput from
+ the system, pass -no-bundled-xcb-xinput.)
+License: MIT License (MIT)
+Copyright: ['Copyright (C) 2001-2006 Bart Massey, Jamey Sharp, and Josh Triplett.', 'Copyright (C) 2006 Peter Hutterer', 'Copyright (C) 2013 Daniel Martin']
+Version: 
+Homepage: https://xcb.freedesktop.org/

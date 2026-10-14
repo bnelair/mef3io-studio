@@ -1,0 +1,6 @@
+Name: SQLite
+Qt module: qtbase (Used in Qt SQL Lite plugin. Configure Qt with -system-sqlite or -no-sqlite to avoid.)
+License: SQLite Blessing (blessing)
+Copyright: The authors disclaim copyright to the source code. However, a license can be obtained if needed.
+Version: 3.53.4
+Homepage: https://www.sqlite.org/

@@ -1,0 +1,6 @@
+Name: D3D12 Memory Allocator
+Qt module: qtbase (Memory management for the D3D12 backend of QRhi.)
+License: MIT License (MIT)
+Copyright: Copyright (c) 2019-2026 Advanced Micro Devices, Inc. All rights reserved.
+Version: v3.1.0
+Homepage: https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator

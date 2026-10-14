@@ -1,0 +1,6 @@
+Name: Catch2
+Qt module: qtbase (Used for testing of the Qt Test module.)
+License: Boost Software License 1.0 (BSL-1.0)
+Copyright: Copyright (c) 2022 Two Blue Cubes Ltd. All rights reserved.
+Version: 2.13.10
+Homepage: https://github.com/catchorg/Catch2

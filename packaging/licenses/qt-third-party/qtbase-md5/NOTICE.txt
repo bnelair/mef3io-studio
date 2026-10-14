@@ -1,0 +1,6 @@
+Name: MD5
+Qt module: qtbase (Used in Qt Core (QCryptographicHash).)
+License: Public Domain (CC0-1.0)
+Copyright: Written by Colin Plumb in 1993, no copyright is claimed. Ian Jackson <ian@chiark.greenend.org.uk>.
+Version: 
+Homepage: 

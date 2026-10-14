@@ -156,6 +156,11 @@ def _const_str(node):
     return " ".join(out)
 
 
+# The log filter names MEF file suffixes only to REDACT them from log text;
+# it never opens a file.
+MEF_NAMES_ALLOWED_IN = {"privacy.py"}
+
+
 def boundary_offences(source: str, name: str = "<src>") -> list[str]:
     tree = ast.parse(source)
     aliases = {"mef3io"}
@@ -214,7 +219,7 @@ def boundary_offences(source: str, name: str = "<src>") -> list[str]:
             lowered = text.lower()
             if "mef3io._" in lowered:
                 offences.append(f"{name}: string {text!r}")
-            for word in MEF_FILE_WORDS:
+            for word in MEF_FILE_WORDS if name not in MEF_NAMES_ALLOWED_IN else ():
                 if re.search(rf"\.{word}\b", lowered) or lowered.strip(". ") == word:
                     offences.append(f"{name}: MEF file name {text!r}")
     return offences

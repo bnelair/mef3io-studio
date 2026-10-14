@@ -1,0 +1,6 @@
+Name: WebP (libwebp)
+Qt module: qtimageformats (Used in the qwebp image plugin if no system libwebp is found.)
+License: BSD 3-clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: Copyright (c) 2010, Google Inc. All rights reserved.
+Version: 1.6.0
+Homepage: https://developers.google.com/speed/webp/

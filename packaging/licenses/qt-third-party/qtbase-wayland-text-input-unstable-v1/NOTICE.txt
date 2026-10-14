@@ -1,0 +1,6 @@
+Name: Wayland Text Input Protocol v1
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: MIT License (MIT)
+Copyright: Copyright © 2012, 2013 Intel Corporation
+Version: unstable v1
+Homepage: https://wayland.freedesktop.org

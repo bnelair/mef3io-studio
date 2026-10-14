@@ -35,6 +35,11 @@ hiddenimports += ["PySide6.QtSvg"]
 
 excludes = [
     "tkinter",
+    # Build tools: nothing at run time imports them (they arrived through
+    # PyInstaller hooks and would bring setuptools' vendored packages along).
+    "setuptools",
+    "pkg_resources",
+    "_distutils_hack",
     # No TLS/network code path exists; keep the bundle free of it.
     "ssl",
     "_ssl",
@@ -91,6 +96,9 @@ DROP_PATTERNS = [
     r"(^|/)libtinfo",
     r"(^|/)libncurses",
     r"(^|/)_?curses",
+    # Windows: Mesa's software OpenGL (~20 MB). The app draws with Qt's raster
+    # engine and never needs OpenGL, let alone a software fallback for it.
+    r"(^|/)opengl32sw\.dll$",
 ]
 if LINUX:
     # glibc's companions: every target system has a libstdc++/libgcc at least

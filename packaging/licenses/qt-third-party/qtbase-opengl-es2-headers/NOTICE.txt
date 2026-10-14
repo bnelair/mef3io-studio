@@ -1,0 +1,6 @@
+Name: OpenGL ES 2 Headers
+Qt module: qtbase (Used on Windows and Linux in the OpenGL related headers of Qt GUI.)
+License: MIT License (MIT)
+Copyright: Copyright (c) 2013-2014 The Khronos Group Inc.
+Version: Revision 27673
+Homepage: https://www.khronos.org/

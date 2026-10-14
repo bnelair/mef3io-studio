@@ -1,0 +1,6 @@
+Name: Secure Hash Algorithm SHA-3 - brg_endian
+Qt module: qtbase (Used in Qt Core (QCryptographicHash).)
+License: BSD 2-clause "Simplified" License (BSD-2-Clause)
+Copyright: Copyright (c) 1998-2013, Brian Gladman, Worcester, UK. All rights reserved.
+Version: 1.0.0
+Homepage: 

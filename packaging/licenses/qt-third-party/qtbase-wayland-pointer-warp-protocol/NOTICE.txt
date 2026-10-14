@@ -1,0 +1,9 @@
+Name: Wayland Pointer Warp Protocol
+Qt module: qtbase (Used in the Qt Wayland platform plugin)
+License: MIT License (MIT)
+Copyright: Copyright © 2024 Neal Gompa
+Copyright © 2024 Xaver Hugl
+Copyright © 2024 Matthias Klumpp
+Copyright © 2024 Vlad Zahorodnii
+Version: version 1
+Homepage: https://wayland.freedesktop.org

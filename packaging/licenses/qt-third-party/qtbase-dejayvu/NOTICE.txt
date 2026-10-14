@@ -1,0 +1,6 @@
+Name: DejaVu Fonts
+Qt module: qtbase (Used for WebAssembly platform.)
+License: Bitstream Vera Font License (Bitstream-Vera)
+Copyright: ['Copyright (c) 2003 by Bitstream, Inc', 'Copyright (c) 2006 by Tavmjong Bah', '(c) American Mathematical Society']
+Version: 2.37
+Homepage: https://dejavu-fonts.github.io/

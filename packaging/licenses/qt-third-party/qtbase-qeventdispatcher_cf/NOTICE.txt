@@ -1,0 +1,6 @@
+Name: QEventDispatcher on macOS
+Qt module: qtbase (Used in Qt Core on macOS.)
+License: BSD 3-clause "New" or "Revised" License (BSD-3-Clause)
+Copyright: Copyright (c) 2007-2008, Apple, Inc.
+Version: 
+Homepage: 

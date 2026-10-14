@@ -1,0 +1,6 @@
+Name: Wayland xdg-toplevel-icon Protocol
+Qt module: qtbase (Used in the Qt Wayland Compositor API, and the Qt Wayland platform plugin.)
+License: MIT License (MIT)
+Copyright: Copyright © 2024 Matthias Klumpp 2024 David Edmundson
+Version: version 1
+Homepage: https://wayland.freedesktop.org

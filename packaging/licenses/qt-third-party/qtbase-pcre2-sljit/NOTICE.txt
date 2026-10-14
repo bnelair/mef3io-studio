@@ -1,0 +1,6 @@
+Name: PCRE2 - Stack-less Just-In-Time Compiler
+Qt module: qtbase (Used in Qt Core (QRegularExpression).)
+License: BSD 2-clause "Simplified" License (BSD-2-Clause)
+Copyright: Copyright Zoltan Herczeg
+Version: 10.48
+Homepage: http://www.pcre.org/
