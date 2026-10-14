@@ -16,10 +16,14 @@ This app handles clinical recordings and produces anonymized copies of them,
 so **privacy failures are security bugs**. In scope:
 
 - **An anonymized copy that still contains** patient details, an original date or time, or anything that links it back to the original. Includes anything the verification step failed to catch.
-- **Patient details or original dates** in logs, reports, crash dumps, temporary files left behind, or anything else the app writes. Only **two artifacts** may contain them, both explicit and both warned about in the UI:
+- **Identifying information where it must not be.** Patient details, original recording dates, recording names or folder paths showing up in logs, reports, crash dumps, temporary files left behind, or anything else the app writes. Only two kinds of artifact may contain such information, both explicit and both warned about in the UI:
   - the anonymizer's **key file** (written only on request);
-  - the **rename record** that makes *Undo rename* possible (old names; switchable off; never in logs or reports).
-- **An original recording modified** without the user's explicit confirmation, or beyond what was confirmed. Anonymization, encryption changes and channel subsets must never touch the original. Renames, stored-name updates and metadata edits change it in place only as confirmed, previewed operations with a backup or undo.
+  - **recovery artifacts** that make undo possible: rename journals (old names) and header or metadata backups (values before an edit). They are stored in the app's per-user data folder under opaque names, never beside the recordings unless the user opts in, never copied into logs, reports or exports, listed and deletable in the app, and can be switched off.
+- **An original recording modified** without the user's explicit confirmation, or beyond what was confirmed:
+  - Anonymization, encryption changes and channel subsets must never touch the original.
+  - Renames (folder, session annotation files and stored names together) and metadata edits change it in place only as confirmed, previewed operations with undo.
+  - **Timestamps are never changed in place,** by any operation.
+- **A rename that loses data:** annotations that other MEF software can no longer find after a rename, or a session left half-renamed after a crash.
 - **Any network access** by the app.
 - **Crashes or out-of-bounds reads** caused by a crafted file. Those usually belong in [mef3io](https://github.com/bnelair/mef3io/security), which does the parsing.
 

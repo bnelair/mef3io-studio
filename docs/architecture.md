@@ -27,8 +27,16 @@ Its `FileManager` provides:
 
 Those are exactly the pieces an interactive viewer needs, so the studio
 **reuses them instead of building its own cache**:
-- **Local recordings:** the `FileManager` runs **inside the app, in-process**, with no gRPC and no network. This keeps the no-network rule. The server's README shows it constructed directly from Python; confirming its in-process API (it currently speaks protobuf types) is part of the viewer spec.
-- **Remote recordings:** the same client API talks to a server over gRPC, so remote viewing is the same code path with a different source.
+- **Local recordings:** the app drives the `FileManager` directly, **without gRPC** and without the network. It still starts its own decode worker processes, which is how the server parallelises.
+- **Remote recordings:** the `Mef3Client` talks to a server over gRPC.
+- **One interface:** both sit behind one "recording source" interface in the app, so the viewer code is the same either way.
+
+**What has to change in mef3io-server first.** These are viewer-spec items,
+each to be filed against mef3io-server:
+- **Encrypted sessions:** the server opens files with `MefReader(path)` and has no password parameter (file_manager.py:178, reader_pool.py:33; nothing in the proto), so it can't serve them today.
+- **A plain-Python API:** `FileManager.open_file` / `get_file_info` return protobuf objects, while `read_signal_range` returns a dict. The app needs one consistent plain-Python interface (or an adapter in the app).
+- **Logging hooks:** the server logs file paths and exception text (file_manager.py:165,188,190). In-process those would reach the app's log, and paths are identifying, so the app needs to control or filter them.
+- **Packaging:** decode workers use the multiprocessing `spawn` start method (reader_pool.py:101-108). Under PyInstaller that needs `multiprocessing.freeze_support()`, and the worker count needs a memory-aware default for laptops.
 
 v0.1 (explore, edit, encrypt, anonymize) goes straight to mef3io and doesn't
 need the server. The viewer is the first module that will.
@@ -41,6 +49,8 @@ All planned in mef3io and tracked in [mef3io#71](https://github.com/bnelair/mef3
 |---|---|---|
 | `mef3io.inspect(path)`: everything about a session without reading samples | Explorer, anonymizer step 1 | [#67](https://github.com/bnelair/mef3io/issues/67) |
 | `anonymize_session(src, dst, shift_us, ...)` and `verify(...)` | Anonymizer | [#70](https://github.com/bnelair/mef3io/issues/70) |
+| `transform_session(...)`: channel subsets, (de/re)encryption, metadata edits and the time shift in one streaming copy; `edit_metadata` in place (never times) | Passwords, channel presets and batch, metadata edit, anonymizer | [#73](https://github.com/bnelair/mef3io/issues/73) |
+| `time_range(...)` and `rename_session(...)` (folder, session-level annotation files and stored names, as one journaled operation) | Ordering and renaming | [#72](https://github.com/bnelair/mef3io/issues/72) |
 | Cancellation tokens and progress callbacks | Every long operation | [#69](https://github.com/bnelair/mef3io/issues/69) |
 | Complete record parsing at every level | Explorer annotations; anonymizer time shift | [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62) |
 | Provenance region (versions and operations, no times) | Explorer | [#58](https://github.com/bnelair/mef3io/pull/58) |
@@ -54,7 +64,12 @@ The future viewer will add [#68](https://github.com/bnelair/mef3io/issues/68)
 - **Background work** runs on a worker thread pool (`QThreadPool`). Opening, inspecting and anonymizing never block the UI, and every long operation shows progress and can be cancelled.
 - **Packaging:** PyInstaller (or Briefcase), built in a CI matrix for Windows x64, macOS arm64 + x86_64 and Linux x64. Code signing and notarization are needed on Windows and macOS, or clinical IT will block the app. Certificates: to be decided.
 - **Settings and preferences:** stored per user (`QSettings`). Never anything about a recording's contents.
-- **Logging:** a rotating local log file. A logging filter rejects records containing known identity fields or absolute timestamps, and a test enforces it.
+- **Recovery artifacts** (rename journals, header and metadata backups) live in the per-user app-data folder, under opaque names; mef3io is told where to write them (`backup_dir`).
+- **Logging:** a rotating local log file. Recording names and folder paths count as identifying, alongside identity fields and absolute timestamps. A logging filter redacts all of them, including messages from mef3io and mef3io-server, and a test feeds it ID-bearing and date-bearing folder names.
+- **Recent files:** off by default, because paths are identifying.
+- **Crashes:** a crash handler writes a local, path-redacted report and sends nothing anywhere.
+- **On screen:** a "mask session names" option, for screen sharing and screenshots.
+- **Time zones:** local times come from the operating system's time-zone database (`zoneinfo`) and a site time zone the user chooses, never from the file's fixed `GMT_offset` alone. That offset ignores daylight saving (meflib.c:4649-4650).
 
 ## Packages (planned layout)
 

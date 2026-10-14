@@ -4,22 +4,26 @@ Tracked on GitHub: [tracking issue](https://github.com/bnelair/mef3io-studio/iss
 here, and [mef3io#71](https://github.com/bnelair/mef3io/issues/71) for the
 library side. The library work always lands in mef3io **before** the app uses it.
 
-## v0.1: explore and anonymize
+## v0.1: explore, organize, protect and anonymize
+
+Shipped **only as installers** (Windows `.exe`, macOS, Linux) on GitHub Releases. Not on PyPI.
 
 | Step | Where | What |
 |---|---|---|
 | 0 | mef3io | Record handling fixed: [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62), [#63](https://github.com/bnelair/mef3io/issues/63) |
-| 1 | mef3io | `inspect()` [#67](https://github.com/bnelair/mef3io/issues/67), cancellation and progress [#69](https://github.com/bnelair/mef3io/issues/69), `anonymize_session` + `verify` [#70](https://github.com/bnelair/mef3io/issues/70), `time_range` + `set_session_name` [#72](https://github.com/bnelair/mef3io/issues/72), released as **mef3io 1.3** |
+| 1 | mef3io | `inspect()` [#67](https://github.com/bnelair/mef3io/issues/67), cancellation and progress [#69](https://github.com/bnelair/mef3io/issues/69), `anonymize_session` + `verify` [#70](https://github.com/bnelair/mef3io/issues/70), `time_range` + `rename_session` [#72](https://github.com/bnelair/mef3io/issues/72), `transform_session` + `edit_metadata` [#73](https://github.com/bnelair/mef3io/issues/73), released as **mef3io 1.3** |
 | 2 | studio | App shell, background jobs, privacy-safe logging, settings |
 | 3 | studio | **Installers** for Windows, macOS and Linux, built in CI. Done early, so packaging and signing problems surface before the features exist |
 | 4 | studio | **Explorer** (metadata), plus **ordering and safe renaming** of sessions ([#12](https://github.com/bnelair/mef3io-studio/issues/12); needs [mef3io#72](https://github.com/bnelair/mef3io/issues/72)) |
-| 5 | studio | **Anonymizer** wizard |
-| 6 | studio | User guide with screenshots; v0.1 release |
+| 5 | studio | **Metadata view and edit** ([#14](https://github.com/bnelair/mef3io-studio/issues/14)); timestamps never editable |
+| 6 | studio | **Passwords** ([#15](https://github.com/bnelair/mef3io-studio/issues/15)) and **channel presets + batch conversion** ([#16](https://github.com/bnelair/mef3io-studio/issues/16)) |
+| 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) |
+| 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release |
 
 ## Next directions (each needs a specification first)
 
-- **Signal viewer:** traces, zoom and pan, gaps; built on mef3io-server's cache, decode and prefetch (in-process locally), fast on multi-TB recordings via mef3io [#68](https://github.com/bnelair/mef3io/issues/68).
-- **Data coverage view:** when data exists and at what rate, per channel, from the index alone (mef3io [#68](https://github.com/bnelair/mef3io/issues/68), plus a mef3io-server RPC).
+- **Signal viewer:** traces, zoom and pan, gaps; built on mef3io-server's cache, decode and prefetch (driven without gRPC locally; needs a password parameter and a plain-Python API there first), fast on multi-TB recordings via mef3io [#68](https://github.com/bnelair/mef3io/issues/68).
+- **Data coverage view:** when data exists and at what rate, per channel, from the block index (mef3io [#68](https://github.com/bnelair/mef3io/issues/68), [mef3io-server#13](https://github.com/bnelair/mef3io-server/issues/13)).
 - **Annotations:** view, then create and edit.
 - **Export** to other formats.
 - **Remote recordings** via [mef3io-server](https://github.com/bnelair/mef3io-server): the viewer's code path with a remote source.

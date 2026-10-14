@@ -27,7 +27,7 @@ It flags anything that will stop a recording from being anonymized:
 can pick any other.
 
 **New start for the reference:**
-- **Keep the time of day** (default): only the date changes. The shift is a whole number of days, so every recording keeps its clock time.
+- **Keep the time of day** (default): only the date changes. The reference recording starts at the same clock time on the new date. Local or UTC clock: see *Time zone* below.
 - **Set the time too:** the time of day is anonymized as well.
 
 **Mode:**
@@ -38,14 +38,20 @@ can pick any other.
 | **Aligned** | **Every** recording is moved to start at the same chosen moment. | Making recordings anonymous *and* comparable from a common start |
 
 **Options:**
-- **Time zone:** keep the local time of day as it appeared at the recording site (default), or keep the UTC time of day. MEF stores UTC plus the site's offset; "keep local" writes the offset that applied at the start.
+- **Time zone:**
+  - **The problem:** MEF stores times in UTC plus one fixed offset (`GMT_offset`). meflib ignores the daylight-saving fields when it shows local time (meflib.c:4649-4650), so the file alone can't say what the clock on the wall read.
+  - **The local clock:** the user picks the recording site's time zone (e.g. *America/Chicago*), and the app computes the local wall-clock time from the operating system's time-zone database. That's correct on either side of a daylight-saving change.
+  - **Default, "keep local time of day":** the copy is written in **UTC with offset 0 and no daylight-saving fields**. The shift is chosen so the copy's UTC clock reads the original **local** time of day at the reference start. Anyone opening the copy sees the right time of day with no time-zone arithmetic, and the site's time zone (a location hint) is gone.
+  - **Alternative, "keep UTC time of day":** shift by whole days in UTC.
 - **Keep the day of the week:** off by default. When on, the shift is rounded to a whole number of weeks.
 - **Default new date: 2000-01-01.** It is far enough from 1970-01-01 that every shifted time stays positive, which MEF's time convention requires. mef3io refuses a shift that would break it.
 
 **Preview:** a table and a timeline show, for every recording, its original
 start → new start. The app warns when aligned mode makes recordings overlap,
-and when a recording crosses a daylight-saving change (its later part would be
-an hour off the local wall clock, because elapsed time must stay exact).
+and when a recording crosses a daylight-saving change. Elapsed time always
+stays exact, so after the copy is shifted, the part of the recording after
+the change is an hour away from what the wall clock read at the time. The
+report notes this per recording.
 
 ## Step 3: identity
 

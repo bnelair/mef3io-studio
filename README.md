@@ -1,6 +1,6 @@
 # mef3io-studio
 
-**A desktop app for exploring and anonymizing MEF 3.0 recordings, with no programming needed.**
+**A desktop app for exploring, organizing, protecting and anonymizing MEF 3.0 recordings, with no programming needed.**
 
 > **Status: planning.** Nothing to install yet. This repository currently holds
 > the plan, the design and the open issues for the first release. Follow the
@@ -43,7 +43,7 @@ easier to copy and share. It is read directly; there's no need to unpack it.
 
 ## What the app will do
 
-### First release: look at recordings, and anonymize them
+### First release
 
 **1. Explore.** Open one or many recordings and see what's in them, without
 loading any signal:
@@ -54,19 +54,36 @@ loading any signal:
 - which mef3io version wrote it (its provenance);
 - an integrity check.
 
-Patient details are **hidden by default**.
+Patient details are **hidden by default**. Times can be shown in UTC or in the
+recording site's own time zone, correct across daylight-saving changes.
 
-**2. Order and rename.** Got a folder of sessions with meaningless (UUID)
-names? See them sorted by when they were recorded, then rename them safely:
+**2. Order and rename.** Got a folder of sessions whose names are long random
+codes? See them sorted by when they were recorded, then rename them safely:
 - **preview** every change first;
-- clashes are caught before anything happens;
-- **undo** is one click.
+- name clashes are caught before anything happens;
+- **undo** whole renames.
 
-The name stored inside the files is updated to match, and sessions where the
-two disagree can be fixed.
+A session's name is stored in several places, including inside its files.
+mef3io changes all of them together, so other MEF software still finds
+everything, annotations included.
 
-**3. Anonymize.** Make a **copy** of one or many recordings with the patient
-details removed and every time shifted. The originals are never modified.
+**3. View and edit details.** See, and correct, the descriptive information
+stored with a recording: subject, recording location, descriptions. Edit one
+recording or many at once, with a preview and undo. **Recording times can
+never be edited**; they only change through anonymization (below).
+
+**4. Protect with passwords, or remove them.** Save a copy with new
+passwords, or without any.
+- MEF passwords lock the **patient details, settings and annotations**.
+- **They don't hide the signal itself,** or the recording's name and start
+  time. The app explains this before you rely on it.
+
+**5. Pick channels, and convert in batches.** Choose the channels you need,
+save that choice, and apply it to many recordings at once. Combine it with
+passwords and anonymization, in one pass per recording.
+
+**6. Anonymize.** Make a **copy** of one or many recordings with the patient
+details removed and every time shifted. The originals are not touched.
 
 <p align="center">
   <img src="docs/img/anonymize-workflow.svg" alt="Anonymization workflow: select recordings, pick a reference recording and its new date, choose relative or aligned mode, choose what identity to remove, then write verified copies." width="760">
@@ -83,14 +100,19 @@ details removed and every time shifted. The originals are never modified.
 
 See the [anonymizer design](docs/design/anonymizer.md) for the details.
 
+Everything that takes time (converting, anonymizing, checking big recordings)
+runs in the background with a **progress bar** and a **cancel** button. The
+app never freezes.
+
 ### Next directions (to be specified later)
 
 - **Signal viewer:** scroll and zoom through the traces, with gaps and
   annotations shown, fast even on multi-TB recordings.
+- **Data coverage:** see when data exists and at what rate, per channel. The
+  fastest way to spot dropouts and gaps.
 - **Annotations:** view, and later create and edit, events and notes.
 - **Export** to other formats (e.g. EDF, NWB).
-- **Data coverage:** see when data exists and at what rate, per channel, from the index alone. The fastest way to spot dropouts and gaps.
-- **Remote recordings** through [mef3io-server](https://github.com/bnelair/mef3io-server), which the viewer also uses locally for caching and prefetch.
+- **Remote recordings** kept on a secure server.
 
 These need their own specifications before work starts; see
 [next directions](docs/design/next-directions.md).
@@ -98,27 +120,32 @@ These need their own specifications before work starts; see
 ## How it fits together
 
 <p align="center">
-  <img src="docs/img/architecture.svg" alt="mef3io-studio is the user interface; all reading, writing and anonymization happens in the mef3io library, which the app calls." width="640">
+  <img src="docs/img/architecture.svg" alt="mef3io-studio is the user interface. File operations go through the mef3io library; viewing will go through mef3io-server, which is built on mef3io." width="640">
 </p>
 
-**The app never edits MEF files itself.** File operations go through the
-mef3io library. Viewing will go through
-[mef3io-server](https://github.com/bnelair/mef3io-server), which adds caching,
-parallel decoding and prefetch on top of mef3io. It runs inside the app for
-local files, or as a server for remote ones.
+**The app never edits MEF files itself.** Everything that touches a file is
+done by the [mef3io](https://github.com/bnelair/mef3io) library, where it is
+tested against the reference implementations. The same operations are also
+available from Python, MATLAB and the command line, for batch work on servers.
 
-Either way, everything that touches a file is done by mef3io, where it is
-tested against the reference implementations. The app is the workflow and the
-screens on top. The same operations are also available from Python, MATLAB
-and the command line, for batch work on servers.
+The future viewer will use
+[mef3io-server](https://github.com/bnelair/mef3io-server), which is built on
+mef3io and keeps recently viewed data ready, so scrolling stays smooth. It
+runs inside the app for files on your computer, or as a separate server for
+recordings kept elsewhere.
 
 ## Privacy
 
 - **Nothing leaves your computer.** The app makes no network connections.
-- **Logs never contain** patient details or original recording dates.
-- **Anonymizing, encrypting and channel subsets always write verified copies;**
-  the originals are not touched. Renaming and metadata edits change a
-  recording in place only when you confirm, and can be undone.
+- **Logs never contain** patient details, recording names or folder paths, or
+  original recording dates.
+- **Anonymizing, password changes and channel selections always write verified
+  copies;** the originals are not touched. Renaming and editing details change
+  a recording in place, only after you confirm, and can be undone unless you
+  turn undo off.
+- **Undo information** (old names, details before an edit) is kept in the
+  app's own data folder, never next to your recordings. You can review and
+  delete it at any time.
 - **Key file:** if you choose to save one (it maps the original recordings to
   their pseudonyms and time shifts), the app warns you that it re-identifies
   the data and must be stored separately.
