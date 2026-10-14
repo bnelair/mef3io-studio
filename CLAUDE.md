@@ -1,7 +1,7 @@
 # mef3io-studio — assistant context
 
 Desktop app (PySide6) for exploring and anonymizing MEF 3.0 recordings, built
-on the mef3io library (github.com/bnelair/mef3io). Status: planning. Design in
+on the mef3io library (github.com/bnelair/mef3io). Status: early development. Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
 Hard rules:
@@ -15,3 +15,19 @@ Hard rules:
   illustrations, technical detail behind a toggle.
 - v0.1 scope = metadata explorer + anonymizer. Viewer, annotations, export,
   mef3io-server access are NEXT DIRECTIONS needing their own specs.
+
+Code (app shell, #2/#3):
+- Dev: `python -m venv .venv && pip install -e .[dev]`; `python -m pytest`
+  (offscreen); `ruff check . && ruff format --check .`. Installers:
+  `packaging/mef3io-studio.spec` + `.github/workflows/build.yml`; every build
+  must pass `mef3io-studio --self-test`. Not on PyPI, ever. Version = `VERSION`.
+- Long work goes through `workers.JobManager.submit(title, fn, ...)` — never on
+  the UI thread; `fn(ctx, ...)` reports via `ctx.report(done, total, phase)`
+  (throttled) and polls `ctx.check_cancelled()`. Titles shown to users carry
+  no patient data.
+- Data access goes through `model.source.RecordingSource` (server source later).
+- Anything identifying the app learns → `common.privacy.register_identity()`.
+  Never log paths or recording contents.
+- New preferences must be declared in `common/settings.PREFERENCES` (UI only).
+- Look: Fusion + palette + QSS in `common/theme.py`; icons are bundled SVGs
+  with `currentColor`; no pixel font sizes.

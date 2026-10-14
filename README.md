@@ -2,9 +2,28 @@
 
 **A desktop app for exploring and anonymizing MEF 3.0 recordings, with no programming needed.**
 
-> **Status: planning.** Nothing to install yet. This repository currently holds
-> the plan, the design and the open issues for the first release. Follow the
+> **Status: early development.** The app shell and the installers exist; the
+> Explorer and Anonymizer are being built. Follow the
 > [roadmap](docs/roadmap.md) or the [tracking issue](https://github.com/bnelair/mef3io-studio/issues/1).
+
+## Getting the app
+
+Download the installer for your computer from the
+[**Releases** page](https://github.com/bnelair/mef3io-studio/releases):
+
+| Computer | File |
+|---|---|
+| Windows | `mef3io-studio-<version>-windows-x64-setup.exe` (installs without administrator rights) |
+| Mac | `mef3io-studio-<version>-macos-arm64.dmg` (Apple silicon) or `-macos-x86_64.dmg` (Intel) |
+| Linux | `mef3io-studio-<version>-linux-x86_64.AppImage` (or the `.tar.gz`) |
+
+There is **no pip package**: mef3io-studio is only distributed as these
+installers. For scripting, use the [mef3io](https://github.com/bnelair/mef3io)
+library directly.
+
+> The current builds are **not code-signed yet**. Windows may show a
+> "Windows protected your PC" message (choose *More info → Run anyway*), and a
+> Mac may ask you to confirm the first launch (right-click the app → *Open*).
 
 mef3io-studio runs on **Windows, macOS and Linux**. It is built on
 [mef3io](https://github.com/bnelair/mef3io), the library that reads and writes
@@ -108,6 +127,62 @@ line, for batch work on servers.
   the data and must be stored separately.
 
 ## For developers
+
+### Run from source
+
+You need Python 3.11 or newer. Work in a virtual environment:
+
+```bash
+git clone https://github.com/bnelair/mef3io-studio
+cd mef3io-studio
+python -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"              # pins mef3io and PySide6 exactly
+mef3io-studio                        # or: python -m mef3io_studio
+mef3io-studio --self-test            # no window: write + read a tiny synthetic recording
+```
+
+`pyproject.toml` exists for development and tests only; the app is never
+published to PyPI (its `Private :: Do Not Upload` classifier makes PyPI reject
+it). The version lives in the single `VERSION` file.
+
+### Run the tests
+
+```bash
+QT_QPA_PLATFORM=offscreen python -m pytest   # headless; tests/conftest.py also sets it
+ruff check . && ruff format --check .
+```
+
+The suite fails if anything tries to open a network connection, if `model/`
+imports Qt, or if a patient name or a recording date reaches the log file.
+
+### Layout
+
+```
+src/mef3io_studio/
+  app.py        entry point, main window, --self-test
+  model/        plain Python, no Qt: progress, cancellation, plain-language errors,
+                the RecordingSource interface (local files today, a server later)
+  workers/      background jobs on QThreadPool: throttled progress, cancel, errors
+  common/       privacy log filter, settings (preferences only), theme, icons,
+                activity panel
+  explorer/, anonymizer/   placeholders for the next roadmap steps
+packaging/      PyInstaller spec, Inno Setup script, dmg and AppImage scripts
+```
+
+### Build an installer locally
+
+```bash
+pip install ".[build]"
+pyinstaller --noconfirm --clean packaging/mef3io-studio.spec
+dist/mef3io-studio/mef3io-studio --self-test   # macOS: dist/mef3io-studio.app/Contents/MacOS/mef3io-studio
+```
+
+CI (`.github/workflows/build.yml`, run manually or on a `v*` tag) builds the
+Windows installer, the macOS `.dmg`s and the Linux AppImage, smoke-tests each
+with `--self-test`, and attaches them to a GitHub Release on tags.
+
+### Design
 
 - [Vision and scope](docs/vision.md)
 - [Architecture](docs/architecture.md)
