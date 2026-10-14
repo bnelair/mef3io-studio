@@ -73,7 +73,7 @@ The future viewer will add [#68](https://github.com/bnelair/mef3io/issues/68)
 - **Recent files:** off by default, because paths are identifying.
 - **Crashes:** a crash handler writes a local, path-redacted report and sends nothing anywhere.
 - **On screen:** a "mask session names" option, for screen sharing and screenshots.
-- **Time zones:** local times come from the operating system's time-zone database (`zoneinfo`) and a site time zone the user chooses, never from the file's fixed `GMT_offset` alone. That offset ignores daylight saving (meflib.c:4649-4650), and it sits in level-2 encrypted section 3, so it is unavailable without the level-2 password.
+- **Time zones:** local times come from the operating system's time-zone database (`zoneinfo`) and a site time zone the user chooses, never from the file's fixed `GMT_offset`. Until a zone is chosen, times are shown in UTC, labelled as such. That offset ignores daylight saving (meflib.c:4649-4650), and it sits in level-2 encrypted section 3, so it is unavailable without the level-2 password.
 
 ## Packages (planned layout)
 

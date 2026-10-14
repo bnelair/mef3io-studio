@@ -78,7 +78,7 @@ aligned mode, where every recording gets its own shift, the floor applies to
 
 ## Step 5: run
 
-- **Recordings run in sequence or a few in parallel,** limited by disk speed. Anonymizing costs about the same as copying: one read and one write, with no decompression.
+- **Recordings run in sequence or a few in parallel,** limited by disk speed. Anonymizing costs about the same as copying (one read and one write, with no decompression), **plus verification**: it re-reads the output, and the signal comparison reads both the original and the copy.
 - **Progress** is shown per recording and overall; **cancel** at any time.
 - **A cancelled or failed recording leaves nothing behind.** mef3io writes to a temporary location and renames only after verification.
 
@@ -87,9 +87,10 @@ aligned mode, where every recording gets its own shift, the floor applies to
 For every recording:
 - **result:** done / failed with reason;
 - **verification:**
-  - samples bit-identical;
+  - samples exactly the same (the compressed signal is byte-identical to the original's);
   - every time shifted by exactly the planned amount, except the time-zone and daylight-saving fields, which are cleared rather than shifted (`GMT_offset = 0`, DST fields = NO_ENTRY, `recording_time_offset = 0`);
-  - **leak scan clean**: no value from the original time range remains anywhere in the copy;
+  - **leak scan clean**: none of the recording's original time values remain in the copy. Every structured time field, every annotation record, and every byte that isn't compressed signal (file headers, metadata sections, index entries apart from their sample min/max values, block headers, annotation files) is checked field by field. The compressed signal itself is checked **byte-identical to the original's** instead of scanned (it looks like random bytes, so a byte scan would report thousands of false hits);
+  - text the user chose to keep (notes, descriptions) was shown for review first and stays the user's responsibility;
   - integrity check passed.
 
 The report can be saved as PDF or CSV. It contains no patient details and no
@@ -115,4 +116,5 @@ In short:
 - **Relative mode:** for every pair of recordings, the time between them is identical before and after.
 - **Aligned mode:** every recording starts at the chosen instant.
 - **Every copy passes `mef3io.anonymize.verify`,** including the leak scan, on all three platforms in CI.
+- **The leak scan reports zero false positives** on a multi-GB copy, and still catches a leak planted in any structured field.
 - **No identity string or original date** appears in the app's log, the report, or anything written apart from the explicit key file.

@@ -54,10 +54,11 @@ loading any signal:
 - which mef3io version wrote it (its provenance);
 - an integrity check.
 
-Patient details are **hidden by default**. Times can be shown in UTC, or in
-the recording site's local time: you **choose the site's time zone** once
-(the files can't tell the app reliably), and local times are then correct
-across daylight-saving changes.
+Patient details are **hidden by default**. Times are shown in UTC until you
+**choose the site's time zone** (the files can't tell the app reliably).
+After that, local times are correct across daylight-saving changes.
+
+You can also **pack** a recording into one file, or **unpack** it again.
 
 **2. Order and rename.** Got a folder of sessions whose names are long random
 codes? See them sorted by when they were recorded, then rename them safely:
@@ -102,9 +103,12 @@ details removed and every time shifted. The originals are not touched.
 - **Aligned mode:** every recording starts at the same chosen moment.
 - **Verified:** every copy is checked before it is kept. The samples must be
   exactly the same, every time must be shifted by exactly the chosen amount,
-  and a scan confirms that no original date remains anywhere in the files. (The
-  copy's time-zone and daylight-saving settings are not shifted: they are
-  cleared, so the copy doesn't hint at where it was recorded.)
+  and a check confirms that none of the recording's original time values
+  remain in the copy. (The copy's time-zone and daylight-saving settings are
+  not shifted: they are cleared, so the copy doesn't hint at where it was
+  recorded.)
+- **Your review:** text you choose to keep (notes, descriptions) is shown to
+  you for review first, and stays your responsibility.
 
 See the [anonymizer design](docs/design/anonymizer.md) for the details.
 

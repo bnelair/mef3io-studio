@@ -39,10 +39,11 @@ reliably provide it:
 - **The result:** a recording made in the other season shows local times one hour off. One that spans a daylight-saving change is an hour off on one side of it.
 
 So:
+- **Until a site time zone is chosen, times are shown in UTC,** clearly labelled as UTC. The app never shows "local time" from the file's own offset.
 - **Choose the site's time zone** (e.g. *Europe/Prague*, *America/Chicago*): **one per app profile**. The app then computes local time per instant from the operating system's time-zone database, correct before and after any daylight-saving change.
 - **A per-window override** shows the open recordings in another time zone. It is **not saved**: closing the window forgets it. Preferences therefore never record which folders exist or where they are.
-- **Recorded offset as fallback only.** It is shown as "recorded offset (fixed, ignores daylight saving)" and used only when no time zone is chosen. `GMT_offset` is in metadata section 3, which is level-2 encrypted, so for an encrypted recording opened **without the level-2 password** this fallback is **unavailable**: the view offers UTC or a chosen time zone only, and says why.
-- **Every view says** which one it uses (UTC / site time zone / recorded offset).
+- **The file's `GMT_offset`** may still appear as a raw value among the read-only technical details (it is in level-2 encrypted section 3, so it is missing without the level-2 password). It is never used to compute displayed times.
+- **Every view says** which one it uses (UTC / site time zone).
 
 **Times you can't trust are labelled *unverified*,** never shown as if
 absolute, and kept out of the absolute order:
@@ -115,7 +116,7 @@ confirmation) apply to every in-place operation in the app: a rename, a drift
 fix, an archive rename, a metadata edit, and the **undo** of any of them.
 
 - **Names:** from templates (`{start:%Y-%m-%d_%H%M%S}.mefd`, `{index:03d}_…`) or typed per row.
-  - `{start}` uses the time zone shown in the table (stated next to the template).
+  - `{start}` uses the chosen site time zone if one is set, otherwise UTC, and the label next to the template says which. It never uses the file's recorded offset.
   - Sessions with unverified times can't use `{start}`.
   - Two sessions with the same start get `_1`, `_2`, ….
   - The `.mefd` / `.mefd.tar` suffix is enforced.
@@ -133,15 +134,15 @@ fix, an archive rename, a metadata edit, and the **undo** of any of them.
   - Before renaming, the app closes **its own** readers for those sessions, and tells the recording source to drop its cached readers for those paths. mef3io-server's decode workers each cache one reader per path (reader_pool.py:24-34), so the server needs a "drop this path in every worker" call ([mef3io-server#15](https://github.com/bnelair/mef3io-server/issues/15)).
   - On Windows, a file held open by another program (an antivirus scanner, OneDrive) makes the rename fail. That's an expected outcome: it rolls back cleanly.
 - **Crash-safe, two-phase.**
-  1. **Before anything changes,** mef3io writes a small **"operation in progress" marker inside the session**, and **flushes both the marker file and its directory entry** to disk. Its file name is opaque, and it holds no old names or paths: only which tool started the operation, the operation kind and a random operation ID. **Every mef3io call that touches the session detects it.**
-  2. The **journal** of the planned steps (with the old names) is written to `backup_dir` in the app's per-user data folder and flushed to disk, also before anything moves. **The journal is mandatory.**
+  1. **First, the journal.** The **journal** of the planned steps (with the old names) is written to `backup_dir` in the app's per-user data folder and flushed to disk. **The journal is mandatory.**
+  2. **Then the marker,** still before anything changes: mef3io writes a small **"operation in progress" marker inside the session**, and **flushes both the marker file and its directory entry** to disk. Its file name is opaque, and it holds no old names or paths: only which tool started the operation, the operation kind and a random operation ID. **Every mef3io call that touches the session detects it.** Only then do the changes start.
   3. Each session then goes to a **temporary name**, then to its final name. Swaps and cycles (A→B, B→A) therefore work. Temporary names are **opaque and bounded**: a fixed 32-character random token plus the suffix, never `<name>` plus something, so they can't exceed the length limit or reveal the name.
   4. Renames use the operating system's **no-replace** calls, so an existing file can never be overwritten, even if it appears between the check and the rename: `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS, `MoveFileExW` without replace on Windows. Where the file system doesn't support them (some network and FAT file systems report `EINVAL` / `ENOTSUP`), the rename is **refused**. It **never falls back** to a plain rename.
   5. **On completion,** the marker is deleted **first**, then the journal.
 - **After a crash:**
   - **Marker and journal both present:** the next start finishes or rolls back the batch from the journal. Every session ends up fully old or fully new.
-  - **Journal present, marker absent** (the crash came just before the marker was written, or just after it was deleted): mef3io checks the four name places, then finishes or discards the journal. The user is never refused.
-  - **Marker present, journal missing** (the operation was started by another user, on another machine, or by a script): writes are **refused** with a plain explanation naming the tool that started the operation and how to finish or roll it back from there. If mef3io's `name_drift` shows that **all four name places agree**, the user may clear the marker with `mef3io.clear_operation_marker(path)`, an explicit, confirmed step.
+  - **Journal present, marker absent:** the crash came between writing the journal and writing the marker, before any change (or just after the marker was deleted on completion, when everything is done). Nothing is half-changed, so mef3io verifies the four name places and **discards** the journal. The user is never refused.
+  - **Marker present, journal missing** (the operation was started by another user, on another machine, or by a script, or the journal folder was lost): writes are **refused** with a plain explanation naming the tool that started the operation and how to finish or roll it back from there. If mef3io's `name_drift` shows that **all four name places agree**, the user may clear the marker with `mef3io.clear_operation_marker(path)`, an explicit, confirmed step.
 - **Same folder only:** a rename never moves a session to another drive.
 - **Confirmation** states how many sessions change, with no default "Yes".
 - **Undo:** see *Undo* below.

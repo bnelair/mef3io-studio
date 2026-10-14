@@ -26,9 +26,10 @@ Hard rules:
 - Recovery artifacts live in the per-user app-data dir under opaque names;
   paths and session names count as identifying (log filter, no recent-files
   list by default, no paths in preferences).
-- Local time comes from a user-chosen site time zone (one per app profile,
-  plus a per-window override that is never saved) via zoneinfo; MEF's GMT_offset is one fixed number, sits
-  in L2-encrypted section 3, and meflib ignores the DST fields.
+- Local time comes ONLY from a user-chosen site time zone via zoneinfo (one
+  per app profile, plus a per-window override that is never saved); UTC,
+  labelled, until one is chosen. Never from GMT_offset: one fixed number, in
+  L2-encrypted section 3, and meflib ignores the DST fields.
 - Never load a whole recording (sessions reach TBs) — use inspect/windowed reads.
 - Privacy: no patient details or original dates in logs, reports, fixtures,
   screenshots; no network access in v0.1.
