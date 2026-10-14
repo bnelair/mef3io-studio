@@ -15,7 +15,8 @@ def _blocked(name):
 
 if os.environ.get("MEF3IO_STUDIO_NETGUARD") == "1":
     for _name in ("connect", "connect_ex", "bind", "sendto", "sendmsg"):
-        setattr(socket.socket, _name, _blocked(f"socket.{_name}"))
+        if hasattr(socket.socket, _name):
+            setattr(socket.socket, _name, _blocked(f"socket.{_name}"))
     for _name in (
         "create_connection",
         "getaddrinfo",

@@ -66,7 +66,8 @@ class _GuardedPopen(_RealPopen):
 def no_network():
     mp = pytest.MonkeyPatch()
     for name in ("connect", "connect_ex", "bind", "sendto", "sendmsg"):
-        mp.setattr(socket.socket, name, _blocked(f"socket.{name}"))
+        if hasattr(socket.socket, name):  # no sendmsg on Windows
+            mp.setattr(socket.socket, name, _blocked(f"socket.{name}"))
     for name in (
         "create_connection",
         "getaddrinfo",
