@@ -38,8 +38,8 @@ jobs:
     name: Windows x64
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install
@@ -81,7 +81,7 @@ jobs:
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
           Compress-Archive -Path dist\mef3io-studio -DestinationPath "dist\mef3io-studio-$version-windows-x64-portable.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mef3io-studio-windows-x64
           path: |
@@ -101,8 +101,8 @@ jobs:
           - runner: macos-15-intel
             arch: x86_64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install
@@ -132,7 +132,7 @@ jobs:
           hdiutil detach "$RUNNER_TEMP/dmg"
           echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mef3io-studio-macos-${{ matrix.arch }}
           path: dist/*.dmg
@@ -144,8 +144,8 @@ jobs:
     # the build machine's, so building on 22.04 runs on more distributions.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Qt runtime libraries (collected into the bundle)
@@ -177,7 +177,7 @@ jobs:
           out="$(dist/*.AppImage --appimage-extract-and-run --self-test)"
           echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mef3io-studio-linux-x86_64
           path: |
@@ -193,12 +193,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Tag must match VERSION
         run: |
           test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)" \
             || { echo "tag ${GITHUB_REF_NAME} does not match VERSION $(cat VERSION)"; exit 1; }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
