@@ -56,3 +56,6 @@ See [design/next-directions.md](design/next-directions.md).
 3. **Never load a whole recording.** Recordings run to terabytes; the app reads only what it shows.
 4. **Private by default.** Patient details are hidden until asked for. Logs carry no patient data and no original dates. There is no network access.
 5. **Plain language first.** Technical detail is there, but never the first thing a user sees.
+6. **Modern and never frozen.**
+   - Every long task runs in the background, with a progress bar and cancel. The window never freezes, even while converting a multi-GB recording.
+   - The interface looks current (light and dark themes, crisp on high-DPI screens) and scales from a laptop to a large monitor.
