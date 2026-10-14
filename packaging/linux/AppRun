@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry point: run the PyInstaller onedir app bundled inside.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/lib/mef3io-studio/mef3io-studio" "$@"
