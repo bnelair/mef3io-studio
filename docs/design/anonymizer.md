@@ -27,7 +27,7 @@ It flags anything that will stop a recording from being anonymized:
 can pick any other.
 
 **New start for the reference:**
-- **Keep the time of day** (default): only the date changes. The shift is a whole number of days, so every recording keeps its clock time.
+- **Keep the time of day** (default): only the date changes. The reference recording starts at the same clock time on the new date. Local or UTC clock: see *Time zone* below.
 - **Set the time too:** the time of day is anonymized as well.
 
 **Mode:**
@@ -38,14 +38,30 @@ can pick any other.
 | **Aligned** | **Every** recording is moved to start at the same chosen moment. | Making recordings anonymous *and* comparable from a common start |
 
 **Options:**
-- **Time zone:** keep the local time of day as it appeared at the recording site (default), or keep the UTC time of day. MEF stores UTC plus the site's offset; "keep local" writes the offset that applied at the start.
-- **Keep the day of the week:** off by default. When on, the shift is rounded to a whole number of weeks.
+- **Time zone:**
+  - **The problem:** MEF stores times in UTC plus one fixed offset (`GMT_offset`). meflib ignores the daylight-saving fields when it shows local time (meflib.c:4649-4650), so the file alone can't say what the clock on the wall read.
+  - **The local clock:** the user picks the recording site's time zone (e.g. *America/Chicago*), and the app computes the local wall-clock time from the operating system's time-zone database. That's correct on either side of a daylight-saving change.
+  - **What every copy carries, in both modes below:** `GMT_offset = 0`, `DST_start_time` and `DST_end_time` set to NO_ENTRY (**not shifted**), and `recording_time_offset = 0`. The site's time zone (a location hint) is gone.
+  - **D** is a whole number of days, and depends on the mode: in "keep local time of day", **D = (the chosen new date) − (the reference's local start date in the site time zone)**; in "keep UTC time of day", **D = (the chosen new date) − (the reference's UTC start date)**. Each mode measures D on the same clock it keeps; otherwise the copy's date can land a day off when the local and UTC dates differ.
+  - **Default, "keep local time of day":** the shift is **D + off_ref**, where **off_ref** is the reference start's UTC offset in the chosen site time zone (at that instant, so daylight saving is included). The copy's UTC clock then reads the original **local** time of day at the reference start. Opening the reference copy shows the right time of day with no time-zone arithmetic; for other recordings, see the per-recording warning below.
+  - **Alternative, "keep UTC time of day":** the shift is D alone, whole days in UTC.
+- **Keep the day of the week:** off by default. When on, only **D** is constrained to a multiple of 7: the app picks the nearest new date with the same weekday as the original. **off_ref is never rounded.**
 - **Default new date: 2000-01-01.** It is far enough from 1970-01-01 that every shifted time stays positive, which MEF's time convention requires. mef3io refuses a shift that would break it.
 
 **Preview:** a table and a timeline show, for every recording, its original
-start → new start. The app warns when aligned mode makes recordings overlap,
-and when a recording crosses a daylight-saving change (its later part would be
-an hour off the local wall clock, because elapsed time must stay exact).
+start → new start. The app warns:
+- when aligned mode makes recordings overlap;
+- **per recording, when its UTC offset at its start differs from the reference's** (relative mode with "keep local time of day"). One shift serves every recording, and off_ref is the reference's offset, so a recording made in the other daylight-saving season shows a time of day **one hour off** in the copy. The warning says by how much, and also says when that hour moves the recording across midnight, so its **weekday** (and date) in the copy flips too;
+- when a recording crosses a daylight-saving change. Elapsed time always stays exact, so after the copy is shifted, the part of the recording after the change is an hour away from what the wall clock read at the time.
+
+The report repeats these notes per recording.
+
+**Leak-scan safety:** the app refuses a shift whose size is smaller than the
+time span of the batch's originals plus one day. With a smaller shift,
+shifted times would fall inside the original time range, and the leak scan
+could not tell a leaked original date from a legitimate shifted one. In
+aligned mode, where every recording gets its own shift, the floor applies to
+**each recording's own shift**.
 
 ## Step 3: identity
 
@@ -62,7 +78,7 @@ an hour off the local wall clock, because elapsed time must stay exact).
 
 ## Step 5: run
 
-- **Recordings run in sequence or a few in parallel,** limited by disk speed. Anonymizing costs about the same as copying: one read and one write, with no decompression.
+- **Recordings run in sequence or a few in parallel,** limited by disk speed. Anonymizing costs about the same as copying (one read and one write, with no decompression), **plus verification**: it re-reads the output, and the signal comparison reads both the original and the copy.
 - **Progress** is shown per recording and overall; **cancel** at any time.
 - **A cancelled or failed recording leaves nothing behind.** mef3io writes to a temporary location and renames only after verification.
 
@@ -71,9 +87,10 @@ an hour off the local wall clock, because elapsed time must stay exact).
 For every recording:
 - **result:** done / failed with reason;
 - **verification:**
-  - samples bit-identical;
-  - every time shifted by exactly the planned amount;
-  - **leak scan clean**: no value from the original time range remains anywhere in the copy;
+  - samples exactly the same (the compressed signal is byte-identical to the original's);
+  - every time shifted by exactly the planned amount, except the time-zone and daylight-saving fields, which are cleared rather than shifted (`GMT_offset = 0`, DST fields = NO_ENTRY, `recording_time_offset = 0`);
+  - **leak scan clean**: none of the recording's original time values remain in the copy. Every **time-valued field** is checked, one field at a time, never by sliding over raw bytes. That covers the file headers, metadata sections, index entries, block headers and annotation records, including the times inside annotation bodies. Fields that hold sizes, counts or sample values are never combined into a would-be time value. Data-derived bytes, meaning the compressed signal and each block's statistics table, are checked **byte-identical to the original's** (after decryption, where encrypted) instead of scanned, since they look like random bytes and a scan would report false hits;
+  - text the user chose to keep (notes, descriptions) was shown for review first and stays the user's responsibility;
   - integrity check passed.
 
 The report can be saved as PDF or CSV. It contains no patient details and no
@@ -86,7 +103,8 @@ Defined and verified in mef3io: see the field-by-field list in
 [mef3io#70](https://github.com/bnelair/mef3io/issues/70) and the
 format specification ([mef3io#65](https://github.com/bnelair/mef3io/issues/65)).
 In short:
-- every timestamp in every file, including those inside annotation records;
+- every timestamp in every file, including those inside annotation records, shifted;
+- the time-zone fields cleared, not shifted: `GMT_offset = 0`, `DST_start_time` / `DST_end_time` = NO_ENTRY, `recording_time_offset = 0`;
 - the subject fields;
 - the session name, which is stored in every file;
 - file identifiers that would link the copy back to the original;
@@ -98,4 +116,5 @@ In short:
 - **Relative mode:** for every pair of recordings, the time between them is identical before and after.
 - **Aligned mode:** every recording starts at the chosen instant.
 - **Every copy passes `mef3io.anonymize.verify`,** including the leak scan, on all three platforms in CI.
+- **The leak scan reports zero false positives** on a multi-GB copy, and still catches a leak planted in any structured field.
 - **No identity string or original date** appears in the app's log, the report, or anything written apart from the explicit key file.

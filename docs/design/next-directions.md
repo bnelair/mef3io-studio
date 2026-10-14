@@ -9,17 +9,54 @@ any of them off.
 **Goal:** scroll and zoom through the traces of a recording of any length,
 with gaps and annotations visible.
 
+**Built on mef3io-server.** The server's `FileManager` already does the
+caching (a byte-budgeted per-channel tile cache), parallel decode and prefetch
+a viewer needs. The app drives it directly, without gRPC, for local files,
+and through the gRPC client for remote ones, behind one "recording source"
+interface. See [architecture](../architecture.md), including what has to
+change in mef3io-server first: encrypted sessions, a plain-Python API, and
+logging hooks.
+
 **What makes it feasible on multi-TB recordings:** mef3io's index stores every
-block's minimum and maximum. A zoomed-out overview can therefore be drawn from
-the small index files alone, without decompressing any data. Zooming in
+block's minimum and maximum. A zoomed-out overview can therefore be drawn
+from the index alone, without decompressing any data. The index is about 2%
+of the data, though, which is tens of GB on a multi-TB recording. The
+overview therefore starts coarse (from segment metadata), refines
+progressively from the index of the visible span, and caches what it has
+read. Zooming in
 switches to a min/max envelope computed in C++, and finally to the samples
 themselves. Planned in [mef3io#68](https://github.com/bnelair/mef3io/issues/68);
 cancellable reads for fast scrolling in [mef3io#69](https://github.com/bnelair/mef3io/issues/69).
 
 **Open questions for the spec:**
-- **Local or server-backed reading,** or both (see Remote recordings below).
+- **What mef3io-server must provide** for local use without gRPC: a password parameter, a plain-Python API next to the protobuf one, logging hooks, and PyInstaller-safe worker processes.
 - **The rendering stack:** pyqtgraph/OpenGL in the app, or a web view.
 - **Montages, filters and per-channel scaling:** how far a viewer should go before it becomes an analysis tool.
+
+## Data coverage view
+
+**Goal:** see at a glance **when data exists, at what rate, and where it is
+missing**, for every channel. It's the first thing to check when inspecting a
+recording: dropouts, gaps, channels recorded at different times, a block
+rate that changes.
+
+**Why it's cheap:** each `.tidx` index entry stores its block's start time and
+sample count. Comparing samples present per time bin with the sampling rate
+gives the coverage (0–100%) and the effective data rate. No samples are
+decoded.
+
+**Caveats for the spec:**
+- **Scale:** the index is still about 2% of the data. Coverage over a whole multi-TB recording is computed coarse-first and progressively, and cached.
+- **Which copy to trust:** the index's copy of a block's time and count can disagree with the block's own header, which mef3io treats as authoritative (mef3io#57). An index-only read can't see the headers, so the view says plainly: **the index copy is used; disagreements with block headers are not detectable in this read.** Detecting them would mean reading every block header, an optional, slower mode if the spec wants one.
+- **Overlaps:** overlapping blocks must not count twice, so coverage never exceeds 100%.
+
+**Layers:**
+- **mef3io:** a `coverage(channel, t0, t1, n_bins)` read, index-only, alongside the overview reads ([mef3io#68](https://github.com/bnelair/mef3io/issues/68)).
+- **mef3io-server:** exposes it as an RPC, so remote recordings get it too.
+- **Studio:** a channels × time heatmap, zoomable, with gaps and low-rate stretches highlighted and a hover readout (rate, % present, block count).
+
+The explorer's v0.1 timeline (segments and gaps) is the coarse version; this
+is the block-level one.
 
 ## Annotations
 
@@ -48,13 +85,19 @@ so scripts get it too, with the app as a front end.
 ## Remote recordings
 
 [mef3io-server](https://github.com/bnelair/mef3io-server) streams MEF 3.0 data
-over gRPC. The app could open recordings that live on a server, which is useful
-when the data must not leave a secure environment.
+over gRPC. The viewer talks to the server's `FileManager` directly for local
+files and to the gRPC client for remote ones, behind one "recording source"
+interface, so opening a recording that lives on a server needs no separate
+viewer code. That's useful when data must not leave a secure environment.
 
-**Open question:** whether the explorer and viewer talk to a common
-"recording source" interface backed either by a local mef3io reader or by the
-server. If yes, v0.1's background-job layer should already sit behind such an
-interface, so this is a design point to keep in mind now.
+**Decided:** the explorer and viewer talk to a common "recording source"
+interface, backed by a local source (mef3io, or mef3io-server's `FileManager`
+driven without gRPC) or by a remote server. v0.1's background-job layer will
+sit behind such an interface ([#2](https://github.com/bnelair/mef3io-studio/issues/2)).
+
+**Open for the spec:** authentication, which operations make sense remotely,
+and behaviour on slow networks. v0.1 makes no network connections; remote
+access will be an explicit, opt-in choice.
 
 ## Validate / repair / recover
 
