@@ -47,7 +47,7 @@ decoded.
 
 **Caveats for the spec:**
 - **Scale:** the index is still about 2% of the data. Coverage over a whole multi-TB recording is computed coarse-first and progressively, and cached.
-- **Which copy to trust:** the index's copy of a block's time and count can disagree with the block's own header, which mef3io treats as authoritative (mef3io#57). The coverage read must say which it uses and flag disagreements.
+- **Which copy to trust:** the index's copy of a block's time and count can disagree with the block's own header, which mef3io treats as authoritative (mef3io#57). An index-only read can't see the headers, so the view says plainly: **the index copy is used; disagreements with block headers are not detectable in this read.** Detecting them would mean reading every block header, an optional, slower mode if the spec wants one.
 - **Overlaps:** overlapping blocks must not count twice, so coverage never exceeds 100%.
 
 **Layers:**

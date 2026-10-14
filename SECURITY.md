@@ -16,14 +16,16 @@ This app handles clinical recordings and produces anonymized copies of them,
 so **privacy failures are security bugs**. In scope:
 
 - **An anonymized copy that still contains** patient details, an original date or time, or anything that links it back to the original. Includes anything the verification step failed to catch.
-- **Identifying information where it must not be.** Patient details, original recording dates, recording names or folder paths showing up in logs, reports, crash dumps, temporary files left behind, or anything else the app writes. Only two kinds of artifact may contain such information, both explicit and both warned about in the UI:
+- **Identifying information where it must not be.** Patient details, original recording dates, recording names or folder paths showing up in logs, reports, crash dumps, settings and preferences, temporary files left behind, or anything else the app writes on its own. Preferences hold no paths: a per-folder time-zone override is keyed by a salted hash of the folder path. Only two kinds of artifact the app writes may contain such information, both explicit and both warned about in the UI:
   - the anonymizer's **key file** (written only on request);
-  - **recovery artifacts** that make undo possible: rename journals (old names) and header or metadata backups (values before an edit). They are stored in the app's per-user data folder under opaque names, never beside the recordings unless the user opts in, never copied into logs, reports or exports, listed and deletable in the app, and can be switched off.
+  - **recovery artifacts**: the **crash journal** (old names; mandatory while an operation runs, deleted when it completes), byte-level backups for crash rollback (deleted when the operation completes unless the user keeps them), and optional **undo information** (old names or old field values). They are stored in the app's per-user data folder under opaque names, never beside the recordings unless the user opts in, never copied into logs, reports or exports, and listed and deletable in the app.
+- **The in-session operation marker identifying anything.** While a multi-step in-place operation runs, mef3io places a small "operation in progress" marker inside the session. It must hold no old names, paths or dates: only the tool, the operation kind and a random ID.
+- **User-initiated exports** (e.g. a copy summary with names and dates shown) are not artifacts the app writes on its own: they are the user's explicit act, preceded by a warning. Identifying information in one that the user did **not** choose to show is in scope.
 - **An original recording modified** without the user's explicit confirmation, or beyond what was confirmed:
   - Anonymization, encryption changes and channel subsets must never touch the original.
-  - Renames (folder, session annotation files and stored names together) and metadata edits change it in place only as confirmed, previewed operations with undo.
+  - Renames (folder, session annotation files and stored names together) and metadata edits change it in place only as confirmed, previewed operations. Their undo is a logical inverse (rename back, or re-apply the old field values), itself a confirmed in-place operation, never a restore of saved bytes.
   - **Timestamps are never changed in place,** by any operation.
-- **A rename that loses data:** annotations that other MEF software can no longer find after a rename, or a session left half-renamed after a crash.
+- **A rename that loses data:** annotations that other MEF software can no longer find after a rename, or a session left half-renamed after a crash. Crash safety must not depend on anything optional: an interrupted operation is always finished or rolled back from the mandatory journal, and a marker whose journal is missing is refused with an explanation, never guessed at.
 - **Any network access** by the app.
 - **Crashes or out-of-bounds reads** caused by a crafted file. Those usually belong in [mef3io](https://github.com/bnelair/mef3io/security), which does the parsing.
 

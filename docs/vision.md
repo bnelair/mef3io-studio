@@ -26,7 +26,7 @@ counts, CRCs) is available, but never in the way.
 
 ## First release (v0.1)
 
-1. **Explorer:** open recordings and inspect them; no signal is loaded. It also **orders sessions by time and renames them safely**: one mef3io operation changes the folder, the session's annotation files and the names stored inside it together. See [design/explorer.md](design/explorer.md) and [#12](https://github.com/bnelair/mef3io-studio/issues/12).
+1. **Explorer:** open recordings and inspect them; no signal is loaded. It also **orders sessions by time and renames them safely**: one mef3io operation changes the folder, the session's annotation files and the names stored inside it together. It also packs a recording into a single file and back. See [design/explorer.md](design/explorer.md) and [#12](https://github.com/bnelair/mef3io-studio/issues/12).
 2. **Metadata view and edit:** subject, location and descriptions, single or batch, in place with undo or into a copy ([#14](https://github.com/bnelair/mef3io-studio/issues/14)). **Timestamps are never editable.**
 3. **Passwords:** save copies with new passwords or without any ([#15](https://github.com/bnelair/mef3io-studio/issues/15)).
 4. **Channel selection and batch conversion:** reusable channel presets applied to many sessions, combined with the other copy options in one pass ([#16](https://github.com/bnelair/mef3io-studio/issues/16)).

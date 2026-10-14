@@ -65,7 +65,9 @@ codes? See them sorted by when they were recorded, then rename them safely:
 
 A session's name is stored in several places, including inside its files.
 mef3io changes all of them together, so other MEF software still finds
-everything, annotations included.
+everything, annotations included. For a password-protected recording the app
+asks for the password first, because part of the name is stored in the locked
+details; without it, the rename is not done.
 
 **3. View and edit details.** See, and correct, the descriptive information
 stored with a recording: subject, recording location, descriptions. Edit one
@@ -74,9 +76,11 @@ never be edited**; they only change through anonymization (below).
 
 **4. Protect with passwords, or remove them.** Save a copy with new
 passwords, or without any.
-- MEF passwords lock the **patient details, settings and annotations**.
-- **They don't hide the signal itself,** or the recording's name and start
-  time. The app explains this before you rely on it.
+- In files written by common tools, MEF passwords lock the **patient
+  details, settings and annotations**.
+- **They don't hide the signal, the recording's name, or its timing.** Some
+  files keep the true date hidden until the level-2 password is given.
+- The app explains this before you rely on it.
 
 **5. Pick channels, and convert in batches.** Choose the channels you need,
 save that choice, and apply it to many recordings at once. Combine it with
@@ -96,7 +100,9 @@ details removed and every time shifted. The originals are not touched.
 - **Aligned mode:** every recording starts at the same chosen moment.
 - **Verified:** every copy is checked before it is kept. The samples must be
   bit-identical, every time must be shifted by exactly the chosen amount, and a
-  scan confirms that no original date remains anywhere in the files.
+  scan confirms that no original date remains anywhere in the files. (The
+  copy's time-zone and daylight-saving settings are not shifted: they are
+  cleared, so the copy doesn't hint at where it was recorded.)
 
 See the [anonymizer design](docs/design/anonymizer.md) for the details.
 

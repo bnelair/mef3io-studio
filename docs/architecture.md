@@ -35,11 +35,14 @@ Those are exactly the pieces an interactive viewer needs, so the studio
 each to be filed against mef3io-server:
 - **Encrypted sessions:** the server opens files with `MefReader(path)` and has no password parameter (file_manager.py:178, reader_pool.py:33; nothing in the proto), so it can't serve them today.
 - **A plain-Python API:** `FileManager.open_file` / `get_file_info` return protobuf objects, while `read_signal_range` returns a dict. The app needs one consistent plain-Python interface (or an adapter in the app).
-- **Logging hooks:** the server logs file paths and exception text (file_manager.py:165,188,190). In-process those would reach the app's log, and paths are identifying, so the app needs to control or filter them.
+- **Logging hooks:** the server logs file paths and exception text (file_manager.py:165,188,190). Driven from the app, those would reach the app's log, and paths are identifying, so the app needs to control or filter them.
 - **Packaging:** decode workers use the multiprocessing `spawn` start method (reader_pool.py:101-108). Under PyInstaller that needs `multiprocessing.freeze_support()`, and the worker count needs a memory-aware default for laptops.
+  - **A fallback that exists today:** `FileManager(use_process_pool=False)` (file_manager.py:43) decodes on threads in the app's own process instead. It avoids spawning workers in the packaged app altogether, at the cost of parallel decode, and is an option if the frozen worker start-up proves fragile.
 
-v0.1 (explore, edit, encrypt, anonymize) goes straight to mef3io and doesn't
-need the server. The viewer is the first module that will.
+v0.1 (explore, including ordering, renaming and pack/unpack; metadata view and
+edit; passwords; channel presets and batch conversion; anonymize) goes
+straight to mef3io and doesn't need the server. The viewer is the first module
+that will.
 
 ## Library APIs the first release depends on
 
@@ -50,7 +53,7 @@ All planned in mef3io and tracked in [mef3io#71](https://github.com/bnelair/mef3
 | `mef3io.inspect(path)`: everything about a session without reading samples | Explorer, anonymizer step 1 | [#67](https://github.com/bnelair/mef3io/issues/67) |
 | `anonymize_session(src, dst, shift_us, ...)` and `verify(...)` | Anonymizer | [#70](https://github.com/bnelair/mef3io/issues/70) |
 | `transform_session(...)`: channel subsets, (de/re)encryption, metadata edits and the time shift in one streaming copy; `edit_metadata` in place (never times) | Passwords, channel presets and batch, metadata edit, anonymizer | [#73](https://github.com/bnelair/mef3io/issues/73) |
-| `time_range(...)` and `rename_session(...)` (folder, session-level annotation files and stored names, as one journaled operation) | Ordering and renaming | [#72](https://github.com/bnelair/mef3io/issues/72) |
+| `time_range(...)`, `rename_session(...)` (folder, session-level annotation files and stored names, as one journaled operation) and `fix_name_drift(...)` | Ordering, renaming, drift fix, undo | [#72](https://github.com/bnelair/mef3io/issues/72) |
 | Cancellation tokens and progress callbacks | Every long operation | [#69](https://github.com/bnelair/mef3io/issues/69) |
 | Complete record parsing at every level | Explorer annotations; anonymizer time shift | [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62) |
 | Provenance region (versions and operations, no times) | Explorer | [#58](https://github.com/bnelair/mef3io/pull/58) |
@@ -63,13 +66,13 @@ The future viewer will add [#68](https://github.com/bnelair/mef3io/issues/68)
 - **Python 3.11+ with PySide6 (Qt 6).** mef3io already ships wheels for every platform the app targets, so the whole stack is one language with no bridge.
 - **Background work** runs on a worker thread pool (`QThreadPool`). Opening, inspecting and anonymizing never block the UI, and every long operation shows progress and can be cancelled.
 - **Packaging:** PyInstaller (or Briefcase), built in a CI matrix for Windows x64, macOS arm64 + x86_64 and Linux x64. Code signing and notarization are needed on Windows and macOS, or clinical IT will block the app. Certificates: to be decided.
-- **Settings and preferences:** stored per user (`QSettings`). Never anything about a recording's contents.
-- **Recovery artifacts** (rename journals, header and metadata backups) live in the per-user app-data folder, under opaque names; mef3io is told where to write them (`backup_dir`).
+- **Settings and preferences:** stored per user (`QSettings`). Never anything about a recording's contents, and **no paths**: the site time zone is set per app profile, and an optional per-folder override is stored under a **salted hash** of the folder path, never the path itself.
+- **Recovery artifacts** live in the per-user app-data folder, under opaque names; mef3io is told where to write them (`backup_dir`). The crash journal is mandatory and deleted when the operation completes; byte-level backups serve crash rollback only; keeping undo information (old names, old field values) afterwards is optional. Undo is a logical inverse (`rename_session` back, `edit_metadata` with the old values), never a byte restore. The only thing written inside a session is mef3io's non-identifying "operation in progress" marker, while an operation runs.
 - **Logging:** a rotating local log file. Recording names and folder paths count as identifying, alongside identity fields and absolute timestamps. A logging filter redacts all of them, including messages from mef3io and mef3io-server, and a test feeds it ID-bearing and date-bearing folder names.
 - **Recent files:** off by default, because paths are identifying.
 - **Crashes:** a crash handler writes a local, path-redacted report and sends nothing anywhere.
 - **On screen:** a "mask session names" option, for screen sharing and screenshots.
-- **Time zones:** local times come from the operating system's time-zone database (`zoneinfo`) and a site time zone the user chooses, never from the file's fixed `GMT_offset` alone. That offset ignores daylight saving (meflib.c:4649-4650).
+- **Time zones:** local times come from the operating system's time-zone database (`zoneinfo`) and a site time zone the user chooses, never from the file's fixed `GMT_offset` alone. That offset ignores daylight saving (meflib.c:4649-4650), and it sits in level-2 encrypted section 3, so it is unavailable without the level-2 password.
 
 ## Packages (planned layout)
 
