@@ -1,7 +1,7 @@
 # Design: metadata explorer (v0.1)
 
-Open recordings and see what's in them. **Read-only**; no signal data is
-loaded. Everything comes from `mef3io.inspect()`
+Open recordings and see what's in them. No signal data is loaded. Everything
+is **read-only** except renaming sessions (below), which always asks first. Everything comes from `mef3io.inspect()`
 ([mef3io#67](https://github.com/bnelair/mef3io/issues/67)), which reads
 metadata, indices and record files only.
 

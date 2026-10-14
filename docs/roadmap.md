@@ -12,7 +12,7 @@ library side. The library work always lands in mef3io **before** the app uses it
 | 1 | mef3io | `inspect()` [#67](https://github.com/bnelair/mef3io/issues/67), cancellation and progress [#69](https://github.com/bnelair/mef3io/issues/69), `anonymize_session` + `verify` [#70](https://github.com/bnelair/mef3io/issues/70), `time_range` + `set_session_name` [#72](https://github.com/bnelair/mef3io/issues/72), released as **mef3io 1.3** |
 | 2 | studio | App shell, background jobs, privacy-safe logging, settings |
 | 3 | studio | **Installers** for Windows, macOS and Linux, built in CI. Done early, so packaging and signing problems surface before the features exist |
-| 4 | studio | **Explorer** (read-only metadata), plus **ordering and safe renaming** of sessions ([#12](https://github.com/bnelair/mef3io-studio/issues/12); needs [mef3io#72](https://github.com/bnelair/mef3io/issues/72)) |
+| 4 | studio | **Explorer** (metadata), plus **ordering and safe renaming** of sessions ([#12](https://github.com/bnelair/mef3io-studio/issues/12); needs [mef3io#72](https://github.com/bnelair/mef3io/issues/72)) |
 | 5 | studio | **Anonymizer** wizard |
 | 6 | studio | User guide with screenshots; v0.1 release |
 
