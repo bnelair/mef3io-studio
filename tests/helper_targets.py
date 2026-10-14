@@ -6,9 +6,9 @@ import time
 
 
 def native_crash():
-    import ctypes
-
-    ctypes.string_at(0)  # read address 0: a segmentation fault / access violation
+    # A native abort (SIGABRT on POSIX). Reading address 0 through ctypes is
+    # not enough: on Windows ctypes turns the access violation into OSError.
+    os.abort()
 
 
 def hard_exit():

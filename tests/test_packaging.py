@@ -63,6 +63,7 @@ def test_empty_licence_fails(tmp_path):
         ("numpy.libs/msvcp140-a4c2229b.dll", "Microsoft-VC-Runtime"),
         ("python312.dll", "Python"),
         ("_ctypes.pyd", "Python"),
+        ("Python.framework/Versions/3.12/Python", "Python"),
         ("python3.12/lib-dynload/_bz2.cpython-312-x86_64-linux-gnu.so", "Python"),
     ],
 )

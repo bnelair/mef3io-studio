@@ -173,7 +173,7 @@ COMPONENT_RULES: list[tuple[str, str]] = [
     (r"(^|/)(PySide6|shiboken6)/|Qt6|pyside6|shiboken6|(^|/)q\w+\.(dll|dylib)$|libqt", QT),
     (r"numpy|openblas|gfortran|quadmath|libgcc_s\.1\.1\.dylib", "numpy"),
     (r"(^|/)mef3io/", "mef3io"),
-    (r"python3|libpython|lib-dynload/|\.cpython-|(^|/)_\w+\.pyd$|(^|/)\w+\.pyd$", "Python"),
+    (r"python3|libpython|Python\.framework/|lib-dynload/|\.cpython-|(^|/)_\w+\.pyd$|(^|/)\w+\.pyd$", "Python"),
 ]
 
 
