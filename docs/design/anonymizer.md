@@ -89,7 +89,7 @@ For every recording:
 - **verification:**
   - samples exactly the same (the compressed signal is byte-identical to the original's);
   - every time shifted by exactly the planned amount, except the time-zone and daylight-saving fields, which are cleared rather than shifted (`GMT_offset = 0`, DST fields = NO_ENTRY, `recording_time_offset = 0`);
-  - **leak scan clean**: none of the recording's original time values remain in the copy. Every structured time field, every annotation record, and every byte that isn't compressed signal (file headers, metadata sections, index entries apart from their sample min/max values, block headers, annotation files) is checked field by field. The compressed signal itself is checked **byte-identical to the original's** instead of scanned (it looks like random bytes, so a byte scan would report thousands of false hits);
+  - **leak scan clean**: none of the recording's original time values remain in the copy. Every **time-valued field** is checked, one field at a time, never by sliding over raw bytes. That covers the file headers, metadata sections, index entries, block headers and annotation records, including the times inside annotation bodies. Fields that hold sizes, counts or sample values are never combined into a would-be time value. Data-derived bytes, meaning the compressed signal and each block's statistics table, are checked **byte-identical to the original's** (after decryption, where encrypted) instead of scanned, since they look like random bytes and a scan would report false hits;
   - text the user chose to keep (notes, descriptions) was shown for review first and stays the user's responsibility;
   - integrity check passed.
 

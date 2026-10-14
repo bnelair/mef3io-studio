@@ -238,6 +238,6 @@ explicit act, with a warning. See [SECURITY.md](../../SECURITY.md).
 - **Opening and inspecting** a large generated recording reads **no signal data** and no block index unless asked. It reads well under 1% of the bytes in total, checked in CI with a byte count, the same method mef3io uses.
 - **Patient details** never appear unless "Show" was clicked for that recording.
 - **After a rename,** pymef and meflib-based readers still find the session-level annotations. No old name remains in any `session_name` field, any session-level record file name, or any description that equalled the old name. (Descriptions or annotation text that merely *contain* the old name are out of scope.)
-- **Killing the app** during a batch rename, then restarting, leaves every session fully old or fully new. A journal without a marker is finished or discarded without asking; a marker without a journal is refused with the explanatory message.
+- **Killing the app** during a batch rename, then restarting, leaves every session fully old or fully new. A journal without a marker means nothing was changed yet, so it is discarded without asking; a marker without a journal is refused with the explanatory message.
 - **Undo is a logical inverse:** append to a session after a rename, undo the rename, and every timestamp is byte-identical to the post-append state. Undo right after an operation is not refused as "recently modified".
 - **Across a daylight-saving change,** local times shown with a chosen site time zone match the operating system's time-zone database at every instant.
