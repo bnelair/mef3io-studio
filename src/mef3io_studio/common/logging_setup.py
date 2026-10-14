@@ -14,7 +14,7 @@ import sys
 import threading
 from pathlib import Path
 
-from platformdirs import user_log_dir
+from platformdirs import user_cache_dir, user_log_dir
 
 from .privacy import PrivacyFilter, scrub
 
@@ -22,11 +22,15 @@ APP_NAME = "mef3io-studio"
 APP_AUTHOR = "BNEL"
 LOG_FILE_NAME = "mef3io-studio.log"
 #: Raw output of faulthandler from a hard crash. It cannot be filtered while
-#: the process is dying, so it is scrubbed into the log on the next start and
-#: deleted.
+#: the process is dying, so it is written OUTSIDE the log folder (which users
+#: are invited to open and send), into the app's cache folder, and scrubbed
+#: into the log at the start of the next run — before any window exists —
+#: then deleted.
 CRASH_FILE_NAME = "crash-pending.txt"
 #: Override the log folder (tests, portable use).
 LOG_DIR_ENV = "MEF3IO_STUDIO_LOG_DIR"
+#: Override the crash-report folder (tests).
+CRASH_DIR_ENV = "MEF3IO_STUDIO_CRASH_DIR"
 
 _FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 _installed: list[logging.Handler] = []
@@ -39,6 +43,13 @@ def log_dir() -> Path:
     if override:
         return Path(override)
     return Path(user_log_dir(APP_NAME, APP_AUTHOR))
+
+
+def crash_dir() -> Path:
+    override = os.environ.get(CRASH_DIR_ENV)
+    if override:
+        return Path(override)
+    return Path(user_cache_dir(APP_NAME, APP_AUTHOR)) / "crash"
 
 
 def setup_logging(
@@ -79,7 +90,7 @@ def setup_logging(
     root.setLevel(level)
     logging.captureWarnings(True)
     if hooks:
-        install_hooks(directory)
+        install_hooks(crash_dir())
     return path
 
 
@@ -147,16 +158,25 @@ def recover_crash_report(directory: Path) -> None:
 
 
 def install_hooks(directory: Path) -> None:
+    """``directory`` holds the raw crash report; never the shared log folder."""
     global _crash_file
     sys.excepthook = _sys_hook
     threading.excepthook = _thread_hook
     recover_crash_report(directory)
     try:
         if _crash_file is None:
+            directory.mkdir(parents=True, exist_ok=True)
             _crash_file = open(directory / CRASH_FILE_NAME, "w", encoding="utf-8")  # noqa: SIM115
             faulthandler.enable(_crash_file, all_threads=True)
     except (OSError, RuntimeError, ValueError):
         _crash_file = None
+
+
+def uninstall_hooks() -> None:
+    """Undo :func:`install_hooks` (tests)."""
+    sys.excepthook = sys.__excepthook__
+    threading.excepthook = threading.__excepthook__
+    close_crash_file()
 
 
 def close_crash_file() -> None:

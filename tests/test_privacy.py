@@ -44,6 +44,21 @@ DATE_FORMS = [
     "datetime.datetime(2019, 3, 14, 9, 26, 53)",
     "datetime.date(2019, 3, 14)",
     "09:26:53",
+    "Mar-14-2019",
+    "March 2019",
+    "14. März 2019",
+    "14 mars 2019",
+    "14 de marzo de 2019",
+    "14 marzo 2019",
+    "14. března 2019",
+    "14 marca 2019",
+    "Do 14 Mär 2019 09:26:53 CET",
+    "2019年3月14日",
+    "2019年3月14日 09時26分",
+    "on 14/03 at 09:26",
+    "3/14/2019 9:26 AM",
+    "2019-03-14T09:26:53.589+01:00",
+    "946684800",
     "1552555613",
     str(START_UUTC // 1000),
     str(START_UUTC),
@@ -58,7 +73,48 @@ PATH_FORMS = [
     "sub-0042_ses-20190314",
     "'/data/clinic/Jane Roe/raw'",
     "PosixPath('/srv/eeg/Doe John/session')",
+    "/Volumes/Patient Jane Doe/rec.mefd",
+    "/data/Jane Marie Doe/rec.mefd",
+    r"C:\Users\Jane Doe\Desktop\Smith John Q\x",
+    r"open \\fileserver\EEG\Jane Doe\rec.mefd failed",
+    "file:///home/someone/Jane%20Doe/rec.mefd",
+    "%2Fdata%2FJane%20Doe%2Frec.mefd",
+    "Пациенты/Иванов_Иван/запись",
+    "患者/山田太郎/記録",
+    "QFile::open: cannot open Пациенты/Петров",
+    "dir 12345678/0001 missing",
+    "~jdoe/x",
+    "JaneDoe-000001.segd",
+    "JaneDoe.timd",
+    "JaneDoe-000001.tdat",
+    "JaneDoe-000001.tmet",
+    "JaneDoe-000001.tidx",
+    "JaneDoe.rdat",
+    "JaneDoe.ridx",
+    "JaneDoe-rec.MEFD",
+    "jane.doe@example.org",
 ]
+# Words that must be gone from the scrubbed text of PATH_FORMS.
+PATH_WORDS = (
+    "Quartermaine",
+    "Roe",
+    "Doe",
+    "0042",
+    "2019",
+    "Users",
+    "share",
+    "Jane",
+    "Marie",
+    "Smith",
+    "Иванов",
+    "Петров",
+    "Пациенты",
+    "山田",
+    "患者",
+    "12345678",
+    "jdoe",
+    "fileserver",
+)
 # Identity spelled differently from how it was registered.
 IDENTITY_VARIANTS = [
     "ZEBULON",
@@ -82,9 +138,9 @@ def test_scrub_removes_every_date_form(form):
 @pytest.mark.parametrize("form", PATH_FORMS)
 def test_scrub_removes_paths(form):
     out = scrub(f"cannot open {form} now", IdentityRegistry())
-    assert "<path>" in out or "[time]" in out
-    for word in ("Quartermaine", "Roe", "Doe", "0042", "2019", "Users", "share"):
-        assert word not in out, out
+    assert "<path>" in out or "<email>" in out
+    for word in PATH_WORDS:
+        assert word.lower() not in out.lower(), out
 
 
 def test_scrub_removes_home_folder():
@@ -93,7 +149,19 @@ def test_scrub_removes_home_folder():
 
 
 @pytest.mark.parametrize(
-    "text", ["mef3io 1.1.4", "Python 3.12.7", "Qt 6.12.0", "job 42", "256.0 Hz", "3/10 done"]
+    "text",
+    [
+        "mef3io 1.1.4",
+        "Python 3.12.7",
+        "Python 3.12.12",
+        "Qt 6.12.0",
+        "app 0.0.1, mef3io 1.1.4, Qt 6.12.0",
+        "job 42",
+        "256.0 Hz",
+        "3/10 done",
+        "channel Fp1 of 64",
+        "QFile::open: cannot open",
+    ],
 )
 def test_scrub_keeps_ordinary_text(text):
     assert scrub(text, IdentityRegistry()) == text
@@ -124,6 +192,67 @@ def test_reader_is_opened_without_path_bearing_warnings(monkeypatch, synthetic_s
     monkeypatch.setattr(mef3io, "Reader", spy)
     LocalRecordingSource().summarize(synthetic_session)
     assert seen.get("warn_declarations") is False
+
+
+def test_real_hooks_scrub_everything(tmp_path):
+    """The reviewer's end-to-end probe: uncaught exceptions in the main thread
+    and in a worker thread, a warning and a Qt message, through the hooks the
+    app really installs."""
+    import sys
+    import threading
+
+    from PySide6.QtCore import qInstallMessageHandler, qWarning
+
+    from mef3io_studio.common.logging_setup import install_qt_message_handler, uninstall_hooks
+
+    log_file = setup_logging(tmp_path / "logs", hooks=True)
+    install_qt_message_handler()
+    try:
+        try:
+            mef3io.Reader("/Volumes/Patient Jane Doe/Иванов Иван/rec.mefd")
+        except Exception:
+            sys.excepthook(*sys.exc_info())
+        thread = threading.Thread(
+            target=lambda: open("/srv/eeg/Smith John Q/14. März 2019/x.mefd")  # noqa: SIM115
+        )
+        thread.start()
+        thread.join()
+        warnings.warn("loaded 山田太郎/記録 recorded Mar-14-2019", stacklevel=1)
+        qWarning("QFile::open: cannot open Пациенты/Петров")
+        logging.getLogger("mef3io_studio").info(
+            "started; Python 3.12.12, epoch 946684800, on 14/03 at 09:26, JaneDoe-000001.segd"
+        )
+    finally:
+        qInstallMessageHandler(None)
+        uninstall_hooks()
+        teardown_logging()
+    text = log_file.read_text(encoding="utf-8")
+    assert "uncaught IoError" in text and "uncaught FileNotFoundError" in text
+    assert "QFile::open: cannot open <path>" in text
+    assert "Python 3.12.12" in text
+    for word in (
+        "Jane",
+        "Doe",
+        "Иванов",
+        "Smith",
+        "März",
+        "2019",
+        "山田",
+        "記録",
+        "Пациенты",
+        "Петров",
+        "946684800",
+        "09:26",
+        "JaneDoe",
+    ):
+        assert word not in text, word
+
+
+def test_crash_report_lives_outside_the_log_folder():
+    from mef3io_studio.common.logging_setup import crash_dir, log_dir
+
+    assert log_dir().resolve() not in crash_dir().resolve().parents
+    assert crash_dir().resolve() != log_dir().resolve()
 
 
 def test_crash_report_is_scrubbed_into_the_log(tmp_path):

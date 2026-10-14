@@ -2,6 +2,7 @@
 (tests/conftest.py puts this folder on PYTHONPATH), so helper processes and
 subprocesses are under the same no-network rule as the tests themselves."""
 
+import _socket
 import os
 import socket
 
@@ -25,3 +26,5 @@ if os.environ.get("MEF3IO_STUDIO_NETGUARD") == "1":
         "gethostbyaddr",
     ):
         setattr(socket, _name, _blocked(_name))
+    for _name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
+        setattr(_socket, _name, _blocked(f"_socket.{_name}"))

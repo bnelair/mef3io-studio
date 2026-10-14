@@ -12,6 +12,7 @@ Linux app is additionally run under strace in CI.
 
 from __future__ import annotations
 
+import _socket
 import os
 import socket
 import subprocess
@@ -24,6 +25,9 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _LOG_DIR = tempfile.mkdtemp(prefix="mef3io-studio-test-logs-")
 os.environ["MEF3IO_STUDIO_LOG_DIR"] = _LOG_DIR
+os.environ["MEF3IO_STUDIO_CRASH_DIR"] = os.path.join(
+    _LOG_DIR, "..", "crash-" + os.path.basename(_LOG_DIR)
+)
 _NETGUARD_DIR = str(Path(__file__).parent / "netguard")
 os.environ["PYTHONPATH"] = os.pathsep.join(
     [_NETGUARD_DIR, *filter(None, [os.environ.get("PYTHONPATH")])]
@@ -62,6 +66,18 @@ class _GuardedPopen(_RealPopen):
         super().__init__(args, *a, **kw)
 
 
+def _guarded_raw_socket_class():
+    raw = _socket.socket
+
+    class GuardedRawSocket(raw):
+        pass
+
+    for name in ("connect", "connect_ex", "bind", "sendto", "sendmsg"):
+        if hasattr(raw, name):
+            setattr(GuardedRawSocket, name, _blocked(f"_socket.socket.{name}"))
+    return GuardedRawSocket
+
+
 @pytest.fixture(autouse=True, scope="session")
 def no_network():
     mp = pytest.MonkeyPatch()
@@ -76,6 +92,10 @@ def no_network():
         "gethostbyaddr",
     ):
         mp.setattr(socket, name, _blocked(name))
+    # The C module underneath, for code that bypasses socket.py.
+    for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
+        mp.setattr(_socket, name, _blocked(f"_socket.{name}"))
+    mp.setattr(_socket, "socket", _guarded_raw_socket_class())
     mp.setattr(subprocess, "Popen", _GuardedPopen)
     yield
     mp.undo()

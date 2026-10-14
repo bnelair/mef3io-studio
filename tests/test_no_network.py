@@ -38,6 +38,20 @@ def test_guard_blocks_socket_methods(method):
 
 
 @pytest.mark.allow_network_attempt
+def test_guard_blocks_the_c_socket_module():
+    import _socket
+
+    with pytest.raises(NetworkAccessError):
+        _socket.getaddrinfo("example.org", 443)
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    try:
+        with pytest.raises(NetworkAccessError):
+            s.connect(("127.0.0.1", 9))
+    finally:
+        s.close()
+
+
+@pytest.mark.allow_network_attempt
 def test_guard_blocks_other_programs():
     with pytest.raises(NetworkAccessError):
         subprocess.run(["curl", "https://example.org"], check=False)
