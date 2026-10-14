@@ -36,6 +36,32 @@ metadata, indices and record files only.
 - **Copy summary:** a text or JSON summary of a recording (masked fields stay masked) for an email or a data-management log.
 - **Pack / unpack:** `.mefd` ↔ `.mefd.tar` via mef3io's `archive_session` / `extract_session`, with progress.
 
+## Ordering and renaming sessions
+
+Common case: a folder of sessions with UUID names. Tracked in
+[#12](https://github.com/bnelair/mef3io-studio/issues/12).
+
+- **Order by time.** Each session's first and last sample time comes from
+  mef3io's fast `time_range` ([mef3io#72](https://github.com/bnelair/mef3io/issues/72)),
+  which reads a few small metadata files per channel and never the data.
+  - The table sorts by start and flags overlaps and gaps between sessions.
+  - A session whose times can't be made absolute (encrypted, a non-zero
+    recording-time offset, no password) is marked *relative* and kept out of
+    the absolute order.
+- **Rename safely.**
+  - **Names:** from templates (`{start:%Y-%m-%d_%H%M%S}.mefd`, `{index:03d}_…`) or typed per row.
+  - **Preview** of every change; the `.mefd` / `.mefd.tar` suffix is enforced.
+  - **Clashes block the run:** case-insensitive collisions, existing names, characters or names Windows forbids.
+  - **Two-phase rename** (via temporary names), so swaps and cycles work and a failure rolls back.
+  - **Same folder only;** no cross-drive moves.
+  - **Undo:** an undo log written *before* renaming, and *Undo last rename*.
+  - **Warning:** a name built from dates reveals when the recording was made; anonymize first if sharing.
+- **Stored name.**
+  - **Why it's safe to rename:** readers use the folder name (meflib derives the session name from the path), but every file also stores the name in its header.
+  - **After a rename:** the app offers *Update stored name too*. This is a header-only rewrite via mef3io's `set_session_name`, which backs up the headers and records the change in provenance.
+  - **Drift:** the explorer flags sessions whose folder and stored names differ and offers *Fix stored name*.
+  - **Archives:** `.mefd.tar` are renamed as files only (archives are read-only), and the app explains how to update the stored name if needed.
+
 ## Not in v0.1
 
 - Viewing the signal (see [next directions](next-directions.md)).

@@ -56,7 +56,16 @@ loading any signal:
 
 Patient details are **hidden by default**.
 
-**2. Anonymize.** Make a **copy** of one or many recordings with the patient
+**2. Order and rename.** Got a folder of sessions with meaningless (UUID)
+names? See them sorted by when they were recorded, then rename them safely:
+- **preview** every change first;
+- clashes are caught before anything happens;
+- **undo** is one click.
+
+The name stored inside the files is updated to match, and sessions where the
+two disagree can be fixed.
+
+**3. Anonymize.** Make a **copy** of one or many recordings with the patient
 details removed and every time shifted. The originals are never modified.
 
 <p align="center">

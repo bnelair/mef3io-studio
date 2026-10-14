@@ -8,6 +8,7 @@ these recordings don't write code: clinicians, research coordinators, students
 and data managers. Their questions are practical:
 
 - *What's in this recording?* Channels, how long it is, when it starts, whether there are gaps, whether it's encrypted, whether it's intact.
+- *Which of these UUID-named folders is which?* Order them by time, and give them meaningful names without breaking anything.
 - *Can I share it?* Remove the patient details and the real dates, consistently across every recording of a subject, without breaking the files.
 - *Can I look at it?* Later: scroll through the signal and its annotations.
 
@@ -25,7 +26,7 @@ counts, CRCs) is available, but never in the way.
 
 ## First release (v0.1)
 
-1. **Metadata explorer:** open recordings and inspect them, read-only. No signal is loaded. See [design/explorer.md](design/explorer.md).
+1. **Metadata explorer:** open recordings and inspect them. No signal is loaded. It also **orders sessions by time and renames them safely**, keeping the name stored inside the files in step. See [design/explorer.md](design/explorer.md).
 2. **Anonymizer:** batch de-identification into verified copies, with the time shift chosen by the user. See [design/anonymizer.md](design/anonymizer.md).
 3. **Installers** for Windows, macOS (Apple silicon and Intel) and Linux.
 
