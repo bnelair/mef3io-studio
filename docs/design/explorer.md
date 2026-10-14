@@ -1,7 +1,15 @@
 # Design: metadata explorer (v0.1)
 
 Open recordings and see what's in them. No signal data is loaded. Everything
-is **read-only** except renaming sessions (below), which always asks first. Everything comes from `mef3io.inspect()`
+is **read-only** except three explicit **in-place** operations:
+- renaming sessions;
+- updating the name stored inside them;
+- editing metadata.
+
+Each one shows a preview and asks for confirmation, and each can be undone
+(a rename record, or header backups). Everything that changes *content*
+(anonymization, encryption, channel subsets) always writes a **copy**
+instead. See [vision → principles](../vision.md#principles). Everything comes from `mef3io.inspect()`
 ([mef3io#67](https://github.com/bnelair/mef3io/issues/67)), which reads
 metadata, indices and record files only.
 
@@ -54,11 +62,16 @@ Common case: a folder of sessions with UUID names. Tracked in
   - **Clashes block the run:** case-insensitive collisions, existing names, characters or names Windows forbids.
   - **Two-phase rename** (via temporary names), so swaps and cycles work and a failure rolls back.
   - **Same folder only;** no cross-drive moves.
-  - **Undo:** an undo log written *before* renaming, and *Undo last rename*.
+  - **Undo:** a **rename record** (old → new names) is written *before* renaming, and *Undo last rename* replays it backwards.
+    - **It's sensitive.** Old names can contain patient IDs or dates, so it is treated like the anonymizer's key file: one of the two artifacts the privacy policy allows ([SECURITY.md](../../SECURITY.md)).
+    - **Where it's written:** by default into the **same folder** as the sessions. It reveals nothing that folder didn't already show before the rename. The user can choose another location or switch it off (then there is no undo).
+    - **Never** copied into logs, reports or summaries. The anonymizer refuses to include it in an output folder.
+    - **The dialog says plainly:** "This file contains the previous names. Delete it before sharing this folder." *Delete rename record* removes it once the user is satisfied.
   - **Warning:** a name built from dates reveals when the recording was made; anonymize first if sharing.
 - **Stored name.**
   - **Why it's safe to rename:** readers use the folder name (meflib derives the session name from the path), but every file also stores the name in its header.
-  - **After a rename:** the app offers *Update stored name too*. This is a header-only rewrite via mef3io's `set_session_name`, which backs up the headers and records the change in provenance.
+  - **After a rename:** the app offers *Update stored name too*. This is a header-only rewrite via mef3io's `set_session_name`: only the 1024-byte header of each file changes; the headers are backed up first; the change is recorded in provenance; and mef3io verifies the session reads identically afterwards.
+  - **Why in place, not a copy:** making a copy of a session that may be hundreds of GB just to change a name is not practical. The stored-name update and drift fix are therefore explicit in-place operations: preview, confirmation, header backup, undo. Users who want an untouched original can make a copy first (*Save as copy*).
   - **Drift:** the explorer flags sessions whose folder and stored names differ and offers *Fix stored name*.
   - **Archives:** `.mefd.tar` are renamed as files only (archives are read-only), and the app explains how to update the stored name if needed.
 

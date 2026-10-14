@@ -110,8 +110,9 @@ line, for batch work on servers.
 
 - **Nothing leaves your computer.** The app makes no network connections.
 - **Logs never contain** patient details or original recording dates.
-- **Anonymized copies are only written once verified;** the originals are never
-  touched.
+- **Anonymizing, encrypting and channel subsets always write verified copies;**
+  the originals are not touched. Renaming and metadata edits change a
+  recording in place only when you confirm, and can be undone.
 - **Key file:** if you choose to save one (it maps the original recordings to
   their pseudonyms and time shifts), the app warns you that it re-identifies
   the data and must be stored separately.

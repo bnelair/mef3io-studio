@@ -49,7 +49,10 @@ See [design/next-directions.md](design/next-directions.md).
 ## Principles
 
 1. **The app never touches the format itself.** Every read, write and anonymization goes through mef3io, where it is tested against the reference implementations. If the app needs something mef3io cannot do, it gets added to mef3io first.
-2. **Originals are never modified.** Anything that writes produces a new copy, and only after verifying it.
+2. **Originals change only when the user explicitly says so.**
+   - **Content changes always write a verified copy:** anonymization, encryption changes, channel subsets. These never touch the original.
+   - **In place only on request:** renaming, updating the stored name, and editing metadata. Each is an explicit operation with a preview, a confirmation, and a backup or record so it can be undone. Copying a multi-hundred-GB recording just to rename it is not practical.
+   - **Nothing ever changes an original as a side effect.**
 3. **Never load a whole recording.** Recordings run to terabytes; the app reads only what it shows.
 4. **Private by default.** Patient details are hidden until asked for. Logs carry no patient data and no original dates. There is no network access.
 5. **Plain language first.** Technical detail is there, but never the first thing a user sees.

@@ -16,8 +16,10 @@ This app handles clinical recordings and produces anonymized copies of them,
 so **privacy failures are security bugs**. In scope:
 
 - **An anonymized copy that still contains** patient details, an original date or time, or anything that links it back to the original. Includes anything the verification step failed to catch.
-- **Patient details or original dates** in logs, reports, crash dumps, temporary files left behind, or anything the app writes, other than the key file the user explicitly asked for.
-- **An original recording** modified in any way.
+- **Patient details or original dates** in logs, reports, crash dumps, temporary files left behind, or anything else the app writes. Only **two artifacts** may contain them, both explicit and both warned about in the UI:
+  - the anonymizer's **key file** (written only on request);
+  - the **rename record** that makes *Undo rename* possible (old names; switchable off; never in logs or reports).
+- **An original recording modified** without the user's explicit confirmation, or beyond what was confirmed. Anonymization, encryption changes and channel subsets must never touch the original. Renames, stored-name updates and metadata edits change it in place only as confirmed, previewed operations with a backup or undo.
 - **Any network access** by the app.
 - **Crashes or out-of-bounds reads** caused by a crafted file. Those usually belong in [mef3io](https://github.com/bnelair/mef3io/security), which does the parsing.
 
