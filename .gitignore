@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+# never commit recordings or key files
+*.mefd/
+*.mefd.tar
+*.key.json
+.DS_Store
+Thumbs.db

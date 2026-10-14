@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Library problem (reading, writing, anonymizing files)
+    url: https://github.com/bnelair/mef3io/issues
+    about: If the problem is in how a MEF file is read or written, it belongs in mef3io.
+  - name: Question / discussion
+    url: https://github.com/bnelair/mef3io-studio/discussions
+    about: Usage questions and open-ended discussion belong here, not in issues.

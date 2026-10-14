@@ -1,0 +1,44 @@
+name: Bug report
+description: Something is wrong or crashes
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Never attach real recordings, and never include
+        patient details, original recording dates or screenshots that show
+        them.** Issues are public. A synthetic session generated with mef3io is
+        enough to reproduce a problem.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Error message or log excerpt
+      description: The app's log never contains patient data, but please check before pasting.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Help → About
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS (Apple silicon), macOS (Intel), Linux]
+    validations:
+      required: true

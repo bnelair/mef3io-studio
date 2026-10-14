@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+title: "mef3io-studio: a desktop app for exploring and anonymizing MEF 3.0 recordings"
+message: "If you use mef3io-studio in research, please cite it."
+type: software
+authors:
+  - name: "Mayo Clinic — Bioelectronics Neurophysiology and Engineering Lab (BNEL)"
+repository-code: "https://github.com/bnelair/mef3io-studio"
+license: Apache-2.0
+keywords:
+  - MEF
+  - electrophysiology
+  - iEEG
+  - EEG
+  - anonymization
+  - de-identification

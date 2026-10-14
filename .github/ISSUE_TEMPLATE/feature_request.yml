@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest an improvement or new capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: The use case, not just the proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: If it needs the app to do something new with MEF files, note that the file handling itself belongs in mef3io.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
