@@ -18,10 +18,11 @@ library side. The library work always lands in mef3io **before** the app uses it
 
 ## Next directions (each needs a specification first)
 
-- **Signal viewer:** traces, zoom and pan, gaps; fast on multi-TB recordings via mef3io [#68](https://github.com/bnelair/mef3io/issues/68).
+- **Signal viewer:** traces, zoom and pan, gaps; built on mef3io-server's cache, decode and prefetch (in-process locally), fast on multi-TB recordings via mef3io [#68](https://github.com/bnelair/mef3io/issues/68).
+- **Data coverage view:** when data exists and at what rate, per channel, from the index alone (mef3io [#68](https://github.com/bnelair/mef3io/issues/68), plus a mef3io-server RPC).
 - **Annotations:** view, then create and edit.
 - **Export** to other formats.
-- **Remote recordings** via [mef3io-server](https://github.com/bnelair/mef3io-server).
+- **Remote recordings** via [mef3io-server](https://github.com/bnelair/mef3io-server): the viewer's code path with a remote source.
 - **Validate / repair / recover** front end for mef3io's existing tools, with dry run by default.
 
 See [design/next-directions.md](design/next-directions.md) for what is known so far.

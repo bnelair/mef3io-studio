@@ -15,6 +15,24 @@ itself.** If the app needs something mef3io can't provide, the feature goes
 into mef3io first. It is then tested against meflib/pymef, and is available
 to scripts and the CLI too.
 
+## mef3io-server: the reading layer for viewing
+
+[mef3io-server](https://github.com/bnelair/mef3io-server) already exists
+(PyPI `mef3io-server`, Docker image on GHCR) and is built directly on mef3io.
+Its `FileManager` provides:
+- metadata loading (`FileInfo`);
+- a **byte-budgeted per-channel tile cache** with idle expiry;
+- **parallel decode across worker processes;**
+- **look-ahead/behind prefetch** sized in windows of the request.
+
+Those are exactly the pieces an interactive viewer needs, so the studio
+**reuses them instead of building its own cache**:
+- **Local recordings:** the `FileManager` runs **inside the app, in-process**, with no gRPC and no network. This keeps the no-network rule. The server's README shows it constructed directly from Python; confirming its in-process API (it currently speaks protobuf types) is part of the viewer spec.
+- **Remote recordings:** the same client API talks to a server over gRPC, so remote viewing is the same code path with a different source.
+
+v0.1 (explore, edit, encrypt, anonymize) goes straight to mef3io and doesn't
+need the server. The viewer is the first module that will.
+
 ## Library APIs the first release depends on
 
 All planned in mef3io and tracked in [mef3io#71](https://github.com/bnelair/mef3io/issues/71):

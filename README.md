@@ -89,7 +89,8 @@ See the [anonymizer design](docs/design/anonymizer.md) for the details.
   annotations shown, fast even on multi-TB recordings.
 - **Annotations:** view, and later create and edit, events and notes.
 - **Export** to other formats (e.g. EDF, NWB).
-- **Remote recordings** through [mef3io-server](https://github.com/bnelair/mef3io-server).
+- **Data coverage:** see when data exists and at what rate, per channel, from the index alone. The fastest way to spot dropouts and gaps.
+- **Remote recordings** through [mef3io-server](https://github.com/bnelair/mef3io-server), which the viewer also uses locally for caching and prefetch.
 
 These need their own specifications before work starts; see
 [next directions](docs/design/next-directions.md).
@@ -100,11 +101,16 @@ These need their own specifications before work starts; see
   <img src="docs/img/architecture.svg" alt="mef3io-studio is the user interface; all reading, writing and anonymization happens in the mef3io library, which the app calls." width="640">
 </p>
 
-**The app never edits MEF files itself.** All reading, writing and
-anonymization is done by the mef3io library, where it is tested against the
-reference implementations. The app is the workflow and the screens on top.
-The same operations are also available from Python, MATLAB and the command
-line, for batch work on servers.
+**The app never edits MEF files itself.** File operations go through the
+mef3io library. Viewing will go through
+[mef3io-server](https://github.com/bnelair/mef3io-server), which adds caching,
+parallel decoding and prefetch on top of mef3io. It runs inside the app for
+local files, or as a server for remote ones.
+
+Either way, everything that touches a file is done by mef3io, where it is
+tested against the reference implementations. The app is the workflow and the
+screens on top. The same operations are also available from Python, MATLAB
+and the command line, for batch work on servers.
 
 ## Privacy
 
