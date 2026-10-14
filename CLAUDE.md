@@ -16,16 +16,18 @@ Hard rules:
   confirmation and undo. Undo is a LOGICAL INVERSE (rename back / edit_metadata
   with the old values of changed fields), never a byte restore, and runs the
   same safety checks. TIMESTAMPS ARE NEVER EDITED IN PLACE — times change only
-  through a verified transformed copy.
+  through a verified transformed copy. GMT_offset is read-only in v0.1;
+  edit_metadata gets field-level dicts only, never a Metadata dataclass.
 - Crash safety never depends on optional artifacts: an opaque in-session
   "operation in progress" marker (no names/paths) + a MANDATORY journal in
-  backup_dir, deleted on completion. Byte backups are crash rollback only.
-  Keeping undo info afterwards is the only optional part.
+  backup_dir; on completion delete marker first, then journal. Byte backups
+  are crash rollback only and ALWAYS deleted. Keeping undo info afterwards is
+  the only optional part, and it never lives beside the recordings.
 - Recovery artifacts live in the per-user app-data dir under opaque names;
   paths and session names count as identifying (log filter, no recent-files
-  list by default, per-folder prefs keyed by a salted path hash).
-- Local time comes from a user-chosen site time zone (per app profile, per-
-  folder overrides) via zoneinfo; MEF's GMT_offset is one fixed number, sits
+  list by default, no paths in preferences).
+- Local time comes from a user-chosen site time zone (one per app profile,
+  plus a per-window override that is never saved) via zoneinfo; MEF's GMT_offset is one fixed number, sits
   in L2-encrypted section 3, and meflib ignores the DST fields.
 - Never load a whole recording (sessions reach TBs) — use inspect/windowed reads.
 - Privacy: no patient details or original dates in logs, reports, fixtures,

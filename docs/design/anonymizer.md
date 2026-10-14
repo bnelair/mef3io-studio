@@ -42,7 +42,8 @@ can pick any other.
   - **The problem:** MEF stores times in UTC plus one fixed offset (`GMT_offset`). meflib ignores the daylight-saving fields when it shows local time (meflib.c:4649-4650), so the file alone can't say what the clock on the wall read.
   - **The local clock:** the user picks the recording site's time zone (e.g. *America/Chicago*), and the app computes the local wall-clock time from the operating system's time-zone database. That's correct on either side of a daylight-saving change.
   - **What every copy carries, in both modes below:** `GMT_offset = 0`, `DST_start_time` and `DST_end_time` set to NO_ENTRY (**not shifted**), and `recording_time_offset = 0`. The site's time zone (a location hint) is gone.
-  - **Default, "keep local time of day":** the shift is **D + off_ref**, where **D** is a whole number of days and **off_ref** is the reference start's UTC offset in the chosen site time zone (at that instant, so daylight saving is included). The copy's UTC clock then reads the original **local** time of day at the reference start. Opening the reference copy shows the right time of day with no time-zone arithmetic; for other recordings, see the per-recording warning below.
+  - **D** is a whole number of days: **D = (the chosen new date) − (the reference's local start date in the site time zone)**.
+  - **Default, "keep local time of day":** the shift is **D + off_ref**, where **off_ref** is the reference start's UTC offset in the chosen site time zone (at that instant, so daylight saving is included). The copy's UTC clock then reads the original **local** time of day at the reference start. Opening the reference copy shows the right time of day with no time-zone arithmetic; for other recordings, see the per-recording warning below.
   - **Alternative, "keep UTC time of day":** the shift is D alone, whole days in UTC.
 - **Keep the day of the week:** off by default. When on, only **D** is constrained to a multiple of 7: the app picks the nearest new date with the same weekday as the original. **off_ref is never rounded.**
 - **Default new date: 2000-01-01.** It is far enough from 1970-01-01 that every shifted time stays positive, which MEF's time convention requires. mef3io refuses a shift that would break it.
@@ -50,7 +51,7 @@ can pick any other.
 **Preview:** a table and a timeline show, for every recording, its original
 start → new start. The app warns:
 - when aligned mode makes recordings overlap;
-- **per recording, when its UTC offset at its start differs from the reference's** (relative mode with "keep local time of day"). One shift serves every recording, and off_ref is the reference's offset, so a recording made in the other daylight-saving season shows a time of day **one hour off** in the copy. The warning says by how much;
+- **per recording, when its UTC offset at its start differs from the reference's** (relative mode with "keep local time of day"). One shift serves every recording, and off_ref is the reference's offset, so a recording made in the other daylight-saving season shows a time of day **one hour off** in the copy. The warning says by how much, and also says when that hour moves the recording across midnight, so its **weekday** (and date) in the copy flips too;
 - when a recording crosses a daylight-saving change. Elapsed time always stays exact, so after the copy is shifted, the part of the recording after the change is an hour away from what the wall clock read at the time.
 
 The report repeats these notes per recording.
@@ -58,7 +59,9 @@ The report repeats these notes per recording.
 **Leak-scan safety:** the app refuses a shift whose size is smaller than the
 time span of the batch's originals plus one day. With a smaller shift,
 shifted times would fall inside the original time range, and the leak scan
-could not tell a leaked original date from a legitimate shifted one.
+could not tell a leaked original date from a legitimate shifted one. In
+aligned mode, where every recording gets its own shift, the floor applies to
+**each recording's own shift**.
 
 ## Step 3: identity
 

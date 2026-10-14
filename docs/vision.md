@@ -55,7 +55,7 @@ See [design/next-directions.md](design/next-directions.md).
 1. **The app never touches the format itself.** Every read, write and anonymization goes through mef3io, where it is tested against the reference implementations. If the app needs something mef3io cannot do, it gets added to mef3io first.
 2. **Originals change only when the user explicitly says so.**
    - **Content changes always write a verified copy:** anonymization, encryption changes, channel subsets. These never touch the original.
-   - **In place only on request:** renaming (which updates the stored name too) and editing metadata. Each is an explicit operation with a preview, a confirmation, and recovery artifacts so it can be undone, unless the user turns undo off. Copying a multi-hundred-GB recording just to rename it is not practical.
+   - **In place only on request:** renaming (which updates the stored name too) and editing metadata. Each is an explicit operation with a preview, a confirmation, and saved information so it can be undone, unless the user turns undo off. Copying a multi-hundred-GB recording just to rename it is not practical.
    - **Timestamps are never edited in place.** The only way to change recording times is a new verified copy (the anonymizer's time shift).
    - **Nothing ever changes an original as a side effect.**
 3. **Never load a whole recording.** Recordings run to terabytes; the app reads only what it shows.

@@ -54,8 +54,10 @@ loading any signal:
 - which mef3io version wrote it (its provenance);
 - an integrity check.
 
-Patient details are **hidden by default**. Times can be shown in UTC or in the
-recording site's own time zone, correct across daylight-saving changes.
+Patient details are **hidden by default**. Times can be shown in UTC, or in
+the recording site's local time: you **choose the site's time zone** once
+(the files can't tell the app reliably), and local times are then correct
+across daylight-saving changes.
 
 **2. Order and rename.** Got a folder of sessions whose names are long random
 codes? See them sorted by when they were recorded, then rename them safely:
@@ -79,7 +81,7 @@ passwords, or without any.
 - In files written by common tools, MEF passwords lock the **patient
   details, settings and annotations**.
 - **They don't hide the signal, the recording's name, or its timing.** Some
-  files keep the true date hidden until the level-2 password is given.
+  files keep the true date hidden until the second, full-access password is given.
 - The app explains this before you rely on it.
 
 **5. Pick channels, and convert in batches.** Choose the channels you need,
@@ -99,8 +101,8 @@ details removed and every time shifted. The originals are not touched.
   still follow each other exactly as before.
 - **Aligned mode:** every recording starts at the same chosen moment.
 - **Verified:** every copy is checked before it is kept. The samples must be
-  bit-identical, every time must be shifted by exactly the chosen amount, and a
-  scan confirms that no original date remains anywhere in the files. (The
+  exactly the same, every time must be shifted by exactly the chosen amount,
+  and a scan confirms that no original date remains anywhere in the files. (The
   copy's time-zone and daylight-saving settings are not shifted: they are
   cleared, so the copy doesn't hint at where it was recorded.)
 
@@ -149,7 +151,7 @@ recordings kept elsewhere.
   copies;** the originals are not touched. Renaming and editing details change
   a recording in place, only after you confirm, and can be undone unless you
   turn undo off.
-- **Undo information** (old names, details before an edit) is kept in the
+- **Undo information** (old names, details before an edit, recording dates) is kept in the
   app's own data folder, never next to your recordings. You can review and
   delete it at any time.
 - **Key file:** if you choose to save one (it maps the original recordings to
