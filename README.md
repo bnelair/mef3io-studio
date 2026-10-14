@@ -11,19 +11,32 @@
 Download the installer for your computer from the
 [**Releases** page](https://github.com/bnelair/mef3io-studio/releases):
 
-| Computer | File |
-|---|---|
-| Windows | `mef3io-studio-<version>-windows-x64-setup.exe` (installs without administrator rights) |
-| Mac | `mef3io-studio-<version>-macos-arm64.dmg` (Apple silicon) or `-macos-x86_64.dmg` (Intel) |
-| Linux | `mef3io-studio-<version>-linux-x86_64.AppImage` (or the `.tar.gz`) |
+| Computer | File | Needs |
+|---|---|---|
+| Windows | `mef3io-studio-<version>-windows-x64-setup.exe` (installs without administrator rights) | Windows 10 or 11, 64-bit |
+| Mac | `mef3io-studio-<version>-macos-arm64.dmg` (Apple silicon) or `-macos-x86_64.dmg` (Intel) | **macOS 14 (Sonoma) or later** |
+| Linux | `mef3io-studio-<version>-linux-x86_64.AppImage` (or the `.tar.gz`) | a desktop Linux from 2021 or later: Ubuntu 22.04+, Debian 12+, RHEL / Rocky / Alma 9+, Fedora 35+ |
+
+Each release also has a `SHA256SUMS` file to check that a download is complete
+and unmodified.
 
 There is **no pip package**: mef3io-studio is only distributed as these
 installers. For scripting, use the [mef3io](https://github.com/bnelair/mef3io)
 library directly.
 
-> The current builds are **not code-signed yet**. Windows may show a
-> "Windows protected your PC" message (choose *More info → Run anyway*), and a
-> Mac may ask you to confirm the first launch (right-click the app → *Open*).
+> The current builds are **not code-signed yet**, so your computer will ask
+> you to confirm the first start:
+>
+> - **Windows:** "Windows protected your PC" → *More info* → *Run anyway*.
+> - **Mac (macOS 15 or later):** open the app once and close the warning, then
+>   go to *System Settings → Privacy & Security*, scroll down to the message
+>   about mef3io-studio and click *Open Anyway*. (On macOS 14: right-click the
+>   app → *Open*.) If macOS says the app "is damaged and can't be opened", the
+>   download was quarantined: move the app to *Applications* and run
+>   `xattr -dr com.apple.quarantine /Applications/mef3io-studio.app` in
+>   Terminal, then open it again.
+> - **Linux:** make the AppImage executable (*Properties → Allow executing*,
+>   or `chmod +x`), then double-click it.
 
 mef3io-studio runs on **Windows, macOS and Linux**. It is built on
 [mef3io](https://github.com/bnelair/mef3io), the library that reads and writes
@@ -138,8 +151,11 @@ cd mef3io-studio
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"              # pins mef3io and PySide6 exactly
+# or exactly what CI uses (hashed):
+#   pip install --require-hashes -r requirements/dev.lock && pip install --no-deps --no-build-isolation -e .
 mef3io-studio                        # or: python -m mef3io_studio
 mef3io-studio --self-test            # no window: write + read a tiny synthetic recording
+mef3io-studio --self-test-gui        # the same, showing the window briefly on the real display
 ```
 
 `pyproject.toml` exists for development and tests only; the app is never
@@ -153,8 +169,15 @@ QT_QPA_PLATFORM=offscreen python -m pytest   # headless; tests/conftest.py also 
 ruff check . && ruff format --check .
 ```
 
-The suite fails if anything tries to open a network connection, if `model/`
-imports Qt, or if a patient name or a recording date reaches the log file.
+The suite fails if anything tries to open a network connection (in the tests
+or in any child process), if `model/` imports Qt, if a patient name, a path or
+a recording date reaches the log file, or if technical jargon appears in the
+user interface (see [docs/ui-language.md](docs/ui-language.md)).
+
+Opening a recording runs in a short-lived helper process for now, because the
+mef3io library holds Python's GIL during an open
+([mef3io#79](https://github.com/bnelair/mef3io/issues/79)), which would freeze
+the window on a worker thread.
 
 ### Layout
 
@@ -173,14 +196,25 @@ packaging/      PyInstaller spec, Inno Setup script, dmg and AppImage scripts
 ### Build an installer locally
 
 ```bash
-pip install ".[build]"
+pip install --require-hashes -r requirements/build.lock && pip install --no-deps --no-build-isolation .
 pyinstaller --noconfirm --clean packaging/mef3io-studio.spec
+python packaging/check_bundle.py dist/mef3io-studio   # nothing that must not ship; licences present
 dist/mef3io-studio/mef3io-studio --self-test   # macOS: dist/mef3io-studio.app/Contents/MacOS/mef3io-studio
+# Linux release builds are made in AlmaLinux 9 (glibc 2.34) for compatibility:
+docker run --rm -v "$PWD":/src -w /src almalinux:9 packaging/linux/build-in-container.sh
 ```
 
-CI (`.github/workflows/build.yml`, run manually or on a `v*` tag) builds the
-Windows installer, the macOS `.dmg`s and the Linux AppImage, smoke-tests each
-with `--self-test`, and attaches them to a GitHub Release on tags.
+`.github/workflows/build.yml` builds the Windows installer, the macOS `.dmg`s
+and the Linux AppImage and tarball. It runs on every push to `main`, on pull
+requests that touch `src/`, `packaging/`, `requirements/`, the pins or
+`VERSION`, when started by hand (*Actions → Build installers → Run workflow*),
+and on `v*` tags. Each build is smoke-tested (`--self-test`, `--self-test-gui`,
+Windows install → upgrade → uninstall, the Linux tarball on five
+distributions, an strace check that no internet socket is opened). On tags the
+installers and `SHA256SUMS` are attached to a GitHub pre-release.
+
+Every bundle carries a `THIRD_PARTY_LICENSES` folder. Qt is used under the
+LGPL v3; Help → About says so and links to the licence texts and sources.
 
 ### Design
 

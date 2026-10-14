@@ -33,10 +33,10 @@ The future viewer will add [#68](https://github.com/bnelair/mef3io/issues/68)
 ## Technology
 
 - **Python 3.11+ with PySide6 (Qt 6).** mef3io already ships wheels for every platform the app targets, so the whole stack is one language with no bridge.
-- **Background work** runs on a worker thread pool (`QThreadPool`). Opening, inspecting and anonymizing never block the UI, and every long operation shows progress and can be cancelled.
+- **Background work** runs on a worker thread pool (`QThreadPool`). Opening, inspecting and anonymizing never block the UI, and every long operation shows progress and can be cancelled. Library calls that hold Python's GIL (a mef3io open today, [mef3io#79](https://github.com/bnelair/mef3io/issues/79)) run in a short-lived helper process instead, so the window keeps redrawing.
 - **Packaging:** PyInstaller (or Briefcase), built in a CI matrix for Windows x64, macOS arm64 + x86_64 and Linux x64. Code signing and notarization are needed on Windows and macOS, or clinical IT will block the app. Certificates: to be decided.
 - **Settings and preferences:** stored per user (`QSettings`). Never anything about a recording's contents.
-- **Logging:** a rotating local log file. A logging filter rejects records containing known identity fields or absolute timestamps, and a test enforces it.
+- **Logging:** a rotating local log file. A logging filter **redacts** (rather than drops) anything identifying in every record: registered identity strings (in any case, with or without accents or separators), paths, and absolute dates and times in any common form. Uncaught exceptions, Qt's messages and crash reports go through the same filter. A test enforces it.
 
 ## Packages (planned layout)
 

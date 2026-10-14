@@ -17,8 +17,10 @@ Hard rules:
   mef3io-server access are NEXT DIRECTIONS needing their own specs.
 
 Code (app shell, #2/#3):
-- Dev: `python -m venv .venv && pip install -e .[dev]`; `python -m pytest`
-  (offscreen); `ruff check . && ruff format --check .`. Installers:
+- Dev: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`
+  (Windows: `.venv\Scripts\activate`); `python -m pytest` (offscreen);
+  `ruff check . && ruff format --check .`. CI installs from the hashed
+  `requirements/*.lock` (regenerate with uv, see requirements/README.md). Installers:
   `packaging/mef3io-studio.spec` + `.github/workflows/build.yml`; every build
   must pass `mef3io-studio --self-test`. Not on PyPI, ever. Version = `VERSION`.
 - Long work goes through `workers.JobManager.submit(title, fn, ...)` — never on
@@ -26,6 +28,15 @@ Code (app shell, #2/#3):
   (throttled) and polls `ctx.check_cancelled()`. Titles shown to users carry
   no patient data.
 - Data access goes through `model.source.RecordingSource` (server source later).
+  `LocalRecordingSource.isolate = True` runs opens in a spawn helper process
+  until mef3io#79 releases the GIL (xfail test pins it); `freeze_support()` is
+  the first thing the launcher does.
+- UI text: everyday words only (docs/ui-language.md, enforced by
+  tests/test_ui_language.py); jargon only behind "Technical details".
+- Packaging: the spec DROPS network/kiosk Qt plugins, QtNetwork, GTK theme,
+  readline, libstdc++; `packaging/check_bundle.py` enforces it in CI, plus
+  THIRD_PARTY_LICENSES. Linux is built in AlmaLinux 9 (glibc 2.34 = PySide6
+  6.12's own floor).
 - Anything identifying the app learns → `common.privacy.register_identity()`.
   Never log paths or recording contents.
 - New preferences must be declared in `common/settings.PREFERENCES` (UI only).
