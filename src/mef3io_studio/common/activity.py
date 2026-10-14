@@ -17,7 +17,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -143,14 +143,17 @@ class ProgressDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
         if record is None or record.status.finished:
             return
-        rect = option.rect.adjusted(8, option.rect.height() - 9, -8, -4)
+        rect = option.rect.adjusted(8, option.rect.height() - 10, -8, -4)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # The track: a visible outline (>= 3:1, theme.border) around a soft fill.
         track = QPainterPath()
-        track.addRoundedRect(QRectF(rect), 2.5, 2.5)
-        painter.fillPath(
-            track, QColor(self.theme.surface_alt if not self.theme.dark else "#2a2f37")
-        )
+        track.addRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 2.5, 2.5)
+        painter.fillPath(track, QColor(self.theme.divider))
+        pen = QPen(QColor(self.theme.border))
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.drawPath(track)
         p = record.progress
         if p.determinate:
             chunk = QRectF(rect)
