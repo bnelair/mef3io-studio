@@ -16,7 +16,7 @@ class JobStatus(enum.Enum):
     RUNNING = "Running"
     SUCCEEDED = "Done"
     FAILED = "Failed"
-    CANCELLED = "Cancelled"
+    CANCELLED = "Stopped"
 
     @property
     def finished(self) -> bool:

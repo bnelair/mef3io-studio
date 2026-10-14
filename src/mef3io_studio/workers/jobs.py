@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -257,7 +258,10 @@ class JobManager(QObject):
         record = JobRecord(title=title)
         token = CancelToken()
         handle = JobHandle(record, token, self)
-        handle.changed.connect(lambda h=handle: self._on_changed(h))
+        # A bound slot, not a lambda capturing the handle: a closure over the
+        # handle, stored in its own C++ connection, is a cycle Python's GC
+        # cannot see, and every finished job would stay in memory forever.
+        handle.changed.connect(self._on_handle_changed)
         self.handles.append(handle)
         log.info("job %d queued", record.id)
         self.job_added.emit(handle)
@@ -273,6 +277,12 @@ class JobManager(QObject):
             handle.pull_progress()
         if not running:
             self._timer.stop()
+
+    @Slot()
+    def _on_handle_changed(self) -> None:
+        handle = self.sender()
+        if isinstance(handle, JobHandle):
+            self._on_changed(handle)
 
     def _on_changed(self, handle: JobHandle) -> None:
         self.job_changed.emit(handle)
@@ -295,10 +305,25 @@ class JobManager(QObject):
 
     @staticmethod
     def _release(handles: list[JobHandle]) -> None:
-        # Detach from the manager so the C++ object is freed together with
-        # its last Python reference (deleteLater on an object Python still
-        # wraps crashed PySide6 6.12 when the wrapper was later touched).
+        """Make finished handles collectable.
+
+        Every connection to a handle's signals is dropped (callers often
+        connect closures that capture the handle — a cycle through C++ that
+        Python's GC cannot see), the result is released, and the handle is
+        detached from the manager so its C++ object goes with its last Python
+        reference. (deleteLater on an object Python still wraps crashed
+        PySide6 6.12 when the wrapper was later touched.)
+        """
+        signals = ("progress", "succeeded", "failed", "cancelled", "finished", "changed")
         for handle in handles:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                for name in signals:
+                    try:
+                        getattr(handle, name).disconnect()
+                    except (RuntimeError, TypeError):
+                        pass
+            handle.result = None
             handle.setParent(None)
 
     def wait(self, timeout_ms: int = 5000) -> bool:

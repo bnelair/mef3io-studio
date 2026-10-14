@@ -12,6 +12,15 @@ from dataclasses import dataclass
 from .cancel import JobCancelled
 
 
+class HelperCrashed(RuntimeError):
+    """The helper process that reads a recording stopped without an answer
+    (a native crash such as a segmentation fault, or a forced exit)."""
+
+    def __init__(self, exitcode: int | None):
+        super().__init__(f"helper process ended unexpectedly (exit code {exitcode})")
+        self.exitcode = exitcode
+
+
 @dataclass(frozen=True)
 class UserMessage:
     title: str
@@ -51,6 +60,15 @@ def _describe(exc: BaseException) -> UserMessage:
             "Stopped",
             "The task was stopped before it finished. Your recordings were not changed, "
             "and anything it had started to write was removed.",
+            detail,
+        )
+
+    if isinstance(exc, HelperCrashed):
+        return UserMessage(
+            "The app stopped while reading this recording",
+            "The part of the app that reads the recording stopped unexpectedly. The "
+            'recording may be damaged. Nothing was changed. Use "Check for problems" '
+            "to look for damage, and keep a copy of the original.",
             detail,
         )
 

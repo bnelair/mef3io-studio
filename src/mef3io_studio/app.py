@@ -287,11 +287,10 @@ def _build_main_window_class():
 
         def run_self_check(self):
             handle = self.jobs.submit("Checking this installation", self_check)
+            record = handle.record  # captured instead of the handle: no cycle
 
             def done(result):
-                handle.record.result_text = (
-                    f"Works: wrote and read back {result.channel_count} channels"
-                )
+                record.result_text = f"Works: wrote and read back {result.channel_count} channels"
                 self.statusBar().showMessage("This installation works.", 5000)
 
             handle.succeeded.connect(done)
@@ -409,8 +408,11 @@ def _build_main_window_class():
 
         def _quit_now(self) -> None:
             """The user would rather not wait: leave immediately."""
+            from .workers.isolated import stop_all_helpers
+
             log.warning("quitting without waiting for tasks to stop")
             self.save_preferences()
+            stop_all_helpers()
             logging.shutdown()
             os._exit(0)
 
@@ -598,7 +600,10 @@ def self_test(report_path: str | None = None, gui: bool = False) -> int:
             window.deleteLater()
             app.processEvents()
         if not shown:
-            raise RuntimeError("the main window could not be shown")
+            raise RuntimeError(
+                "the main window could not be shown (a locked screen, or a computer "
+                "without a display, can cause this)"
+            )
         line = (
             f"mef3io-studio self-test OK: wrote and read {result.channel_count} channels "
             f"(app {app_version()}, mef3io {result.mef3io_version}, Qt {qt_version()}, "

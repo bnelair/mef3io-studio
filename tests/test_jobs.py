@@ -261,3 +261,117 @@ def test_activity_panel_lists_jobs(qtbot, jobs, phase):
     assert indicator.button.text() == "No tasks running"
     panel.clear_finished()
     assert panel.model.rowCount() == 0
+
+
+class _BigResult:
+    """A job result large enough that a leak would show (weakref-able)."""
+
+    def __init__(self):
+        self.data = bytearray(2_000_000)
+
+
+def test_finished_handles_and_results_are_freed(qtbot, jobs):
+    """Regression: a closure over the handle connected to its own signal is a
+    cycle through C++ the GC cannot see; clear_finished() must break it."""
+    import gc
+    import weakref
+
+    def work(ctx):
+        return _BigResult()
+
+    handle_refs, result_refs = [], []
+    for _round in range(3):
+        handles = [jobs.submit("t", work) for _ in range(25)]
+        for h in handles:
+            # the pattern app code naturally writes: a closure over the handle
+            h.succeeded.connect(lambda r, h=h: setattr(h.record, "result_text", "ok"))
+            handle_refs.append(weakref.ref(h))
+        qtbot.waitUntil(lambda hs=handles: all(h.is_finished for h in hs), timeout=20_000)
+        result_refs += [weakref.ref(h.result) for h in handles]
+        del handles, h
+        jobs.clear_finished()
+        qtbot.wait(20)
+        gc.collect()
+        alive = [r for r in handle_refs if r() is not None]
+        assert not alive, f"{len(alive)} handles still alive after round {_round}"
+        assert all(r() is None for r in result_refs), "job results still alive"
+
+
+def test_self_check_handle_is_freed(window, qtbot):
+    import gc
+    import weakref
+
+    handle = window.run_self_check()
+    ref = weakref.ref(handle)
+    with qtbot.waitSignal(handle.finished, timeout=60_000):
+        pass
+    del handle
+    window.jobs.clear_finished()
+    qtbot.wait(20)
+    gc.collect()
+    assert ref() is None
+
+
+@pytest.mark.parametrize("target", ["native_crash", "hard_exit"])
+def test_helper_crash_gets_a_specific_plain_message(target):
+    import helper_targets
+
+    from mef3io_studio.model.errors import HelperCrashed, describe_error
+    from mef3io_studio.workers.isolated import run_isolated
+
+    with pytest.raises(HelperCrashed) as info:
+        run_isolated(getattr(helper_targets, target))
+    message = describe_error(info.value)
+    assert message.title == "The app stopped while reading this recording"
+    assert "may be damaged" in message.text and "Nothing was changed" in message.text
+
+
+def test_successful_helper_is_not_terminated(monkeypatch):
+    import multiprocessing.context
+
+    import helper_targets
+
+    from mef3io_studio.workers.isolated import run_isolated
+
+    calls = []
+    real = multiprocessing.context.SpawnProcess.terminate
+
+    def spy(self):
+        calls.append(self)
+        return real(self)
+
+    monkeypatch.setattr(multiprocessing.context.SpawnProcess, "terminate", spy)
+    for _ in range(3):
+        assert run_isolated(helper_targets.answer) == 42
+    assert calls == [], "a helper that answered was terminated instead of exiting"
+
+
+def test_stop_all_helpers_leaves_no_orphans():
+    import multiprocessing
+    import threading
+
+    import helper_targets
+
+    from mef3io_studio.model.errors import HelperCrashed
+    from mef3io_studio.workers.isolated import run_isolated, stop_all_helpers
+
+    outcome = []
+
+    def run():
+        try:
+            run_isolated(helper_targets.sleep_then, 30)
+        except HelperCrashed as exc:
+            outcome.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 30
+    while not multiprocessing.active_children() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert multiprocessing.active_children()
+    start = time.monotonic()
+    stop_all_helpers()
+    thread.join(10)
+    assert time.monotonic() - start < 5
+    assert not multiprocessing.active_children()
+    assert outcome and isinstance(outcome[0], HelperCrashed)
