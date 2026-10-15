@@ -17,6 +17,7 @@ import pytest
 from explorer_sessions import (
     FIRST,
     LAST,
+    PASSWORD_BASIC,
     PATIENT_ID,
     SECOND,
     T0,
@@ -816,3 +817,14 @@ def test_the_warning_counts_details_the_way_the_table_does(page, qtbot, tmp_path
     page.export_times(LEVEL_RECORDINGS, path=str(tmp_path / "x.csv"))
     entry.busy = ""
     assert asked == [1, 0]
+    # Show chosen, opened with the basic password only: the description is
+    # still written, so the warning must count it.
+    locked = write_encrypted(tmp_path / "basic.mefd")
+    page.open_paths([str(locked)], interactive=False, password=PASSWORD_BASIC)
+    wait_loaded(qtbot, page, 2)
+    basic = next(e for e in page.entries() if e.name == "basic")
+    assert basic.details is not None and not basic.details.patient.names_available
+    basic.revealed = True
+    asked.clear()
+    page.export_times(LEVEL_RECORDINGS, [basic], path=str(tmp_path / "x.csv"))
+    assert asked == [1]

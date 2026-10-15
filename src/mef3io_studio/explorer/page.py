@@ -799,7 +799,8 @@ class ExplorerPage(QWidget):
             more += (
                 " You chose Show for the patient details of "
                 + ("this recording" if count == 1 else f"{revealed} of them")
-                + ", so those details are included too. The others read [hidden]."
+                + ", so those details are included too (names that need the full-access "
+                "password read locked). The others read [hidden]."
             )
         else:
             more += " Patient details are not included: they read [hidden]."
@@ -834,16 +835,11 @@ class ExplorerPage(QWidget):
         entries = self.timeline_entries() if entries is None else entries
         if not entries:
             return None
-        # Counted the way the table decides: details included only for a
-        # recording that is open (not being read again) with its patient
-        # details unlocked.
-        revealed = sum(
-            1
-            for e in entries
-            if e.revealed
-            and coverage_status(e) == STATUS_READY
-            and e.details.patient.names_available
-        )
+        # Counted the way the table decides: whatever Show reveals is
+        # written for a recording that is open (not being read again), even
+        # when only the basic password opened it (its description is then
+        # written; the names read "locked").
+        revealed = sum(1 for e in entries if e.revealed and coverage_status(e) == STATUS_READY)
         if not self.confirm_export(len(entries), revealed):
             return None
         if path is None:

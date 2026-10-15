@@ -522,3 +522,8 @@ def test_the_warning_names_the_pair_that_may_be_copies():
     text = overlap_text(layout)
     assert "d and e (10 s, may be copies)" in text
     assert text.count("may be copies)") == 1
+    assert "the others were probably made at the same time" in text
+    # Only copies: nothing about recordings made at the same time.
+    layout, _ = combine([item("d", d), item("e", copy)])
+    text = overlap_text(layout)
+    assert "may be copies" in text and "same time" not in text.split(".", 1)[1]
