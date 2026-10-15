@@ -786,8 +786,9 @@ class ExplorerPage(QWidget):
     # ------------------------------------------------------------------
     # Save times as a table
     # ------------------------------------------------------------------
-    def confirm_export(self, count: int, revealed: int) -> bool:
-        """The warning before a table with dates is written."""
+    def confirm_export(self, count: int, revealed: int, level: str = LEVEL_RECORDINGS) -> bool:
+        """The warning before a table with dates is written. ``revealed``:
+        how many rows will carry patient details (what Show revealed)."""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("The table will contain dates")
@@ -795,7 +796,9 @@ class ExplorerPage(QWidget):
         more = (
             f"It covers {_plural(count, 'recording')} and lists their names as the list shows them."
         )
-        if revealed:
+        if level == LEVEL_PARTS:
+            more += " This table has no patient details."
+        elif revealed:
             more += (
                 " You chose Show for the patient details of "
                 + ("this recording" if count == 1 else f"{revealed} of them")
@@ -835,22 +838,29 @@ class ExplorerPage(QWidget):
         entries = self.timeline_entries() if entries is None else entries
         if not entries:
             return None
-        # Counted the way the table decides: whatever Show reveals is
-        # written for a recording that is open (not being read again), even
-        # when only the basic password opened it (its description is then
-        # written; the names read "locked").
-        revealed = sum(1 for e in entries if e.revealed and coverage_status(e) == STATUS_READY)
-        if not self.confirm_export(len(entries), revealed):
-            return None
-        if path is None:
-            path = self.choose_export_path(level)
-            if not path:
-                return None
+        # What is saved is fixed NOW, before the dialogs: they let other
+        # events run (a re-read may finish meanwhile), and the warning must
+        # describe exactly the table that is written.
         labels = timeline_labels(entries)
         items = [
             ExportItem(coverage_input(e, labels.get(e.key, "")), file_name(e), e.revealed)
             for e in entries
         ]
+        # Counted the way the table decides: whatever Show reveals is
+        # written for a recording that is open, even when only the basic
+        # password opened it (its description is then written; the names
+        # read "locked"). The per-part table has no patient details.
+        revealed = (
+            0
+            if level == LEVEL_PARTS
+            else sum(1 for i in items if i.revealed and i.recording.details is not None)
+        )
+        if not self.confirm_export(len(items), revealed, level):
+            return None
+        if path is None:
+            path = self.choose_export_path(level)
+            if not path:
+                return None
         handle = self.jobs.submit(
             "Saving the times of recordings as a table", export_times, items, self.zone, level, path
         )

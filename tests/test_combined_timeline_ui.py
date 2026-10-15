@@ -294,13 +294,17 @@ def test_save_times_as_a_table(page, qtbot, tmp_path):
     page.open_paths([str(plain), str(locked)], interactive=False)
     wait_loaded(qtbot, page, 2)
     asked = []
-    page.confirm_export = lambda count, revealed: asked.append((count, revealed)) or False
+    page.confirm_export = lambda count, revealed, level=None: (
+        asked.append((count, revealed)) or False
+    )
     out = tmp_path / "out" / "times.csv"
     out.parent.mkdir()
     assert page.export_times(LEVEL_RECORDINGS, path=str(out)) is None
     assert asked == [(2, 0)] and not out.exists()  # refused: nothing written
 
-    page.confirm_export = lambda count, revealed: asked.append((count, revealed)) or True
+    page.confirm_export = lambda count, revealed, level=None: (
+        asked.append((count, revealed)) or True
+    )
     handle = page.export_times(LEVEL_RECORDINGS, path=str(out))
     with qtbot.waitSignal(handle.finished, timeout=30_000):
         pass
@@ -323,7 +327,7 @@ def test_save_times_as_a_table(page, qtbot, tmp_path):
     handle = page.export_times(LEVEL_PARTS, path=str(out))
     with qtbot.waitSignal(handle.finished, timeout=30_000):
         pass
-    assert asked[-1] == (2, 1)
+    assert asked[-1] == (2, 0)  # the per-part table has no patient details
     parts = _read_csv(out)
     assert len(parts) == 3 + 1  # three channels' parts, one row for the locked one
     assert parts[0]["start_site_time"] == "2000-01-01T01:00:00+01:00"
@@ -701,7 +705,7 @@ def test_saving_400_recordings_never_stalls_the_window(page, qtbot, tmp_path, le
     # enough for every CI run.)
     page.model.add(_synthetic(parts=50 if level == LEVEL_RECORDINGS else 20))
     page._refresh_body()
-    page.confirm_export = lambda count, revealed: True
+    page.confirm_export = lambda count, revealed, level=None: True
     _settle_garbage()
     ticks = []
     timer = QTimer()
@@ -811,7 +815,7 @@ def test_the_warning_counts_details_the_way_the_table_does(page, qtbot, tmp_path
     entry = page.entries()[0]
     entry.revealed = True
     asked = []
-    page.confirm_export = lambda count, revealed: asked.append(revealed) or False
+    page.confirm_export = lambda count, revealed, level=None: asked.append(revealed) or False
     page.export_times(LEVEL_RECORDINGS, path=str(tmp_path / "x.csv"))
     entry.busy = "Reading…"  # being read again: its row will have no details
     page.export_times(LEVEL_RECORDINGS, path=str(tmp_path / "x.csv"))
@@ -828,3 +832,42 @@ def test_the_warning_counts_details_the_way_the_table_does(page, qtbot, tmp_path
     asked.clear()
     page.export_times(LEVEL_RECORDINGS, [basic], path=str(tmp_path / "x.csv"))
     assert asked == [1]
+    # ...and that is what the table holds.
+    page.confirm_export = lambda count, revealed, level=None: True
+    out = tmp_path / "basic.csv"
+    handle = page.export_times(LEVEL_RECORDINGS, [basic], path=str(out))
+    with qtbot.waitSignal(handle.finished, timeout=30_000):
+        pass
+    row = _read_csv(out)[0]
+    assert row["patient_first_name"] == "locked" and row["patient_id"] == "locked"
+    # The per-part table has no patient details: nothing to count.
+    asked.clear()
+    page.confirm_export = lambda count, revealed, level=None: asked.append(revealed) or False
+    page.export_times(LEVEL_PARTS, [basic], path=str(tmp_path / "x.csv"))
+    assert asked == [0]
+
+
+def test_the_table_is_what_the_warning_described(page, qtbot, tmp_path):
+    """A re-read that finishes while the warning is open changes nothing:
+    the table is fixed before the warning is shown."""
+    path = write_encrypted(tmp_path / "late.mefd")
+    page.open_paths([str(path)], interactive=False, password=PASSWORD_BASIC)
+    wait_loaded(qtbot, page, 1)
+    entry = page.entries()[0]
+    entry.revealed = True
+    entry.busy = "Reading…"  # being opened again, e.g. with the full-access password
+    counted = []
+
+    def confirm(count, revealed, level=None):
+        counted.append(revealed)
+        entry.busy = ""  # the re-read finishes while the warning is open
+        return True
+
+    page.confirm_export = confirm
+    out = tmp_path / "late.csv"
+    handle = page.export_times(LEVEL_RECORDINGS, [entry], path=str(out))
+    with qtbot.waitSignal(handle.finished, timeout=30_000):
+        pass
+    row = _read_csv(out)[0]
+    assert counted == [0]
+    assert row["patient_first_name"] == "" and row["recording_description"] == ""
