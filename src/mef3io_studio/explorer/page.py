@@ -91,19 +91,62 @@ class _FitInner(QWidget):
     reports the minimum instead: the page fills the window and scrolls only
     when the window is shorter than that."""
 
+    def __init__(self, toolbar, body: QWidget, margins: tuple[int, int, int, int]):
+        super().__init__()
+        self._toolbar, self._body = toolbar, body
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*margins)
+        layout.addLayout(toolbar)
+        layout.addWidget(body, 1)
+
     def heightForWidth(self, width: int) -> int:  # noqa: N802
         layout = self.layout()
         margins = layout.contentsMargins()
-        toolbar = layout.itemAt(0).layout()
-        body = layout.itemAt(1).widget()
         inner_width = width - margins.left() - margins.right()
         return (
             margins.top()
             + margins.bottom()
-            + toolbar.heightForWidth(inner_width)
+            + self._toolbar.heightForWidth(inner_width)
             + layout.spacing()
-            + body.minimumSizeHint().height()
+            + self._body.minimumSizeHint().height()
         )
+
+
+class _ListBox(QWidget):
+    """The recordings list and its row of buttons. The buttons wrap onto
+    more lines when narrow, so the minimum height depends on the width:
+    reported here, so the splitter never squeezes the wrapped row away."""
+
+    def __init__(self, table: QTableView, actions, parent=None):
+        super().__init__(parent)
+        self._table, self._actions = table, actions
+        self._wrapped = -1
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(table, 1)
+        layout.addLayout(actions)
+        # At least a few rows of the list, so a short window scrolls the
+        # page rather than showing a header with no rows.
+        rows = table.verticalHeader().defaultSectionSize()
+        table.setMinimumHeight(table.horizontalHeader().sizeHint().height() + rows * 3 + 4)
+
+    def _actions_height(self) -> int:
+        width = self.width() if self.width() > 0 else self.sizeHint().width()
+        return self._actions.heightForWidth(width)
+
+    def minimumSizeHint(self):  # noqa: N802
+        hint = super().minimumSizeHint()
+        hint.setHeight(
+            self._table.minimumHeight() + self.layout().spacing() + self._actions_height()
+        )
+        return hint
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        wrapped = self._actions_height()
+        if wrapped != self._wrapped:
+            self._wrapped = wrapped
+            self.updateGeometry()  # the splitter and the page re-read the minimum
 
 
 class DropZone(QFrame):
@@ -309,11 +352,8 @@ class ExplorerPage(QWidget):
         actions.addWidget(self.pack_button)
         actions.addWidget(self.remove_button)
 
-        list_box = QWidget(self)
-        list_layout = QVBoxLayout(list_box)
-        list_layout.setContentsMargins(0, 0, 0, 0)
-        list_layout.addWidget(self.table, 1)
-        list_layout.addLayout(actions)
+        list_box = _ListBox(self.table, actions, self)
+        self.list_box = list_box
 
         # -- the detail panel -----------------------------------------------------
         self.detail_heading = QLabel("", self)
@@ -376,11 +416,7 @@ class ExplorerPage(QWidget):
         # large text) the page scrolls instead of forcing the window, and
         # the sidebar next to it, to change size. Platforms measure widgets
         # differently, so no single minimum width can be relied on.
-        inner = _FitInner()
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(int(em), int(em * 0.8), int(em), int(em * 0.6))
-        layout.addLayout(toolbar)
-        layout.addWidget(self.body, 1)
+        inner = _FitInner(toolbar, self.body, (int(em), int(em * 0.8), int(em), int(em * 0.6)))
         self.scroll = QScrollArea(self)
         self.scroll.setObjectName("Panel")
         self.scroll.setWidgetResizable(True)

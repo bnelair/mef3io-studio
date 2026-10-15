@@ -521,3 +521,34 @@ def test_page_fills_the_window_without_scrolling(window, qtbot, tmp_path, size):
     qtbot.wait(100)
     assert page.tabs.height() + page.table.height() > before
     assert not page.scroll.verticalScrollBar().isVisible()
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_list_buttons_are_never_cut_off(qapp, qtbot, settings, tmp_path, scale):
+    """Regression (review round 6): when the list's buttons wrap onto more
+    lines, the list keeps room for them at every window size."""
+    from mef3io_studio.app import build_main_window
+
+    font = qapp.font()
+    bigger = qapp.font()
+    bigger.setPointSizeF(font.pointSizeF() * scale)
+    qapp.setFont(bigger)
+    try:
+        win = build_main_window(qapp, settings)
+        qtbot.addWidget(win)
+        win._closing = True
+        win.show()
+        win.activity_dock.show()
+        page = win.explorer
+        page.open_paths([str(write_plain(tmp_path / "b.mefd", notes=False))], interactive=False)
+        wait_loaded(qtbot, page, 1)
+        page.select_entry(page.entries()[0])
+        for size in ((1280, 800), (1000, 600), (800, 442), (1400, 900)):
+            win.resize(*size)
+            qtbot.wait(80)
+            for button in (page.remove_button, page.check_selected_button, page.pack_button):
+                bottom = button.mapTo(page.list_box, button.rect().bottomLeft()).y()
+                assert bottom < page.list_box.height(), (size, button.text())
+        win.jobs.dispose()
+    finally:
+        qapp.setFont(font)
