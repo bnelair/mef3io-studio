@@ -132,6 +132,28 @@ def test_caller_mistakes_raise():
         plan_shifts([a], ShiftSettings(reference_id="nope"))
     with pytest.raises(ValueError):
         plan_shifts([a], ShiftSettings(time_of_day=TimeOfDay.SET, new_time=time(1, tzinfo=UTC)))
+    for bad in (datetime(2000, 1, 1), "2000-01-01"):
+        with pytest.raises(ValueError):
+            plan_shifts([a], ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC, new_date=bad))
+
+
+def test_any_integer_type_is_accepted_as_a_time():
+    class NumpyLikeInt:  # what operator.index accepts, like numpy.int64
+        def __init__(self, v):
+            self.v = v
+
+        def __index__(self):
+            return self.v
+
+    start = utc(2021, 1, 1, 1)
+    odd = RecordingTimes("a", NumpyLikeInt(start), NumpyLikeInt(start + HOUR))
+    plan = plan_shifts([odd], ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC))
+    assert plan.runnable
+    assert type(plan.by_id["a"].start_us) is int
+    assert to_utc(plan.by_id["a"].new_start_us) == datetime(2000, 1, 1, 1, tzinfo=UTC)
+    for bad in (True, 1.5e15, "1"):
+        plan = plan_shifts([RecordingTimes("b", bad, start)], ShiftSettings(time_of_day="keep_utc"))
+        assert plan.blocked[0].reasons == (Blocker.TIMES_INVALID,)
 
 
 def test_settings_accept_plain_strings_for_the_choices():
@@ -725,6 +747,11 @@ def test_clock_changes_and_settings_hide_their_details_in_repr():
     for value in (c.after_us, c.offset_before_us, c.offset_after_us, plan.new_date.isoformat()):
         assert str(value) not in text
     assert "Chicago" not in text
+    # Other-season details hint at the season and a start near midnight.
+    zone = "Europe/Prague"
+    recs = [rec("ref", local(zone, 2021, 1, 11, 12)), rec("s", local(zone, 2021, 7, 15, 0, 30))]
+    text = repr(plan_shifts(recs, keep_local(zone)).warnings)
+    assert "time_of_day_off_us" not in text and "day_shift" not in text
 
 
 def test_the_planner_module_logs_nothing_and_imports_no_mef3io():

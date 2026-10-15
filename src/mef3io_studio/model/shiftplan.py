@@ -61,10 +61,11 @@ Plain Python, no Qt.
 from __future__ import annotations
 
 import enum
+import operator
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
-from functools import cache, cached_property
+from functools import cache, cached_property, lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from .recording import ACCESS_BASIC, RecordingDetails
@@ -237,11 +238,11 @@ class PlanWarning:
     #: OTHER_SEASON: how far the copy's time of day is from the wall clock at
     #: the original start (copy minus wall clock; reference offset minus this
     #: recording's).
-    time_of_day_off_us: int = 0
+    time_of_day_off_us: int = field(default=0, repr=False)
     #: OTHER_SEASON: the copy's date minus the date it would show with the
     #: wall-clock time of day kept, in whole days: normally -1, 0 or +1 (more
     #: after a zone's rule change). Non-zero = the date and weekday flip.
-    day_shift: int = 0
+    day_shift: int = field(default=0, repr=False)
 
     @property
     def weekday_flips(self) -> bool:
@@ -376,7 +377,14 @@ def _known_zones() -> frozenset[str]:
 
 
 def clock_changes(start_us: int, end_us: int, zone: tzinfo) -> tuple[ClockChange, ...]:
-    """Every change of the UTC offset in ``zone`` within (start, end]."""
+    """Every change of the UTC offset in ``zone`` within (start, end].
+    Cached: it depends only on the originals and the zone, not on the
+    settings a wizard changes."""
+    return _clock_changes(start_us, end_us, zone)
+
+
+@lru_cache(maxsize=4096)
+def _clock_changes(start_us: int, end_us: int, zone: tzinfo) -> tuple[ClockChange, ...]:
     changes = []
     t, offset = start_us, _offset_us(start_us, zone)
     while t < end_us:
@@ -395,23 +403,29 @@ def clock_changes(start_us: int, end_us: int, zone: tzinfo) -> tuple[ClockChange
     return tuple(changes)
 
 
-def _blockers(rec: RecordingTimes) -> tuple[Blocker, ...]:
+def _as_int(value) -> int | None:
+    """Any integer type (numpy's too) as a Python int; None otherwise."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return operator.index(value)
+    except TypeError:
+        return None
+
+
+def _checked(rec: RecordingTimes) -> tuple[RecordingTimes, tuple[Blocker, ...]]:
+    """The recording with plain-int times, and why it cannot be planned."""
     out = []
     if rec.locked:
         out.append(Blocker.LOCKED)
     if not rec.times_verified:
         out.append(Blocker.TIMES_UNVERIFIED)
-    s, e = rec.start_us, rec.end_us
-    if (
-        not isinstance(s, int)
-        or not isinstance(e, int)
-        or isinstance(s, bool)
-        or isinstance(e, bool)
-        or not (0 < s <= e <= MAX_TIME_US)
-        or e - s > MAX_DURATION_US
-    ):
+    s, e = _as_int(rec.start_us), _as_int(rec.end_us)
+    if s is None or e is None or not (0 < s <= e <= MAX_TIME_US) or e - s > MAX_DURATION_US:
         out.append(Blocker.TIMES_INVALID)
-    return tuple(out)
+    else:
+        rec = replace(rec, start_us=s, end_us=e)
+    return rec, tuple(out)
 
 
 # --------------------------------------------------------------------------
@@ -439,7 +453,7 @@ def plan_shifts(
     blocked: list[BlockedRecording] = []
     plannable: list[RecordingTimes] = []
     for r in recs:
-        reasons = _blockers(r)
+        r, reasons = _checked(r)
         if reasons:
             blocked.append(BlockedRecording(r.id, reasons))
         else:
@@ -448,6 +462,8 @@ def plan_shifts(
 
     zone, zone_ok = _resolve_zone(settings.site_zone)
     pre: list[Refusal] = []
+    if isinstance(settings.new_date, datetime) or not isinstance(settings.new_date, date):
+        raise ValueError("new_date must be a datetime.date")
     if not FIRST_NEW_DATE <= settings.new_date <= LAST_NEW_DATE:
         pre.append(Refusal(RefusalCode.NEW_DATE_OUT_OF_RANGE))
     if not zone_ok:
