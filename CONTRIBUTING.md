@@ -1,10 +1,10 @@
 # Contributing to mef3io-studio
 
 Thanks for your interest. mef3io-studio is the desktop app on top of the
-[mef3io](https://github.com/bnelair/mef3io) library. **The project is in
-planning:** the design lives in [`docs/`](docs/) and the work in
+[mef3io](https://github.com/bnelair/mef3io) library. **The project is in early
+development:** the design lives in [`docs/`](docs/) and the work in
 [issues](https://github.com/bnelair/mef3io-studio/issues). Comments on the
-design are the most useful contribution right now.
+design are among the most useful contributions right now.
 
 ## The one rule
 
@@ -16,11 +16,12 @@ available to scripts too. See [docs/architecture.md](docs/architecture.md).
 
 ## Ways to help
 
+- **Try a test version** from the [Releases page](https://github.com/bnelair/mef3io-studio/releases) and report what is unclear or broken.
 - **Comment on the design:** the [roadmap](docs/roadmap.md) and the [design notes](docs/design/).
 - **Report a bug** or **request a feature** via issues; please use the templates.
-- **Send a pull request** once there is code (see below).
+- **Send a pull request** (see below).
 
-## Pull requests (once development starts)
+## Pull requests
 
 - Branch from `main` and open the PR against `main`.
 - Keep the batch-planning logic in `model/` free of Qt, so it can be unit-tested without a GUI.
