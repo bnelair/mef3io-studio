@@ -43,6 +43,7 @@ DISTRIBUTIONS = [
     "platformdirs",
     "PySide6-Essentials",
     "shiboken6",
+    "tzdata",
     "pyinstaller",
 ]
 
