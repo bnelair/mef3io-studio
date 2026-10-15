@@ -139,10 +139,9 @@ class StatusView(QWidget):
         self.unlock.clicked.connect(self.unlock_requested)
         self.check = QPushButton("Check for problems", self)
         self.check.clicked.connect(self.check_requested)
-        buttons = QHBoxLayout()
+        buttons = FlowLayout()
         buttons.addWidget(self.unlock)
         buttons.addWidget(self.check)
-        buttons.addStretch(1)
         self.details_slot = QVBoxLayout()
         layout = QVBoxLayout(self)
         layout.addWidget(self.heading)
@@ -231,14 +230,15 @@ class ExplorerPage(QWidget):
         self.zone_button = QToolButton(self)
         self.zone_button.setText("Change…")
         self.zone_button.setToolTip("Choose the time zone the times are shown in")
+        # The caption takes the free room and is cut short rather than make
+        # the window wider (laptops, large text).
+        self.zone_caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.zone_caption.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         toolbar = QHBoxLayout()
         toolbar.addWidget(self.open_button)
         toolbar.addWidget(self.scan_button)
-        toolbar.addStretch(1)
-        zone_row = QHBoxLayout()
-        zone_row.addWidget(self.zone_caption, 1)
-        zone_row.addWidget(self.zone_button)
-        toolbar.addLayout(zone_row)
+        toolbar.addWidget(self.zone_caption, 1)
+        toolbar.addWidget(self.zone_button)
 
         # -- the list ------------------------------------------------------------
         self.model = RecordingTableModel(self)
@@ -378,9 +378,9 @@ class ExplorerPage(QWidget):
     def set_zone(self, zone: tzinfo) -> None:
         self.zone = zone
         label = zone_label(zone)
-        self.zone_caption.setText(
-            "Times are shown in UTC" if label == "UTC" else f"Times are shown in {label} time"
-        )
+        caption = "Times are shown in UTC" if label == "UTC" else f"Times are shown in {label} time"
+        self.zone_caption.setText(caption)
+        self.zone_caption.setToolTip(caption)
         self.model.set_zone(zone)
         self._fit_columns()
         self._show_current()
