@@ -80,3 +80,10 @@ Code (app shell, #2/#3):
   note text are masked until "Show" per recording; Copy summary also hides
   names and dates. RTO != 0 = deprecated date masking: warn, never call it
   anonymized.
+- Anonymizer (#5): `model/shiftplan.py` is the time-shift PLANNER (step 2),
+  pure data in/out: `plan_shifts([RecordingTimes], ShiftSettings) ->
+  ShiftPlan` with per-recording `shift_us`, warnings/blockers/refusals as
+  enum CODES (words belong to the UI). It never imports mef3io or logging;
+  original times and shifts are `repr=False` (the shift re-identifies).
+  Recordings with unverified times (rto != 0 or unknown) or no full-access
+  password are BLOCKED, not planned. Running the copy is mef3io#70's job.
