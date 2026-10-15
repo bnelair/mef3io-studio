@@ -12,10 +12,11 @@ from __future__ import annotations
 import logging
 import time
 
+from ..common.privacy import register_identity
 from ..model import archive
 from ..model.errors import HelperCrashed, describe_error
 from ..model.problems import CheckReport
-from ..model.recording import InspectOutcome, location_key
+from ..model.recording import InspectOutcome, location_key, recording_name
 from ..model.scan import ScanResult, find_recordings
 from ..model.source import RecordingSource, RecordingSummary
 from ..selftest import SelfTestResult, run_self_test
@@ -53,8 +54,16 @@ def _inspect(ctx: JobContext, source: RecordingSource, requests: list[tuple[str,
     delivered: list[str] = []
     phase = "Reading recording details"
     ctx.report(0, total, phase)
+    # The log filter learns names and passwords here, on this worker thread:
+    # registering rebuilds the filter's pattern, which must never stall the
+    # window.
+    for location, password in requests:
+        register_identity(recording_name(location), password)
 
     def got(outcome: InspectOutcome) -> None:
+        register_identity(outcome.name)
+        if outcome.details is not None:
+            register_identity(*outcome.details.identity_values())
         delivered.append(outcome.location)
         ctx.publish(outcome)
         ctx.report(len(delivered), total, phase)
@@ -63,15 +72,25 @@ def _inspect(ctx: JobContext, source: RecordingSource, requests: list[tuple[str,
         return 0
     if source.isolate:
         remaining = list(requests)
+        empty_crashes = 0
         while remaining:
             try:
                 ctx.run_isolated(source.inspect_many, remaining, on_message=got)
                 break
             except HelperCrashed as exc:
                 done = len(delivered) - (total - len(remaining))
+                if done >= len(remaining):
+                    break  # every answer arrived; it stopped while exiting
+                empty_crashes = empty_crashes + 1 if done == 0 else 0
                 crashed, remaining = remaining[done], remaining[done + 1 :]
                 log.warning("job %d: the helper stopped on one recording", ctx.job_id)
                 got(InspectOutcome(crashed[0], error=describe_error(exc)))
+                if empty_crashes >= 2:
+                    # Helpers die before reading anything: the installation,
+                    # not the recordings. Don't start one per recording.
+                    for location, _password in remaining:
+                        got(InspectOutcome(location, error=describe_error(exc)))
+                    break
     else:
         for request in requests:
             ctx.check_cancelled()

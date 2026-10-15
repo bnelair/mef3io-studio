@@ -396,3 +396,37 @@ def test_scan_of_something_that_is_not_a_folder(tmp_path):
     with pytest.raises(NotAFolder) as info:
         find_recordings(str(stray))
     assert describe_error(info.value).title == "This is not a recording"
+
+
+def test_pack_without_links_never_replaces(tmp_path, monkeypatch):
+    src = write_plain(tmp_path / "rec.mefd", notes=False)
+    for taken in (False, True):
+        out = tmp_path / f"o{taken}"
+        out.mkdir()
+        plan = archive.plan(str(src), str(out))
+        archive.run_in_helper(plan)
+
+        def no_links(*_args):
+            raise PermissionError("no links here")
+
+        monkeypatch.setattr(os, "link", no_links)
+        if taken:
+            (out / "rec.mefd.tar").write_text("appeared meanwhile")
+            with pytest.raises(archive.TargetExists):
+                archive.finish(plan)
+            assert (out / "rec.mefd.tar").read_text() == "appeared meanwhile"
+        else:
+            assert archive.finish(plan).endswith("rec.mefd.tar")
+            assert inspect_recording(str(out / "rec.mefd.tar")).details is not None
+        monkeypatch.undo()
+
+
+def test_inside_recording_check_ignores_case_and_follows_links(tmp_path):
+    src = write_plain(tmp_path / "rec.mefd", notes=False)
+    upper = tmp_path / "OTHER.MEFD" / "sub"
+    upper.mkdir(parents=True)
+    link = tmp_path / "shortcut"
+    link.symlink_to(src)
+    for destination in (upper, link):
+        with pytest.raises(archive.InsideRecording):
+            archive.plan(str(src), str(destination))

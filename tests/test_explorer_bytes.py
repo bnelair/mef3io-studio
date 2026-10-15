@@ -50,9 +50,10 @@ def test_inspecting_reads_under_one_percent(large, kind):
     )
     assert (channels, parts) == (2, 2)
     assert read < BUDGET * total, f"read {read} bytes of {total} ({100 * read / total:.2f}%)"
-    # An absolute bound too: the details files (16 kB per part) plus small
-    # notes files and, for a single file, its table of contents. Reading the
-    # block table as well (toc) would exceed it.
+    # A loose absolute bound too: the details files (16 kB per part) plus
+    # small notes files and, for a single file, its table of contents. On this
+    # fixture the block table is too small for the bound to catch a toc() read;
+    # the guard in helper_targets.measure_inspect is what pins that exactly.
     details = channels * parts * 16_384
     assert read < 3 * details + 200_000, read
 

@@ -103,9 +103,9 @@ def test_details_tabs_and_masking(page, qtbot, tmp_path):
     # Masked by default: patient details and the text of notes.
     assert page.patient.values["First name"] == HIDDEN
     assert page.patient.values["Patient ID"] == HIDDEN
-    texts = [page.notes.table.item(r, 3).text() for r in range(page.notes.table.rowCount())]
+    texts = [page.notes.table.text(r, 3) for r in range(page.notes.table.rowCount())]
     assert texts and set(texts) == {HIDDEN}
-    where = {page.notes.table.item(r, 1).text() for r in range(page.notes.table.rowCount())}
+    where = {page.notes.table.text(r, 1) for r in range(page.notes.table.rowCount())}
     assert where == {"Whole recording", "a1", "a1, part 1"}
     assert not any(FIRST in v or PATIENT_ID in v for v in page.overview.values.values())
 
@@ -120,7 +120,7 @@ def test_details_tabs_and_masking(page, qtbot, tmp_path):
     page.patient.button.click()
     assert entry.revealed
     assert page.patient.values["First name"] == FIRST
-    assert page.notes.table.item(0, 3).text() != HIDDEN
+    assert page.notes.table.text(0, 3) != HIDDEN
     asked = []
     page.confirm_copy_with_details = lambda n: asked.append(n) or False
     QGuiApplication.clipboard().setText("before")
@@ -400,6 +400,10 @@ def test_pack_of_a_password_protected_recording(page, qtbot, tmp_path):
         pass
     assert handle.record.status is JobStatus.SUCCEEDED, handle.error
     assert (out / "locked.mefd.tar").is_file()
+    # The new copy is opened with the same password, not shown locked.
+    wait_loaded(qtbot, page, 2)
+    copy = next(e for e in page.entries() if e.outcome.packed)
+    assert copy.details is not None and not copy.needs_password
 
 
 def test_a_helper_crash_costs_only_that_recording(page, qtbot, tmp_path):
@@ -426,3 +430,37 @@ def test_an_older_task_cannot_remove_a_reopened_recording(page, qtbot, tmp_path)
     qtbot.wait(200)
     assert [e.name for e in page.entries()] == ["x"]
     assert page.entries()[0].details is not None
+
+
+def test_many_notes_never_stall_the_window(page, qtbot, tmp_path):
+    """Regression (review round 2): what the log filter learns is registered
+    on the task's thread, and note text is not registered at all."""
+    import time
+
+    from PySide6.QtCore import QTimer
+
+    path = write_plain(tmp_path / "busy.mefd", notes=False)
+    with mef3io.Writer(str(path)) as w:
+        w.write_annotations([{"time": T0 + i * 10_000, "text": f"event {i}"} for i in range(800)])
+    ticks = []
+    timer = QTimer()
+    timer.setInterval(20)
+    timer.timeout.connect(lambda: ticks.append(time.monotonic()))
+    timer.start()
+    page.open_paths([str(path)], interactive=False)
+    wait_loaded(qtbot, page, 1)
+    page.select_entry(page.entries()[0])
+    qtbot.wait(100)
+    timer.stop()
+    assert len(page.entries()[0].details.notes) == 800
+    gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
+    assert gaps and max(gaps) < 0.5, max(gaps)
+
+
+def test_summaries_of_several_hidden_recordings_are_numbered(page, qtbot, tmp_path):
+    paths = [write_plain(tmp_path / f"{n}.mefd", notes=False) for n in ("p", "q")]
+    page.open_paths([str(p) for p in paths], interactive=False)
+    wait_loaded(qtbot, page, 2)
+    text = page.summary_text(page.entries(), "text")
+    assert "Item: 1 of 2" in text and "Item: 2 of 2" in text
+    assert "Item" not in page.summary_text(page.entries()[:1], "text")

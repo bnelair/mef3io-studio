@@ -328,3 +328,28 @@ def test_log_file_never_contains_identity_paths_or_dates(qtbot, jobs, tmp_path):
         assert form not in text, form
     assert str(tmp_path) not in text
     assert "2019" not in text
+
+
+def test_hidden_characters_do_not_split_an_identity():
+    from mef3io_studio.common.privacy import IdentityRegistry
+
+    registry = IdentityRegistry()
+    registry.register("Smith", "Müller")
+    for text in ("Sm­ith", "Sm​ith", "Müller", "MU‍LLER"):
+        assert registry.redact(f"x {text} y") == "x [redacted] y", text
+
+
+def test_registering_many_identities_stays_cheap():
+    """Each value is compiled once, on its own: the cost per registration
+    must not grow with how many are already known (it holds the GIL)."""
+    import time
+
+    from mef3io_studio.common.privacy import IdentityRegistry
+
+    registry = IdentityRegistry()
+    for i in range(1000):
+        registry.register(f"Person Number {i} Example")
+    start = time.perf_counter()
+    registry.register("One More Person Name")
+    assert time.perf_counter() - start < 0.05
+    assert registry.redact("One More Person Name") == "[redacted]"

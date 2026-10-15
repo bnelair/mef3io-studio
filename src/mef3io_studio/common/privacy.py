@@ -153,36 +153,52 @@ def _path_sub(match: re.Match) -> str:
     return PATH + trailing
 
 
-_COMBINING = "[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f]*"
-
-
 def _strip_accents(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c))
 
 
 def _identity_pattern(value: str) -> str:
     """Regex for ``value`` matching any case, accents and separators. Applied
-    to NFD-normalised text, so every base letter may carry combining marks."""
+    to the skeleton of NFD-normalised text (see :func:`_skeleton`)."""
     base = _strip_accents(unicodedata.normalize("NFKC", value)).casefold()
     parts = [p for p in re.split(r"[\W_]+", base) if p]
-    pieces = []
-    for part in parts:
-        pieces.append("".join(re.escape(c) + _COMBINING for c in part))
-    return r"[\W_]*".join(pieces)
+    return r"[\W_]*".join(re.escape(part) for part in parts)
+
+
+def _skeleton(text: str) -> tuple[str, list[int]]:
+    """``text`` without combining marks and invisible format characters
+    (zero-width spaces, soft hyphens), plus where each kept character sits in
+    ``text``. Identities are matched on the skeleton, so accents and hidden
+    characters can't split a name, and their pattern stays small (cheap to
+    compile)."""
+    kept, where = [], []
+    for i, ch in enumerate(text):
+        if unicodedata.combining(ch) or unicodedata.category(ch) == "Cf":
+            continue
+        kept.append(ch)
+        where.append(i)
+    return "".join(kept), where
 
 
 class IdentityRegistry:
-    """A thread-safe set of strings that must never be logged."""
+    """A thread-safe set of strings that must never be logged.
+
+    Each value is compiled once, on its own, when it is registered (cost
+    independent of how many are already known); a log line is checked
+    against each. One combined pattern would have to be recompiled on every
+    registration, which grows with every recording opened and, since
+    compiling holds the GIL, would stall the window.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._keys: set[str] = set()
-        self._patterns: list[str] = []
-        self._regex: re.Pattern[str] | None = None
+        #: (pattern length, compiled), longest first so the longest match wins.
+        self._regexes: list[tuple[int, re.Pattern[str]]] = []
 
     def register(self, *values: object) -> None:
+        new = []
         with self._lock:
-            added = False
             for value in values:
                 text = str(value).strip() if value is not None else ""
                 key = _strip_accents(unicodedata.normalize("NFKC", text)).casefold()
@@ -191,24 +207,50 @@ class IdentityRegistry:
                 if len(re.sub(r"[\W_]+", "", key)) < 2 or key in self._keys:
                     continue
                 self._keys.add(key)
-                self._patterns.append(_identity_pattern(text))
-                added = True
-            if added:
-                ordered = sorted(self._patterns, key=len, reverse=True)
-                self._regex = re.compile("|".join(ordered), re.IGNORECASE)
+                new.append(text)
+        compiled = []
+        for text in new:  # compiled outside the lock
+            pattern = _identity_pattern(text)
+            compiled.append((len(pattern), re.compile(pattern, re.IGNORECASE)))
+        if compiled:
+            with self._lock:
+                regexes = self._regexes + compiled
+                regexes.sort(key=lambda item: -item[0])
+                self._regexes = regexes
 
     def clear(self) -> None:
         with self._lock:
             self._keys.clear()
-            self._patterns.clear()
-            self._regex = None
+            self._regexes = []
 
     def redact(self, text: str) -> str:
-        regex = self._regex
-        if regex is None:
+        regexes = self._regexes
+        if not regexes:
             return text
         decomposed = unicodedata.normalize("NFD", unicodedata.normalize("NFKC", text))
-        return unicodedata.normalize("NFC", regex.sub(REDACTED, decomposed))
+        base, where = _skeleton(decomposed)
+        spans = []
+        for _length, regex in regexes:
+            for m in regex.finditer(base):
+                if m.end() > m.start():
+                    end = where[m.end()] if m.end() < len(where) else len(decomposed)
+                    spans.append((where[m.start()], end))
+        if not spans:
+            return text
+        spans.sort()
+        merged = [list(spans[0])]
+        for start, end in spans[1:]:
+            if start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        out, pos = [], 0
+        for start, end in merged:
+            out.append(decomposed[pos:start])
+            out.append(REDACTED)
+            pos = end
+        out.append(decomposed[pos:])
+        return unicodedata.normalize("NFC", "".join(out))
 
 
 #: The app-wide registry the log filter consults.

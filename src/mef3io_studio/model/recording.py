@@ -310,8 +310,10 @@ class RecordingDetails:
         """Every identifying string this recording holds, for the log filter."""
         values = [self.name, *self.patient.values()]
         values += [c.description for c in self.channels if c.description]
-        # Note text is masked in the UI and never logged; registered anyway.
-        values += [n.text for n in self.notes if n.text]
+        # Note text is NOT registered: it is masked in the UI and never
+        # logged, and a recording can hold thousands of notes, which would
+        # make the log filter's pattern huge (and short texts like "ok"
+        # would redact inside unrelated words).
         first, last = self.patient.first_name, self.patient.last_name
         if first and last:
             # The log filter matches "First Last"; register the other order too.

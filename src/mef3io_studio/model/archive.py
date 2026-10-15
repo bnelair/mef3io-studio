@@ -62,10 +62,12 @@ def plan(source: str, destination_folder: str) -> ArchivePlan:
     writes. Raises :class:`TargetExists` if the result's name is taken."""
     source = os.path.normpath(os.path.abspath(os.fspath(source)))
     destination = os.path.normpath(os.path.abspath(os.fspath(destination_folder)))
-    inside_source = os.path.normcase(destination + os.sep).startswith(
-        os.path.normcase(source + os.sep)
-    )
-    parts = os.path.normcase(destination).split(os.sep)
+    # Case-insensitive like the suffix rule (REC.MEFD is a recording too),
+    # and through links, so a shortcut into a recording is caught.
+    real_source = os.path.realpath(source).lower()
+    real_destination = os.path.realpath(destination).lower()
+    inside_source = (real_destination + os.sep).startswith(real_source + os.sep)
+    parts = [*real_destination.split(os.sep), *destination.lower().split(os.sep)]
     if inside_source or any(p.endswith(".mefd") for p in parts):
         raise InsideRecording("the destination is inside a recording")
     destination_folder = destination

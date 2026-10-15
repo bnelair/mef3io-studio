@@ -48,7 +48,6 @@ from ..common.activity import JobProgressWidget
 from ..common.dialogs import MessageDialog, TechnicalDetails
 from ..common.flow import FlowLayout
 from ..common.pages import scaled_font
-from ..common.privacy import register_identity
 from ..common.theme import LIGHT, Theme
 from ..model.errors import UserMessage
 from ..model.recording import InspectOutcome, is_recording_location, location_key
@@ -490,7 +489,7 @@ class ExplorerPage(QWidget):
         if folder:
             self.scan_folder(folder)
 
-    def open_paths(self, paths: list[str], interactive: bool = True):
+    def open_paths(self, paths: list[str], interactive: bool = True, password: str = ""):
         """Open recordings. Anything that is not named like a recording is
         handed to a scan (in the background: even checking whether a path is
         a folder can hang on a disconnected drive), which looks inside a
@@ -514,8 +513,9 @@ class ExplorerPage(QWidget):
                 if len(recordings) == 1:
                     self.select_entry(existing)
                 continue
-            entry = RecordingEntry(location=os.path.abspath(path), busy="Reading…")
-            register_identity(entry.name)
+            entry = RecordingEntry(
+                location=os.path.abspath(path), busy="Reading…", password=password
+            )
             new.append(entry)
         if not new:
             return None
@@ -560,17 +560,20 @@ class ExplorerPage(QWidget):
 
     def _open_finished(self, keys: list[str], job: int) -> None:
         # Recordings the task never answered for (it was stopped or failed).
+        changed = False
         for key in keys:
             entry = self.model.entry_for(key)
             if entry is not None and entry.open_job == job:
+                changed = True
                 entry.open_job = None
                 entry.busy = ""
                 if entry.outcome is None:
                     self.model.remove([entry])
                 else:
                     self._entry_changed(entry)
-        self._refresh_body()
-        self._show_current()
+        if changed:  # every answered row was already shown as it arrived
+            self._refresh_body()
+            self._show_current()
 
     def _fit_columns(self) -> None:
         if len(self.model.entries) <= 500:  # beyond that, keep it cheap
@@ -589,14 +592,13 @@ class ExplorerPage(QWidget):
         added: list[RecordingEntry] = []
         applied: list[RecordingEntry] = []
         for outcome in outcomes:
-            if outcome.details is not None:
-                register_identity(*outcome.details.identity_values())
+            # (The task registered every identifying value with the log
+            # filter before publishing it, on its own thread.)
             entry = self.model.entry_for(location_key(outcome.location))
             if entry is None:
                 if not create:
                     continue  # removed from the list while it was being read
                 entry = RecordingEntry(location=os.path.abspath(outcome.location))
-                register_identity(entry.name)
                 entry.outcome = outcome
                 added.append(entry)
                 continue
@@ -638,8 +640,7 @@ class ExplorerPage(QWidget):
     def _unlock_with(self, entry: RecordingEntry, password: str) -> None:
         if not password or self.model.row_of(entry) < 0:
             return
-        register_identity(password)
-        entry.password = password
+        entry.password = password  # registered with the log filter by the task
         entry.busy = "Reading…"  # the old outcome stays until the new one arrives
         self._entry_changed(entry)
         self._submit_open([entry], prompt=True)
@@ -796,7 +797,8 @@ class ExplorerPage(QWidget):
         def done(new_location: str) -> None:
             record.result_text = "Done: the new copy was checked against the original"
             self.status.emit("Packed into one file." if packing else "Unpacked into a folder.")
-            self.open_paths([new_location], interactive=False)
+            # A copy keeps its password protection: open it with the same one.
+            self.open_paths([new_location], interactive=False, password=entry.password)
 
         handle.succeeded.connect(done)
         handle.failed.connect(self._show_message)

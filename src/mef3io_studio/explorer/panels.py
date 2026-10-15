@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import tzinfo
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFormLayout,
@@ -21,8 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QTableWidget,
-    QTableWidgetItem,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
@@ -107,33 +106,87 @@ def _clear(layout) -> None:
             widget.deleteLater()
 
 
-class _SortItem(QTableWidgetItem):
-    """A table cell that sorts by a value, not by its text."""
+class RowsModel(QAbstractTableModel):
+    """Read-only rows of text, each with a sort key per column. A model, not
+    a widget per cell: only visible rows are drawn, so thousands of notes
+    or channels cost nothing to show."""
 
-    def __init__(self, text: str, key):
-        super().__init__(text)
-        self.key = key
-        self.setFlags(self.flags() & ~Qt.ItemFlag.ItemIsEditable)
+    def __init__(self, columns: tuple[str, ...], parent=None):
+        super().__init__(parent)
+        self.columns = columns
+        self.rows: list[tuple[tuple[str, ...], tuple]] = []
+        self.right_aligned: set[int] = set()
 
-    def __lt__(self, other):
+    def rowCount(self, parent=QModelIndex()):  # noqa: B008, N802
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QModelIndex()):  # noqa: B008, N802
+        return 0 if parent.isValid() else len(self.columns)
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return self.columns[section]
+        return None
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            return self.rows[index.row()][0][index.column()]
+        if role == Qt.ItemDataRole.TextAlignmentRole and index.column() in self.right_aligned:
+            return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return None
+
+    def set_rows(self, rows: list[tuple[tuple[str, ...], tuple]]) -> None:
+        self.beginResetModel()
+        self.rows = rows
+        self.endResetModel()
+
+    def key(self, row: int, col: int):
+        return self.rows[row][1][col]
+
+
+class _KeySort(QSortFilterProxyModel):
+    def lessThan(self, left, right):  # noqa: N802
+        model = self.sourceModel()
+        a, b = model.key(left.row(), left.column()), model.key(right.row(), right.column())
         try:
-            return self.key < other.key
+            return a < b
         except TypeError:
-            return str(self.key) < str(other.key)
+            return str(a) < str(b)
 
 
-def _table(columns: tuple[str, ...]) -> QTableWidget:
-    table = QTableWidget(0, len(columns))
-    table.setHorizontalHeaderLabels(list(columns))
-    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    table.setAlternatingRowColors(True)
-    table.setShowGrid(False)
-    table.setWordWrap(False)
-    table.verticalHeader().hide()
-    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-    table.horizontalHeader().setStretchLastSection(True)
-    return table
+class RowsTable(QTableView):
+    """A sortable read-only table over a :class:`RowsModel`."""
+
+    def __init__(self, columns: tuple[str, ...], parent=None):
+        super().__init__(parent)
+        self.rows = RowsModel(columns, self)
+        self.proxy = _KeySort(self)
+        self.proxy.setSourceModel(self.rows)
+        self.setModel(self.proxy)
+        self.setSortingEnabled(True)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setAlternatingRowColors(True)
+        self.setShowGrid(False)
+        self.setWordWrap(False)
+        self.verticalHeader().hide()
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+
+    def set_rows(self, rows) -> None:
+        self.rows.set_rows(rows)
+        if len(rows) <= 300:  # fitting columns measures every row
+            self.resizeColumnsToContents()
+
+    def rowCount(self) -> int:  # noqa: N802
+        return self.proxy.rowCount()
+
+    def text(self, row: int, col: int) -> str:
+        """The text shown in a cell, in the current sort order."""
+        return self.proxy.index(row, col).data()
 
 
 # --------------------------------------------------------------------------
@@ -258,35 +311,38 @@ class ChannelsPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.table = _table(self.COLUMNS)
-        self.table.setSortingEnabled(True)
+        self.table = RowsTable(self.COLUMNS)
+        self.table.rows.right_aligned = {1, 3, 4}
         layout = QVBoxLayout(self)
         layout.addWidget(self.table)
 
     def show_entry(self, entry: RecordingEntry, zone: tzinfo) -> None:
         details = entry.details
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
-        if details is None:
-            return
-        self.table.setRowCount(len(details.channels))
-        for row, c in enumerate(details.channels):
-            cells = (
-                _SortItem(c.name, c.name.casefold()),
-                _SortItem(format_rate(c.sampling_frequency), c.sampling_frequency),
-                _SortItem(c.units, c.units),
-                _SortItem(f"{c.samples:,}", c.samples),
-                _SortItem(str(len(c.parts)), len(c.parts)),
-                _SortItem(format_time(c.start, zone), c.start),
-                _SortItem(format_time(c.end, zone), c.end),
+        rows = []
+        for c in details.channels if details is not None else ():
+            rows.append(
+                (
+                    (
+                        c.name,
+                        format_rate(c.sampling_frequency),
+                        c.units,
+                        f"{c.samples:,}",
+                        str(len(c.parts)),
+                        format_time(c.start, zone),
+                        format_time(c.end, zone),
+                    ),
+                    (
+                        c.name.casefold(),
+                        c.sampling_frequency,
+                        c.units,
+                        c.samples,
+                        len(c.parts),
+                        c.start,
+                        c.end,
+                    ),
+                )
             )
-            for col, item in enumerate(cells):
-                if col in (1, 3, 4):
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                    )
-                self.table.setItem(row, col, item)
-        self.table.setSortingEnabled(True)
+        self.table.set_rows(rows)
 
 
 # --------------------------------------------------------------------------
@@ -340,8 +396,8 @@ class NotesPanel(QWidget):
         self.empty = QLabel("This recording has no notes or events.")
         self.empty.setObjectName("Muted")
         self.empty.setWordWrap(True)
-        self.table = _table(self.COLUMNS)
-        self.table.setSortingEnabled(True)
+        self.table = RowsTable(self.COLUMNS)
+        self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.problem_slot = QVBoxLayout()
         layout = QVBoxLayout(self)
         layout.addWidget(self.levels)
@@ -352,8 +408,6 @@ class NotesPanel(QWidget):
 
     def show_entry(self, entry: RecordingEntry, zone: tzinfo) -> None:
         details = entry.details
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
         notes = details.notes if details is not None else ()
         _clear(self.problem_slot)
         problem = details.notes_problem if details is not None else None
@@ -369,21 +423,29 @@ class NotesPanel(QWidget):
         self.empty.setVisible(details is not None and not notes and problem is None)
         self.table.setVisible(bool(notes))
         self.hidden_note.setVisible(bool(notes) and not entry.revealed)
-        self.table.setRowCount(len(notes))
-        for row, note in enumerate(notes):
+        rows = []
+        for note in notes:
             text = note.text if entry.revealed else (HIDDEN if note.text else "")
             length = format_span(note.duration / 1e6) if note.duration else ""
-            cells = (
-                _SortItem(format_time(note.time, zone), note.time),
-                _SortItem(note.where, (note.channel or "", note.segment or -1)),
-                _SortItem(note_kind_label(note.kind), note.kind),
-                _SortItem(text, text),
-                _SortItem(length, note.duration or 0),
+            rows.append(
+                (
+                    (
+                        format_time(note.time, zone),
+                        note.where,
+                        note_kind_label(note.kind),
+                        text,
+                        length,
+                    ),
+                    (
+                        note.time,
+                        (note.channel or "", note.segment or -1),
+                        note.kind,
+                        text,
+                        note.duration or 0,
+                    ),
+                )
             )
-            for col, item in enumerate(cells):
-                self.table.setItem(row, col, item)
-        self.table.setSortingEnabled(True)
-        self.table.sortItems(0)
+        self.table.set_rows(rows)
 
 
 # --------------------------------------------------------------------------
