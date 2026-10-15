@@ -123,10 +123,96 @@ def format_rates(rates: list[float] | tuple[float, ...]) -> str:
     if not unique:
         return ""
     if len(unique) <= 3:
-        return ", ".join(format_rate(r) for r in unique)
+        # "256 / 512 Hz"; units are written once per run of the same unit:
+        # "512 Hz / 8 kHz".
+        words = [format_rate(r).split(" ") for r in unique]
+        out: list[str] = []
+        for i, (number, unit) in enumerate(words):
+            last = i == len(words) - 1 or words[i + 1][1] != unit
+            out.append(f"{number} {unit}" if last else number)
+        return " / ".join(out)
     return f"{format_rate(unique[0])} to {format_rate(unique[-1])} ({len(unique)} different)"
 
 
 def format_count(n: int, one: str, many: str | None = None) -> str:
     """ "1 channel", "3 channels"."""
     return f"{n} {one if n == 1 else (many or one + 's')}"
+
+
+#: Steps between the marks on a time axis, in microseconds.
+_TICK_STEPS = [
+    int(x * 1_000_000)
+    for x in (
+        0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
+        1, 2, 5, 10, 15, 30,
+        60, 120, 300, 600, 900, 1800,
+        3600, 7200, 10800, 21600, 43200,
+        86400, 2 * 86400, 7 * 86400, 14 * 86400, 28 * 86400, 91 * 86400,
+        182 * 86400, 364 * 86400, 728 * 86400, 1820 * 86400, 3640 * 86400,
+    )
+]  # fmt: skip
+_DAY = 86_400_000_000
+
+
+def tick_step(span_us: int, max_ticks: int) -> int:
+    """The smallest step that puts at most ``max_ticks`` marks on the axis."""
+    max_ticks = max(1, max_ticks)
+    for step in _TICK_STEPS:
+        if span_us / step <= max_ticks:
+            return step
+    return _TICK_STEPS[-1] * max(1, int(span_us / (_TICK_STEPS[-1] * max_ticks)) + 1)
+
+
+def axis_ticks(v0: int, v1: int, step: int, zone: tzinfo = UTC) -> list[int]:
+    """Marks every ``step`` between ``v0`` and ``v1``, on round wall-clock
+    times in ``zone`` (whole hours, local midnight, ...). Computed per mark
+    from the time-zone database, so a daylight-saving change is honoured."""
+    if v1 <= v0 or step <= 0:
+        return []
+    try:
+        local = to_datetime(v0, zone)
+    except (OverflowError, ValueError, OSError):
+        return []
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+    wall = local.replace(tzinfo=None)
+    if step >= _DAY:
+        days = step // _DAY
+        ordinal = midnight.toordinal()
+        start = datetime.fromordinal(ordinal - ordinal % days)
+        delta = timedelta(days=days)
+    else:
+        since = (wall - midnight) // timedelta(microseconds=1)
+        start = midnight + timedelta(microseconds=since - since % step)
+        delta = timedelta(microseconds=step)
+    out: list[int] = []
+    current = start
+    for _ in range(1000):
+        try:
+            aware = current.replace(tzinfo=zone)
+            us = (aware - _EPOCH) // timedelta(microseconds=1)
+        except (OverflowError, ValueError):
+            break
+        if us > v1:
+            break
+        if us >= v0 and (not out or us > out[-1]):
+            out.append(us)
+        current = current + delta
+    return out
+
+
+def tick_label(us: int, step: int, zone: tzinfo = UTC, with_date: bool = False) -> str:
+    """A short label for a mark: the date for steps of a day or more, else
+    the time of day (with the date where ``with_date``)."""
+    try:
+        moment = to_datetime(us, zone)
+    except (OverflowError, ValueError, OSError):
+        return ""
+    if step >= _DAY:
+        return moment.strftime("%Y-%m-%d")
+    if step >= 60_000_000:
+        text = moment.strftime("%H:%M")
+    elif step >= 1_000_000:
+        text = moment.strftime("%H:%M:%S")
+    else:
+        text = moment.strftime("%H:%M:%S.") + f"{moment.microsecond // 1000:03d}"
+    return f"{moment.strftime('%Y-%m-%d')} {text}" if with_date else text

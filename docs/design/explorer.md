@@ -67,6 +67,21 @@ It's virtualized, so hundreds of recordings stay fast.
 | Overview | Start and end, duration, gaps, channels, segments, size |
 | Channels | Name, sampling rate, units, samples, segments, first and last sample time |
 | Timeline | Each channel as a bar over time, with segment boundaries and gaps. Drawn from metadata; the block-level version is the coverage view (next directions) |
+
+**Combined timeline** (instead of the tabs, chosen next to them): the
+recordings selected in the list (two or more), otherwise every listed
+recording, **one row per recording** on a shared time axis. Per recording:
+the union of its channels' parts, shaded by whether all or only some
+channels have data; parts whose samples cover less time than they span are
+striped ("gaps inside"). Across recordings with **verified** times only:
+first and last time, span, time with data, gaps between recordings, and
+**overlaps** per pair (flagged as possible copies when they share at least
+90% of the shorter one's data). Unverified rows are drawn grey and labelled,
+kept after the others and out of every figure; locked and unreadable rows say
+why there is nothing to draw. Metadata only (what the open already read);
+laid out in short slices on the GUI thread (a Python worker thread stalls
+the window through the interpreter lock), and painted per pixel column, so
+400 recordings with thousands of parts stay responsive (test-pinned).
 | Annotations | Every record at every level (session, channel, segment): time, type, text. Text is hidden while patient details are hidden |
 | Patient details | Subject name, ID, location and descriptions, **masked by default**; "Show" per recording |
 | Provenance | Which mef3io version created and last modified the files, and which operations were applied. Blank for files from other writers |
@@ -75,6 +90,14 @@ It's virtualized, so hundreds of recordings stay fast.
 ## Also in v0.1
 
 - **Copy summary:** a text or JSON summary of a recording, for an email or a data-management log. This is a **user-initiated export**: the user's explicit act, not something the app writes on its own. **Names and dates are masked** in it unless the user chose "Show" for that recording, in which case the app warns that the summary will contain them before copying.
+- **Save times as a table (CSV):** one row per recording, or one per part of
+  each channel, for the combined timeline's recordings or the selection. UTC
+  ISO 8601 with `Z`, microseconds since 1970 (exact round trip) and, when a
+  site zone is chosen, site time with its offset. A **user-initiated export**
+  that contains dates: the app warns before writing. Patient details only
+  where "Show" was chosen (`[hidden]` otherwise); unverified times are marked
+  as such. UTF-8 with BOM, formula-like text cells prefixed with `'`, written
+  to a temporary name and renamed when complete.
 - **Pack / unpack:** `.mefd` ↔ `.mefd.tar` via mef3io's `archive_session` / `extract_session`, with progress.
 
 ## Ordering and renaming sessions

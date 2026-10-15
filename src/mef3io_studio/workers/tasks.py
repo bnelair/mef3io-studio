@@ -14,7 +14,9 @@ import time
 
 from ..common.privacy import register_identity
 from ..model import archive
+from ..model.coverage import Stopped, combine
 from ..model.errors import HelperCrashed, describe_error
+from ..model.export import LEVEL_PARTS, ExportItem, part_table, recording_table, write_csv
 from ..model.problems import CheckReport
 from ..model.recording import InspectOutcome, location_key, recording_name
 from ..model.scan import ScanResult, find_recordings
@@ -125,6 +127,44 @@ def scan_and_open(
     new = [(loc, "") for loc in found.locations if location_key(loc) not in known]
     _inspect(ctx, source, new)
     return found
+
+
+def _pacer(work: float = 0.005, rest: float = 0.001):
+    """A pause function for pure-Python work on a task thread: after every
+    ``work`` seconds it sleeps ``rest`` seconds, so the window's thread gets
+    the interpreter lock at once instead of waiting for it."""
+    last = [time.perf_counter()]
+
+    def pause() -> None:
+        now = time.perf_counter()
+        if now - last[0] >= work:
+            time.sleep(rest)
+            last[0] = time.perf_counter()
+
+    return pause
+
+
+def export_times(ctx: JobContext, items: list[ExportItem], zone, level: str, path: str) -> int:
+    """Save the times of recordings as a CSV table at ``path`` (chosen by
+    the user). Returns the number of rows. Reads no file: everything comes
+    from what the Explorer already knows. Never logs the path."""
+    ctx.report(0, None, "Working out the times")
+    if level == LEVEL_PARTS:
+        header, rows = part_table(items, zone)
+    else:
+        try:
+            layout, _cache = combine(
+                [i.recording for i in items], should_stop=lambda: ctx.cancelled, pause=_pacer()
+            )
+        except Stopped:
+            ctx.check_cancelled()
+            raise
+        header, rows = recording_table(items, zone, layout)
+    ctx.check_cancelled()
+    write_csv(path, header, rows, ctx.report, lambda: ctx.cancelled)
+    ctx.report(len(rows), len(rows), "Saved")
+    log.info("job %d: saved a table of %d row(s)", ctx.job_id, len(rows))
+    return len(rows)
 
 
 def check_recording(
