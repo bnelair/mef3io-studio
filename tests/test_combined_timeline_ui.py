@@ -83,6 +83,14 @@ def _write(path, start, seconds=10, channels=("c",)):
     return path
 
 
+def _settle_garbage() -> None:
+    """Before a timing check: collect what earlier tests left behind, so a
+    garbage-collector pass over their leftovers is not timed as ours."""
+    import gc
+
+    gc.collect()
+
+
 def _row_y(widget: CombinedTimelineWidget, index: int) -> float:
     em, row, _gutter, axis = widget._metrics()
     return axis + (index - widget.scrollbar.value()) * row + row / 2
@@ -228,6 +236,7 @@ def test_layout_runs_in_short_slices(page, qtbot, tmp_path, monkeypatch):
     events (see workers/slices.py), and a newer request drops an older one."""
     from mef3io_studio.workers import slices
 
+    _settle_garbage()
     longest = []
     real = slices.SlicedRunner._slice
 
@@ -376,6 +385,7 @@ def test_four_hundred_recordings_never_stall_the_window(page, qtbot):
     page.model.add(_synthetic())
     page._refresh_body()
     page.select_entry(page.entries()[0])
+    _settle_garbage()
     ticks = []
     timer = QTimer()
     timer.setInterval(10)
@@ -661,6 +671,7 @@ def test_four_hundred_recordings_at_the_same_time(page, qtbot):
         )
     page.model.add(entries)
     page._refresh_body()
+    _settle_garbage()
     ticks = []
     timer = QTimer()
     timer.setInterval(10)
@@ -678,3 +689,130 @@ def test_four_hundred_recordings_at_the_same_time(page, qtbot):
     assert not layout.pairs_complete and len(layout.sharing) == 400
     assert "too many to list" in page.combined.overlap_label.text()
     assert worst < 0.25, worst
+
+
+# -- review round 2 ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("level", [LEVEL_RECORDINGS, LEVEL_PARTS])
+def test_saving_400_recordings_never_stalls_the_window(page, qtbot, tmp_path, level):
+    # (64,000 parts for the per-part table: enough to see a stall, short
+    # enough for every CI run.)
+    page.model.add(_synthetic(parts=50 if level == LEVEL_RECORDINGS else 20))
+    page._refresh_body()
+    page.confirm_export = lambda count, revealed: True
+    _settle_garbage()
+    ticks = []
+    timer = QTimer()
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: ticks.append(time.monotonic()))
+    timer.start()
+    qtbot.wait(50)
+    start = len(ticks)
+    out = tmp_path / "t.csv"
+    handle = page.export_times(level, page.entries(), str(out))
+    with qtbot.waitSignal(handle.finished, timeout=120_000):
+        pass
+    qtbot.wait(60)
+    timer.stop()
+    assert handle.record.status is JobStatus.SUCCEEDED
+    window = ticks[max(0, start - 1) :]
+    worst = max(b - a for a, b in zip(window, window[1:], strict=False))
+    assert worst < 0.25, worst
+
+
+def test_no_layout_step_runs_long(monkeypatch):
+    """Pauses are frequent enough that a slice never overruns by much, even
+    for one channel with 50,000 parts or 30 recordings sharing all their time."""
+    import gc
+
+    from mef3io_studio.model.coverage import combine_steps
+
+    def worst_step(items):
+        steps = combine_steps(items)
+        worst = 0.0
+        collected = []
+
+        def note(phase, info):
+            collected.append(info["generation"])
+
+        gc.collect()  # what earlier tests left behind is not this code's cost
+        gc.callbacks.append(note)
+        try:
+            while True:
+                t = time.perf_counter()
+                del collected[:]
+                next(steps)
+                took = time.perf_counter() - t
+                if not collected:  # a step the garbage collector paused is not ours
+                    worst = max(worst, took)
+        except StopIteration:
+            return worst
+        finally:
+            gc.callbacks.remove(note)
+
+    from mef3io_studio.model.coverage import RecordingInput
+
+    parts = tuple(
+        Part(i, T0 + 2 * i * SECOND, T0 + (2 * i + 1) * SECOND, 256, 1) for i in range(50_000)
+    )
+    big = RecordingDetails(
+        "/x/big.mefd", (ChannelInfo("a", 256.0, "uV", 0, T0, parts[-1].end, parts),)
+    )
+    # (Typical steps take a few milliseconds; the budget is the window's.)
+    assert worst_step([RecordingInput("big", "big", big)]) < 0.2
+    many = [
+        RecordingInput(
+            f"r{i}",
+            f"r{i}",
+            RecordingDetails(
+                f"/x/r{i}.mefd",
+                (
+                    ChannelInfo(
+                        "a",
+                        256.0,
+                        "uV",
+                        0,
+                        T0,
+                        parts[4999].end,
+                        tuple(Part(p.number, p.start + i, p.end + i, 256, 1) for p in parts[:5000]),
+                    ),
+                ),
+            ),
+        )
+        for i in range(30)
+    ]
+    assert worst_step(many) < 0.2
+
+
+def test_going_back_to_all_recordings_reuses_the_work(page, qtbot, tmp_path):
+    paths = [_write(tmp_path / f"c{i}.mefd", T0 + i * 3600 * SECOND) for i in range(4)]
+    page.open_paths([str(p) for p in paths], interactive=False)
+    wait_loaded(qtbot, page, 4)
+    page.show_combined(True)
+    first = {r.key: r for r in wait_layout(qtbot, page, 4).rows}
+    model = page.table.selectionModel()
+    page.table.clearSelection()
+    for row in (0, 1):
+        model.select(
+            page.proxy.index(row, 0), model.SelectionFlag.Select | model.SelectionFlag.Rows
+        )
+    wait_layout(qtbot, page, 2)
+    page.table.clearSelection()
+    again = wait_layout(qtbot, page, 4)
+    assert all(r is first[r.key] for r in again.rows)
+
+
+def test_the_warning_counts_details_the_way_the_table_does(page, qtbot, tmp_path):
+    plain = write_plain(tmp_path / "p.mefd", notes=False)
+    page.open_paths([str(plain)], interactive=False)
+    wait_loaded(qtbot, page, 1)
+    entry = page.entries()[0]
+    entry.revealed = True
+    asked = []
+    page.confirm_export = lambda count, revealed: asked.append(revealed) or False
+    page.export_times(LEVEL_RECORDINGS, path=str(tmp_path / "x.csv"))
+    entry.busy = "Reading…"  # being read again: its row will have no details
+    page.export_times(LEVEL_RECORDINGS, path=str(tmp_path / "x.csv"))
+    entry.busy = ""
+    assert asked == [1, 0]

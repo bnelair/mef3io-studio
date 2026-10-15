@@ -115,8 +115,8 @@ line:
   verified times: first and last time, the time from first to last, the time
   with data, and the gaps between recordings.
 - **Overlaps are flagged plainly.** Two recordings that cover the same time
-  have been made at the same time (for example on two beds) or be copies of
-  each other, for example a folder and its single-file copy. When nearly all
+  have been made at the same time (for example on two beds), or they may be
+  copies of each other, for example a folder and its single-file copy. When nearly all
   of the shorter one is shared and the channels are the same, the warning
   says they may be copies. Where two recordings have the same name, the
   timeline shows their file names (with `.mefd` or `.mefd.tar`) to tell them

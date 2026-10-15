@@ -142,7 +142,9 @@ def timeline_labels(entries: list[RecordingEntry]) -> dict[str, str]:
     """What to call each recording on the timeline: its name, as in the
     list, unless another one has the same name (a folder and its
     single-file copy): then its file name, and if that is still the same,
-    the name of the folder it is in."""
+    the name of the folder it is in. (Two recordings whose folders also
+    share a name still read the same; the tooltip and the list's full
+    location tell them apart.)"""
     by_name: dict[str, list[RecordingEntry]] = {}
     for e in entries:
         by_name.setdefault(e.name.casefold(), []).append(e)
@@ -747,7 +749,12 @@ class ExplorerPage(QWidget):
         if result is None:
             return
         layout, cache, keys = result
-        self._coverage_cache = cache
+        # Keep what was worked out for every recording still listed, not
+        # only the ones shown: going back to all of them is then instant.
+        listed = {e.key for e in self.model.entries}
+        kept = {k: v for k, v in self._coverage_cache.items() if k in listed}
+        kept.update(cache)
+        self._coverage_cache = kept
         # Fit when the set of recordings differs from the one on screen
         # (not from the last one asked for: that one may have been dropped).
         refit = keys != self._layout_keys
@@ -827,7 +834,16 @@ class ExplorerPage(QWidget):
         entries = self.timeline_entries() if entries is None else entries
         if not entries:
             return None
-        revealed = sum(1 for e in entries if e.revealed and e.details is not None)
+        # Counted the way the table decides: details included only for a
+        # recording that is open (not being read again) with its patient
+        # details unlocked.
+        revealed = sum(
+            1
+            for e in entries
+            if e.revealed
+            and coverage_status(e) == STATUS_READY
+            and e.details.patient.names_available
+        )
         if not self.confirm_export(len(entries), revealed):
             return None
         if path is None:

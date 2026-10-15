@@ -508,3 +508,17 @@ def test_the_table_gets_normal_permissions(tmp_path):
     write_csv(str(link), ["a"], [[2]])
     assert link.is_symlink() and _read(shared)[1] == [{"a": "2"}]
     assert sorted(p.name for p in tmp_path.iterdir()) == ["link.csv", "new.csv", "shared.csv"]
+
+
+def test_the_warning_names_the_pair_that_may_be_copies():
+    from mef3io_studio.explorer.combined import overlap_text
+
+    a = details(channel("x", part(0, 0, 1000)))
+    b = details(channel("y", part(0, 0, 900)))  # same time, other channels
+    c = details(channel("w", part(0, 0, 800)))
+    d = details(channel("z", part(0, 2000, 2010)))
+    copy = details(channel("z", part(0, 2000, 2010)))
+    layout, _ = combine([item(k, v) for k, v in zip("abcde", (a, b, c, d, copy), strict=True)])
+    text = overlap_text(layout)
+    assert "d and e (10 s, may be copies)" in text
+    assert text.count("may be copies)") == 1

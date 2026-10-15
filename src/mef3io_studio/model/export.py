@@ -39,7 +39,7 @@ import os
 import secrets
 import stat
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, tzinfo
 
@@ -184,8 +184,10 @@ def recording_table(
     items: Sequence[ExportItem],
     zone: tzinfo = UTC,
     layout: CombinedLayout | None = None,
+    pause: Callable[[], None] | None = None,
 ) -> tuple[list[str], list[list]]:
-    """One row per recording."""
+    """One row per recording. ``pause()`` is called between rows (a task
+    thread passes one that lets the window's thread run)."""
     local = zone is not UTC
     name = zone_label(zone)
     if layout is None:
@@ -214,6 +216,8 @@ def recording_table(
     ]
     rows = []
     for item in items:
+        if pause is not None:
+            pause()
         rec = item.recording
         details = rec.details
         coverage: RecordingCoverage | None = layout.row(rec.key)
@@ -260,9 +264,37 @@ def recording_table(
     return header, rows
 
 
-def part_table(items: Sequence[ExportItem], zone: tzinfo = UTC) -> tuple[list[str], list[list]]:
+def part_table(
+    items: Sequence[ExportItem],
+    zone: tzinfo = UTC,
+    pause: Callable[[], None] | None = None,
+) -> tuple[list[str], list[list]]:
     """One row per part of each channel. A recording without details gets
-    one row saying why."""
+    one row saying why. ``pause()`` is called between rows."""
+    header, rows, _count = part_rows(items, zone, pause)
+    return header, list(rows)
+
+
+def part_count(items: Sequence[ExportItem]) -> int:
+    """How many rows :func:`part_rows` yields."""
+    total = 0
+    for item in items:
+        rec = item.recording
+        if rec.details is None or rec.status != STATUS_READY:
+            total += 1
+        else:
+            total += sum(len(c.parts) for c in rec.details.channels)
+    return total
+
+
+def part_rows(
+    items: Sequence[ExportItem],
+    zone: tzinfo = UTC,
+    pause: Callable[[], None] | None = None,
+) -> tuple[list[str], Iterator[list], int]:
+    """:func:`part_table` as a stream: ``(header, rows, number of rows)``.
+    Written row by row, a large table never sits in memory whole (which
+    also keeps Python's garbage collector from pausing the app for long)."""
     local = zone is not UTC
     name = zone_label(zone)
     header = [
@@ -282,41 +314,47 @@ def part_table(items: Sequence[ExportItem], zone: tzinfo = UTC) -> tuple[list[st
         "gaps_inside",
         "missing_inside_seconds",
     ]
-    rows = []
-    for item in items:
-        rec = item.recording
-        details = rec.details
-        ready = details is not None and rec.status == STATUS_READY
-        lead: list = [
-            rec.name,
-            item.file_name,
-            STATUS_WORDS.get(rec.status, rec.status),
-            ("yes" if details.times_verified else "no") if ready else "",
-            time_note(details) if ready else "",
-        ]
-        if local:
-            lead.append(name)
-        if not ready:
-            rows.append([safe_cell(v) for v in lead + [""] * (len(header) - len(lead))])
-            continue
-        for channel in details.channels:
-            fs = channel.sampling_frequency
-            for part in channel.parts:
-                missing = part.missing_seconds(fs)
-                row = [
-                    *lead,
-                    channel.name,
-                    part.number + 1,
-                    *_time_values(part.start, zone, local),
-                    *_time_values(part.end, zone, local),
-                    seconds_text(max(0, part.end - part.start)),
-                    part.samples,
-                    f"{fs:g}",
-                    "yes" if missing else "no",
-                    seconds_text(round(missing * 1e6)) if missing else "0",
-                ]
-                rows.append([safe_cell(v) for v in row])
-    return header, rows
+
+    def rows() -> Iterator[list]:
+        for item in items:
+            rec = item.recording
+            details = rec.details
+            ready = details is not None and rec.status == STATUS_READY
+            lead: list = [
+                rec.name,
+                item.file_name,
+                STATUS_WORDS.get(rec.status, rec.status),
+                ("yes" if details.times_verified else "no") if ready else "",
+                time_note(details) if ready else "",
+            ]
+            if local:
+                lead.append(name)
+            if not ready:
+                yield [safe_cell(v) for v in lead + [""] * (len(header) - len(lead))]
+                continue
+            lead = [safe_cell(v) for v in lead]
+            for channel in details.channels:
+                fs = channel.sampling_frequency
+                channel_name = safe_cell(channel.name)
+                rate = f"{fs:g}"
+                for part in channel.parts:
+                    if pause is not None:
+                        pause()
+                    missing = part.missing_seconds(fs)
+                    yield [
+                        *lead,
+                        channel_name,
+                        part.number + 1,
+                        *_time_values(part.start, zone, local),
+                        *_time_values(part.end, zone, local),
+                        seconds_text(max(0, part.end - part.start)),
+                        part.samples,
+                        rate,
+                        "yes" if missing else "no",
+                        seconds_text(round(missing * 1e6)) if missing else "0",
+                    ]
+
+    return header, rows(), part_count(items)
 
 
 def _new_file_mode(path: str) -> int:
@@ -344,10 +382,12 @@ def _new_file_mode(path: str) -> int:
 def write_csv(
     path: str,
     header: list[str],
-    rows: Sequence[Sequence],
+    rows: Iterable[Sequence],
     report: ReportFn | None = None,
     should_stop: Callable[[], bool] | None = None,
-) -> None:
+    pause: Callable[[], None] | None = None,
+    total: int | None = None,
+) -> int:
     """Write the table to ``path`` safely (see the module docstring).
     Replaces ``path`` only once the whole table is on disk; the caller has
     already asked the user whether replacing it is fine."""
@@ -364,17 +404,22 @@ def write_csv(
         with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle, quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
             writer.writerow([safe_cell(h) for h in header])
-            total = len(rows)
-            for n, row in enumerate(rows):
-                if n % 2000 == 0:
+            if total is None and isinstance(rows, Sequence):
+                total = len(rows)
+            n = 0
+            for n, row in enumerate(rows, 1):
+                if n % 2000 == 1:  # the first row, then every 2000
                     if should_stop is not None and should_stop():
                         raise JobCancelled
                     if report is not None:
                         report(n, total, "Saving the table")
+                if pause is not None:
+                    pause()
                 writer.writerow(row)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, path)
+        return n
     except BaseException:
         try:
             os.remove(temp)

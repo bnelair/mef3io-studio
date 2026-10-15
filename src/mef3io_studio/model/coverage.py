@@ -55,6 +55,8 @@ COPY_SHARE = 0.9
 #: each recording's shared time is still worked out, but the pairs are not
 #: listed: the work would grow with the square of the number of recordings.
 PAIR_LIMIT = 2000
+#: Parts handled between two pauses.
+PART_CHUNK = 2000
 
 _EMPTY = np.zeros(0, dtype=np.int64)
 
@@ -282,13 +284,17 @@ def _tolerance(rates) -> int:
 
 def _count_steps(intervals: list[tuple[np.ndarray, np.ndarray]], grid: np.ndarray) -> np.ndarray:
     """How many of the interval sets cover each [grid[i], grid[i+1])."""
-    delta = np.zeros(len(grid), dtype=np.int64)
-    for s, e in intervals:
-        keep = e > s
-        if keep.any():
-            np.add.at(delta, np.searchsorted(grid, s[keep]), 1)
-            np.add.at(delta, np.searchsorted(grid, e[keep]), -1)
-    return np.cumsum(delta)[:-1]
+    if not intervals:
+        return np.zeros(max(0, len(grid) - 1), dtype=np.int64)
+    s = np.concatenate([a for a, _ in intervals])
+    e = np.concatenate([b for _, b in intervals])
+    keep = e > s
+    s, e = s[keep], e[keep]
+    n = len(grid)
+    delta = np.bincount(np.searchsorted(grid, s), minlength=n) - np.bincount(
+        np.searchsorted(grid, e), minlength=n
+    )
+    return np.cumsum(delta[:n])[:-1]
 
 
 def _at_least(sets, n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -297,7 +303,9 @@ def _at_least(sets, n: int) -> tuple[np.ndarray, np.ndarray]:
     nonempty = [(s, e) for s, e in sets if len(s)]
     if len(nonempty) < n:
         return _EMPTY, _EMPTY
-    grid = np.unique(np.concatenate([np.concatenate(pair) for pair in nonempty]))
+    grid = np.concatenate([np.concatenate(pair) for pair in nonempty])
+    grid.sort(kind="stable")
+    grid = grid[np.concatenate(([True], grid[1:] != grid[:-1]))]
     counts = _count_steps(nonempty, grid)
     keep = counts >= n
     return merge_intervals(grid[:-1][keep], grid[1:][keep])
@@ -344,16 +352,25 @@ def recording_coverage_steps(item: RecordingInput) -> Generator[None, None, Reco
             continue
         part_count += len(parts)
         fs = channel.sampling_frequency
-        s = np.fromiter((p.start for p in parts), dtype=np.int64, count=len(parts))
-        e = np.fromiter((p.end for p in parts), dtype=np.int64, count=len(parts))
+        # In chunks, so a channel with tens of thousands of parts still
+        # pauses every few milliseconds.
+        s = np.empty(len(parts), dtype=np.int64)
+        e = np.empty(len(parts), dtype=np.int64)
+        has_gaps = np.empty(len(parts), dtype=bool)
+        for lo in range(0, len(parts), PART_CHUNK):
+            chunk = parts[lo : lo + PART_CHUNK]
+            n = len(chunk)
+            s[lo : lo + n] = np.fromiter((p.start for p in chunk), dtype=np.int64, count=n)
+            e[lo : lo + n] = np.fromiter((p.end for p in chunk), dtype=np.int64, count=n)
+            has_gaps[lo : lo + n] = np.fromiter(
+                (p.missing_seconds(fs) > 0 for p in chunk), dtype=bool, count=n
+            )
+            yield
         e = np.maximum(e, s)  # a part that ends before it starts is a point
         all_starts.append(s)
         all_ends.append(e)
         tol = _tolerance([fs])
         channel_sets.append(merge_intervals(s, e, tol))
-        has_gaps = np.fromiter(
-            (p.missing_seconds(fs) > 0 for p in parts), dtype=bool, count=len(parts)
-        )
         if has_gaps.any():
             gappy += int(has_gaps.sum())
             inside_sets.append(merge_intervals(s[has_gaps], e[has_gaps], tol))
@@ -487,15 +504,15 @@ def across_steps(
     # Vectorised over every recording's stretches with data (a point has no
     # time to share): the time with data, and the time two or more share.
     sets = []
-    for n, row in enumerate(counted):
+    for row in counted:
         arr = np.array(row.runs, dtype=np.int64).reshape(-1, 2)
         arr = arr[arr[:, 1] > arr[:, 0]]
         sets.append((arr[:, 0], arr[:, 1]))
-        if n % 32 == 31:
-            yield
+        yield
     lengths = [int((e - s).sum()) for s, e in sets]
     all_s = np.concatenate([s for s, _ in sets])
     all_e = np.concatenate([e for _, e in sets])
+    yield
     us, ue = merge_intervals(all_s, all_e)
     with_data = int((ue - us).sum())
     yield
@@ -516,8 +533,7 @@ def across_steps(
             if len(mine[0]):
                 shared_of[a.key] = tuple(zip(mine[0].tolist(), mine[1].tolist(), strict=True))
                 sharers.append(i)
-            if i % 16 == 15:
-                yield
+            yield
         # Pairs: only recordings that share time, and whose extents meet.
         sharers.sort(key=lambda i: counted[i].first)
         checked = 0
@@ -533,8 +549,7 @@ def across_steps(
                 if checked > PAIR_LIMIT:
                     complete = False
                     break
-                if checked % 16 == 0:
-                    yield
+                yield
                 # shared = |a| + |b| - |a or b|
                 u_s, u_e = merge_intervals(
                     np.concatenate((sets[i][0], sets[j][0])),

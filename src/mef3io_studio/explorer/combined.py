@@ -102,6 +102,7 @@ class CombinedTimelineWidget(QWidget):
         self.v1 = 1
         self._drag: tuple[float, int, int] | None = None
         self._wheel_rows = 0.0
+        self._gutter_cache: tuple = (None, 0)
         self._dragged = False
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -115,10 +116,14 @@ class CombinedTimelineWidget(QWidget):
         fm = self.fontMetrics()
         em = fm.height()
         row = round(em * 1.45)
-        rows = self.layout_data.rows if self.layout_data else ()
-        widest = max((fm.horizontalAdvance(r.name) for r in rows[:2000]), default=0)
-        gutter = min(widest + em, round(em * 13))
-        gutter = max(gutter, round(em * 6))
+        # The names' width is measured once per layout and font.
+        cache_key = (id(self.layout_data), em)
+        if self._gutter_cache[0] != cache_key:
+            rows = self.layout_data.rows if self.layout_data else ()
+            widest = max((fm.horizontalAdvance(r.name) for r in rows[:2000]), default=0)
+            gutter = min(widest + em, round(em * 13))
+            self._gutter_cache = (cache_key, max(gutter, round(em * 6)))
+        gutter = self._gutter_cache[1]
         axis = round(em * 2.85)
         return em, row, gutter, axis
 
@@ -527,7 +532,7 @@ class CombinedTimelineWidget(QWidget):
                     )
             if not row.verified:
                 tag_w = fm.horizontalAdvance(UNVERIFIED_TAG) + em * 0.6
-                tx = x1 + em * 0.4
+                tx = max(plot.left(), x1 + em * 0.4)
                 if tx + tag_w > plot.right():
                     tx = max(plot.left(), x0 - tag_w - em * 0.4)
                 painter.setPen(muted)
@@ -799,18 +804,19 @@ def overlap_text(layout: CombinedLayout, limit: int = 2) -> str:
             "too many to list in pairs (for example several beds recorded at once). "
             "Point at a row to see its times."
         )
+    # Pairs that may be copies first: they are the ones worth acting on.
+    ordered = sorted(layout.overlaps, key=lambda o: (not o.may_be_copies, -o.microseconds))
     pairs = []
-    copies = False
-    for o in layout.overlaps[:limit]:
-        pairs.append(f"{o.first_name} and {o.second_name} ({format_span(o.seconds)})")
-        copies = copies or o.may_be_copies
-    more = len(layout.overlaps) - limit
+    for o in ordered[:limit]:
+        tail = ", may be copies" if o.may_be_copies else ""
+        pairs.append(f"{o.first_name} and {o.second_name} ({format_span(o.seconds)}{tail})")
+    more = len(ordered) - limit
     if more > 0:
         pairs.append(format_count(more, "more pair"))
     head = "Some of these recordings cover the same time: " + "; ".join(pairs) + "."
-    if copies:
+    if any(o.may_be_copies for o in ordered):
         return head + (
-            " Nearly all of the shorter one is shared, with the same channels: they may "
-            "be copies of each other."
+            " Recordings that share nearly all their time and the same channels may be "
+            "copies of each other; others were made at the same time."
         )
     return head + " This happens with recordings made at the same time, or with copies."
