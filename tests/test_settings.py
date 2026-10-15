@@ -36,6 +36,10 @@ def test_preferences_are_exactly_the_reviewed_list():
         "ui/window_state",
         "ui/main_splitter",
         "ui/activity_visible",
+        "ui/explorer_splitter",
+        # The site's IANA time zone: a place, chosen once per app profile
+        # (docs/design/explorer.md); never a path or a recording's details.
+        "time/site_zone",
     }
 
 

@@ -72,6 +72,33 @@ def _describe(exc: BaseException) -> UserMessage:
             detail,
         )
 
+    from .archive import CopyMismatch, NotEnoughSpace, TargetExists
+
+    if isinstance(exc, TargetExists):
+        return UserMessage(
+            "That name is already taken",
+            "A file or folder with the new recording's name is already in the chosen "
+            "folder, so nothing was written and nothing was replaced. Choose another "
+            "folder, or move the existing one first.",
+            detail,
+        )
+    if isinstance(exc, NotEnoughSpace):
+        return UserMessage(
+            "Not enough free space",
+            "The chosen drive does not have room for the new copy, so nothing was "
+            "written. The original was not changed. Free some space or choose another "
+            "drive, then try again.",
+            detail,
+        )
+    if isinstance(exc, CopyMismatch):
+        return UserMessage(
+            "The new copy did not match the original",
+            "The copy was checked against the original and they differ, so the copy "
+            "was removed. The original was not changed. Try again; if it keeps "
+            'happening, use "Check for problems" on the original.',
+            detail,
+        )
+
     m = _mef3io_errors()
     # Without the C++ backend mef3io aliases all of these to RuntimeError,
     # which would make every RuntimeError look like a password problem.

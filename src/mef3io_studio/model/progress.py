@@ -70,6 +70,27 @@ class ProgressSlot:
             return self._latest
 
 
+class Mailbox:
+    """Items a job hands to the UI while it is still working (each opened
+    recording, as soon as it is ready). The worker appends; the UI thread
+    takes everything waiting on the same timer that collects progress, so a
+    job publishing thousands of items still causes at most a few UI updates
+    a second. Nothing is ever dropped."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: list = []
+
+    def put(self, item) -> None:
+        with self._lock:
+            self._items.append(item)
+
+    def take_all(self) -> list:
+        with self._lock:
+            items, self._items = self._items, []
+        return items
+
+
 #: How often the UI pulls progress from running jobs.
 UI_UPDATES_PER_SECOND = 10
 
