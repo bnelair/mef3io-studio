@@ -7,7 +7,14 @@ the library. Each task shows its progress and can be stopped.
 
 Read-only, except "Pack into one file" / "Unpack into a folder", which
 always write a NEW recording next to (or away from) the original and never
-replace anything.
+replace anything, and "Save times as a table", which writes only the file
+the user chose.
+
+Below the list, the user switches between the **details** of one recording
+and the **combined timeline** of several (``combined.py``): the selected
+recordings when two or more are selected, otherwise every recording in the
+list. Its layout is worked out in short slices between other events
+(``workers.slices``), so the window never waits for it.
 
 Privacy: patient details are hidden until "Show" for that recording; every
 identifying string the page learns (recording names, patient details,
@@ -20,12 +27,14 @@ from __future__ import annotations
 import os
 from datetime import UTC, tzinfo
 
-from PySide6.QtCore import QItemSelectionModel, Qt, Signal
+from PySide6.QtCore import QItemSelectionModel, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QFileDialog,
     QFrame,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMenu,
@@ -49,13 +58,31 @@ from ..common.dialogs import MessageDialog, TechnicalDetails
 from ..common.flow import FlowLayout
 from ..common.pages import scaled_font
 from ..common.theme import LIGHT, Theme
+from ..model.coverage import (
+    STATUS_LOCKED,
+    STATUS_READING,
+    STATUS_READY,
+    STATUS_UNREADABLE,
+    STATUS_WRONG_PASSWORD,
+    RecordingInput,
+    combine_steps,
+)
 from ..model.errors import UserMessage
+from ..model.export import LEVEL_PARTS, LEVEL_RECORDINGS, ExportItem
 from ..model.recording import InspectOutcome, is_recording_location, location_key
 from ..model.source import LocalRecordingSource, RecordingSource
 from ..model.summary import as_json, as_text, build_summary
 from ..model.timefmt import format_count, resolve_zone, zone_label
 from ..workers.jobs import JobManager
-from ..workers.tasks import check_recording, open_recordings, pack_or_unpack, scan_and_open
+from ..workers.slices import SlicedRunner
+from ..workers.tasks import (
+    check_recording,
+    export_times,
+    open_recordings,
+    pack_or_unpack,
+    scan_and_open,
+)
+from .combined import CombinedTimelinePanel
 from .dialogs import PasswordDialog
 from .panels import (
     ChannelsPanel,
@@ -80,8 +107,68 @@ TABS = (
 )
 
 
+#: Wait this long after the last change before laying out the combined
+#: timeline again (a scan delivers recordings in quick bursts).
+LAYOUT_DELAY_MS = 120
+
+EXPORT_WARNING = (
+    "This file will contain the dates of the recordings, which can identify people. "
+    "Store it like the recordings themselves."
+)
+
+
 def _plural(n: int, one: str) -> str:
     return format_count(n, one)
+
+
+def coverage_status(entry: RecordingEntry) -> str:
+    """Whether a recording has times to draw, and if not, why."""
+    outcome = entry.outcome
+    if outcome is None or entry.busy == "Reading…":
+        return STATUS_READING
+    if outcome.needs_password:
+        return STATUS_WRONG_PASSWORD if outcome.wrong_password else STATUS_LOCKED
+    if outcome.details is None:
+        return STATUS_UNREADABLE
+    return STATUS_READY
+
+
+def file_name(entry: RecordingEntry) -> str:
+    """The recording's folder or file name, with its .mefd / .mefd.tar."""
+    return os.path.basename(os.path.normpath(entry.location))
+
+
+def timeline_labels(entries: list[RecordingEntry]) -> dict[str, str]:
+    """What to call each recording on the timeline: its name, as in the
+    list, unless another one has the same name (a folder and its
+    single-file copy): then its file name, and if that is still the same,
+    the name of the folder it is in. (Two recordings whose folders also
+    share a name still read the same; the tooltip and the list's full
+    location tell them apart.)"""
+    by_name: dict[str, list[RecordingEntry]] = {}
+    for e in entries:
+        by_name.setdefault(e.name.casefold(), []).append(e)
+    labels: dict[str, str] = {}
+    for group in by_name.values():
+        if len(group) == 1:
+            continue
+        files: dict[str, list[RecordingEntry]] = {}
+        for e in group:
+            files.setdefault(file_name(e).casefold(), []).append(e)
+        for same in files.values():
+            for e in same:
+                if len(same) == 1:
+                    labels[e.key] = file_name(e)
+                else:
+                    folder = os.path.basename(os.path.dirname(os.path.normpath(e.location)))
+                    labels[e.key] = f"{file_name(e)} in {folder}"
+    return labels
+
+
+def coverage_input(entry: RecordingEntry, label: str = "") -> RecordingInput:
+    status = coverage_status(entry)
+    details = entry.details if status == STATUS_READY else None
+    return RecordingInput(entry.key, entry.name, details, status, label)
 
 
 class _FitInner(QWidget):
@@ -330,7 +417,7 @@ class ExplorerPage(QWidget):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.selectionModel().currentRowChanged.connect(self._on_current_changed)
-        self.table.selectionModel().selectionChanged.connect(self._update_actions)
+        self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
         self.copy_button = QToolButton(self)
         self.copy_button.setText("Copy summary")
@@ -364,6 +451,24 @@ class ExplorerPage(QWidget):
         self.detail_heading = QLabel("", self)
         self.detail_heading.setFont(scaled_font(self, 1.25, bold=True))
         self.detail_heading.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Never wider than the room it gets: a long name is cut, not the window widened.
+        self.detail_heading.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.details_mode_button = QToolButton(self)
+        self.details_mode_button.setText("Details")
+        self.details_mode_button.setToolTip("The details of the recording selected in the list")
+        self.combined_mode_button = QToolButton(self)
+        self.combined_mode_button.setText("Combined timeline")
+        self.combined_mode_button.setToolTip(
+            "The selected recordings on one timeline (all of them when fewer than two are selected)"
+        )
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        for button in (self.details_mode_button, self.combined_mode_button):
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            self.mode_group.addButton(button)
+        self.details_mode_button.setChecked(True)
+        self.combined_mode_button.toggled.connect(self._on_mode_toggled)
         self.status_view = StatusView(self)
         self.status_view.unlock_requested.connect(lambda: self.unlock(self.current_entry()))
         self.status_view.check_requested.connect(lambda: self.check(self.current_entry()))
@@ -393,15 +498,38 @@ class ExplorerPage(QWidget):
         self.nothing_selected = QLabel("Select a recording in the list to see its details.")
         self.nothing_selected.setObjectName("Muted")
         self.nothing_selected.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.combined = CombinedTimelinePanel(self)
+        self.combined.recording_clicked.connect(self._on_combined_clicked)
+        self.combined.recording_activated.connect(self._on_combined_activated)
+        self.combined.export_requested.connect(lambda level: self.export_times(level))
         self.detail_stack = QStackedWidget(self)
         self.detail_stack.addWidget(self.nothing_selected)
         self.detail_stack.addWidget(self.status_view)
         self.detail_stack.addWidget(self.tabs)
+        self.detail_stack.addWidget(self.combined)
         detail_box = QWidget(self)
         detail_layout = QVBoxLayout(detail_box)
         detail_layout.setContentsMargins(0, int(em * 0.4), 0, 0)
-        detail_layout.addWidget(self.detail_heading)
+        heading_row = QHBoxLayout()
+        heading_row.setContentsMargins(0, 0, 0, 0)
+        heading_row.addWidget(self.detail_heading, 1)
+        heading_row.addWidget(self.details_mode_button)
+        heading_row.addWidget(self.combined_mode_button)
+        detail_layout.addLayout(heading_row)
         detail_layout.addWidget(self.detail_stack, 1)
+
+        # The combined timeline's layout: worked out in short slices, a
+        # moment after the last change, only while it is on screen.
+        self._layout_runner = SlicedRunner(self)
+        self._layout_runner.done.connect(self._on_layout_done)
+        self._layout_runner.failed.connect(lambda: self.combined.set_computing(False))
+        self._layout_timer = QTimer(self)
+        self._layout_timer.setSingleShot(True)
+        self._layout_timer.setInterval(LAYOUT_DELAY_MS)
+        self._layout_timer.timeout.connect(self._start_layout)
+        self._layout_dirty = True
+        self._layout_keys: tuple[str, ...] | None = None
+        self._coverage_cache: dict = {}
 
         self.splitter = QSplitter(Qt.Orientation.Vertical, self)
         self.splitter.setObjectName("ExplorerSplitter")
@@ -449,6 +577,7 @@ class ExplorerPage(QWidget):
         self.theme = theme
         self.drop_zone.set_theme(theme)
         self.timeline.set_theme(theme)
+        self.combined.set_theme(theme)
 
     def set_zone(self, zone: tzinfo) -> None:
         self.zone = zone
@@ -457,6 +586,7 @@ class ExplorerPage(QWidget):
         self.zone_caption.setText(caption)
         self.zone_caption.setToolTip(caption)
         self.model.set_zone(zone)
+        self.combined.set_zone(zone)
         self._fit_columns()
         self._show_current()
 
@@ -519,8 +649,17 @@ class ExplorerPage(QWidget):
         self._show_current()
         self._update_actions()
 
+    def _on_selection_changed(self, *_args) -> None:
+        self._update_actions()
+        self._schedule_layout()
+
     def _show_current(self) -> None:
         entry = self.current_entry()
+        if self.combined_mode_button.isChecked():
+            self.combined.set_current(entry.key if entry is not None else None)
+            self._show_combined_heading()
+            self.detail_stack.setCurrentWidget(self.combined)
+            return
         if entry is None:
             self.detail_heading.setText("")
             self.detail_stack.setCurrentWidget(self.nothing_selected)
@@ -540,6 +679,199 @@ class ExplorerPage(QWidget):
         if entry is self.current_entry():
             self._show_current()
         self._update_actions()
+        self._schedule_layout()
+
+    # ------------------------------------------------------------------
+    # The combined timeline
+    # ------------------------------------------------------------------
+    def timeline_entries(self) -> list[RecordingEntry]:
+        """The recordings on the combined timeline: the selected ones when
+        two or more are selected, otherwise every recording in the list."""
+        rows = self.table.selectionModel().selectedRows()
+        if len(rows) >= 2:
+            return [self.proxy.data(r, EntryRole) for r in rows]
+        return list(self.model.entries)
+
+    def _timeline_caption(self) -> str:
+        if len(self.table.selectionModel().selectedRows()) >= 2:
+            return "Showing the recordings selected in the list."
+        return "Showing every recording in the list. Select two or more to show only those."
+
+    def _show_combined_heading(self) -> None:
+        n = len(self.timeline_entries())
+        self.detail_heading.setText(f"{_plural(n, 'recording')} on one timeline")
+
+    def show_combined(self, combined: bool = True) -> None:
+        (self.combined_mode_button if combined else self.details_mode_button).setChecked(True)
+
+    def _on_mode_toggled(self, combined: bool) -> None:
+        if combined:
+            self._schedule_layout(now=True)
+        else:
+            # Laid out again when shown; nothing pending may touch the
+            # Details view meanwhile.
+            self._layout_timer.stop()
+            self._layout_runner.cancel()
+            self.combined.set_computing(False)
+            self._layout_dirty = True
+        self._show_current()
+
+    def _schedule_layout(self, now: bool = False) -> None:
+        self._layout_dirty = True
+        if not self.combined_mode_button.isChecked():
+            return  # worked out when it is shown
+        if now:
+            self._layout_timer.stop()
+            self._start_layout()
+        else:
+            self._layout_timer.start()
+
+    def _start_layout(self) -> None:
+        if not self._layout_dirty or not self.combined_mode_button.isChecked():
+            return  # (still dirty when hidden: laid out when shown)
+        self._layout_dirty = False
+        entries = self.timeline_entries()
+        labels = timeline_labels(entries)
+        items = [coverage_input(e, labels.get(e.key, "")) for e in entries]
+        keys = tuple(sorted(i.key for i in items))
+        cache = self._coverage_cache
+        self.combined.set_caption(self._timeline_caption())
+        self._show_combined_heading()
+        self.combined.set_computing(True)
+
+        def work():
+            layout, new_cache = yield from combine_steps(items, cache)
+            return layout, new_cache, keys
+
+        self._layout_runner.submit(work())
+
+    def _on_layout_done(self, result) -> None:
+        if result is None:
+            return
+        layout, cache, keys = result
+        # Keep what was worked out for every recording still listed, not
+        # only the ones shown: going back to all of them is then instant.
+        listed = {e.key for e in self.model.entries}
+        kept = {k: v for k, v in self._coverage_cache.items() if k in listed}
+        kept.update(cache)
+        self._coverage_cache = kept
+        # Fit when the set of recordings differs from the one on screen
+        # (not from the last one asked for: that one may have been dropped).
+        refit = keys != self._layout_keys
+        self._layout_keys = keys
+        self.combined.set_layout(layout, refit=refit)
+        entry = self.current_entry()
+        self.combined.set_current(entry.key if entry is not None else None)
+
+    def _on_combined_clicked(self, key: str) -> None:
+        entry = self.model.entry_for(key)
+        if entry is None:
+            return
+        if len(self.table.selectionModel().selectedRows()) >= 2:
+            # Keep the selection (it is what the timeline shows); only move
+            # the current recording, as Ctrl+arrow keys would.
+            row = self.model.row_of(entry)
+            index = self.proxy.mapFromSource(self.model.index(row, 0))
+            self.table.selectionModel().setCurrentIndex(
+                index, QItemSelectionModel.SelectionFlag.NoUpdate
+            )
+            self.table.scrollTo(index)
+        else:
+            self.select_entry(entry)
+
+    def _on_combined_activated(self, key: str) -> None:
+        self._on_combined_clicked(key)
+        self.show_combined(False)
+
+    # ------------------------------------------------------------------
+    # Save times as a table
+    # ------------------------------------------------------------------
+    def confirm_export(self, count: int, revealed: int, level: str = LEVEL_RECORDINGS) -> bool:
+        """The warning before a table with dates is written. ``revealed``:
+        how many rows will carry patient details (what Show revealed)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("The table will contain dates")
+        box.setText(EXPORT_WARNING)
+        more = (
+            f"It covers {_plural(count, 'recording')} and lists their names as the list shows them."
+        )
+        if level == LEVEL_PARTS:
+            more += " This table has no patient details."
+        elif revealed:
+            more += (
+                " You chose Show for the patient details of "
+                + ("this recording" if count == 1 else f"{revealed} of them")
+                + ", so those details are included too (names that need the full-access "
+                "password read locked). The others read [hidden]."
+            )
+        else:
+            more += " Patient details are not included: they read [hidden]."
+        box.setInformativeText(more)
+        save = box.addButton("Choose where to save…", QMessageBox.ButtonRole.AcceptRole)
+        keep = box.addButton("Don't save", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        return box.clickedButton() is save
+
+    def choose_export_path(self, level: str) -> str:
+        """Ask where to save; the dialog asks before replacing a file."""
+        dialog = QFileDialog(self, "Save the times as a table")
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilters(["Tables for spreadsheets (*.csv)"])
+        dialog.setDefaultSuffix("csv")
+        dialog.selectFile("recording-parts.csv" if level == LEVEL_PARTS else "recording-times.csv")
+        if not dialog.exec():
+            return ""
+        files = dialog.selectedFiles()
+        return files[0] if files else ""
+
+    def export_times(
+        self,
+        level: str = LEVEL_RECORDINGS,
+        entries: list[RecordingEntry] | None = None,
+        path: str | None = None,
+    ):
+        """Save the times of ``entries`` (default: the combined timeline's
+        recordings) as a CSV table. Returns the task's handle, or None."""
+        entries = self.timeline_entries() if entries is None else entries
+        if not entries:
+            return None
+        # What is saved is fixed NOW, before the dialogs: they let other
+        # events run (a re-read may finish meanwhile), and the warning must
+        # describe exactly the table that is written.
+        labels = timeline_labels(entries)
+        items = [
+            ExportItem(coverage_input(e, labels.get(e.key, "")), file_name(e), e.revealed)
+            for e in entries
+        ]
+        # Counted the way the table decides: whatever Show reveals is
+        # written for a recording that is open, even when only the basic
+        # password opened it (its description is then written; the names
+        # read "locked"). The per-part table has no patient details.
+        revealed = (
+            0
+            if level == LEVEL_PARTS
+            else sum(1 for i in items if i.revealed and i.recording.details is not None)
+        )
+        if not self.confirm_export(len(items), revealed, level):
+            return None
+        if path is None:
+            path = self.choose_export_path(level)
+            if not path:
+                return None
+        handle = self.jobs.submit(
+            "Saving the times of recordings as a table", export_times, items, self.zone, level, path
+        )
+
+        def done(rows: int) -> None:
+            handle.record.result_text = f"Saved a table with {_plural(rows, 'row')}"
+            self.status.emit(f"Saved the table ({_plural(rows, 'row')}).")
+
+        handle.succeeded.connect(done)
+        handle.failed.connect(self._show_message)
+        return handle
 
     # ------------------------------------------------------------------
     # Opening
@@ -697,6 +1029,8 @@ class ExplorerPage(QWidget):
             entry.outcome = outcome
             entry.busy = ""
             applied.append(entry)
+        if applied or added:
+            self._schedule_layout()
         if applied:
             self.model.refresh_all()
             current = self.current_entry()
@@ -906,6 +1240,7 @@ class ExplorerPage(QWidget):
         self._refresh_body()
         self._show_current()
         self._update_actions()
+        self._schedule_layout()
 
     # ------------------------------------------------------------------
     # Menus, messages, drag and drop
@@ -917,6 +1252,11 @@ class ExplorerPage(QWidget):
         menu.addAction("Check for problems", self.check_selected)
         menu.addAction("Copy summary as text", lambda: self.copy_summary("text"))
         menu.addAction("Copy summary as JSON", lambda: self.copy_summary("json"))
+        menu.addAction(
+            "Save their times as a table (CSV)…",
+            lambda: self.export_times(LEVEL_RECORDINGS, self.selected_entries()),
+        )
+        menu.addAction("Show them on one timeline", lambda: self.show_combined(True))
         menu.addSeparator()
         menu.addAction("Remove from the list", self.remove_selected)
         menu.popup(self.table.viewport().mapToGlobal(pos))

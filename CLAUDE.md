@@ -80,6 +80,13 @@ Code (app shell, #2/#3):
   note text are masked until "Show" per recording; Copy summary also hides
   names and dates. RTO != 0 = deprecated date masking: warn, never call it
   anonymized.
+- Combined timeline (explorer/combined.py + model/coverage.py): one row per
+  recording, metadata only; verified times only in the figures/overlaps.
+  Layout runs in slices on the GUI thread (workers/slices.py), NOT a Python
+  thread: a computing thread stalls the window through the GIL (measured
+  0.5 s). Painting is per pixel column (coverage.pixel_runs). CSV export
+  (model/export.py): warn first, Show policy for patient details, safe cells,
+  temp file + rename. Every Explorer table aligns headings like cells (test).
 - Anonymizer (#5): `model/shiftplan.py` is the time-shift PLANNER (step 2),
   pure data in/out: `plan_shifts([RecordingTimes], ShiftSettings) ->
   ShiftPlan` with per-recording `shift_us`, warnings/blockers/refusals as

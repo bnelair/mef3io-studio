@@ -48,6 +48,8 @@ the result of the last check for problems.
 - Select several rows with Ctrl (⌘ on a Mac) or Shift.
 - **Remove from the list** only removes rows from the list. Nothing is
   deleted.
+- Numbers (duration, channels, sampling rate, size) line up on the right
+  under their headings; names and times on the left.
 
 ### Times and time zones
 
@@ -85,6 +87,90 @@ Select a recording to see its details in the tabs below the list:
 | **Check for problems** | Compares what the recording says about itself with its data. Choose **Check now**; the results are explained in plain words, with the technical details one click away. Checking never changes the recording |
 
 ![The timeline of a recording with a gap between its two parts.](img/screenshots/explorer-timeline-light.png)
+
+### Several recordings on one timeline
+
+Choose **Combined timeline** (next to **Details**, above the tabs) to see
+several recordings together, **one row per recording**, on one shared time
+line:
+
+- **Which recordings:** the ones selected in the list when you select two or
+  more (Ctrl or Shift); otherwise every recording in the list.
+- **Rows are in time order.** Recordings whose times are unverified come
+  after the others, and recordings with nothing to draw (still being read,
+  locked, or not readable) come last, each with a line saying why.
+- **What the bars mean:**
+  - **dark:** every channel of the recording has data at that time;
+  - **light:** only some of its channels do;
+  - **striped:** a part with gaps inside it (where exactly is not known
+    without reading more of the recording);
+  - **a thin line** between bars: a gap inside the recording;
+  - **red:** time that more than one recording covers (a band under the time
+    scale, and a line under each recording concerned);
+  - **grey and dotted, labelled "unverified time":** the times may not be the
+    real ones (see *Times and time zones*). These are drawn so you can see
+    them, but they are **not counted** in the figures and never flagged as
+    overlapping.
+- **The figures beside it** are worked out across the recordings with
+  verified times: first and last time, the time from first to last, the time
+  with data, and the gaps between recordings.
+- **Overlaps are flagged plainly.** Two recordings that cover the same time
+  have been made at the same time (for example on two beds), or they may be
+  copies of each other, for example a folder and its single-file copy. When nearly all
+  of the shorter one is shared and the channels are the same, the warning
+  says they may be copies. Where two recordings have the same name, the
+  timeline shows their file names (with `.mefd` or `.mefd.tar`) to tell them
+  apart. When very many recordings share time, they are counted but not
+  listed in pairs.
+- **Zoom and move:** turn the mouse wheel over the bars to zoom in or out
+  around the pointer, drag to move along the time line, and use **Fit all**
+  (or the Home key) to see everything again. Over the names, the mouse wheel
+  scrolls through the rows when they don't all fit.
+- **Point at a bar** to see the stretch's start, end and length, and how many
+  of the recording's channels have data there. **Click a row** to select that
+  recording in the list; **double-click** it to open its details.
+
+Times are shown in the chosen time zone, with the offset, like everywhere
+else. Like the rest of the page, the timeline is drawn from what the app has
+already read: no signal is loaded. Patient details are not part of this view.
+
+![Six recordings on one timeline: two overlap, one has only some channels in its second part, one has gaps inside a part, one has unverified times and one is locked.](img/screenshots/explorer-combined-light.png)
+
+### Save times as a table
+
+**Save times as a table** (on the combined timeline) writes the start and end
+times of those recordings to a CSV file that opens in Excel, LibreOffice and
+other spreadsheet programs. Right-click the list for **Save their times as a
+table (CSV)…** to save just the selected recordings. Two layouts:
+
+- **One row per recording** (the usual choice): name, file name, start, end,
+  duration, channels, sampling rates, number of parts, time with data, gaps
+  between parts, parts with gaps inside them, and which other recordings in
+  the table cover the same time, and for how long.
+- **One row per part of each channel:** recording, channel, part number,
+  start, end, duration, samples, sampling rate, and whether the part has gaps
+  inside it.
+
+Every time is written in **UTC** (for example `2000-01-06T07:00:00Z`) and as a
+whole number of **microseconds since 1970 in UTC**, which converts back
+exactly in scripts. (Spreadsheet programs keep only 15 digits of a number and
+round these; import that column as text to keep it exact.) When you have chosen a site time zone, the table also has the time
+in that zone with its offset (for example `2000-01-06T08:00:00+01:00`).
+
+- **Before saving, the app warns you:** *"This file will contain the dates of
+  the recordings, which can identify people. Store it like the recordings
+  themselves."*
+- **Patient details** are included only for recordings where you chose
+  **Show**; for the others the columns read `[hidden]`.
+- **Unverified times** are marked in the `times_verified` and `time_note`
+  columns and never counted as overlapping. Recordings that are locked or
+  could not be opened get a row saying so, without times.
+- The file is written under a temporary name and only takes its final name
+  when it is complete; stopping the task leaves nothing behind. The save
+  dialog asks before replacing a file.
+- Text cells that a spreadsheet would treat as a formula (starting with `=`,
+  `+`, `-` or `@`, for example a strange file name) get a `'` in front, so
+  opening the table never runs anything.
 
 ### Patient details stay hidden
 

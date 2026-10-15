@@ -103,6 +103,8 @@ QPushButton:hover, QToolButton:hover { background: $hover; }
 QPushButton:pressed, QToolButton:pressed { background: $accent_soft; }
 QPushButton:focus, QToolButton:focus { border: 2px solid $accent; }
 QPushButton:disabled, QToolButton:disabled { color: $muted; }
+QToolButton:checked { background: $accent_soft; border: 1px solid $accent; }
+QToolButton:checked:focus { border: 2px solid $accent; }
 QPushButton[primary="true"] { background: $accent; color: $accent_text; border-color: $accent; }
 QToolButton#StatusButton { border: 2px solid transparent; padding: 0.1em 0.4em; background: transparent; }
 QToolButton#StatusButton:hover { background: $hover; }

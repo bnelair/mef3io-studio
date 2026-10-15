@@ -350,7 +350,9 @@ def test_number_formats():
     assert format_span(3 * 3600 + 120) == "3 h 02 min"
     assert format_span(2 * 86400 + 4 * 3600) == "2 days 4 h"
     assert format_size(41_442_800) == "41.4 MB"
-    assert format_rates([256.0, 512.0]) == "256 Hz, 512 Hz"
+    assert format_rates([256.0, 512.0]) == "256 / 512 Hz"
+    assert format_rates([512.0, 8000.0]) == "512 Hz / 8 kHz"
+    assert format_rates([8000.0]) == "8 kHz"
     assert format_rates([1, 2, 3, 4]) == "1 Hz to 4 Hz (4 different)"
 
 

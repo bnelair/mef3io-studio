@@ -42,6 +42,7 @@ from ..model.timefmt import (
     zone_label,
 )
 from .state import RecordingEntry
+from .table import column_alignment, tabular_font
 from .timeline import TimelineWidget
 
 HIDDEN = "Hidden"
@@ -118,7 +119,11 @@ class RowsModel(QAbstractTableModel):
         self.display = display
         self.key = key
         self.objects: list = []
+        #: Columns of quantities (right-aligned); the rest are left-aligned.
         self.right_aligned: set[int] = set()
+        #: Columns of times, drawn with digits of equal width.
+        self.time_columns: set[int] = set()
+        self._time_font = None
         self._sorted: tuple[int, Qt.SortOrder] | None = None
 
     def rowCount(self, parent=QModelIndex()):  # noqa: B008, N802
@@ -128,8 +133,12 @@ class RowsModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self.columns)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802
-        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+        if orientation != Qt.Orientation.Horizontal:
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
             return self.columns[section]
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return column_alignment(section, self.right_aligned)
         return None
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
@@ -137,8 +146,15 @@ class RowsModel(QAbstractTableModel):
             return None
         if role == Qt.ItemDataRole.DisplayRole:
             return self.display(self.objects[index.row()], index.column())
-        if role == Qt.ItemDataRole.TextAlignmentRole and index.column() in self.right_aligned:
-            return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return column_alignment(index.column(), self.right_aligned)
+        if role == Qt.ItemDataRole.FontRole and index.column() in self.time_columns:
+            if self._time_font is None:
+                self._time_font = tabular_font()
+            return self._time_font
+        if role == Qt.ItemDataRole.ToolTipRole:
+            # The full text, for a cell too narrow to show all of it.
+            return self.display(self.objects[index.row()], index.column()) or None
         return None
 
     def set_objects(self, objects: list) -> None:
@@ -332,6 +348,7 @@ class ChannelsPanel(QWidget):
         self.zone: tzinfo = UTC
         self.table = RowsTable(self.COLUMNS, self._display, self._key)
         self.table.rows.right_aligned = {1, 3, 4}
+        self.table.rows.time_columns = {5, 6}
         layout = QVBoxLayout(self)
         layout.addWidget(self.table)
 
@@ -447,6 +464,8 @@ class NotesPanel(QWidget):
         self.zone: tzinfo = UTC
         self.revealed = False
         self.table = RowsTable(self.COLUMNS, self._display, self._key)
+        self.table.rows.right_aligned = {4}
+        self.table.rows.time_columns = {0}
         self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.problem_slot = QVBoxLayout()
         layout = QVBoxLayout(self)

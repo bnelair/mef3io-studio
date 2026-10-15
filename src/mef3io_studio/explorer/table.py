@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, tzinfo
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
+from PySide6.QtGui import QFont
 
 from ..model.recording import ACCESS_BASIC
 from ..model.summary import unverified_note
@@ -32,7 +33,28 @@ COLUMNS = (
     "Problems",
 )
 EntryRole = Qt.ItemDataRole.UserRole + 1
-_NUMERIC = {COL_DURATION, COL_CHANNELS, COL_SIZE}
+#: Quantities line up on the right, text and times on the left; the heading
+#: of each column is aligned like its cells.
+_NUMERIC = {COL_DURATION, COL_CHANNELS, COL_RATES, COL_SIZE}
+_TIMES = {COL_START, COL_END}
+ALIGN_LEFT = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+ALIGN_RIGHT = int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+
+def column_alignment(col: int, numeric=_NUMERIC) -> int:
+    """One alignment per column, used for its heading and its cells."""
+    return ALIGN_RIGHT if col in numeric else ALIGN_LEFT
+
+
+def tabular_font(base: QFont | None = None) -> QFont:
+    """The font with digits of equal width (OpenType "tnum"), so times in a
+    column line up; unchanged where the font has no such digits."""
+    font = QFont(base) if base is not None else QFont()
+    try:
+        font.setFeature(QFont.Tag("tnum"), 1)
+    except (AttributeError, TypeError, ValueError):  # Qt before 6.7
+        pass
+    return font
 
 
 def status_text(entry: RecordingEntry) -> str:
@@ -52,6 +74,7 @@ class RecordingTableModel(QAbstractTableModel):
         self.entries: list[RecordingEntry] = []
         self._rows: dict[str, int] = {}
         self.zone: tzinfo = UTC
+        self._time_font: QFont | None = None
 
     # -- Qt model API ---------------------------------------------------
     def rowCount(self, parent=QModelIndex()):  # noqa: B008, N802
@@ -67,6 +90,8 @@ class RecordingTableModel(QAbstractTableModel):
             if section in (COL_START, COL_END):
                 return f"{COLUMNS[section]} ({zone_label(self.zone)})"
             return COLUMNS[section]
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return column_alignment(section)
         if role == Qt.ItemDataRole.ToolTipRole and section in (COL_START, COL_END):
             return f"Times are shown in {zone_label(self.zone)}. Change it under View > Time zone."
         return None
@@ -80,10 +105,15 @@ class RecordingTableModel(QAbstractTableModel):
             return entry
         if role == Qt.ItemDataRole.DisplayRole:
             return self.display(entry, col)
-        if role == Qt.ItemDataRole.TextAlignmentRole and col in _NUMERIC:
-            return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return column_alignment(col)
+        if role == Qt.ItemDataRole.FontRole and col in _TIMES:
+            if self._time_font is None:
+                self._time_font = tabular_font()
+            return self._time_font
         if role == Qt.ItemDataRole.ToolTipRole:
-            return self.tooltip(entry, col)
+            # The full text, for a cell too narrow to show all of it.
+            return self.tooltip(entry, col) or self.display(entry, col) or None
         return None
 
     # -- what each cell says ------------------------------------------------
