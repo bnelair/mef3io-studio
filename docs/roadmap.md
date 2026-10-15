@@ -8,17 +8,17 @@ library side. The library work always lands in mef3io **before** the app uses it
 
 Shipped **only as installers** (Windows `.exe`, macOS, Linux) on GitHub Releases. Not on PyPI.
 
-| Step | Where | What |
-|---|---|---|
-| 0 | mef3io | Record handling fixed: [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62), [#63](https://github.com/bnelair/mef3io/issues/63) |
-| 1 | mef3io | `inspect()` [#67](https://github.com/bnelair/mef3io/issues/67), cancellation and progress [#69](https://github.com/bnelair/mef3io/issues/69), `anonymize_session` + `verify` [#70](https://github.com/bnelair/mef3io/issues/70), `time_range` + `rename_session` + `fix_name_drift` [#72](https://github.com/bnelair/mef3io/issues/72), `transform_session` + `edit_metadata` [#73](https://github.com/bnelair/mef3io/issues/73), released as **mef3io 1.3** |
-| 2 | studio | App shell, background jobs, privacy-safe logging, settings |
-| 3 | studio | **Installers** for Windows, macOS and Linux, built in CI. Done early, so packaging and signing problems surface before the features exist |
-| 4 | studio | **Explorer** (metadata), plus **ordering and safe renaming** of sessions ([#12](https://github.com/bnelair/mef3io-studio/issues/12); needs [mef3io#72](https://github.com/bnelair/mef3io/issues/72)) |
-| 5 | studio | **Metadata view and edit** ([#14](https://github.com/bnelair/mef3io-studio/issues/14)); timestamps never editable |
-| 6 | studio | **Passwords** ([#15](https://github.com/bnelair/mef3io-studio/issues/15)) and **channel presets + batch conversion** ([#16](https://github.com/bnelair/mef3io-studio/issues/16)) |
-| 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) |
-| 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release |
+| Step | Where | What | Status |
+|---|---|---|---|
+| 0 | mef3io | Record handling fixed: [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62), [#63](https://github.com/bnelair/mef3io/issues/63) | Done |
+| 1 | mef3io | `inspect()` [#67](https://github.com/bnelair/mef3io/issues/67), cancellation and progress [#69](https://github.com/bnelair/mef3io/issues/69), `anonymize_session` + `verify` [#70](https://github.com/bnelair/mef3io/issues/70), `time_range` + `rename_session` + `fix_name_drift` [#72](https://github.com/bnelair/mef3io/issues/72), `transform_session` + `edit_metadata` [#73](https://github.com/bnelair/mef3io/issues/73), released as **mef3io 1.3** | In progress (work on #67 and #69 is under way in mef3io, not yet released); the app uses temporary stand-ins for both until mef3io 1.3 |
+| 2 | studio | App shell, background jobs, privacy-safe logging, settings | Done |
+| 3 | studio | **Installers** for Windows, macOS and Linux, built in CI. Done early, so packaging and signing problems surface before the features exist | Done; code signing still open |
+| 4 | studio | **Explorer** (metadata), plus **ordering and safe renaming** of sessions ([#12](https://github.com/bnelair/mef3io-studio/issues/12); needs [mef3io#72](https://github.com/bnelair/mef3io/issues/72)) | Explore page done; ordering and renaming planned |
+| 5 | studio | **Metadata view and edit** ([#14](https://github.com/bnelair/mef3io-studio/issues/14)); timestamps never editable | Planned |
+| 6 | studio | **Passwords** ([#15](https://github.com/bnelair/mef3io-studio/issues/15)) and **channel presets + batch conversion** ([#16](https://github.com/bnelair/mef3io-studio/issues/16)) | Planned |
+| 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) | Started |
+| 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release | Started (user guide for the Explore page) |
 
 ## Next directions (each needs a specification first)
 

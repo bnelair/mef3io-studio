@@ -2,9 +2,12 @@
 
 **A desktop app for exploring, organizing, protecting and anonymizing MEF 3.0 recordings, with no programming needed.**
 
-> **Status: early development.** The app shell and the installers exist; the
-> Explorer and Anonymizer are being built. Follow the
-> [roadmap](docs/roadmap.md) or the [tracking issue](https://github.com/bnelair/mef3io-studio/issues/1).
+[![Latest release](https://img.shields.io/github/v/release/bnelair/mef3io-studio?include_prereleases&label=latest%20test%20version)](https://github.com/bnelair/mef3io-studio/releases)
+[![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
+[![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
+
+The app is in early development: test versions are available, and some
+features below are still being built. See [Project status](#project-status).
 
 ## Getting the app
 
@@ -13,7 +16,7 @@ Download the installer for your computer from the
 
 | Computer | File | Needs |
 |---|---|---|
-| Windows | `mef3io-studio-<version>-windows-x64-setup.exe` (installs without administrator rights) | Windows 10 or 11, 64-bit |
+| Windows | `mef3io-studio-<version>-windows-x64-setup.exe` (installs without administrator rights), or the `-portable.zip` (no installation) | Windows 10 or 11, 64-bit |
 | Mac | `mef3io-studio-<version>-macos-arm64.dmg` (Apple silicon) or `-macos-x86_64.dmg` (Intel) | **macOS 14 (Sonoma) or later** |
 | Linux | `mef3io-studio-<version>-linux-x86_64.AppImage` (or the `.tar.gz`) | a desktop Linux from 2021 or later: Ubuntu 22.04+, Debian 12+, RHEL / Rocky / Alma 9+, Fedora 35+ |
 
@@ -92,7 +95,8 @@ After that, local times are correct across daylight-saving changes.
 
 You can also **pack** a recording into one file, or **unpack** it again.
 
-The Explorer is available in development builds; see the
+The Explore page is in the test versions on the
+[Releases page](https://github.com/bnelair/mef3io-studio/releases); see the
 [user guide](docs/user-guide.md#explore-recordings).
 
 **2. Order and rename.** Got a folder of sessions whose names are long random
@@ -247,7 +251,8 @@ src/mef3io_studio/
   workers/      background jobs on QThreadPool: throttled progress, cancel, errors
   common/       privacy log filter, settings (preferences only), theme, icons,
                 activity panel
-  explorer/, anonymizer/   placeholders for the next roadmap steps
+  explorer/     the Explore page (list, details, timeline, pack/unpack)
+  anonymizer/   placeholder for a later roadmap step
 packaging/      PyInstaller spec, Inno Setup script, dmg and AppImage scripts
 ```
 
@@ -285,6 +290,36 @@ LGPL v3; Help → About says so and links to the licence texts and sources.
 
 The library side of the plan is tracked in
 [mef3io#71](https://github.com/bnelair/mef3io/issues/71).
+
+### Make a release
+
+1. **Revise the documentation first (required).** Open a pull request that
+   checks everything people read against the app that is about to ship: this
+   README, [docs/user-guide.md](docs/user-guide.md) and its screenshots
+   (`docs/img/screenshots/`), the texts the installers show
+   (`packaging/windows/mef3io-studio.iss`, `packaging/linux/mef3io-studio.desktop`,
+   the release notes text in `.github/workflows/build.yml`), the app's own
+   description (`--help`, in `src/mef3io_studio/app.py`), and
+   [docs/roadmap.md](docs/roadmap.md) including its Status column. Have it
+   reviewed and merge it before tagging.
+2. Set the new version in `VERSION` in its own pull request and merge it.
+3. Tag the resulting commit on `main` and push the tag:
+   `git switch main && git pull && git tag v$(cat VERSION) && git push origin v$(cat VERSION)`.
+   `build.yml` builds and tests every installer and, only if the tag matches
+   `VERSION` (checked after the builds), publishes them as a GitHub
+   pre-release with `SHA256SUMS`. Every release is published as a
+   pre-release; to mark a final version, edit the release on GitHub afterwards.
+
+## Project status
+
+mef3io-studio is in **early development**. The app, its installers and the
+Explore page are ready to try. Still to come for the first full release:
+ordering and renaming recordings, viewing and editing details, adding or
+removing passwords, choosing channels and converting in batches, and
+anonymizing (work on anonymizing has started). Test versions are published on the
+[Releases page](https://github.com/bnelair/mef3io-studio/releases) as
+pre-releases. Progress is tracked in the [roadmap](docs/roadmap.md) and the
+[tracking issue](https://github.com/bnelair/mef3io-studio/issues/1).
 
 ## License
 
