@@ -2,9 +2,12 @@
 
 **A desktop app for exploring, organizing, protecting and anonymizing MEF 3.0 recordings, with no programming needed.**
 
-> **Status: early development.** The app shell and the installers exist; the
-> Explorer and Anonymizer are being built. Follow the
-> [roadmap](docs/roadmap.md) or the [tracking issue](https://github.com/bnelair/mef3io-studio/issues/1).
+[![Latest release](https://img.shields.io/github/v/release/bnelair/mef3io-studio?include_prereleases&label=latest%20release)](https://github.com/bnelair/mef3io-studio/releases)
+[![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installers)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
+[![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
+
+The app is in early development: test versions are available, and some
+features below are still being built. See [Project status](#project-status).
 
 ## Getting the app
 
@@ -285,6 +288,30 @@ LGPL v3; Help → About says so and links to the licence texts and sources.
 
 The library side of the plan is tracked in
 [mef3io#71](https://github.com/bnelair/mef3io/issues/71).
+
+### Make a release
+
+1. **Revise the documentation first (required).** Open a pull request that
+   checks everything people read against the app that is about to ship: this
+   README, [docs/user-guide.md](docs/user-guide.md) and its screenshots
+   (`docs/img/screenshots/`), the texts the installers show
+   (`packaging/windows/mef3io-studio.iss`, `packaging/linux/mef3io-studio.desktop`,
+   the release notes text in `.github/workflows/build.yml`), and
+   [docs/roadmap.md](docs/roadmap.md). Have it reviewed and merge it before
+   tagging.
+2. Set the new version in `VERSION` in its own pull request and merge it.
+3. Tag that commit `v<VERSION>` (for example `v0.1.0.dev1`) and push the tag.
+   `build.yml` checks that the tag matches `VERSION`, builds and tests every
+   installer, and publishes them as a GitHub pre-release with `SHA256SUMS`.
+
+## Project status
+
+mef3io-studio is in **early development**. The app, its installers and the
+Explore page exist; organizing, editing details, passwords and anonymizing
+are being built. Test versions are published on the
+[Releases page](https://github.com/bnelair/mef3io-studio/releases) as
+pre-releases. Progress is tracked in the [roadmap](docs/roadmap.md) and the
+[tracking issue](https://github.com/bnelair/mef3io-studio/issues/1).
 
 ## License
 
