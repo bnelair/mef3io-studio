@@ -815,8 +815,11 @@ def overlap_text(layout: CombinedLayout, limit: int = 2) -> str:
         pairs.append(format_count(more, "more pair"))
     head = "Some of these recordings cover the same time: " + "; ".join(pairs) + "."
     if any(o.may_be_copies for o in ordered):
-        return head + (
+        tail = (
             " Recordings that share nearly all their time and the same channels may be "
-            "copies of each other; others were made at the same time."
+            "copies of each other"
         )
+        if not all(o.may_be_copies for o in ordered):
+            tail += "; the others were probably made at the same time"
+        return head + tail + "."
     return head + " This happens with recordings made at the same time, or with copies."
