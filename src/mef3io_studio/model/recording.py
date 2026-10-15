@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass, field
 
 from .errors import UserMessage
+from .text import technical
 
 #: Recording suffixes, longest first (mef3io enforces them, case-insensitively).
 SUFFIXES = (".mefd.tar", ".mefd")
@@ -48,13 +49,14 @@ def is_recording_location(location: str) -> bool:
     return lowered.endswith(SUFFIXES)
 
 
-#: Everyday words for what mef3io records having done to a file.
+#: Everyday words for what mef3io records having done to a file (the keys
+#: are mef3io's operation names).
 OPERATION_WORDS = {
     "create": "created",
     "append": "added to",
-    "header-repair": "details fixed",
+    technical("header-repair"): "details fixed",
     "recovery": "rescued after an interrupted write",
-    "segment-repaired": "an earlier part was fixed",
+    technical("segment-repaired"): "an earlier part was fixed",
 }
 
 
