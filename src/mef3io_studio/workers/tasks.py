@@ -57,8 +57,10 @@ def _inspect(ctx: JobContext, source: RecordingSource, requests: list[tuple[str,
     # The log filter learns names and passwords here, on this worker thread:
     # registering rebuilds the filter's pattern, which must never stall the
     # window.
-    for location, password in requests:
-        register_identity(recording_name(location), password)
+    register_identity(
+        *(recording_name(location) for location, _password in requests),
+        *(password for _location, password in requests),
+    )
 
     def got(outcome: InspectOutcome) -> None:
         register_identity(outcome.name)

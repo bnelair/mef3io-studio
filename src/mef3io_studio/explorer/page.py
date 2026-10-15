@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
     QFrame,
-    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMenu,
@@ -230,14 +229,12 @@ class ExplorerPage(QWidget):
         self.zone_button = QToolButton(self)
         self.zone_button.setText("Change…")
         self.zone_button.setToolTip("Choose the time zone the times are shown in")
-        # The caption takes the free room and is cut short rather than make
-        # the window wider (laptops, large text).
-        self.zone_caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.zone_caption.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        toolbar = QHBoxLayout()
+        # A row that wraps rather than make the window wider (laptops,
+        # large text): the buttons first, then where times are shown.
+        toolbar = FlowLayout()
         toolbar.addWidget(self.open_button)
         toolbar.addWidget(self.scan_button)
-        toolbar.addWidget(self.zone_caption, 1)
+        toolbar.addWidget(self.zone_caption)
         toolbar.addWidget(self.zone_button)
 
         # -- the list ------------------------------------------------------------
@@ -258,7 +255,7 @@ class ExplorerPage(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setResizeContentsPrecision(40)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.selectionModel().currentRowChanged.connect(self._on_current_changed)
@@ -576,8 +573,9 @@ class ExplorerPage(QWidget):
             self._show_current()
 
     def _fit_columns(self) -> None:
-        if len(self.model.entries) <= 500:  # beyond that, keep it cheap
-            self.table.resizeColumnsToContents()
+        # Measured from a sample of rows (setResizeContentsPrecision), so
+        # this stays cheap however many recordings are listed.
+        self.table.resizeColumnsToContents()
 
     def _on_outcomes(
         self,
@@ -591,6 +589,9 @@ class ExplorerPage(QWidget):
         only to rows that task still owns."""
         added: list[RecordingEntry] = []
         applied: list[RecordingEntry] = []
+        # One re-sort for the whole batch, not one per recording (each would
+        # re-sort the list on the GUI thread).
+        self.proxy.setDynamicSortFilter(False)
         for outcome in outcomes:
             # (The task registered every identifying value with the log
             # filter before publishing it, on its own thread.)
@@ -608,12 +609,18 @@ class ExplorerPage(QWidget):
             entry.outcome = outcome
             entry.busy = ""
             applied.append(entry)
-            self._entry_changed(entry)
+        if applied:
+            self.model.refresh_all()
+            current = self.current_entry()
+            if current is not None and current in applied:
+                self._show_current()
+            self._update_actions()
         if added:
             self.model.add(added)
             self._refresh_body()
             if self.current_entry() is None:
                 self.select_entry(added[0])
+        self.proxy.setDynamicSortFilter(True)  # sorts once, now
         self._fit_columns()
         for entry in applied:
             if prompt and entry.needs_password:

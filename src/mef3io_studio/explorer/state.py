@@ -33,13 +33,11 @@ class RecordingEntry:
     #: The id of the opening task that owns this row (None when none does).
     open_job: int | None = None
 
-    @property
-    def key(self) -> str:
-        return location_key(self.location)
-
-    @property
-    def name(self) -> str:
-        return recording_name(self.location)
+    def __post_init__(self) -> None:
+        # Computed once: sorting asks for these thousands of times.
+        self.key = location_key(self.location)
+        self.name = recording_name(self.location)
+        self.sort_name = self.name.casefold()
 
     @property
     def details(self):

@@ -62,7 +62,10 @@ Code (app shell, #2/#3):
   readline, libstdc++; `packaging/check_bundle.py` enforces it in CI, plus
   THIRD_PARTY_LICENSES. Linux is built in AlmaLinux 9 (glibc 2.34 = PySide6
   6.12's own floor).
-- Anything identifying the app learns → `common.privacy.register_identity()`.
+- Anything identifying the app learns → `common.privacy.register_identity()`,
+  called from task threads (workers/tasks.py), never the GUI thread.
+  Exception: note text is NOT registered (masked in the UI, never logged;
+  thousands per recording).
   Never log paths or recording contents.
 - New preferences must be declared in `common/settings.PREFERENCES` (UI only).
 - Look: Fusion + palette + QSS in `common/theme.py`; icons are bundled SVGs

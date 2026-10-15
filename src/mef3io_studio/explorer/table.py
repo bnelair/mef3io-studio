@@ -151,9 +151,9 @@ class RecordingTableModel(QAbstractTableModel):
         for rows without one, so those sort last."""
         entry = self.entries[row]
         outcome, details = entry.outcome, entry.details
-        missing = (1, entry.name.casefold())
+        missing = (1, entry.sort_name)
         if col == COL_NAME:
-            return (0, entry.name.casefold())
+            return (0, entry.sort_name)
         if col == COL_SIZE:
             if outcome is None or outcome.size_bytes is None:
                 return missing
@@ -207,6 +207,12 @@ class RecordingTableModel(QAbstractTableModel):
         self.entries = [e for e in self.entries if e.key not in doomed]
         self._rows = {e.key: i for i, e in enumerate(self.entries)}
         self.endResetModel()
+
+    def refresh_all(self) -> None:
+        if self.entries:
+            self.dataChanged.emit(
+                self.index(0, 0), self.index(len(self.entries) - 1, len(COLUMNS) - 1)
+            )
 
     def refresh(self, entry: RecordingEntry) -> None:
         row = self.row_of(entry)

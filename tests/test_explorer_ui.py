@@ -432,29 +432,50 @@ def test_an_older_task_cannot_remove_a_reopened_recording(page, qtbot, tmp_path)
     assert page.entries()[0].details is not None
 
 
-def test_many_notes_never_stall_the_window(page, qtbot, tmp_path):
-    """Regression (review round 2): what the log filter learns is registered
-    on the task's thread, and note text is not registered at all."""
+@pytest.mark.parametrize("count", [800, 20_000])
+def test_many_notes_never_stall_the_window(page, qtbot, tmp_path, count):
+    """Regression (review rounds 2 and 3): what the log filter learns is
+    registered on the task's thread, note text is not registered, and the
+    notes table formats only the rows on screen and sorts with one list
+    sort. Measured with a UI timer that is already ticking before each
+    action: opening, sorting by text, Show and Hide."""
     import time
 
     from PySide6.QtCore import QTimer
 
     path = write_plain(tmp_path / "busy.mefd", notes=False)
     with mef3io.Writer(str(path)) as w:
-        w.write_annotations([{"time": T0 + i * 10_000, "text": f"event {i}"} for i in range(800)])
+        w.write_annotations([{"time": T0 + i * 1000, "text": f"event {i}"} for i in range(count)])
     ticks = []
     timer = QTimer()
-    timer.setInterval(20)
+    timer.setInterval(10)
     timer.timeout.connect(lambda: ticks.append(time.monotonic()))
     timer.start()
-    page.open_paths([str(path)], interactive=False)
-    wait_loaded(qtbot, page, 1)
-    page.select_entry(page.entries()[0])
-    qtbot.wait(100)
+    qtbot.wait(50)
+
+    def max_gap(action):
+        start = len(ticks)
+        action()
+        qtbot.wait(60)
+        window = ticks[max(0, start - 1) :]
+        return max(b - a for a, b in zip(window, window[1:], strict=False))
+
+    def open_it():
+        page.open_paths([str(path)], interactive=False)
+        wait_loaded(qtbot, page, 1, timeout=120_000)
+        page.select_entry(page.entries()[0])
+        page.tabs.setCurrentWidget(page.notes)
+
+    gaps = {
+        "open": max_gap(open_it),
+        "sort": max_gap(lambda: page.notes.table.sortByColumn(3, Qt.SortOrder.DescendingOrder)),
+        "show": max_gap(page.patient.button.click),
+        "hide": max_gap(page.patient.button.click),
+    }
     timer.stop()
-    assert len(page.entries()[0].details.notes) == 800
-    gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
-    assert gaps and max(gaps) < 0.5, max(gaps)
+    assert page.notes.table.rowCount() == count
+    assert page.notes.table.text(0, 3) == HIDDEN
+    assert max(gaps.values()) < 0.5, gaps
 
 
 def test_summaries_of_several_hidden_recordings_are_numbered(page, qtbot, tmp_path):

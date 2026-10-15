@@ -30,6 +30,7 @@ No Qt, no knowledge of MEF bytes.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 import threading
@@ -165,15 +166,23 @@ def _identity_pattern(value: str) -> str:
     return r"[\W_]*".join(re.escape(part) for part in parts)
 
 
-def _skeleton(text: str) -> tuple[str, list[int]]:
+#: Marks that ride on a letter (Mn, Me: accents, enclosing circles, the
+#: combining grapheme joiner, variation selectors) and invisible format
+#: characters (Cf: zero-width spaces and joiners, soft hyphens).
+_INVISIBLE = {"Mn", "Me", "Cf"}
+
+
+def _skeleton(text: str) -> tuple[str, list[int] | range]:
     """``text`` without combining marks and invisible format characters
     (zero-width spaces, soft hyphens), plus where each kept character sits in
     ``text``. Identities are matched on the skeleton, so accents and hidden
     characters can't split a name, and their pattern stays small (cheap to
     compile)."""
+    if text.isascii():  # the usual log line: nothing to drop
+        return text, range(len(text))
     kept, where = [], []
     for i, ch in enumerate(text):
-        if unicodedata.combining(ch) or unicodedata.category(ch) == "Cf":
+        if unicodedata.category(ch) in _INVISIBLE:
             continue
         kept.append(ch)
         where.append(i)
@@ -185,20 +194,23 @@ class IdentityRegistry:
 
     Each value is compiled once, on its own, when it is registered (cost
     independent of how many are already known); a log line is checked
-    against each. One combined pattern would have to be recompiled on every
-    registration, which grows with every recording opened and, since
+    against those whose first part occurs in it. One combined pattern would
+    have to be recompiled on every registration, which grows with every recording opened and, since
     compiling holds the GIL, would stall the window.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._keys: set[str] = set()
-        #: (pattern length, compiled), longest first so the longest match wins.
-        self._regexes: list[tuple[int, re.Pattern[str]]] = []
+        #: (pattern length, first part, compiled), longest first.
+        self._regexes: list[tuple[int, str, re.Pattern[str]]] = []
 
     def register(self, *values: object) -> None:
-        new = []
+        # Everything under the lock: a second registration of the same value
+        # must not return before that value is actually redacted. One small
+        # pattern compiles in well under a millisecond.
         with self._lock:
+            regexes = list(self._regexes)  # readers keep using the old list
             for value in values:
                 text = str(value).strip() if value is not None else ""
                 key = _strip_accents(unicodedata.normalize("NFKC", text)).casefold()
@@ -206,17 +218,12 @@ class IdentityRegistry:
                 # longer is registered, however generic it looks.
                 if len(re.sub(r"[\W_]+", "", key)) < 2 or key in self._keys:
                     continue
+                parts = [p for p in re.split(r"[\W_]+", key) if p]
+                pattern = _identity_pattern(text)
+                compiled = (len(pattern), parts[0], re.compile(pattern, re.IGNORECASE))
+                bisect.insort(regexes, compiled, key=lambda item: -item[0])  # longest first
                 self._keys.add(key)
-                new.append(text)
-        compiled = []
-        for text in new:  # compiled outside the lock
-            pattern = _identity_pattern(text)
-            compiled.append((len(pattern), re.compile(pattern, re.IGNORECASE)))
-        if compiled:
-            with self._lock:
-                regexes = self._regexes + compiled
-                regexes.sort(key=lambda item: -item[0])
-                self._regexes = regexes
+            self._regexes = regexes
 
     def clear(self) -> None:
         with self._lock:
@@ -229,8 +236,13 @@ class IdentityRegistry:
             return text
         decomposed = unicodedata.normalize("NFD", unicodedata.normalize("NFKC", text))
         base, where = _skeleton(decomposed)
+        folded = base.casefold()
         spans = []
-        for _length, regex in regexes:
+        for _length, first, regex in regexes:
+            # A cheap substring test first: a value can only match where its
+            # first part appears, so most patterns never run on a line.
+            if first not in folded:
+                continue
             for m in regex.finditer(base):
                 if m.end() > m.start():
                     end = where[m.end()] if m.end() < len(where) else len(decomposed)

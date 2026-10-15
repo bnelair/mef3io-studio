@@ -445,3 +445,71 @@ def test_helper_exits_when_the_app_dies(tmp_path):
     finally:
         if parent.poll() is None:
             parent.kill()
+
+
+class _FakeCtx:
+    """Just enough of a JobContext for the open task, with a scripted
+    helper: each run answers some requests, then crashes."""
+
+    job_id = 0
+    cancel_token = None
+
+    def __init__(self, script):
+        self.script = list(script)  # answers per run before it crashes; None = no crash
+        self.runs = 0
+        self.published = []
+
+    def report(self, *_args):
+        pass
+
+    def publish(self, item):
+        self.published.append(item)
+
+    def run_isolated(self, fn, requests, on_message=None):
+        from mef3io_studio.model.errors import HelperCrashed
+        from mef3io_studio.model.recording import InspectOutcome
+
+        self.runs += 1
+        answers = self.script.pop(0) if self.script else None
+        for i, (location, _pw) in enumerate(requests):
+            if answers is not None and i >= answers:
+                raise HelperCrashed(-6)
+            on_message(InspectOutcome(location))
+        if answers is not None and answers >= len(requests):
+            raise HelperCrashed(-6)  # answered everything, then died while exiting
+        return []
+
+
+class _Source:
+    isolate = True
+
+    def inspect_many(self, requests, send=None):  # pragma: no cover - never called
+        raise AssertionError
+
+
+def _run_open(script, n=5):
+    from mef3io_studio.workers.tasks import open_recordings
+
+    ctx = _FakeCtx(script)
+    requests = [(f"/r/{i}.mefd", "") for i in range(n)]
+    open_recordings(ctx, _Source(), requests)
+    return ctx
+
+
+def test_open_survives_a_helper_that_dies_after_its_last_answer():
+    ctx = _run_open([5])
+    assert [o.location for o in ctx.published] == [f"/r/{i}.mefd" for i in range(5)]
+    assert all(o.error is None for o in ctx.published) and ctx.runs == 1
+
+
+def test_open_stops_restarting_helpers_that_die_before_reading_anything():
+    ctx = _run_open([0, 0, 0, 0, 0])
+    assert ctx.runs == 2
+    assert len(ctx.published) == 5
+    assert all(o.error is not None for o in ctx.published)
+
+
+def test_open_continues_after_one_helper_crash():
+    ctx = _run_open([1])  # second recording crashes the first helper
+    errors = [o.location for o in ctx.published if o.error is not None]
+    assert errors == ["/r/1.mefd"] and len(ctx.published) == 5 and ctx.runs == 2
