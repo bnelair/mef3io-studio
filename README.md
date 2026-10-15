@@ -304,7 +304,7 @@ The library side of the plan is tracked in
    reviewed and merge it before tagging.
 2. Set the new version in `VERSION` in its own pull request and merge it.
 3. Tag the resulting commit on `main` and push the tag:
-   `git pull && git tag v$(cat VERSION) && git push origin v$(cat VERSION)`.
+   `git switch main && git pull && git tag v$(cat VERSION) && git push origin v$(cat VERSION)`.
    `build.yml` builds and tests every installer and, only if the tag matches
    `VERSION` (checked after the builds), publishes them as a GitHub
    pre-release with `SHA256SUMS`. Every release is published as a
