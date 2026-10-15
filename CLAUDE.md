@@ -87,3 +87,10 @@ Code (app shell, #2/#3):
   0.5 s). Painting is per pixel column (coverage.pixel_runs). CSV export
   (model/export.py): warn first, Show policy for patient details, safe cells,
   temp file + rename. Every Explorer table aligns headings like cells (test).
+- Anonymizer (#5): `model/shiftplan.py` is the time-shift PLANNER (step 2),
+  pure data in/out: `plan_shifts([RecordingTimes], ShiftSettings) ->
+  ShiftPlan` with per-recording `shift_us`, warnings/blockers/refusals as
+  enum CODES (words belong to the UI). It never imports mef3io or logging;
+  original times and shifts are `repr=False` (the shift re-identifies).
+  Recordings with unverified times (rto != 0 or unknown) or no full-access
+  password are BLOCKED, not planned. Running the copy is mef3io#70's job.
