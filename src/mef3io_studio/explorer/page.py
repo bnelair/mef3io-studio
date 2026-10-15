@@ -133,10 +133,40 @@ def coverage_status(entry: RecordingEntry) -> str:
     return STATUS_READY
 
 
-def coverage_input(entry: RecordingEntry) -> RecordingInput:
+def file_name(entry: RecordingEntry) -> str:
+    """The recording's folder or file name, with its .mefd / .mefd.tar."""
+    return os.path.basename(os.path.normpath(entry.location))
+
+
+def timeline_labels(entries: list[RecordingEntry]) -> dict[str, str]:
+    """What to call each recording on the timeline: its name, as in the
+    list, unless another one has the same name (a folder and its
+    single-file copy): then its file name, and if that is still the same,
+    the name of the folder it is in."""
+    by_name: dict[str, list[RecordingEntry]] = {}
+    for e in entries:
+        by_name.setdefault(e.name.casefold(), []).append(e)
+    labels: dict[str, str] = {}
+    for group in by_name.values():
+        if len(group) == 1:
+            continue
+        files: dict[str, list[RecordingEntry]] = {}
+        for e in group:
+            files.setdefault(file_name(e).casefold(), []).append(e)
+        for same in files.values():
+            for e in same:
+                if len(same) == 1:
+                    labels[e.key] = file_name(e)
+                else:
+                    folder = os.path.basename(os.path.dirname(os.path.normpath(e.location)))
+                    labels[e.key] = f"{file_name(e)} in {folder}"
+    return labels
+
+
+def coverage_input(entry: RecordingEntry, label: str = "") -> RecordingInput:
     status = coverage_status(entry)
     details = entry.details if status == STATUS_READY else None
-    return RecordingInput(entry.key, entry.name, details, status)
+    return RecordingInput(entry.key, entry.name, details, status, label)
 
 
 class _FitInner(QWidget):
@@ -675,6 +705,13 @@ class ExplorerPage(QWidget):
     def _on_mode_toggled(self, combined: bool) -> None:
         if combined:
             self._schedule_layout(now=True)
+        else:
+            # Laid out again when shown; nothing pending may touch the
+            # Details view meanwhile.
+            self._layout_timer.stop()
+            self._layout_runner.cancel()
+            self.combined.set_computing(False)
+            self._layout_dirty = True
         self._show_current()
 
     def _schedule_layout(self, now: bool = False) -> None:
@@ -688,14 +725,13 @@ class ExplorerPage(QWidget):
             self._layout_timer.start()
 
     def _start_layout(self) -> None:
-        if not self._layout_dirty:
-            return
+        if not self._layout_dirty or not self.combined_mode_button.isChecked():
+            return  # (still dirty when hidden: laid out when shown)
         self._layout_dirty = False
         entries = self.timeline_entries()
-        items = [coverage_input(e) for e in entries]
+        labels = timeline_labels(entries)
+        items = [coverage_input(e, labels.get(e.key, "")) for e in entries]
         keys = tuple(sorted(i.key for i in items))
-        refit = keys != self._layout_keys
-        self._layout_keys = keys
         cache = self._coverage_cache
         self.combined.set_caption(self._timeline_caption())
         self._show_combined_heading()
@@ -703,15 +739,19 @@ class ExplorerPage(QWidget):
 
         def work():
             layout, new_cache = yield from combine_steps(items, cache)
-            return layout, new_cache, refit
+            return layout, new_cache, keys
 
         self._layout_runner.submit(work())
 
     def _on_layout_done(self, result) -> None:
         if result is None:
             return
-        layout, cache, refit = result
+        layout, cache, keys = result
         self._coverage_cache = cache
+        # Fit when the set of recordings differs from the one on screen
+        # (not from the last one asked for: that one may have been dropped).
+        refit = keys != self._layout_keys
+        self._layout_keys = keys
         self.combined.set_layout(layout, refit=refit)
         entry = self.current_entry()
         self.combined.set_current(entry.key if entry is not None else None)
@@ -794,10 +834,9 @@ class ExplorerPage(QWidget):
             path = self.choose_export_path(level)
             if not path:
                 return None
+        labels = timeline_labels(entries)
         items = [
-            ExportItem(
-                coverage_input(e), os.path.basename(os.path.normpath(e.location)), e.revealed
-            )
+            ExportItem(coverage_input(e, labels.get(e.key, "")), file_name(e), e.revealed)
             for e in entries
         ]
         handle = self.jobs.submit(

@@ -2,13 +2,16 @@
 time line, with what is worth knowing across them.
 
 Drawn from what the Explorer already read (each part's start, end and
-sample count): no file is opened here. The layout is worked out off the
-GUI thread (``model.coverage`` through ``workers.latest``); painting draws
+sample count): no file is opened here. The layout is worked out in short
+slices between other events (``model.coverage`` through
+``workers.slices``); painting draws
 only the rows on screen, and only one rectangle per run of pixel columns
 (``coverage.pixel_runs``), so the cost of a repaint depends on the size of
 the widget, not on how many recordings or parts there are.
 
-Privacy: rows are named like the recordings list (the recording's name).
+Privacy: rows are named like the recordings list (the recording's name;
+where two listed recordings share a name, e.g. a folder and its
+single-file copy, the file name tells them apart).
 Patient details and note text are not part of this view, so the "Show"
 choice has nothing to reveal here; times are shown like everywhere else in
 the Explorer, in the chosen time zone with its offset.
@@ -98,6 +101,7 @@ class CombinedTimelineWidget(QWidget):
         self.v0 = 0
         self.v1 = 1
         self._drag: tuple[float, int, int] | None = None
+        self._wheel_rows = 0.0
         self._dragged = False
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -198,6 +202,7 @@ class CombinedTimelineWidget(QWidget):
             span = max(rng[1] - rng[0], 1_000_000)
             pad = span // 50
             self.v0, self.v1 = rng[0] - pad, rng[0] + span + pad
+        self._wheel_rows = 0.0
         self.update()
         self.view_changed.emit()
 
@@ -205,6 +210,19 @@ class CombinedTimelineWidget(QWidget):
         rng = self.data_range() or (0, 1)
         span = max(rng[1] - rng[0], 1_000_000)
         return MIN_SPAN, span * 4
+
+    def _keep_in_reach(self) -> None:
+        """Never move so far that no data is left on screen."""
+        rng = self.data_range()
+        if rng is None:
+            return
+        span = self.v1 - self.v0
+        margin = span // 2
+        if self.v0 > rng[1] - margin:
+            self.v0 = rng[1] - margin
+        elif self.v1 < rng[0] + margin:
+            self.v0 = rng[0] + margin - span
+        self.v1 = self.v0 + span
 
     def zoom(self, factor: float, anchor_x: float | None = None) -> None:
         """``factor`` > 1 zooms in. ``anchor_x``: the pixel that stays put."""
@@ -218,6 +236,7 @@ class CombinedTimelineWidget(QWidget):
         anchor = self.v0 + span * frac
         self.v0 = int(anchor - new * frac)
         self.v1 = self.v0 + new
+        self._keep_in_reach()
         self.update()
         self.view_changed.emit()
 
@@ -226,6 +245,7 @@ class CombinedTimelineWidget(QWidget):
         shift = int((self.v1 - self.v0) * dx / plot.width())
         self.v0 -= shift
         self.v1 -= shift
+        self._keep_in_reach()
         self.update()
         self.view_changed.emit()
 
@@ -235,8 +255,14 @@ class CombinedTimelineWidget(QWidget):
             event.ignore()
             return
         pos = event.position()
-        if pos.x() < self.plot_rect().left() and self.scrollbar.isVisible():
-            self.scrollbar.setValue(self.scrollbar.value() - round(steps * 3))
+        if pos.x() < self.plot_rect().left():
+            # Over the names: scroll the rows (nothing happens when they all
+            # fit). Small trackpad steps add up until they make a whole row.
+            self._wheel_rows -= steps * 3
+            whole = int(self._wheel_rows)
+            if whole:
+                self._wheel_rows -= whole
+                self.scrollbar.setValue(self.scrollbar.value() + whole)
         else:
             self.zoom(ZOOM_STEP**steps, pos.x())
         event.accept()
@@ -289,6 +315,7 @@ class CombinedTimelineWidget(QWidget):
             if self._dragged:
                 shift = int((v1 - v0) * (pos.x() - x0) / self.plot_rect().width())
                 self.v0, self.v1 = v0 - shift, v1 - shift
+                self._keep_in_reach()
                 self.update()
                 self.view_changed.emit()
             return
@@ -360,11 +387,14 @@ class CombinedTimelineWidget(QWidget):
                 lines.append(f"A gap of {format_span((gap[1] - gap[0]) / 1e6)}")
             else:
                 return ""
-        others = self.layout_data.overlapping.get(row.key, ()) if self.layout_data else ()
+        layout = self.layout_data
+        others = set(layout.overlapping.get(row.key, ())) if layout else set()
         if others:
-            names = [r.name for r in self.layout_data.rows if r.key in set(others)]
+            names = [r.name for r in layout.rows if r.key in others]
             shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
             lines.append(f"Covers the same time as: {shown}")
+        elif layout is not None and row.key in layout.overlap_spans_of:
+            lines.append("Covers the same time as other recordings")
         return "\n".join(lines)
 
     # -- painting ------------------------------------------------------------
@@ -760,20 +790,27 @@ def note_text(layout: CombinedLayout) -> str:
 
 def overlap_text(layout: CombinedLayout, limit: int = 2) -> str:
     """A plain warning when recordings cover the same time."""
-    if not layout.overlaps:
+    sharing = layout.sharing
+    if not sharing:
         return ""
-    names = {r.key: r.name for r in layout.rows}
+    if not layout.pairs_complete:
+        return (
+            f"{format_count(len(sharing), 'recording')} cover the same time as others, "
+            "too many to list in pairs (for example several beds recorded at once). "
+            "Point at a row to see its times."
+        )
     pairs = []
     copies = False
     for o in layout.overlaps[:limit]:
-        pairs.append(
-            f"{names.get(o.first, '')} and {names.get(o.second, '')} ({format_span(o.seconds)})"
-        )
+        pairs.append(f"{o.first_name} and {o.second_name} ({format_span(o.seconds)})")
         copies = copies or o.may_be_copies
     more = len(layout.overlaps) - limit
     if more > 0:
         pairs.append(format_count(more, "more pair"))
     head = "Some of these recordings cover the same time: " + "; ".join(pairs) + "."
     if copies:
-        return head + " Nearly all of the shorter one is shared, so they may be copies."
-    return head + " Recordings that overlap may be copies of each other."
+        return head + (
+            " Nearly all of the shorter one is shared, with the same channels: they may "
+            "be copies of each other."
+        )
+    return head + " This happens with recordings made at the same time, or with copies."

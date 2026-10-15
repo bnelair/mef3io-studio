@@ -25,7 +25,9 @@ are kept out of the absolute order, docs/design/explorer.md):
   two recordings of the same time may be copies of each other.
 
 Times are integers, microseconds since 1970, UTC, as everywhere in
-``model``. Plain Python and numpy, no Qt. Runs on a background thread.
+``model``. Plain Python and numpy, no Qt. The ``*_steps`` generators pause
+every few milliseconds, so the window can do the work in short slices
+(``workers.slices``); a task thread drives them with :func:`drive`.
 """
 
 from __future__ import annotations
@@ -45,8 +47,14 @@ STATUS_WRONG_PASSWORD = "wrong password"
 STATUS_UNREADABLE = "unreadable"
 
 #: Two recordings that share at least this much of the shorter one's data
-#: time are flagged as possible copies of each other.
+#: time, with the same channels at the same rates, are flagged as possible
+#: copies of each other.
 COPY_SHARE = 0.9
+#: At most this many pairs of recordings are compared one by one. Beyond it
+#: (many recordings made at the same time, e.g. several beds on one ward),
+#: each recording's shared time is still worked out, but the pairs are not
+#: listed: the work would grow with the square of the number of recordings.
+PAIR_LIMIT = 2000
 
 _EMPTY = np.zeros(0, dtype=np.int64)
 
@@ -64,6 +72,14 @@ class RecordingInput:
     name: str
     details: RecordingDetails | None
     status: str = STATUS_READY
+    #: What to call it on the timeline when two listed recordings share a
+    #: name (a folder and its single-file copy): its file name, and the
+    #: folder it is in if that is not enough. Empty: the name.
+    label: str = ""
+
+    @property
+    def shown_name(self) -> str:
+        return self.label or self.name
 
 
 @dataclass(frozen=True, eq=False)
@@ -95,6 +111,12 @@ class RecordingCoverage:
     #: Stretches with data (any channel), and the gaps between them.
     runs: tuple[tuple[int, int], ...] = ()
     gaps: tuple[tuple[int, int], ...] = ()
+    #: Shorter than this (1.5 sample periods of the slowest channel) is
+    #: rounding, not a gap.
+    tolerance: int = 0
+    #: The channels' names and rates, to tell a copy from a recording that
+    #: merely ran at the same time.
+    channel_signature: tuple = ()
 
     @property
     def has_data(self) -> bool:
@@ -147,6 +169,9 @@ class Overlap:
     microseconds: int
     #: The shared time is at least COPY_SHARE of the shorter one's data.
     may_be_copies: bool = False
+    #: The two recordings' names as shown on the timeline.
+    first_name: str = ""
+    second_name: str = ""
 
     @property
     def seconds(self) -> float:
@@ -173,6 +198,15 @@ class CombinedLayout:
     overlap_spans_of: dict = field(default_factory=dict)
     #: Per recording key: the keys of the recordings it overlaps.
     overlapping: dict = field(default_factory=dict)
+    #: False when too many recordings share time to compare every pair
+    #: (see PAIR_LIMIT): ``overlaps`` and ``overlapping`` are then empty, and
+    #: only ``overlap_spans_of`` says who shares time.
+    pairs_complete: bool = True
+
+    @property
+    def sharing(self) -> list[RecordingCoverage]:
+        """Recordings that share time with at least one other."""
+        return [r for r in self.rows if r.key in self.overlap_spans_of]
 
     @property
     def counted(self) -> list[RecordingCoverage]:
@@ -297,7 +331,7 @@ def recording_coverage_steps(item: RecordingInput) -> Generator[None, None, Reco
     details = item.details
     if details is None or item.status != STATUS_READY:
         status = item.status if item.status != STATUS_READY else STATUS_READING
-        return RecordingCoverage(item.key, item.name, status)
+        return RecordingCoverage(item.key, item.shown_name, status)
     verified = details.times_verified
     channel_sets: list[tuple[np.ndarray, np.ndarray]] = []
     inside_sets: list[tuple[np.ndarray, np.ndarray]] = []
@@ -327,7 +361,7 @@ def recording_coverage_steps(item: RecordingInput) -> Generator[None, None, Reco
     if not channel_sets:
         return RecordingCoverage(
             item.key,
-            item.name,
+            item.shown_name,
             STATUS_READY,
             verified=verified,
             uses_time_offset=details.uses_time_offset,
@@ -335,11 +369,8 @@ def recording_coverage_steps(item: RecordingInput) -> Generator[None, None, Reco
             channel_count=len(details.channels),
         )
     # Stretches with data and the gaps between them (the Overview's rule).
-    rs, re_ = merge_intervals(
-        np.concatenate(all_starts),
-        np.concatenate(all_ends),
-        _tolerance([c.sampling_frequency for c in details.channels]),
-    )
+    tolerance = _tolerance([c.sampling_frequency for c in details.channels])
+    rs, re_ = merge_intervals(np.concatenate(all_starts), np.concatenate(all_ends), tolerance)
     runs = tuple(zip(rs.tolist(), re_.tolist(), strict=True))
     gaps = tuple((a[1], b[0]) for a, b in zip(runs, runs[1:], strict=False))
     # How many channels have data at each moment.
@@ -359,7 +390,7 @@ def recording_coverage_steps(item: RecordingInput) -> Generator[None, None, Reco
         starts, ends, counts, inside = starts[first], ends[last], counts[first], inside[first]
     return RecordingCoverage(
         item.key,
-        item.name,
+        item.shown_name,
         STATUS_READY,
         verified=verified,
         uses_time_offset=details.uses_time_offset,
@@ -375,6 +406,10 @@ def recording_coverage_steps(item: RecordingInput) -> Generator[None, None, Reco
         inside=inside,
         runs=runs,
         gaps=gaps,
+        tolerance=tolerance,
+        channel_signature=tuple(
+            sorted((c.name, c.sampling_frequency) for c in details.channels if c.parts)
+        ),
     )
 
 
@@ -412,7 +447,7 @@ def combine_steps(
             cached is not None
             and cached[0] is item.details
             and cached[1].status == item.status
-            and cached[1].name == item.name
+            and cached[1].name == item.shown_name
         ):
             coverage = cached[1]
         else:
@@ -440,7 +475,12 @@ def across_steps(
     first = min(r.first for r in counted)
     last = max(r.last for r in counted)
     # Gaps between recordings: where none of them is recording at all.
-    ext_s, ext_e = merge_intervals([r.first for r in counted], [r.last for r in counted])
+    # (Closer than the rounding tolerance is not a gap, like inside one.)
+    ext_s, ext_e = merge_intervals(
+        [r.first for r in counted],
+        [r.last for r in counted],
+        max(r.tolerance for r in counted),
+    )
     gaps_between = tuple(
         (int(a), int(b)) for a, b in zip(ext_e[:-1].tolist(), ext_s[1:].tolist(), strict=True)
     )
@@ -465,22 +505,36 @@ def across_steps(
     shared_of: dict[str, tuple] = {}
     overlaps = []
     overlapping: dict[str, list[str]] = {}
+    complete = True
     if shared:
-        # Only recordings whose first-to-last extents meet can share time.
-        order = sorted(range(len(counted)), key=lambda i: counted[i].first)
-        for n, i in enumerate(order):
-            yield
-            a = counted[i]
-            mine = _at_least([sets[i], (shared_s, shared_e)], 2)
+        # Each recording's share: only the shared spans within its extent.
+        sharers = []
+        for i, a in enumerate(counted):
+            lo = int(np.searchsorted(shared_e, a.first, side="right"))
+            hi = int(np.searchsorted(shared_s, a.last, side="left"))
+            mine = _at_least([sets[i], (shared_s[lo:hi], shared_e[lo:hi])], 2)
             if len(mine[0]):
                 shared_of[a.key] = tuple(zip(mine[0].tolist(), mine[1].tolist(), strict=True))
-            else:
-                continue
-            for j in order[n + 1 :]:
+                sharers.append(i)
+            if i % 16 == 15:
+                yield
+        # Pairs: only recordings that share time, and whose extents meet.
+        sharers.sort(key=lambda i: counted[i].first)
+        checked = 0
+        for n, i in enumerate(sharers):
+            if not complete:
+                break
+            a = counted[i]
+            for j in sharers[n + 1 :]:
                 b = counted[j]
                 if b.first >= a.last:
                     break
-                yield
+                checked += 1
+                if checked > PAIR_LIMIT:
+                    complete = False
+                    break
+                if checked % 16 == 0:
+                    yield
                 # shared = |a| + |b| - |a or b|
                 u_s, u_e = merge_intervals(
                     np.concatenate((sets[i][0], sets[j][0])),
@@ -490,11 +544,17 @@ def across_steps(
                 if us_shared <= 0:
                     continue
                 shorter = min(lengths[i], lengths[j])
-                copies = shorter > 0 and us_shared >= COPY_SHARE * shorter
-                first_key, second_key = (a.key, b.key)
-                overlaps.append(Overlap(first_key, second_key, us_shared, copies))
+                copies = (
+                    shorter > 0
+                    and us_shared >= COPY_SHARE * shorter
+                    and a.channel_signature == b.channel_signature
+                )
+                overlaps.append(Overlap(a.key, b.key, us_shared, copies, a.name, b.name))
                 overlapping.setdefault(a.key, []).append(b.key)
                 overlapping.setdefault(b.key, []).append(a.key)
+    if not complete:
+        # A partial list would read as the whole story: list none.
+        overlaps, overlapping = [], {}
     overlaps.sort(key=lambda o: -o.microseconds)
     return CombinedLayout(
         rows=tuple(rows),
@@ -506,6 +566,7 @@ def across_steps(
         overlap_spans=tuple(shared),
         overlap_spans_of=shared_of,
         overlapping={k: tuple(v) for k, v in overlapping.items()},
+        pairs_complete=complete,
     )
 
 
@@ -525,7 +586,9 @@ def _touched(starts, ends, v0: int, scale: float, width: int) -> np.ndarray:
         return out[:width] > 0
     x0 = (np.asarray(starts, dtype=np.int64) - v0) * scale
     x1 = (np.asarray(ends, dtype=np.int64) - v0) * scale
-    visible = (x1 >= 0) & (x0 < width)
+    # A stretch ending exactly at the left edge is not on screen; a point
+    # exactly on it is.
+    visible = ((x1 > 0) | ((x1 == x0) & (x0 >= 0))) & (x0 < width)
     if not visible.any():
         return out[:width] > 0
     i0 = np.clip(np.floor(x0[visible]), 0, width - 1).astype(np.int64)

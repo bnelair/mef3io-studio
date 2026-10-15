@@ -10,9 +10,10 @@ layouts:
 * one row per part of each channel.
 
 Times are written three ways: UTC in ISO 8601 with ``Z`` (the reference),
-microseconds since 1970 UTC as whole numbers (so the table converts back
-exactly), and, when a site time zone is chosen, the site's local time with
-its offset (e.g. ``2026-10-15T09:30:00+02:00``). Recordings whose times are
+microseconds since 1970 UTC as whole numbers (exact for scripts; spreadsheet
+programs keep only 15 digits of a number, so they round these unless the
+column is imported as text), and, when a site time zone is chosen, the
+site's local time with its offset (e.g. ``2026-10-15T09:30:00+02:00``). Recordings whose times are
 not verified say so in their own columns; their times are never presented
 as verified.
 
@@ -25,7 +26,8 @@ spreadsheet would run as a formula (starting with ``=``, ``+``, ``-``,
 ``@``, a tab or a carriage return, for example from a file name) are
 prefixed with ``'``. The file is written under a temporary name in the same
 folder, flushed to disk, then renamed over the chosen name, so a stopped or
-failed export never leaves half a table behind.
+failed export never leaves half a table behind. It gets the permissions a
+newly saved file normally gets (or those of the file it replaces).
 
 Plain Python, no Qt. Runs on a background thread.
 """
@@ -34,6 +36,8 @@ from __future__ import annotations
 
 import csv
 import os
+import secrets
+import stat
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -67,6 +71,7 @@ STATUS_WORDS = {
     STATUS_UNREADABLE: "could not be opened",
 }
 LOCKED_DETAIL = "locked"
+TOO_MANY = "several, too many to list"
 
 #: Characters that make a spreadsheet treat a cell as a formula.
 FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
@@ -185,7 +190,7 @@ def recording_table(
     name = zone_label(zone)
     if layout is None:
         layout, _ = combine([i.recording for i in items])
-    names = {i.recording.key: i.recording.name for i in items}
+    names = {i.recording.key: i.recording.shown_name for i in items}
     header = [
         "recording",
         "file_name",
@@ -243,8 +248,13 @@ def recording_table(
             row += ["0", 0, "0", 0]
         others = layout.overlapping.get(rec.key, ())
         shared = layout.overlap_spans_of.get(rec.key, ())
-        row.append("; ".join(names.get(k, "") for k in others))
-        row.append(seconds_text(sum(e - s for s, e in shared)) if others else "")
+        if others:
+            row.append("; ".join(names.get(k, "") for k in others))
+        elif shared:  # too many recordings at the same time to list in pairs
+            row.append(TOO_MANY)
+        else:
+            row.append("")
+        row.append(seconds_text(sum(e - s for s, e in shared)) if shared else "")
         row += _patient(item)
         rows.append([safe_cell(v) for v in row])
     return header, rows
@@ -309,6 +319,28 @@ def part_table(items: Sequence[ExportItem], zone: tzinfo = UTC) -> tuple[list[st
     return header, rows
 
 
+def _new_file_mode(path: str) -> int:
+    """The permissions to give the table: those of the file it replaces,
+    else what a newly created file gets here (0o666 less the umask)."""
+    try:
+        return stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        pass
+    folder = os.path.dirname(path) or "."
+    probe = os.path.join(folder, f".mef3io-studio-{secrets.token_hex(8)}.probe")
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        os.close(fd)
+        return stat.S_IMODE(os.stat(probe).st_mode)
+    except OSError:
+        return 0o644
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+
+
 def write_csv(
     path: str,
     header: list[str],
@@ -319,9 +351,16 @@ def write_csv(
     """Write the table to ``path`` safely (see the module docstring).
     Replaces ``path`` only once the whole table is on disk; the caller has
     already asked the user whether replacing it is fine."""
-    folder = os.path.dirname(os.path.abspath(path)) or "."
+    # A link chosen in the save dialog: write where it points, keep the link.
+    path = os.path.realpath(path)
+    folder = os.path.dirname(path) or "."
+    mode = _new_file_mode(path)
     fd, temp = tempfile.mkstemp(prefix=".mef3io-studio-", suffix=".tmp", dir=folder)
     try:
+        try:
+            os.chmod(temp, mode)
+        except OSError:
+            pass
         with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle, quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
             writer.writerow([safe_cell(h) for h in header])

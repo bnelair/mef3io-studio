@@ -188,14 +188,21 @@ def axis_ticks(v0: int, v1: int, step: int, zone: tzinfo = UTC) -> list[int]:
     current = start
     for _ in range(1000):
         try:
-            aware = current.replace(tzinfo=zone)
-            us = (aware - _EPOCH) // timedelta(microseconds=1)
+            # The repeated hour when clocks go back is two instants: both
+            # get a mark (fold=1 is the second one).
+            moments = sorted(
+                {
+                    (current.replace(tzinfo=zone, fold=f) - _EPOCH) // timedelta(microseconds=1)
+                    for f in (0, 1)
+                }
+            )
         except (OverflowError, ValueError):
             break
-        if us > v1:
+        if moments[0] > v1:
             break
-        if us >= v0 and (not out or us > out[-1]):
-            out.append(us)
+        for us in moments:
+            if v0 <= us <= v1 and (not out or us > out[-1]):
+                out.append(us)
         current = current + delta
     return out
 

@@ -115,12 +115,17 @@ line:
   verified times: first and last time, the time from first to last, the time
   with data, and the gaps between recordings.
 - **Overlaps are flagged plainly.** Two recordings that cover the same time
-  may be copies of each other, for example a folder and its single-file copy.
-  When nearly all of the shorter one is shared, the warning says so.
+  have been made at the same time (for example on two beds) or be copies of
+  each other, for example a folder and its single-file copy. When nearly all
+  of the shorter one is shared and the channels are the same, the warning
+  says they may be copies. Where two recordings have the same name, the
+  timeline shows their file names (with `.mefd` or `.mefd.tar`) to tell them
+  apart. When very many recordings share time, they are counted but not
+  listed in pairs.
 - **Zoom and move:** turn the mouse wheel over the bars to zoom in or out
   around the pointer, drag to move along the time line, and use **Fit all**
   (or the Home key) to see everything again. Over the names, the mouse wheel
-  scrolls through the rows.
+  scrolls through the rows when they don't all fit.
 - **Point at a bar** to see the stretch's start, end and length, and how many
   of the recording's channels have data there. **Click a row** to select that
   recording in the list; **double-click** it to open its details.
@@ -148,7 +153,8 @@ table (CSV)…** to save just the selected recordings. Two layouts:
 
 Every time is written in **UTC** (for example `2000-01-06T07:00:00Z`) and as a
 whole number of **microseconds since 1970 in UTC**, which converts back
-exactly. When you have chosen a site time zone, the table also has the time
+exactly in scripts. (Spreadsheet programs keep only 15 digits of a number and
+round these; import that column as text to keep it exact.) When you have chosen a site time zone, the table also has the time
 in that zone with its offset (for example `2000-01-06T08:00:00+01:00`).
 
 - **Before saving, the app warns you:** *"This file will contain the dates of

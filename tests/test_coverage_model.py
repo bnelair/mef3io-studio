@@ -425,3 +425,86 @@ def test_a_stopped_or_failed_write_leaves_nothing_behind(tmp_path):
     assert path.read_text() == "old" and os.listdir(tmp_path) == ["keep.csv"]
     write_csv(str(path), ["a"], [[1], [2]])
     assert _read(path)[1] == [{"a": "1"}, {"a": "2"}]
+
+
+# -- review round 1 ----------------------------------------------------------
+
+
+def test_many_recordings_at_the_same_time_stay_bounded():
+    """400 recordings on the same day (several beds at once): the pairs are
+    not all compared, but every recording's shared time still is."""
+    import time
+
+    from mef3io_studio.model.coverage import PAIR_LIMIT
+
+    items = [
+        item(
+            f"r{i:03d}",
+            details(channel("x", *[part(j, j * 700 + i, j * 700 + i + 600) for j in range(50)])),
+        )
+        for i in range(400)
+    ]
+    start = time.perf_counter()
+    layout, _ = combine(items)
+    assert time.perf_counter() - start < 10
+    assert not layout.pairs_complete
+    assert layout.overlaps == () and layout.overlapping == {} and PAIR_LIMIT < 400 * 399 / 2
+    assert len(layout.sharing) == 400
+    header, rows = recording_table([ExportItem(i, i.name + ".mefd") for i in items], UTC, layout)
+    cells = [dict(zip(header, r, strict=True)) for r in rows]
+    assert {c["overlaps_with"] for c in cells} == {"several, too many to list"}
+    assert all(float(c["overlap_seconds"]) > 0 for c in cells)
+
+
+def test_copies_need_the_same_channels():
+    a = details(channel("x", part(0, 0, 100)))
+    same_time_other_bed = details(channel("y", part(0, 0, 100)))
+    layout, _ = combine([item("a", a), item("b", same_time_other_bed)])
+    assert layout.overlaps[0].seconds == 100 and not layout.overlaps[0].may_be_copies
+
+
+def test_tiny_gaps_between_recordings_are_rounding():
+    a = details(channel("x", part(0, 0, 10)))
+    b = details(channel("x", part(0, 10.002, 20)))  # 2 ms: under one sample period
+    c = details(channel("x", part(0, 30, 40)))
+    layout, _ = combine([item("a", a), item("b", b), item("c", c)])
+    assert layout.gaps_between == ((T0 + 20 * S, T0 + 30 * S),)
+
+
+def test_a_stretch_ending_at_the_left_edge_is_not_drawn():
+    cov = recording_coverage(item("r", details(channel("a", part(0, 0, 10)))))
+    assert pixel_runs(cov, T0 + 10 * S, T0 + 20 * S, 100) == []
+    assert pixel_runs(cov, T0 + 9 * S, T0 + 20 * S, 110)[0][:2] == (0, 10)
+    point = recording_coverage(item("p", details(channel("a", part(0, 10, 10)))))
+    assert pixel_runs(point, T0 + 10 * S, T0 + 20 * S, 100) == [(0, 1, PIXEL_SOME, False)]
+
+
+def test_the_repeated_hour_gets_its_marks():
+    prague = resolve_zone("Europe/Prague")
+    # 2026-10-25: clocks go back from 03:00 to 02:00 in Prague.
+    start = 1_792_878_000_000_000  # 2026-10-25 00:00 +02:00
+    marks = axis_ticks(start, start + 6 * 3600 * S, 3600 * S, prague)
+    assert all(b - a == 3600 * S for a, b in zip(marks, marks[1:], strict=False))
+    labels = [format_time(m, prague)[11:] for m in marks]
+    assert "02:00:00 +02:00" in labels and "02:00:00 +01:00" in labels
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_the_table_gets_normal_permissions(tmp_path):
+    fresh = tmp_path / "new.csv"
+    old = os.umask(0o022)
+    try:
+        write_csv(str(fresh), ["a"], [[1]])
+    finally:
+        os.umask(old)
+    assert fresh.stat().st_mode & 0o777 == 0o644
+    shared = tmp_path / "shared.csv"
+    shared.write_text("x")
+    shared.chmod(0o664)
+    write_csv(str(shared), ["a"], [[1]])
+    assert shared.stat().st_mode & 0o777 == 0o664
+    link = tmp_path / "link.csv"
+    link.symlink_to(shared)
+    write_csv(str(link), ["a"], [[2]])
+    assert link.is_symlink() and _read(shared)[1] == [{"a": "2"}]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["link.csv", "new.csv", "shared.csv"]

@@ -540,3 +540,141 @@ def test_headings_line_up_with_cells_on_screen(qapp, page, qtbot, tmp_path):
         assert abs(head[side] - cell[side]) <= 10, (COLUMNS[col], head, cell)
         checked += 1
     assert checked >= 6
+
+
+# -- review round 1 ----------------------------------------------------------
+
+
+def test_double_click_leaves_the_details_heading_alone(page, qtbot, tmp_path):
+    paths = [_write(tmp_path / f"d{i}.mefd", T0 + i * 3600 * SECOND) for i in range(3)]
+    page.open_paths([str(p) for p in paths], interactive=False)
+    wait_loaded(qtbot, page, 3)
+    page.select_entry(page.entries()[0])
+    page.show_combined(True)
+    layout = wait_layout(qtbot, page, 3)
+    widget = page.combined.timeline
+    target = layout.rows[2]
+    qtbot.mouseDClick(widget, Qt.MouseButton.LeftButton, pos=QPoint(10, int(_row_y(widget, 2))))
+    qtbot.wait(400)  # longer than the layout delay
+    assert page.detail_stack.currentWidget() is page.tabs
+    assert page.detail_heading.text() == target.name
+    # Shown again: laid out again for the new selection.
+    page.show_combined(True)
+    wait_layout(qtbot, page, 3)
+    assert page.detail_heading.text() == "3 recordings on one timeline"
+
+
+def test_fit_is_not_lost_when_a_layout_is_replaced(page, qtbot, tmp_path):
+    paths = [_write(tmp_path / f"f{i}.mefd", T0 + i * 86_400 * SECOND) for i in range(4)]
+    page.open_paths([str(p) for p in paths], interactive=False)
+    wait_loaded(qtbot, page, 4)
+    page.show_combined(True)
+    wait_layout(qtbot, page, 4)
+    all_span = page.combined.timeline.v1 - page.combined.timeline.v0
+    model = page.table.selectionModel()
+    page.table.clearSelection()
+    for row in (0, 1):
+        model.select(
+            page.proxy.index(row, 0), model.SelectionFlag.Select | model.SelectionFlag.Rows
+        )
+    page._layout_timer.stop()
+    page._start_layout()  # the selection's layout, asked for...
+    page._layout_dirty = True
+    page._start_layout()  # ...and replaced before it finished (same recordings)
+    wait_layout(qtbot, page, 2)
+    assert page.combined.timeline.v1 - page.combined.timeline.v0 < all_span / 2
+
+
+def test_a_folder_and_its_copy_are_told_apart(page, qtbot, tmp_path):
+    folder = _write(tmp_path / "rec.mefd", T0)
+    other = tmp_path / "other"
+    other.mkdir()
+    twin = _write(other / "rec.mefd", T0 + 3600 * SECOND)
+    copy = tmp_path / "rec.mefd.tar"
+    mef3io.archive_session(str(folder), str(copy))
+    page.open_paths([str(folder), str(copy), str(twin)], interactive=False)
+    wait_loaded(qtbot, page, 3)
+    page.show_combined(True)
+    layout = wait_layout(qtbot, page, 3)
+    names = sorted(r.name for r in layout.rows)
+    assert names == [f"rec.mefd in {other.name}", f"rec.mefd in {tmp_path.name}", "rec.mefd.tar"]
+    assert layout.overlaps and layout.overlaps[0].may_be_copies
+    text = page.combined.overlap_label.text()
+    assert "rec.mefd.tar" in text and "may be copies" in text
+
+
+def test_wheel_over_names_never_zooms_and_moving_keeps_data_in_reach(page, qtbot, tmp_path):
+    from PySide6.QtGui import QWheelEvent
+
+    page.open_paths([str(_write(tmp_path / "w.mefd", T0))], interactive=False)
+    wait_loaded(qtbot, page, 1)
+    page.show_combined(True)
+    wait_layout(qtbot, page, 1)
+    widget = page.combined.timeline
+    before = (widget.v0, widget.v1)
+    pos = QPointF(5, _row_y(widget, 0))
+    for delta in (QPoint(0, 120), QPoint(0, 15)):  # a mouse wheel, a trackpad
+        event = QWheelEvent(
+            pos,
+            widget.mapToGlobal(pos),
+            QPoint(),
+            delta,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        QApplication.sendEvent(widget, event)
+    assert (widget.v0, widget.v1) == before
+    for _ in range(200):
+        widget.pan_pixels(-500)
+    first, last = widget.data_range()
+    assert widget.v0 < last  # some data still on screen
+    for _ in range(200):
+        widget.pan_pixels(500)
+    assert widget.v1 > first
+
+
+def test_four_hundred_recordings_at_the_same_time(page, qtbot):
+    """Several beds recorded at once: the pairs are not all compared, and
+    the window stays responsive while it is laid out."""
+    entries = _synthetic(400, channels=4, parts=50)
+    for i, entry in enumerate(entries):
+        details = entry.outcome.details
+        shift = -i * 3 * 86_400 * SECOND + i * 1000
+        chans = tuple(
+            ChannelInfo(
+                c.name,
+                c.sampling_frequency,
+                c.units,
+                c.samples,
+                c.start + shift,
+                c.end + shift,
+                tuple(
+                    Part(p.number, p.start + shift, p.end + shift, p.samples, 1) for p in c.parts
+                ),
+            )
+            for c in details.channels
+        )
+        entry.outcome = InspectOutcome(
+            entry.location, details=RecordingDetails(entry.location, chans)
+        )
+    page.model.add(entries)
+    page._refresh_body()
+    ticks = []
+    timer = QTimer()
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: ticks.append(time.monotonic()))
+    timer.start()
+    qtbot.wait(50)
+    start = len(ticks)
+    page.show_combined(True)
+    layout = wait_layout(qtbot, page, 400, timeout=120_000)
+    page.combined.timeline.repaint()
+    qtbot.wait(60)
+    timer.stop()
+    window = ticks[max(0, start - 1) :]
+    worst = max(b - a for a, b in zip(window, window[1:], strict=False))
+    assert not layout.pairs_complete and len(layout.sharing) == 400
+    assert "too many to list" in page.combined.overlap_label.text()
+    assert worst < 0.25, worst
