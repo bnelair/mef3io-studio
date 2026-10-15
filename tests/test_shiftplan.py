@@ -139,6 +139,7 @@ def test_settings_accept_plain_strings_for_the_choices():
         [rec("a", utc(2021, 1, 1, 1))], ShiftSettings(mode="aligned", time_of_day="keep_utc")
     )
     assert plan.runnable
+    assert to_utc(utc(2021, 1, 1, 1) + plan.shift_for("a")) == datetime(2000, 1, 1, 1, tzinfo=UTC)
 
 
 # --------------------------------------------------------------------------
@@ -421,22 +422,39 @@ def test_shifted_times_must_stay_well_above_zero():
 
 def test_shifted_times_past_the_last_date_are_refused_not_crashing():
     a = rec("a", utc(2021, 6, 1, 9), hours=24 * 5)
+    long = rec("long", utc(2021, 6, 1, 9), hours=24 * 40)
     plan = plan_shifts(
-        [a], ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC, new_date=date(9999, 12, 28))
+        [long], ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC, new_date=date(9999, 12, 1))
     )
     assert codes(plan.refusals) == [RefusalCode.TOO_LATE]
-    for tod in TimeOfDay:
-        plan = plan_shifts(
-            [a],
-            ShiftSettings(
-                time_of_day=tod,
-                new_date=date.max,
-                keep_weekday=True,
-                site_zone="Pacific/Kiritimati",
-            ),
-        )
-        assert RefusalCode.TOO_LATE in codes(plan.refusals)
-        assert not plan.runnable
+    assert plan.refusals[0].recording_id == "long"
+    plan = plan_shifts(
+        [a], ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC, new_date=date(9999, 12, 1))
+    )
+    assert plan.runnable
+    # New dates outside the accepted range: one batch-level refusal, never a crash.
+    for new_date in (date.max, date(9999, 12, 2), date(1969, 12, 31), date.min):
+        for tod in TimeOfDay:
+            plan = plan_shifts(
+                [a],
+                ShiftSettings(
+                    time_of_day=tod,
+                    new_date=new_date,
+                    keep_weekday=True,
+                    site_zone="Pacific/Kiritimati",
+                ),
+            )
+            assert codes(plan.refusals) == [RefusalCode.NEW_DATE_OUT_OF_RANGE]
+            assert plan.refusals[0].recording_id is None and not plan.runnable
+
+
+def test_a_relative_shift_too_late_for_a_later_recording_only():
+    recs = [rec("ref", utc(2021, 6, 1, 9)), rec("later", utc(2021, 7, 30, 9))]
+    plan = plan_shifts(
+        recs, ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC, new_date=date(9999, 12, 1))
+    )
+    assert [(r.code, r.recording_id) for r in plan.refusals] == [(RefusalCode.TOO_LATE, "later")]
+    assert plan.recordings  # still previewable
 
 
 # --------------------------------------------------------------------------
@@ -647,7 +665,11 @@ def _details(rto, access):
         (0, ACCESS_OPEN, ()),
         (0, ACCESS_FULL, ()),
         (123, ACCESS_FULL, (Blocker.TIMES_UNVERIFIED,)),
-        (None, ACCESS_BASIC, (Blocker.LOCKED, Blocker.TIMES_UNVERIFIED)),
+        # Locked: the password is the one thing to fix, so one code only.
+        (None, ACCESS_BASIC, (Blocker.LOCKED,)),
+        # Not locked, but the offset could not be read: unverified.
+        (None, ACCESS_FULL, (Blocker.TIMES_UNVERIFIED,)),
+        (123, ACCESS_BASIC, (Blocker.LOCKED, Blocker.TIMES_UNVERIFIED)),
     ],
 )
 def test_explorer_details_become_planner_input(rto, access, reasons):
@@ -678,9 +700,31 @@ def test_no_original_time_or_shift_appears_in_any_repr():
     text = repr(plan) + repr(recs) + repr(plan.recordings) + repr(plan.refusals)
     secrets = {r.start_us for r in recs} | {r.end_us for r in recs}
     secrets |= {p.shift_us for p in plan.recordings} | {p.new_start_us for p in plan.recordings}
+    # off_ref equals the size of the season difference here, so check by name.
+    for name in ("reference_offset_us", "days=", "new_date=", "shift_us", "start_us", "end_us"):
+        assert name not in text
+    original_date = plan.new_date - timedelta(days=plan.days)
+    assert original_date == date(2021, 1, 11)
     for value in secrets:
         assert str(value) not in text
-    assert "2021" not in text.replace("2021, 1, 15", "")  # only the chosen new date
+    assert repr(original_date) not in text
+    assert "2021" not in text
+    assert "Prague" not in text  # the site zone is a location hint
+
+
+def test_clock_changes_and_settings_hide_their_details_in_repr():
+    zone = "America/Chicago"
+    change = utc(2021, 3, 14, 8)
+    plan = plan_shifts(
+        [RecordingTimes("a", change - 7 * HOUR, change + HOUR)],
+        keep_local(zone, keep_weekday=True),
+    )
+    (warning,) = plan.warnings
+    (c,) = warning.clock_changes
+    text = repr(plan) + repr(plan.warnings)
+    for value in (c.after_us, c.offset_before_us, c.offset_after_us, plan.new_date.isoformat()):
+        assert str(value) not in text
+    assert "Chicago" not in text
 
 
 def test_the_planner_module_logs_nothing_and_imports_no_mef3io():
@@ -720,10 +764,17 @@ def _random_case(rng: random.Random):
     for i in range(rng.randint(1, 6)):
         start = base + rng.randrange(0, 400 * DAY_US)
         recs.append(RecordingTimes(f"r{i}", start, start + rng.randrange(0, 3 * DAY_US)))
+    roll = rng.random()
+    if roll < 0.3:  # near the originals: below the floor some of the time
+        new_date = to_utc(base).date() + timedelta(days=rng.randrange(-800, 1200))
+    elif roll < 0.4:  # right at the start of 1970: too early
+        new_date = date(1970, 1, 1) + timedelta(days=rng.randrange(0, 3))
+    else:
+        new_date = date(1975, 1, 1) + timedelta(days=rng.randrange(0, 365 * 20))
     settings = ShiftSettings(
         mode=rng.choice(list(Mode)),
         time_of_day=rng.choice(list(TimeOfDay)),
-        new_date=date(1975, 1, 1) + timedelta(days=rng.randrange(0, 365 * 20)),
+        new_date=new_date,
         new_time=time(rng.randrange(24), rng.randrange(60)),
         site_zone=zone,
         keep_weekday=rng.random() < 0.5,
@@ -734,6 +785,17 @@ def _random_case(rng: random.Random):
 
 @pytest.mark.parametrize("seed", range(40))
 def test_random_batches_follow_every_rule(seed):
+    _check_random_batches(seed, set())
+
+
+def test_random_batches_reach_every_outcome():
+    seen: set = set()
+    for seed in range(40):
+        _check_random_batches(seed, seen)
+    assert {RefusalCode.BELOW_FLOOR, RefusalCode.TOO_EARLY, "runnable", "refused"} <= seen
+
+
+def _check_random_batches(seed, seen):
     rng = random.Random(seed)
     for _ in range(25):
         zone, recs, s = _random_case(rng)
@@ -784,8 +846,13 @@ def test_random_batches_follow_every_rule(seed):
                 expected.add((RefusalCode.BELOW_FLOOR, p.id if s.mode is Mode.ALIGNED else None))
             if p.new_start_us < MIN_SHIFTED_US:
                 expected.add((RefusalCode.TOO_EARLY, p.id))
-        assert {(r.code, r.recording_id) for r in plan.refusals} == expected
+            if p.new_end_us > MAX_TIME_US:
+                expected.add((RefusalCode.TOO_LATE, p.id))
+        got = {(r.code, r.recording_id) for r in plan.refusals}
+        assert got == expected
         assert plan.runnable == (not expected)
+        seen.update(code for code, _ in got)
+        seen.add("runnable" if plan.runnable else "refused")
 
         # Warnings.
         other = warned(plan, WarningCode.OTHER_SEASON)
@@ -826,3 +893,148 @@ def test_clock_change_scan_is_fast_for_a_year_long_recording():
     changes = clock_changes(utc(2020, 1, 1), utc(2021, 1, 1), ZoneInfo("America/Chicago"))
     assert len(changes) == 2
     assert _time.perf_counter() - t0 < 2.0
+
+
+# --------------------------------------------------------------------------
+# Round-1 review additions
+
+
+@pytest.mark.parametrize(("fold", "offset_h"), [(0, -5), (1, -6)])
+def test_a_reference_in_the_repeated_hour_keeps_its_wall_clock(fold, offset_h):
+    zone = ZoneInfo("America/Chicago")
+    start = us(datetime(2021, 11, 7, 1, 30, fold=fold, tzinfo=zone))
+    plan = plan_shifts([rec("a", start)], keep_local("America/Chicago"))
+    assert plan.reference_offset_us == offset_h * HOUR
+    assert to_utc(start + plan.shift_for("a")) == datetime(2000, 1, 1, 1, 30, tzinfo=UTC)
+
+
+def test_a_reference_exactly_at_spring_forward_reads_three_oclock():
+    start = utc(2021, 3, 14, 8)  # 02:00 CST does not exist; it is 03:00 CDT
+    plan = plan_shifts([rec("a", start)], keep_local("America/Chicago"))
+    assert plan.reference_offset_us == -5 * HOUR
+    assert to_utc(start + plan.shift_for("a")) == datetime(2000, 1, 1, 3, tzinfo=UTC)
+    assert not plan.warnings  # it starts after the change
+
+
+def test_northern_reference_in_summer_flips_a_late_winter_recording_forward():
+    zone = "Europe/Prague"
+    recs = [
+        rec("ref", local(zone, 2021, 7, 1, 12)),
+        rec("winter_late", local(zone, 2021, 11, 20, 23, 30)),
+        rec("winter_noon", local(zone, 2021, 12, 1, 12)),
+    ]
+    plan = plan_shifts(recs, keep_local(zone))
+    other = warned(plan, WarningCode.OTHER_SEASON)
+    assert set(other) == {"winter_late", "winter_noon"}
+    assert other["winter_late"].time_of_day_off_us == HOUR
+    assert other["winter_late"].day_shift == 1
+    assert other["winter_noon"].day_shift == 0
+    copy = to_utc(plan.by_id["winter_late"].new_start_us)
+    assert (copy.hour, copy.minute) == (0, 30)
+
+
+def test_st_johns_half_hour_zone_other_season():
+    zone = "America/St_Johns"  # -3:30 standard, -2:30 daylight
+    recs = [
+        rec("ref", local(zone, 2021, 1, 10, 12)),
+        rec("summer", local(zone, 2021, 7, 10, 0, 20)),
+    ]
+    plan = plan_shifts(recs, keep_local(zone))
+    assert plan.reference_offset_us == -3.5 * HOUR
+    (w,) = warned(plan, WarningCode.OTHER_SEASON).values()
+    assert w.time_of_day_off_us == -HOUR and w.day_shift == -1
+
+
+def test_a_zone_without_dst_never_warns_across_seasons():
+    zone = "Asia/Kolkata"
+    recs = [
+        rec("jan", local(zone, 2021, 1, 10, 23, 50)),
+        rec("jul", local(zone, 2021, 7, 10, 0, 5)),
+    ]
+    for mode in Mode:
+        plan = plan_shifts(recs, keep_local(zone, mode=mode))
+        assert plan.runnable
+        assert not warned(plan, WarningCode.OTHER_SEASON)
+        assert not warned(plan, WarningCode.DST_CROSSING)
+
+
+def test_aligned_refuses_the_reference_itself_below_the_floor():
+    recs = [rec("ref", utc(2000, 1, 3, 10)), rec("later", utc(2000, 1, 10, 10))]
+    plan = plan_shifts(recs, ShiftSettings(mode=Mode.ALIGNED, time_of_day=TimeOfDay.KEEP_UTC))
+    below = {r.recording_id for r in plan.refusals if r.code is RefusalCode.BELOW_FLOOR}
+    assert "ref" in below
+
+
+@pytest.mark.parametrize(("days", "refused"), [(10, False), (9, True)])
+def test_aligned_floor_boundary_is_exact(days, refused):
+    # Batch spans exactly 9 days; the floor is 10 days. The target is the
+    # reference's new start; "b" ends the span and starts at the same time of day.
+    x = utc(2020, 3, 1, 6)
+    recs = [
+        RecordingTimes("a", x, x + HOUR),
+        RecordingTimes("b", x + 9 * DAY_US - HOUR, x + 9 * DAY_US),
+    ]
+    target = to_utc(x + 9 * DAY_US - HOUR + days * DAY_US)
+    plan = plan_shifts(
+        recs,
+        ShiftSettings(
+            mode=Mode.ALIGNED,
+            time_of_day=TimeOfDay.KEEP_UTC,
+            reference_id="b",
+            new_date=target.date(),
+        ),
+    )
+    assert plan.floor_us == 10 * DAY_US
+    assert plan.by_id["b"].shift_us == days * DAY_US
+    below = {r.recording_id for r in plan.refusals if r.code is RefusalCode.BELOW_FLOOR}
+    assert ("b" in below) == refused
+
+
+def test_span_ids_name_the_ends_of_the_batch():
+    x = utc(2020, 3, 1)
+    recs = [rec("mid", x + DAY_US), rec("first", x), rec("last", x + 30 * DAY_US, hours=5)]
+    plan = plan_shifts(recs, ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC))
+    assert plan.span_ids == ("first", "last")
+
+
+def test_an_implausibly_long_recording_is_blocked_and_planning_stays_fast():
+    import time as _time
+
+    t = utc(2021, 6, 1)
+    recs = [rec("ok", t), RecordingTimes("corrupt", t, MAX_TIME_US)]
+    t0 = _time.perf_counter()
+    plan = plan_shifts(recs, keep_local("Europe/Prague"))
+    assert _time.perf_counter() - t0 < 1.0
+    assert plan.blocked[0].id == "corrupt"
+    assert plan.blocked[0].reasons == (Blocker.TIMES_INVALID,)
+    assert plan.runnable and plan.batch_span_us == 2 * HOUR
+    # Ten years is still accepted, and scanned quickly.
+    decade = RecordingTimes("decade", t, t + shiftplan.MAX_DURATION_US)
+    t0 = _time.perf_counter()
+    plan = plan_shifts([decade], keep_local("Europe/Prague", new_date=date(1975, 1, 1)))
+    assert _time.perf_counter() - t0 < 2.0
+    assert not plan.blocked
+    assert len(plan.warnings[0].clock_changes) == 20
+
+
+def test_a_large_aligned_batch_plans_quickly():
+    import time as _time
+
+    t = utc(2010, 1, 1)
+    recs = [rec(f"r{i}", t + i * HOUR, hours=1.5) for i in range(600)]
+    t0 = _time.perf_counter()
+    plan = plan_shifts(recs, ShiftSettings(mode=Mode.ALIGNED, time_of_day=TimeOfDay.KEEP_UTC))
+    assert _time.perf_counter() - t0 < 3.0
+    assert len(warned(plan, WarningCode.ALIGNED_OVERLAP)["r0"].overlaps) == 599
+
+
+@pytest.mark.parametrize("name", ["europe/prague", "EUROPE/PRAGUE", "localtime"])
+def test_zone_names_must_be_listed_exactly(name):
+    plan = plan_shifts([rec("a", utc(2021, 3, 1, 10))], ShiftSettings(site_zone=name))
+    assert codes(plan.refusals) == [RefusalCode.UNKNOWN_ZONE]
+
+
+def test_the_plan_says_whether_a_site_zone_was_used():
+    a = [rec("a", utc(2021, 3, 1, 10))]
+    assert plan_shifts(a, keep_local("Europe/Prague")).used_site_zone
+    assert not plan_shifts(a, ShiftSettings(time_of_day=TimeOfDay.SET)).used_site_zone

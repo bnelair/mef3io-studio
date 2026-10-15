@@ -42,14 +42,18 @@ Recordings that cannot be planned are listed in :attr:`ShiftPlan.blocked`
 with :class:`Blocker` codes and take no part in the plan (nor in the batch
 span). In particular a recording whose times are not verified (a non-zero
 recording-time offset, meflib's deprecated date masking, whose sign
-convention the bytes cannot settle; or one that is unknown because the
-full-access password is missing) is blocked: a wrong reading of its times
-would put a wrong date in the copy and defeat the leak scan.
+convention the bytes cannot settle) is blocked: a wrong reading of its times
+would put a wrong date in the copy and defeat the leak scan. A recording
+opened without the full-access password is blocked as ``LOCKED`` (its offset
+is behind that password, and anonymizing needs it anyway).
 
-Privacy: original times and shifts are re-identifying (the shift is what the
-optional key file stores), so they are left out of every ``repr`` here; a
-stray log line of a plan shows only ids and codes. Ids are the caller's
-opaque keys and must not be names or paths.
+Privacy: original times, shifts, and anything they can be worked back from
+(D, off_ref, the weekday-adjusted date, clock-change positions, the site
+zone) are re-identifying (the shift is what the optional key file stores),
+so they are left out of every ``repr`` here; a stray log line of a plan shows
+only ids and codes. ``dataclasses.asdict`` still exposes everything: a plan
+must never be serialised into a log or a report. Ids are the caller's opaque
+keys and must not be names or paths.
 
 Plain Python, no Qt.
 """
@@ -60,7 +64,8 @@ import enum
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from functools import cache, cached_property
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from .recording import ACCESS_BASIC, RecordingDetails
 
@@ -72,18 +77,30 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 #: Every shifted time must be at least this (1970-01-02 00:00 UTC). MEF stores
 #: times negated as a marker, so a time must stay well above 0; one day of
 #: margin also keeps every site-zone date after 1970-01-01.
+#: TODO(mef3io#70): mirror anonymize_session's own margin once it exists, so
+#: a plan called runnable here is never refused there.
 MIN_SHIFTED_US = DAY_US
 #: The last instant handled (9999-12-30 00:00 UTC), one day short of what
 #: Python's dates reach, so a time stays convertible in every zone.
 MAX_TIME_US = (datetime(9999, 12, 30, tzinfo=UTC) - _EPOCH) // _ONE_US
 
+#: The range of new dates accepted (later ones leave no room for a recording).
+FIRST_NEW_DATE = date(1970, 1, 1)
+LAST_NEW_DATE = date(9999, 12, 1)
+
+#: A recording longer than this is taken as damaged times (TIMES_INVALID):
+#: one bad end time would otherwise inflate the batch span (refusing every
+#: shift) and make the clock-change scan run for minutes.
+MAX_DURATION_US = 3653 * DAY_US  # ten years
+
 #: The default new date of the reference copy.
 DEFAULT_NEW_DATE = date(2000, 1, 1)
 
 #: Clock changes are looked for at this step, then pinned to the microsecond.
-#: Two changes that cancel out within one step would be missed; no zone in the
-#: IANA database changes its offset twice within six hours.
-_SCAN_STEP_US = 6 * 3600 * 1_000_000
+#: Two changes that cancel out within one step would be missed; in the IANA
+#: database (2026.5) no zone has changed its offset twice within about a week
+#: since 1900, and recordings start after 1970.
+_SCAN_STEP_US = DAY_US
 
 
 class Mode(enum.StrEnum):
@@ -105,7 +122,8 @@ class Blocker(enum.StrEnum):
     TIMES_UNVERIFIED = "times_unverified"
     #: Opened without the full-access password; anonymizing needs it.
     LOCKED = "locked"
-    #: No usable start/end (missing, end before start, or out of range).
+    #: No usable start/end (missing, end before start, out of range, or
+    #: longer than MAX_DURATION_US).
     TIMES_INVALID = "times_invalid"
 
 
@@ -116,6 +134,8 @@ class RefusalCode(enum.StrEnum):
     REFERENCE_BLOCKED = "reference_blocked"  # the chosen reference is blocked
     UNKNOWN_ZONE = "unknown_zone"  # the site zone name is not in the database
     NEEDS_SITE_ZONE = "needs_site_zone"  # keep-local without a site zone
+    #: new_date outside FIRST_NEW_DATE..LAST_NEW_DATE (batch level).
+    NEW_DATE_OUT_OF_RANGE = "new_date_out_of_range"
     BELOW_FLOOR = "below_floor"  # |shift| < batch span + one day
     TOO_EARLY = "too_early"  # a shifted time below MIN_SHIFTED_US
     TOO_LATE = "too_late"  # a shifted time past MAX_TIME_US (or no such date)
@@ -142,21 +162,27 @@ class RecordingTimes:
     id: str
     start_us: int | None = field(repr=False)
     end_us: int | None = field(repr=False)
-    #: False when the times may not be the real ones (Explorer:
-    #: ``RecordingDetails.times_verified``).
+    #: False when the times may not be the real ones: a non-zero
+    #: recording-time offset, or one that could not be read although the
+    #: recording is not locked.
     times_verified: bool = True
     #: True when the full-access password is missing.
     locked: bool = False
 
 
 def recording_times(details: RecordingDetails, recording_id: str) -> RecordingTimes:
-    """What the Explorer knows about a recording, as planner input."""
+    """What the Explorer knows about a recording, as planner input. A
+    locked recording's unknown offset is reported as LOCKED only: the
+    password is the one thing to fix, and its times are judged once it is
+    given."""
+    locked = details.access == ACCESS_BASIC
+    rto = details.recording_time_offset
     return RecordingTimes(
         id=recording_id,
         start_us=details.start,
         end_us=details.end,
-        times_verified=details.times_verified,
-        locked=details.access == ACCESS_BASIC,
+        times_verified=rto == 0 or (rto is None and locked),
+        locked=locked,
     )
 
 
@@ -166,14 +192,16 @@ class ShiftSettings:
 
     mode: Mode = Mode.RELATIVE
     time_of_day: TimeOfDay = TimeOfDay.KEEP_LOCAL
-    new_date: date = DEFAULT_NEW_DATE
+    #: Not in the repr: a user may pick a date near the original.
+    new_date: date = field(default=DEFAULT_NEW_DATE, repr=False)
     #: Used only with ``TimeOfDay.SET``: the reference copy's start time on
     #: the copy's clock (UTC). Must be naive.
     new_time: time = time(0, 0)
     #: IANA name of the recording site's time zone, e.g. "Europe/Prague".
     #: Required for keep-local; when given, also used for the clock-change
-    #: warnings in every mode.
-    site_zone: str | None = None
+    #: warnings in every mode and for the weekday in set-the-time mode.
+    #: A location hint, so not in the repr.
+    site_zone: str | None = field(default=None, repr=False)
     keep_weekday: bool = False
     #: None = the earliest-starting recording.
     reference_id: str | None = None
@@ -187,10 +215,11 @@ class ShiftSettings:
 class ClockChange:
     """A daylight-saving (or other offset) change inside a recording."""
 
-    #: Time from the recording's start to the change (not a date).
-    after_us: int
-    offset_before_us: int
-    offset_after_us: int
+    #: Time from the recording's start to the change (not a date, but with
+    #: the copy's start it places a known rule date, so not in the repr).
+    after_us: int = field(repr=False)
+    offset_before_us: int = field(repr=False)
+    offset_after_us: int = field(repr=False)
 
     @property
     def change_us(self) -> int:
@@ -210,8 +239,8 @@ class PlanWarning:
     #: recording's).
     time_of_day_off_us: int = 0
     #: OTHER_SEASON: the copy's date minus the date it would show with the
-    #: wall-clock time of day kept: -1, 0 or +1. Non-zero = the date and the
-    #: weekday flip.
+    #: wall-clock time of day kept, in whole days: normally -1, 0 or +1 (more
+    #: after a zone's rule change). Non-zero = the date and weekday flip.
     day_shift: int = 0
 
     @property
@@ -260,15 +289,24 @@ class ShiftPlan:
     blocked: tuple[BlockedRecording, ...] = ()
     refusals: tuple[Refusal, ...] = ()
     reference_id: str | None = None
-    #: The new date actually used (after the weekday option).
-    new_date: date | None = None
-    #: D in days (keep-local / keep-UTC); None for set-the-time.
-    days: int | None = None
-    #: off_ref (keep-local only).
-    reference_offset_us: int | None = None
+    #: The new date actually used (after the weekday option; with it, it
+    #: gives the original weekday away, so not in the repr).
+    new_date: date | None = field(default=None, repr=False)
+    #: D in days (keep-local / keep-UTC); None for set-the-time. With
+    #: new_date it gives the original date back: not in the repr.
+    days: int | None = field(default=None, repr=False)
+    #: off_ref (keep-local only); not in the repr.
+    reference_offset_us: int | None = field(default=None, repr=False)
     #: The span of the planned originals, and the smallest allowed shift.
     batch_span_us: int | None = None
     floor_us: int | None = None
+    #: The recordings at either end of that span (earliest start, latest
+    #: end), so a refusal below the floor can say what makes the span long.
+    span_ids: tuple[str, str] | None = None
+    #: True when a site zone was used: clock changes were checked, and a
+    #: set-the-time weekday is the site's. False: no clock-change check, and
+    #: that weekday is the UTC one.
+    used_site_zone: bool = False
 
     @property
     def runnable(self) -> bool:
@@ -279,11 +317,13 @@ class ShiftPlan:
     def warnings(self) -> tuple[PlanWarning, ...]:
         return tuple(w for r in self.recordings for w in r.warnings)
 
+    @cached_property
+    def by_id(self) -> dict[str, PlannedShift]:
+        return {r.id: r for r in self.recordings}
+
     def shift_for(self, recording_id: str) -> int | None:
-        for r in self.recordings:
-            if r.id == recording_id:
-                return r.shift_us
-        return None
+        planned = self.by_id.get(recording_id)
+        return planned.shift_us if planned else None
 
 
 # --------------------------------------------------------------------------
@@ -315,10 +355,24 @@ def _resolve_zone(name: str | None) -> tuple[tzinfo | None, bool]:
         return None, True
     if name == "UTC":
         return UTC, True
+    # Only names the database lists: on a case-insensitive file system
+    # "europe/prague" would otherwise load on one platform and not another.
+    if name not in _known_zones():
+        return None, False
     try:
         return ZoneInfo(name), True
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError):  # pragma: no cover - listed but broken
         return None, False
+
+
+@cache
+def _known_zones() -> frozenset[str]:
+    try:
+        names = set(available_timezones())
+    except Exception:  # pragma: no cover - a broken tz database
+        names = set()
+    names.discard("localtime")
+    return frozenset(names)
 
 
 def clock_changes(start_us: int, end_us: int, zone: tzinfo) -> tuple[ClockChange, ...]:
@@ -354,6 +408,7 @@ def _blockers(rec: RecordingTimes) -> tuple[Blocker, ...]:
         or isinstance(s, bool)
         or isinstance(e, bool)
         or not (0 < s <= e <= MAX_TIME_US)
+        or e - s > MAX_DURATION_US
     ):
         out.append(Blocker.TIMES_INVALID)
     return tuple(out)
@@ -393,6 +448,8 @@ def plan_shifts(
 
     zone, zone_ok = _resolve_zone(settings.site_zone)
     pre: list[Refusal] = []
+    if not FIRST_NEW_DATE <= settings.new_date <= LAST_NEW_DATE:
+        pre.append(Refusal(RefusalCode.NEW_DATE_OUT_OF_RANGE))
     if not zone_ok:
         pre.append(Refusal(RefusalCode.UNKNOWN_ZONE))
     elif tod is TimeOfDay.KEEP_LOCAL and zone is None:
@@ -411,27 +468,31 @@ def plan_shifts(
     assert ref is not None
 
     # The reference's new start: D (and off_ref) on the clock the mode keeps.
+    # (new_date and every original are range-checked above: no overflow here.)
     days = off_ref = None
-    try:
-        if tod is TimeOfDay.SET:
-            original_date = _datetime(ref.start_us, zone or UTC).date()
-            new_date = settings.new_date
-            if settings.keep_weekday:
-                new_date = _nearest_same_weekday(new_date, original_date)
-            ref_shift = _us(datetime.combine(new_date, settings.new_time, UTC)) - ref.start_us
-        else:
-            clock = zone if tod is TimeOfDay.KEEP_LOCAL else UTC
-            original_date = _datetime(ref.start_us, clock).date()
-            new_date = settings.new_date
-            if settings.keep_weekday:
-                new_date = _nearest_same_weekday(new_date, original_date)
-            days = (new_date - original_date).days
-            off_ref = _offset_us(ref.start_us, clock) if tod is TimeOfDay.KEEP_LOCAL else None
-            ref_shift = days * DAY_US + (off_ref or 0)
-    except OverflowError:
-        return replace(base, reference_id=ref.id, refusals=(Refusal(RefusalCode.TOO_LATE),))
+    if tod is TimeOfDay.SET:
+        original_date = _datetime(ref.start_us, zone or UTC).date()
+        new_date = settings.new_date
+        if settings.keep_weekday:
+            new_date = _nearest_same_weekday(new_date, original_date)
+        ref_shift = _us(datetime.combine(new_date, settings.new_time, UTC)) - ref.start_us
+    else:
+        clock = zone if tod is TimeOfDay.KEEP_LOCAL else UTC
+        original_date = _datetime(ref.start_us, clock).date()
+        new_date = settings.new_date
+        if settings.keep_weekday:
+            new_date = _nearest_same_weekday(new_date, original_date)
+        days = (new_date - original_date).days
+        off_ref = _offset_us(ref.start_us, clock) if tod is TimeOfDay.KEEP_LOCAL else None
+        ref_shift = days * DAY_US + (off_ref or 0)
 
-    span = max(r.end_us for r in plannable) - min(r.start_us for r in plannable)
+    # The span of the originals as their start/end times give it.
+    # TODO(mef3io#70): if verify's leak scan counts note times outside the
+    # signal's range as part of "the original range", take the span from the
+    # same source (inspect()) so the two floors agree.
+    first = min(plannable, key=lambda r: r.start_us)
+    last = max(plannable, key=lambda r: r.end_us)
+    span = last.end_us - first.start_us
     floor = span + DAY_US
     target = ref.start_us + ref_shift
 
@@ -497,6 +558,8 @@ def plan_shifts(
         reference_offset_us=off_ref,
         batch_span_us=span,
         floor_us=floor,
+        span_ids=(first.id, last.id),
+        used_site_zone=zone is not None,
     )
 
 
@@ -511,7 +574,8 @@ def _overlap_warnings(planned: list[PlannedShift], out: dict[str, list[PlanWarni
             if b.new_end_us > b.new_start_us:  # an empty recording overlaps nothing
                 hits[a.id].append(b.id)
                 hits[b.id].append(a.id)
+    position = {p.id: i for i, p in enumerate(planned)}
     for p in planned:
         if hits[p.id]:
-            others = tuple(sorted(hits[p.id], key=[q.id for q in planned].index))
+            others = tuple(sorted(hits[p.id], key=position.__getitem__))
             out[p.id].append(PlanWarning(WarningCode.ALIGNED_OVERLAP, p.id, overlaps=others))
