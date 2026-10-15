@@ -128,7 +128,12 @@ class _ListBox(QWidget):
         # At least a few rows of the list, so a short window scrolls the
         # page rather than showing a header with no rows.
         rows = table.verticalHeader().defaultSectionSize()
-        table.setMinimumHeight(table.horizontalHeader().sizeHint().height() + rows * 3 + 4)
+        table.setMinimumHeight(
+            table.horizontalHeader().sizeHint().height()
+            + rows * 3
+            + table.horizontalScrollBar().sizeHint().height()  # usually showing
+            + 2 * table.frameWidth()
+        )
 
     def _actions_height(self) -> int:
         width = self.width() if self.width() > 0 else self.sizeHint().width()

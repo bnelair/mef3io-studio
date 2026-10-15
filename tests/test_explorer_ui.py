@@ -549,6 +549,9 @@ def test_list_buttons_are_never_cut_off(qapp, qtbot, settings, tmp_path, scale):
             for button in (page.remove_button, page.check_selected_button, page.pack_button):
                 bottom = button.mapTo(page.list_box, button.rect().bottomLeft()).y()
                 assert bottom < page.list_box.height(), (size, button.text())
+        win.resize(800, 442)  # the smallest window: the page scrolls, never clips
+        qtbot.wait(80)
+        assert page.scroll.verticalScrollBar().isVisible()
         win.jobs.dispose()
     finally:
         qapp.setFont(font)
