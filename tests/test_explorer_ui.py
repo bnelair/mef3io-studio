@@ -499,3 +499,25 @@ def test_sorting_notes_keeps_the_selection_on_the_same_note(page, qtbot, tmp_pat
     table.sortByColumn(0, Qt.SortOrder.DescendingOrder)
     row = table.selectionModel().selectedRows()[0].row()
     assert table.rows.objects[row] is chosen and row == 49
+
+
+@pytest.mark.parametrize("size", [(1280, 800), (1400, 900)])
+def test_page_fills_the_window_without_scrolling(window, qtbot, tmp_path, size):
+    """Regression (review round 5): the page sits in a scroll area for very
+    small windows, but at normal sizes it fills the window exactly."""
+    window._closing = True
+    window.show()
+    window.resize(*size)
+    page = window.explorer
+    page.open_paths([str(write_plain(tmp_path / "fit.mefd", notes=False))], interactive=False)
+    wait_loaded(qtbot, page, 1)
+    page.select_entry(page.entries()[0])
+    qtbot.wait(100)
+    assert not page.scroll.verticalScrollBar().isVisible()
+    assert page.scroll.widget().height() == page.scroll.viewport().height()
+    # The list and the details grow with the window.
+    before = page.tabs.height() + page.table.height()
+    window.resize(size[0], size[1] + 200)
+    qtbot.wait(100)
+    assert page.tabs.height() + page.table.height() > before
+    assert not page.scroll.verticalScrollBar().isVisible()

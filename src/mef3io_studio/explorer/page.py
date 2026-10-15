@@ -84,6 +84,28 @@ def _plural(n: int, one: str) -> str:
     return format_count(n, one)
 
 
+class _FitInner(QWidget):
+    """The page's content inside its scroll area. Its toolbar wraps (height
+    depends on width), and for such a widget QScrollArea takes the
+    PREFERRED height as the minimum, so the page would always scroll. This
+    reports the minimum instead: the page fills the window and scrolls only
+    when the window is shorter than that."""
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        toolbar = layout.itemAt(0).layout()
+        body = layout.itemAt(1).widget()
+        inner_width = width - margins.left() - margins.right()
+        return (
+            margins.top()
+            + margins.bottom()
+            + toolbar.heightForWidth(inner_width)
+            + layout.spacing()
+            + body.minimumSizeHint().height()
+        )
+
+
 class DropZone(QFrame):
     """Shown while the list is empty: what to do first."""
 
@@ -354,7 +376,7 @@ class ExplorerPage(QWidget):
         # large text) the page scrolls instead of forcing the window, and
         # the sidebar next to it, to change size. Platforms measure widgets
         # differently, so no single minimum width can be relied on.
-        inner = QWidget()
+        inner = _FitInner()
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(int(em), int(em * 0.8), int(em), int(em * 0.6))
         layout.addLayout(toolbar)
@@ -363,6 +385,7 @@ class ExplorerPage(QWidget):
         self.scroll.setObjectName("Panel")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keep focus on the list
         self.scroll.setWidget(inner)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -605,11 +628,15 @@ class ExplorerPage(QWidget):
         # re-sort the list on the GUI thread).
         self.proxy.setDynamicSortFilter(False)
         try:
-            self._apply_outcomes(outcomes, prompt, create, job)
+            applied = self._apply_outcomes(outcomes, prompt, create, job)
         finally:
             self.proxy.setDynamicSortFilter(True)  # sorts once, now
+        self._fit_columns()  # after the re-sort: widths come from a sample of rows
+        for entry in applied:
+            if prompt and entry.needs_password:
+                self.unlock(entry)
 
-    def _apply_outcomes(self, outcomes, prompt: bool, create: bool, job) -> None:
+    def _apply_outcomes(self, outcomes, prompt: bool, create: bool, job) -> list:
         added: list[RecordingEntry] = []
         applied: list[RecordingEntry] = []
         for outcome in outcomes:
@@ -640,10 +667,7 @@ class ExplorerPage(QWidget):
             self._refresh_body()
             if self.current_entry() is None:
                 self.select_entry(added[0])
-        self._fit_columns()
-        for entry in applied:
-            if prompt and entry.needs_password:
-                self.unlock(entry)
+        return applied
 
     # ------------------------------------------------------------------
     # Passwords
