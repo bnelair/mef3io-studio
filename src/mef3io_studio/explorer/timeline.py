@@ -45,7 +45,7 @@ class TimelineWidget(QWidget):
             else em
         )
         gutter = min(gutter, round(em * 12))
-        axis = round(em * 2.6)
+        axis = round(em * 3.0)
         return em, row, gutter, axis
 
     def sizeHint(self) -> QSize:  # noqa: N802
@@ -112,7 +112,7 @@ class TimelineWidget(QWidget):
         painter.setPen(muted)
         span = format_span((t1 - t0) / 1e6)
         painter.drawText(
-            QRectF(left, base, width, em * 1.0),
+            QRectF(left, base + em * 0.35, width, em * 1.0),
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
             f"{span} in total",
         )

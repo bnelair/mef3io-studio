@@ -22,3 +22,47 @@ def sleep_then(seconds):
 
 def answer():
     return 42
+
+
+def _rchar():
+    with open("/proc/self/io") as fh:
+        for line in fh:
+            if line.startswith("rchar"):
+                return int(line.split()[1])
+    raise RuntimeError("no rchar")
+
+
+def measure_inspect(warm_up, location):
+    """Bytes this process reads (``/proc/self/io`` rchar, which counts every
+    byte read, page cache or not) while the explorer inspects ``location``,
+    exactly as the app does. ``warm_up`` is inspected first so that Python
+    imports done on first use are not counted."""
+    from mef3io_studio.model.source import LocalRecordingSource
+
+    source = LocalRecordingSource()
+    source.inspect_many([(warm_up, "")])
+    before = _rchar()
+    (outcome,) = source.inspect_many([(location, "")])
+    read = _rchar() - before
+    assert outcome.details is not None, outcome.error
+    return read, len(outcome.details.channels), outcome.details.part_count
+
+
+def count_to(n, send):
+    for i in range(n):
+        send(i)
+    return "counted"
+
+
+def write_pid_then_sleep(path):
+    with open(path, "w") as fh:
+        fh.write(str(os.getpid()))
+    time.sleep(60)
+
+
+def orphan_parent(pid_file):
+    """Runs as a separate Python program: starts a helper, then waits to be
+    killed (see test_helper_exits_when_the_app_dies)."""
+    from mef3io_studio.workers.isolated import run_isolated
+
+    run_isolated(write_pid_then_sleep, pid_file)

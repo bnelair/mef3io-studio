@@ -597,6 +597,36 @@ def _finish_self_test(line: str, code: int, report_path: str | None) -> int:
     return code
 
 
+def _explore_test_recording(app, window, folder: str, timeout: float = 120.0) -> str:
+    """Open the synthetic recording in the Explorer, as a user would, and
+    wait (without blocking the event loop) until its details are shown."""
+    import time
+    from pathlib import Path
+
+    from .selftest import CHANNELS, write_test_recording
+
+    path = Path(folder) / "explore-test.mefd"
+    write_test_recording(path)
+    page = window.explorer
+    page.open_paths([str(path)], interactive=False)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        entries = page.entries()
+        if entries and not entries[0].busy and entries[0].outcome is not None:
+            break
+        time.sleep(0.02)
+    else:
+        raise RuntimeError("the Explorer did not open the test recording in time")
+    outcome = page.entries()[0].outcome
+    if outcome.details is None:
+        raise RuntimeError(f"the Explorer could not open the test recording: {outcome.error}")
+    channels = len(outcome.details.channels)
+    if channels != len(CHANNELS) or page.detail_stack.currentWidget() is not page.tabs:
+        raise RuntimeError(f"the Explorer showed {channels} channels, expected {len(CHANNELS)}")
+    return f"{channels} channels in the Explorer"
+
+
 def self_test(report_path: str | None = None, gui: bool = False) -> int:
     """Run the installation check. Returns the exit code.
 
@@ -645,6 +675,7 @@ def self_test(report_path: str | None = None, gui: bool = False) -> int:
                 shown = state["shown"]
             else:
                 app.processEvents()
+            explored = _explore_test_recording(app, window, tmp)
             platform_name = app.platformName()
             window.jobs.dispose()
             window.hide()
@@ -656,7 +687,8 @@ def self_test(report_path: str | None = None, gui: bool = False) -> int:
                 "without a display, can cause this)"
             )
         line = (
-            f"mef3io-studio self-test OK: wrote and read {result.channel_count} channels "
+            f"mef3io-studio self-test OK: wrote and read {result.channel_count} channels, "
+            f"explored {explored} "
             f"(app {app_version()}, mef3io {result.mef3io_version}, Qt {qt_version()}, "
             f"display {platform_name})"
         )

@@ -67,3 +67,13 @@ Code (app shell, #2/#3):
 - New preferences must be declared in `common/settings.PREFERENCES` (UI only).
 - Look: Fusion + palette + QSS in `common/theme.py`; icons are bundled SVGs
   with `currentColor`; no pixel font sizes.
+- Explorer (#4): `model/inspect.py` is the ONLY place that reads a recording
+  for display (thin adapter over the public Reader; swap for mef3io.inspect()
+  #67). It never calls read/read_raw/toc; tests/test_explorer_bytes.py pins
+  < 1% of bytes read via /proc/self/io in the helper. Widgets (`explorer/`,
+  `common/`) never import mef3io (test). Pack/unpack (`model/archive.py`)
+  writes to an opaque `.mef3io-studio-<hex>` temp name, checks the copy, then
+  finishes without replacing anything. Patient details, descriptions and
+  note text are masked until "Show" per recording; Copy summary also hides
+  names and dates. RTO != 0 = deprecated date masking: warn, never call it
+  anonymized.

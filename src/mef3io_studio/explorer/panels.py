@@ -283,7 +283,7 @@ class ChannelsPanel(QWidget):
             for col, item in enumerate(cells):
                 if col in (1, 3, 4):
                     item.setTextAlignment(
-                        int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 self.table.setItem(row, col, item)
         self.table.setSortingEnabled(True)
