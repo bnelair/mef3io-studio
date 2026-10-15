@@ -122,7 +122,9 @@ def test_time_offset_recording_is_flagged(tmp_path):
     path = set_time_offset(write_plain(tmp_path / "masked.mefd", notes=False), 3 * DAY)
     d = inspect_recording(str(path)).details
     assert d.recording_time_offset == 3 * DAY
-    assert d.uses_time_offset and d.times_verified
+    # Deprecated date masking: identifiable, and the times are unverified
+    # (the legacy sign convention cannot be told from the bytes).
+    assert d.uses_time_offset and not d.times_verified
     # The times shown are the ones mef3io returns for this file.
     with mef3io.Reader(str(path), warn_declarations=False) as reader:
         assert d.start == reader.info("a1")["start_time"]
@@ -350,3 +352,47 @@ def test_number_formats():
     assert format_size(41_442_800) == "41.4 MB"
     assert format_rates([256.0, 512.0]) == "256 Hz, 512 Hz"
     assert format_rates([1, 2, 3, 4]) == "1 Hz to 4 Hz (4 different)"
+
+
+def test_pack_refuses_a_destination_inside_a_recording(tmp_path):
+    src = write_plain(tmp_path / "rec.mefd", notes=False)
+    other = write_plain(tmp_path / "other.mefd", notes=False)
+    for destination in (src, src / "a1.timd", other):
+        with pytest.raises(archive.InsideRecording):
+            archive.plan(str(src), str(destination))
+
+
+def test_pack_and_check_a_password_protected_recording(tmp_path):
+    src = write_encrypted(tmp_path / "locked.mefd")
+    out = tmp_path / "o"
+    out.mkdir()
+    plan = archive.plan(str(src), str(out))
+    archive.run_in_helper(plan, PASSWORD_FULL)
+    target = archive.finish(plan)
+    assert inspect_recording(target, PASSWORD_FULL).details.access == ACCESS_FULL
+    assert inspect_recording(target).needs_password  # the copy keeps its protection
+
+
+def test_temporary_cleanup_includes_mef3io_working_files(tmp_path):
+    src = write_plain(tmp_path / "rec.mefd", notes=False)
+    out = tmp_path / "o"
+    out.mkdir()
+    plan = archive.plan(str(src), str(out))
+    working = plan.temporary + ".tmp"  # what archive_session writes before renaming
+    with open(working, "wb") as fh:
+        fh.write(b"x" * 1000)
+    assert archive.written_bytes(plan) == 1000
+    (out / "unrelated.txt").write_text("keep me")
+    archive.remove_temporary(plan)
+    assert sorted(p.name for p in out.iterdir()) == ["unrelated.txt"]
+
+
+def test_scan_of_something_that_is_not_a_folder(tmp_path):
+    from mef3io_studio.model.errors import describe_error
+    from mef3io_studio.model.scan import NotAFolder
+
+    stray = tmp_path / "notes.txt"
+    stray.write_text("x")
+    with pytest.raises(NotAFolder) as info:
+        find_recordings(str(stray))
+    assert describe_error(info.value).title == "This is not a recording"

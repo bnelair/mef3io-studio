@@ -37,10 +37,19 @@ def measure_inspect(warm_up, location):
     byte read, page cache or not) while the explorer inspects ``location``,
     exactly as the app does. ``warm_up`` is inspected first so that Python
     imports done on first use are not counted."""
+    import mef3io
+
     from mef3io_studio.model.source import LocalRecordingSource
 
     source = LocalRecordingSource()
     source.inspect_many([(warm_up, "")])
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("the explorer must not read the signal or the block table")
+
+    # Exact, independent of the byte count: these calls are never made.
+    for name in ("read", "read_raw", "toc"):
+        setattr(mef3io.Reader, name, forbidden)
     before = _rchar()
     (outcome,) = source.inspect_many([(location, "")])
     read = _rchar() - before
@@ -66,3 +75,20 @@ def orphan_parent(pid_file):
     from mef3io_studio.workers.isolated import run_isolated
 
     run_isolated(write_pid_then_sleep, pid_file)
+
+
+class CrashOnSecond:
+    """A recording source whose helper dies (natively) on the second
+    recording it is given, as a damaged file could make it."""
+
+    isolate = True
+
+    def inspect_many(self, requests, send=None):
+        from mef3io_studio.model.source import LocalRecordingSource
+
+        real = LocalRecordingSource()
+        for location, password in requests:
+            if location.endswith("crash.mefd"):
+                os.abort()
+            real.inspect_many([(location, password)], send=send)
+        return []

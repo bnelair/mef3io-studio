@@ -255,9 +255,13 @@ class RecordingDetails:
 
     @property
     def times_verified(self) -> bool:
-        """False when the recording-time offset is unknown, so the times shown
-        may not be the true ones (docs/design/explorer.md)."""
-        return self.recording_time_offset is not None
+        """False when the times may not be the real ones
+        (docs/design/explorer.md, "Times you can't trust"): the
+        recording-time offset is unknown (it is behind the full-access
+        password), or it is not zero, where older tools stored times with the
+        opposite sign convention to meflib and the bytes cannot tell which.
+        The times are still shown as mef3io returns them, labelled."""
+        return self.recording_time_offset == 0
 
     @property
     def uses_time_offset(self) -> bool:
@@ -306,6 +310,8 @@ class RecordingDetails:
         """Every identifying string this recording holds, for the log filter."""
         values = [self.name, *self.patient.values()]
         values += [c.description for c in self.channels if c.description]
+        # Note text is masked in the UI and never logged; registered anyway.
+        values += [n.text for n in self.notes if n.text]
         first, last = self.patient.first_name, self.patient.last_name
         if first and last:
             # The log filter matches "First Last"; register the other order too.

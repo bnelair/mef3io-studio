@@ -57,15 +57,18 @@ zone…** (or **Change…** at the top right). After that, every time is shown
 in that place's local time, with its offset from UTC, correct on both sides
 of a daylight-saving change. The choice is remembered.
 
-Times marked **(unverified)** may not be the real ones: the part of the
-recording that confirms them is locked until the full-access password is
-given. They are listed after the others when you sort by time.
+Times marked **(unverified)** may not be the real ones. They are listed
+after the others when you sort by time. This happens in two cases:
 
-Some recordings carry a **time offset** that older software used to hide the
-real date. The app shows a warning for these: *"This recording hides its real
-date in a way that can be undone; treat it as identifiable."* The real date is
-still in the file, so such a recording is **not** anonymized. The times shown
-are the true ones.
+- the part of the recording that confirms the times is locked until the
+  full-access password is given;
+- the recording carries a **time offset** that older software used to hide the
+  real date. The app shows a warning for these: *"This recording hides its real
+  date in a way that can be undone; treat it as identifiable."* The real date
+  is still in the file, so such a recording is **not** anonymized. Older
+  programs stored such times in two different ways, and the file does not say
+  which, so the times shown (as the mef3io library works them out) are
+  unverified.
 
 ### The details of a recording
 

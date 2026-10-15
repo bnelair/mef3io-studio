@@ -176,6 +176,7 @@ def test_time_offset_note_is_shown(page, qtbot, tmp_path):
     page.select_entry(page.entries()[0])
     texts = [w.text() for w in page.overview.findChildren(type(page.detail_heading))]
     assert any("hides its real date in a way that can be undone" in t for t in texts)
+    assert "(unverified)" in page.overview.values["Start"]
     assert not any("anonymized recording." in t and "is an" in t for t in texts)
 
 
@@ -366,3 +367,62 @@ def test_what_the_explorer_learns_never_reaches_the_log(page, qtbot, tmp_path):
     scrubbed = scrub(line)
     for secret in (FIRST, LAST, PATIENT_ID, "Zebedee_case", PASSWORD_FULL):
         assert secret not in scrubbed, scrubbed
+
+
+def test_stopping_a_pack_leaves_nothing_behind(page, qtbot, tmp_path):
+    from explorer_sessions import write_large
+
+    src = write_large(tmp_path / "big.mefd", channels=2, parts=2, seconds=600)
+    page.open_paths([str(src)], interactive=False)
+    wait_loaded(qtbot, page, 1)
+    out = tmp_path / "out"
+    out.mkdir()
+    handle = page.pack(page.entries()[0], str(out))
+    qtbot.waitUntil(lambda: any(out.iterdir()), timeout=30_000)
+    handle.cancel()
+    with qtbot.waitSignal(handle.finished, timeout=30_000):
+        pass
+    assert handle.record.status is JobStatus.CANCELLED
+    assert list(out.iterdir()) == []
+
+
+def test_pack_of_a_password_protected_recording(page, qtbot, tmp_path):
+    src = write_encrypted(tmp_path / "locked.mefd")
+    page.open_paths([str(src)], interactive=False)
+    wait_loaded(qtbot, page, 1)
+    entry = page.entries()[0]
+    page._unlock_with(entry, PASSWORD_FULL)
+    qtbot.waitUntil(lambda: entry.details is not None and not entry.busy, timeout=60_000)
+    out = tmp_path / "out"
+    out.mkdir()
+    handle = page.pack(entry, str(out))
+    with qtbot.waitSignal(handle.finished, timeout=60_000):
+        pass
+    assert handle.record.status is JobStatus.SUCCEEDED, handle.error
+    assert (out / "locked.mefd.tar").is_file()
+
+
+def test_a_helper_crash_costs_only_that_recording(page, qtbot, tmp_path):
+    import helper_targets
+
+    paths = [write_plain(tmp_path / f"{n}.mefd", notes=False) for n in ("a", "crash", "c")]
+    page.source = helper_targets.CrashOnSecond()
+    page.open_paths([str(p) for p in paths], interactive=False)
+    wait_loaded(qtbot, page, 3)
+    by_name = {e.name: e for e in page.entries()}
+    assert by_name["a"].details is not None and by_name["c"].details is not None
+    assert by_name["crash"].outcome.error.title == "The app stopped while reading this recording"
+
+
+def test_an_older_task_cannot_remove_a_reopened_recording(page, qtbot, tmp_path):
+    path = write_plain(tmp_path / "x.mefd", notes=False)
+    first = page.open_paths([str(path)], interactive=False)
+    page.table.selectAll()
+    page.remove_selected()
+    second = page.open_paths([str(path)], interactive=False)
+    first.cancel()
+    with qtbot.waitSignal(second.finished, timeout=60_000):
+        pass
+    qtbot.wait(200)
+    assert [e.name for e in page.entries()] == ["x"]
+    assert page.entries()[0].details is not None

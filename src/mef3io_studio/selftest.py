@@ -50,8 +50,14 @@ def write_test_recording(session: Path, cancel: CancelToken | None = None, repor
 
 def check_time_zones() -> None:
     """The time-zone database is bundled (Windows has none of its own)."""
+    from importlib.resources import files
+
     from .model.timefmt import format_time, resolve_zone, zone_label
 
+    # zoneinfo prefers the system database on Linux and macOS, so check the
+    # bundled one itself (it is the only one on Windows).
+    if not files("tzdata").joinpath("zoneinfo", "Europe", "Prague").is_file():
+        raise RuntimeError("the bundled time-zone database is missing")
     zone = resolve_zone("Europe/Prague")
     if zone_label(zone) != "Europe/Prague" or not format_time(START_UUTC, zone).endswith("+01:00"):
         raise RuntimeError("the time-zone database is missing")

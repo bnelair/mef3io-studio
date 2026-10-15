@@ -23,6 +23,10 @@ TEMP_PREFIX = ".mef3io-studio-"
 ReportFn = Callable[[float, float | None, str], None]
 
 
+class NotAFolder(NotADirectoryError):
+    """What was given to scan is not a folder (nor a recording)."""
+
+
 @dataclass(frozen=True)
 class ScanResult:
     locations: tuple[str, ...]
@@ -38,6 +42,8 @@ def find_recordings(
 ) -> ScanResult:
     cancel = cancel or CancelToken()
     report = report or (lambda done, total, phase: None)
+    if not os.path.isdir(root):
+        raise NotAFolder("not a folder")
     found: list[str] = []
     searched = skipped = 0
     stack = [os.fspath(root)]

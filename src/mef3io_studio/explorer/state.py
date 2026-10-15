@@ -30,6 +30,8 @@ class RecordingEntry:
     check_error: UserMessage | None = None
     #: A task for this recording is running ("Reading…", "Checking…").
     busy: str = ""
+    #: The id of the opening task that owns this row (None when none does).
+    open_job: int | None = None
 
     @property
     def key(self) -> str:

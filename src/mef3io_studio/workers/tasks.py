@@ -13,6 +13,7 @@ import logging
 import time
 
 from ..model import archive
+from ..model.errors import HelperCrashed, describe_error
 from ..model.problems import CheckReport
 from ..model.recording import InspectOutcome, location_key
 from ..model.scan import ScanResult, find_recordings
@@ -42,27 +43,41 @@ def summarize_recording(
 
 def _inspect(ctx: JobContext, source: RecordingSource, requests: list[tuple[str, str]]) -> int:
     """Inspect each recording, publishing every outcome as soon as it is
-    ready (``JobHandle.published``). Returns how many were read."""
+    ready (``JobHandle.published``). Returns how many were read.
+
+    All recordings share one helper process (starting one per recording
+    costs more than the opens). If the helper crashes on one recording, that
+    recording gets the plain "stopped while reading" message, and a new
+    helper carries on with the rest."""
     total = len(requests)
-    state = {"done": 0}
+    delivered: list[str] = []
     phase = "Reading recording details"
     ctx.report(0, total, phase)
 
     def got(outcome: InspectOutcome) -> None:
-        state["done"] += 1
+        delivered.append(outcome.location)
         ctx.publish(outcome)
-        ctx.report(state["done"], total, phase)
+        ctx.report(len(delivered), total, phase)
 
     if not requests:
         return 0
     if source.isolate:
-        ctx.run_isolated(source.inspect_many, requests, on_message=got)
+        remaining = list(requests)
+        while remaining:
+            try:
+                ctx.run_isolated(source.inspect_many, remaining, on_message=got)
+                break
+            except HelperCrashed as exc:
+                done = len(delivered) - (total - len(remaining))
+                crashed, remaining = remaining[done], remaining[done + 1 :]
+                log.warning("job %d: the helper stopped on one recording", ctx.job_id)
+                got(InspectOutcome(crashed[0], error=describe_error(exc)))
     else:
         for request in requests:
             ctx.check_cancelled()
             source.inspect_many([request], send=got)
-    log.info("job %d: read the details of %d recording(s)", ctx.job_id, state["done"])
-    return state["done"]
+    log.info("job %d: read the details of %d recording(s)", ctx.job_id, len(delivered))
+    return len(delivered)
 
 
 def open_recordings(
@@ -109,7 +124,11 @@ def check_recording(
 
 
 def pack_or_unpack(
-    ctx: JobContext, location: str, destination_folder: str, size_bytes: int | None = None
+    ctx: JobContext,
+    location: str,
+    destination_folder: str,
+    size_bytes: int | None = None,
+    password: str = "",
 ) -> str:
     """Pack a recording folder into one file, or unpack one into a folder,
     always into a new path (see :mod:`..model.archive`). Returns the path of
@@ -134,7 +153,7 @@ def pack_or_unpack(
         phase["text"] = "Checking the copy"
         ctx.report(0, None, phase["text"])
 
-    ctx.run_isolated(archive.run_in_helper, plan, on_message=step, on_poll=poll)
+    ctx.run_isolated(archive.run_in_helper, plan, password, on_message=step, on_poll=poll)
     ctx.check_cancelled()
     result = archive.finish(plan)
     log.info("job %d: %s finished", ctx.job_id, "packing" if plan.packing else "unpacking")

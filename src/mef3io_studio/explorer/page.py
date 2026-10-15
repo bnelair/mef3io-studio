@@ -491,25 +491,18 @@ class ExplorerPage(QWidget):
             self.scan_folder(folder)
 
     def open_paths(self, paths: list[str], interactive: bool = True):
-        """Open recordings. A folder that is not itself a recording is
-        scanned instead. Returns the task's handle (or None)."""
+        """Open recordings. Anything that is not named like a recording is
+        handed to a scan (in the background: even checking whether a path is
+        a folder can hang on a disconnected drive), which looks inside a
+        folder or says plainly that it is not a recording. Returns the task's
+        handle (or None)."""
         recordings, folders = [], []
         for path in paths:
             path = os.fspath(path)
             if is_recording_location(path):
                 recordings.append(path)
-            elif os.path.isdir(path):
-                folders.append(path)
             else:
-                self._show_message(
-                    UserMessage(
-                        "This is not a recording",
-                        "Recordings are folders ending in .mefd, or single files ending in "
-                        ".mefd.tar. Nothing was opened. Choose a recording, or use Scan a "
-                        "folder to find the recordings inside a folder.",
-                        "",
-                    )
-                )
+                folders.append(path)
         for folder in folders:
             self.scan_folder(folder)
         if not recordings:
@@ -536,9 +529,14 @@ class ExplorerPage(QWidget):
         requests = [(e.location, e.password) for e in entries]
         title = "Opening a recording" if len(entries) == 1 else f"Opening {len(entries)} recordings"
         handle = self.jobs.submit(title, open_recordings, self.source, requests)
-        handle.published.connect(lambda items: self._on_outcomes(items, prompt, create=False))
+        job = handle.record.id
+        for entry in entries:
+            # This task now owns the entry: an older task for the same
+            # recording (removed and opened again) can no longer touch it.
+            entry.open_job = job
+        handle.published.connect(lambda items: self._on_outcomes(items, prompt, False, job))
         keys = [e.key for e in entries]
-        handle.finished.connect(lambda: self._open_finished(keys))
+        handle.finished.connect(lambda: self._open_finished(keys, job))
         handle.failed.connect(self._show_message)
         return handle
 
@@ -560,11 +558,12 @@ class ExplorerPage(QWidget):
             text += f"; {_plural(result.folders_skipped, 'folder')} could not be read"
         self.status.emit(text + ".")
 
-    def _open_finished(self, keys: list[str]) -> None:
+    def _open_finished(self, keys: list[str], job: int) -> None:
         # Recordings the task never answered for (it was stopped or failed).
         for key in keys:
             entry = self.model.entry_for(key)
-            if entry is not None and entry.busy == "Reading…":
+            if entry is not None and entry.open_job == job:
+                entry.open_job = None
                 entry.busy = ""
                 if entry.outcome is None:
                     self.model.remove([entry])
@@ -577,8 +576,18 @@ class ExplorerPage(QWidget):
         if len(self.model.entries) <= 500:  # beyond that, keep it cheap
             self.table.resizeColumnsToContents()
 
-    def _on_outcomes(self, outcomes: list[InspectOutcome], prompt: bool, create: bool) -> None:
+    def _on_outcomes(
+        self,
+        outcomes: list[InspectOutcome],
+        prompt: bool,
+        create: bool,
+        job: int | None = None,
+    ) -> None:
+        """``create``: a scan's results (new rows; never overwrite a row
+        that is already listed). Otherwise an open task's results, applied
+        only to rows that task still owns."""
         added: list[RecordingEntry] = []
+        applied: list[RecordingEntry] = []
         for outcome in outcomes:
             if outcome.details is not None:
                 register_identity(*outcome.details.identity_values())
@@ -591,8 +600,12 @@ class ExplorerPage(QWidget):
                 entry.outcome = outcome
                 added.append(entry)
                 continue
+            if create or entry.open_job != job:
+                continue  # listed meanwhile, or opened again by a newer task
+            entry.open_job = None
             entry.outcome = outcome
             entry.busy = ""
+            applied.append(entry)
             self._entry_changed(entry)
         if added:
             self.model.add(added)
@@ -600,9 +613,8 @@ class ExplorerPage(QWidget):
             if self.current_entry() is None:
                 self.select_entry(added[0])
         self._fit_columns()
-        for outcome in outcomes:
-            entry = self.model.entry_for(location_key(outcome.location))
-            if prompt and entry is not None and outcome.needs_password:
+        for entry in applied:
+            if prompt and entry.needs_password:
                 self.unlock(entry)
 
     # ------------------------------------------------------------------
@@ -673,7 +685,9 @@ class ExplorerPage(QWidget):
 
         def finished():
             entry.busy = ""
-            widget = self._check_progress.pop(entry.key, None)
+            widget = progress
+            if self._check_progress.get(entry.key) is progress:
+                del self._check_progress[entry.key]
             if self.check_panel.progress_widget is widget:
                 self.check_panel.set_progress(None)
             if widget is not None:
@@ -695,8 +709,10 @@ class ExplorerPage(QWidget):
     # Copy summary
     # ------------------------------------------------------------------
     def summary_text(self, entries: list[RecordingEntry], fmt: str) -> str:
-        summaries = [
-            build_summary(
+        listed = [e for e in entries if e.outcome is not None]
+        summaries = []
+        for i, e in enumerate(listed):
+            summary = build_summary(
                 e.outcome,
                 self.zone,
                 show=e.revealed,
@@ -704,9 +720,10 @@ class ExplorerPage(QWidget):
                 app_version=app_version(),
                 library_version=mef3io_version(),
             )
-            for e in entries
-            if e.outcome is not None
-        ]
+            if len(listed) > 1:
+                # Hidden names read the same; a neutral number tells them apart.
+                summary = {"item": f"{i + 1} of {len(listed)}", **summary}
+            summaries.append(summary)
         return as_json(summaries) if fmt == "json" else as_text(summaries)
 
     def confirm_copy_with_details(self, count: int) -> bool:
@@ -772,6 +789,7 @@ class ExplorerPage(QWidget):
             entry.location,
             destination_folder,
             entry.outcome.size_bytes,
+            entry.password,
         )
         record = handle.record
 

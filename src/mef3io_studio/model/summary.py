@@ -35,6 +35,14 @@ UNVERIFIED_NOTE = (
     "The times may not be the real ones: the part of the recording that confirms "
     "them needs the full-access password."
 )
+UNVERIFIED_OFFSET_NOTE = (
+    "The times may not be the real ones: older programs stored times in recordings "
+    "like this one in two different ways, and the file does not say which."
+)
+
+
+def unverified_note(details) -> str:
+    return UNVERIFIED_OFFSET_NOTE if details.recording_time_offset else UNVERIFIED_NOTE
 
 
 def _access_words(access: str) -> str:
@@ -76,7 +84,7 @@ def build_summary(
     out["start"] = hide(format_time(details.start, zone))
     out["end"] = hide(format_time(details.end, zone))
     if not details.times_verified:
-        out["times_note"] = UNVERIFIED_NOTE
+        out["times_note"] = unverified_note(details)
     if details.uses_time_offset:
         out["date_note"] = DATE_OFFSET_NOTE
     out["duration"] = format_span(details.duration_seconds)
@@ -156,6 +164,7 @@ def as_json(summaries: list[dict]) -> str:
 
 
 _LABELS = {
+    "item": "Item",
     "recording": "Recording",
     "kind": "Kind",
     "size_on_disk": "Size on disk",

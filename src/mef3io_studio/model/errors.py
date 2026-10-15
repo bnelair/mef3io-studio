@@ -72,7 +72,24 @@ def _describe(exc: BaseException) -> UserMessage:
             detail,
         )
 
-    from .archive import CopyMismatch, NotEnoughSpace, TargetExists
+    from .archive import CopyMismatch, InsideRecording, NotEnoughSpace, TargetExists
+    from .scan import NotAFolder
+
+    if isinstance(exc, InsideRecording):
+        return UserMessage(
+            "Choose a folder outside the recording",
+            "The chosen folder is inside a recording, and a copy there would mix into "
+            "it. Nothing was written. Choose a folder that is not part of any recording.",
+            detail,
+        )
+    if isinstance(exc, NotAFolder):
+        return UserMessage(
+            "This is not a recording",
+            "Recordings are folders ending in .mefd, or single files ending in "
+            ".mefd.tar. Nothing was opened. Choose a recording, or use Scan a folder to "
+            "find the recordings inside a folder.",
+            detail,
+        )
 
     if isinstance(exc, TargetExists):
         return UserMessage(

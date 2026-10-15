@@ -14,6 +14,7 @@ from datetime import UTC, tzinfo
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
 
 from ..model.recording import ACCESS_BASIC
+from ..model.summary import unverified_note
 from ..model.timefmt import format_rates, format_size, format_span, format_time, zone_label
 from .state import RecordingEntry
 
@@ -134,10 +135,7 @@ class RecordingTableModel(QAbstractTableModel):
         if col in (COL_START, COL_END) and details is not None:
             notes = []
             if not details.times_verified:
-                notes.append(
-                    "Unverified: these times may not be the real ones until the "
-                    "full-access password is given."
-                )
+                notes.append("Unverified. " + unverified_note(details))
             if details.uses_time_offset:
                 notes.append(
                     "This recording hides its real date in a way that can be undone; "

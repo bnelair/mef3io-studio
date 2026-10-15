@@ -32,7 +32,7 @@ from ..common.pages import scaled_font
 from ..common.text import technical
 from ..common.theme import Theme
 from ..model.recording import ACCESS_BASIC, ACCESS_FULL, note_kind_label, operation_words
-from ..model.summary import DATE_OFFSET_NOTE, UNVERIFIED_NOTE
+from ..model.summary import DATE_OFFSET_NOTE, unverified_note
 from ..model.timefmt import (
     format_count,
     format_rate,
@@ -51,11 +51,11 @@ LOCKED = "Locked: needs the full-access password"
 DATE_OFFSET_DETAIL = (
     "It uses an older way of masking dates: a time offset stored inside the "
     "recording. The real date can be worked out from the file again, so this is not "
-    "an anonymized recording. The times shown here are the true ones."
+    "an anonymized recording. The times shown are the ones the mef3io library works "
+    "out from the file."
 )
 UNVERIFIED_DETAIL = (
-    "Times marked unverified are kept after the others when the list is sorted by "
-    "time. Open the recording with the full-access password to confirm them."
+    "Times marked unverified are kept after the others when the list is sorted by time."
 )
 BASIC_ACCESS_NOTE = (
     "Opened with the basic password. The patient details and some settings stay "
@@ -176,7 +176,7 @@ class OverviewPanel(QWidget):
         if details.uses_time_offset:
             self.notices.addWidget(_notice(DATE_OFFSET_NOTE, True, DATE_OFFSET_DETAIL))
         if not details.times_verified:
-            self.notices.addWidget(_notice(UNVERIFIED_NOTE, False, UNVERIFIED_DETAIL))
+            self.notices.addWidget(_notice(unverified_note(details), False, UNVERIFIED_DETAIL))
         if details.access == ACCESS_BASIC:
             self.notices.addWidget(_notice(BASIC_ACCESS_NOTE))
         if details.declarations_incomplete:

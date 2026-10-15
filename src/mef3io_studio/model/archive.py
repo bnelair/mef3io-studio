@@ -41,6 +41,10 @@ class NotEnoughSpace(OSError):
         self.free = free
 
 
+class InsideRecording(ValueError):
+    """The chosen destination is inside a recording (or the source itself)."""
+
+
 class CopyMismatch(RuntimeError):
     """The packed or unpacked copy does not match the original."""
 
@@ -56,7 +60,15 @@ class ArchivePlan:
 def plan(source: str, destination_folder: str) -> ArchivePlan:
     """Where packing (or unpacking) ``source`` into ``destination_folder``
     writes. Raises :class:`TargetExists` if the result's name is taken."""
-    source = os.path.normpath(os.fspath(source))
+    source = os.path.normpath(os.path.abspath(os.fspath(source)))
+    destination = os.path.normpath(os.path.abspath(os.fspath(destination_folder)))
+    inside_source = os.path.normcase(destination + os.sep).startswith(
+        os.path.normcase(source + os.sep)
+    )
+    parts = os.path.normcase(destination).split(os.sep)
+    if inside_source or any(p.endswith(".mefd") for p in parts):
+        raise InsideRecording("the destination is inside a recording")
+    destination_folder = destination
     packing = not is_packed(source)
     name = recording_name(source)
     suffix = ".mefd.tar" if packing else ".mefd"
@@ -83,41 +95,57 @@ def check_space(plan_: ArchivePlan, size_bytes: int | None) -> None:
         raise NotEnoughSpace(needed, free)
 
 
+def _temporary_paths(plan_: ArchivePlan) -> list[str]:
+    """The copy under its temporary name, plus whatever mef3io writes before
+    it renames its own output into place (``<name>.tmp`` for a packed file).
+    Everything starting with the random temporary name is ours."""
+    folder = os.path.dirname(plan_.temporary)
+    base = os.path.basename(plan_.temporary)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return [plan_.temporary]
+    return [os.path.join(folder, n) for n in names if n.startswith(base)]
+
+
 def remove_temporary(plan_: ArchivePlan) -> None:
     """Remove the unfinished copy (it is ours: opaque random name)."""
-    path = plan_.temporary
-    if os.path.isdir(path) and not os.path.islink(path):
-        shutil.rmtree(path, ignore_errors=True)
-    elif os.path.lexists(path):
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+    for path in _temporary_paths(plan_):
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.lexists(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def written_bytes(plan_: ArchivePlan) -> int:
     """How much of the copy exists so far (for progress)."""
-    path = plan_.temporary
-    try:
-        if os.path.isfile(path):
-            return os.stat(path).st_size
-        total = 0
-        for folder, _dirs, files in os.walk(path):
-            for name in files:
-                try:
-                    total += os.stat(os.path.join(folder, name)).st_size
-                except OSError:
-                    pass
-        return total
-    except OSError:
-        return 0
+    total = 0
+    for path in _temporary_paths(plan_):
+        try:
+            if os.path.isfile(path):
+                total += os.stat(path).st_size
+                continue
+            for folder, _dirs, files in os.walk(path):
+                for name in files:
+                    try:
+                        total += os.stat(os.path.join(folder, name)).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return total
 
 
-def _shape(location: str) -> list[tuple[str, float, tuple[tuple[int, int, int, int], ...]]]:
+def _shape(
+    location: str, password: str = ""
+) -> list[tuple[str, float, tuple[tuple[int, int, int, int], ...]]]:
     """Channels, rates and every part's times and sample count."""
     from .inspect import inspect_recording
 
-    outcome = inspect_recording(location)
+    outcome = inspect_recording(location, password)
     if outcome.details is None:
         raise CopyMismatch("the copy could not be opened")
     return [
@@ -130,9 +158,10 @@ def _shape(location: str) -> list[tuple[str, float, tuple[tuple[int, int, int, i
     ]
 
 
-def run_in_helper(plan_: ArchivePlan, send=None) -> None:
+def run_in_helper(plan_: ArchivePlan, password: str = "", send=None) -> None:
     """mef3io writes the temporary copy, then the copy is compared with the
-    original. Runs in a helper process; never touches the final name.
+    original (opened with the same password: a copy keeps its protection).
+    Runs in a helper process; never touches the final name.
     ``send("checking")`` announces the second step."""
     import mef3io
 
@@ -142,7 +171,7 @@ def run_in_helper(plan_: ArchivePlan, send=None) -> None:
         mef3io.extract_session(plan_.source, plan_.temporary, False)
     if send is not None:
         send("checking")
-    if _shape(plan_.source) != _shape(plan_.temporary):
+    if _shape(plan_.source, password) != _shape(plan_.temporary, password):
         raise CopyMismatch("the copy does not list the same channels and parts as the original")
 
 
@@ -155,9 +184,27 @@ def finish(plan_: ArchivePlan) -> str:
             raise TargetExists(errno.EEXIST, "the target already exists") from None
         except OSError:
             # File systems without links (FAT, exFAT, some network shares).
-            if os.path.lexists(plan_.target):
+            if sys.platform == "win32":
+                try:
+                    os.rename(plan_.temporary, plan_.target)  # never replaces on Windows
+                except FileExistsError:
+                    raise TargetExists(errno.EEXIST, "the target already exists") from None
+                return plan_.target
+            # Claim the name atomically with an empty placeholder (fails if
+            # anything is there), then move the copy over our own placeholder.
+            try:
+                fd = os.open(plan_.target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
                 raise TargetExists(errno.EEXIST, "the target already exists") from None
-            os.rename(plan_.temporary, plan_.target)  # Windows: never replaces
+            os.close(fd)
+            try:
+                os.rename(plan_.temporary, plan_.target)
+            except OSError:
+                try:
+                    os.unlink(plan_.target)
+                except OSError:
+                    pass
+                raise
             return plan_.target
         os.unlink(plan_.temporary)
         return plan_.target
