@@ -189,6 +189,12 @@ def _skeleton(text: str) -> tuple[str, list[int] | range]:
     return "".join(kept), where
 
 
+def _fold(text: str) -> str:
+    """Case-fold the way ``re.IGNORECASE`` compares, for the substring
+    pre-check: it also treats the dotless ı (Turkish) as i."""
+    return text.casefold().replace("\u0131", "i")
+
+
 class IdentityRegistry:
     """A thread-safe set of strings that must never be logged.
 
@@ -218,7 +224,7 @@ class IdentityRegistry:
                 # longer is registered, however generic it looks.
                 if len(re.sub(r"[\W_]+", "", key)) < 2 or key in self._keys:
                     continue
-                parts = [p for p in re.split(r"[\W_]+", key) if p]
+                parts = [p for p in re.split(r"[\W_]+", _fold(key)) if p]
                 pattern = _identity_pattern(text)
                 compiled = (len(pattern), parts[0], re.compile(pattern, re.IGNORECASE))
                 bisect.insort(regexes, compiled, key=lambda item: -item[0])  # longest first
@@ -236,7 +242,7 @@ class IdentityRegistry:
             return text
         decomposed = unicodedata.normalize("NFD", unicodedata.normalize("NFKC", text))
         base, where = _skeleton(decomposed)
-        folded = base.casefold()
+        folded = _fold(base)
         spans = []
         for _length, first, regex in regexes:
             # A cheap substring test first: a value can only match where its

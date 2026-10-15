@@ -485,3 +485,17 @@ def test_summaries_of_several_hidden_recordings_are_numbered(page, qtbot, tmp_pa
     text = page.summary_text(page.entries(), "text")
     assert "Item: 1 of 2" in text and "Item: 2 of 2" in text
     assert "Item" not in page.summary_text(page.entries()[:1], "text")
+
+
+def test_sorting_notes_keeps_the_selection_on_the_same_note(page, qtbot, tmp_path):
+    path = write_plain(tmp_path / "sel.mefd", notes=False)
+    with mef3io.Writer(str(path)) as w:
+        w.write_annotations([{"time": T0 + i * 1000, "text": f"n{i:03d}"} for i in range(50)])
+    page.open_paths([str(path)], interactive=False)
+    wait_loaded(qtbot, page, 1)
+    table = page.notes.table
+    table.selectRow(0)
+    chosen = table.rows.objects[0]
+    table.sortByColumn(0, Qt.SortOrder.DescendingOrder)
+    row = table.selectionModel().selectedRows()[0].row()
+    assert table.rows.objects[row] is chosen and row == 49

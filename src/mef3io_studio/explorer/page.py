@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStackedWidget,
@@ -349,10 +350,23 @@ class ExplorerPage(QWidget):
         self.body.addWidget(self.splitter)
         self.body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        layout = QVBoxLayout(self)
+        # Everything sits in a scroll area: on a very narrow window (or very
+        # large text) the page scrolls instead of forcing the window, and
+        # the sidebar next to it, to change size. Platforms measure widgets
+        # differently, so no single minimum width can be relied on.
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
         layout.setContentsMargins(int(em), int(em * 0.8), int(em), int(em * 0.6))
         layout.addLayout(toolbar)
         layout.addWidget(self.body, 1)
+        self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("Panel")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setWidget(inner)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.scroll)
 
         self._remove_action = QAction("Remove from the list", self)
         self._remove_action.setShortcut(Qt.Key.Key_Delete)
@@ -587,11 +601,17 @@ class ExplorerPage(QWidget):
         """``create``: a scan's results (new rows; never overwrite a row
         that is already listed). Otherwise an open task's results, applied
         only to rows that task still owns."""
-        added: list[RecordingEntry] = []
-        applied: list[RecordingEntry] = []
         # One re-sort for the whole batch, not one per recording (each would
         # re-sort the list on the GUI thread).
         self.proxy.setDynamicSortFilter(False)
+        try:
+            self._apply_outcomes(outcomes, prompt, create, job)
+        finally:
+            self.proxy.setDynamicSortFilter(True)  # sorts once, now
+
+    def _apply_outcomes(self, outcomes, prompt: bool, create: bool, job) -> None:
+        added: list[RecordingEntry] = []
+        applied: list[RecordingEntry] = []
         for outcome in outcomes:
             # (The task registered every identifying value with the log
             # filter before publishing it, on its own thread.)
@@ -620,7 +640,6 @@ class ExplorerPage(QWidget):
             self._refresh_body()
             if self.current_entry() is None:
                 self.select_entry(added[0])
-        self.proxy.setDynamicSortFilter(True)  # sorts once, now
         self._fit_columns()
         for entry in applied:
             if prompt and entry.needs_password:

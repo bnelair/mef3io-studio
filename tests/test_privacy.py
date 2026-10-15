@@ -353,3 +353,12 @@ def test_registering_many_identities_stays_cheap():
     registry.register("One More Person Name")
     assert time.perf_counter() - start < 0.05
     assert registry.redact("One More Person Name") == "[redacted]"
+
+
+def test_dotless_i_is_matched_both_ways():
+    from mef3io_studio.common.privacy import IdentityRegistry
+
+    for registered, logged in (("Yildiz", "Yıldız"), ("Yıldız", "Yildiz")):
+        registry = IdentityRegistry()
+        registry.register(registered)
+        assert registry.redact(f"saw {logged} today") == "saw [redacted] today"

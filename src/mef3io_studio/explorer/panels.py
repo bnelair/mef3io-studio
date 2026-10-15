@@ -164,7 +164,15 @@ class RowsModel(QAbstractTableModel):
     def sort(self, column: int, order=Qt.SortOrder.AscendingOrder) -> None:
         self._sorted = (column, order)
         self.layoutAboutToBeChanged.emit()
+        # Keep the selection on the same items, not the same row numbers.
+        old = self.persistentIndexList()
+        held = [(index, self.objects[index.row()]) for index in old]
         self._sort_objects(column, order)
+        rows = {id(obj): row for row, obj in enumerate(self.objects)}
+        self.changePersistentIndexList(
+            [index for index, _obj in held],
+            [self.index(rows[id(obj)], index.column()) for index, obj in held],
+        )
         self.layoutChanged.emit()
 
 
