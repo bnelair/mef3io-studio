@@ -1065,3 +1065,22 @@ def test_the_plan_says_whether_a_site_zone_was_used():
     a = [rec("a", utc(2021, 3, 1, 10))]
     assert plan_shifts(a, keep_local("Europe/Prague")).used_site_zone
     assert not plan_shifts(a, ShiftSettings(time_of_day=TimeOfDay.SET)).used_site_zone
+
+
+def test_clock_changes_accepts_only_integer_times_and_caches_ints():
+    zone = ZoneInfo("America/Chicago")
+    s, e = utc(2021, 3, 14, 5), utc(2021, 3, 14, 11)
+    with pytest.raises(TypeError):
+        clock_changes(float(s), float(e), zone)
+
+    class Idx:
+        def __init__(self, v):
+            self.v = v
+
+        def __index__(self):
+            return self.v
+
+    (c,) = clock_changes(Idx(s), Idx(e), zone)
+    assert type(c.after_us) is int and c.after_us == 3 * HOUR
+    plan = plan_shifts([RecordingTimes("a", s, e)], keep_local("America/Chicago"))
+    assert type(plan.warnings[0].clock_changes[0].after_us) is int

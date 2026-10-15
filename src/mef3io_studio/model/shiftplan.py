@@ -379,8 +379,10 @@ def _known_zones() -> frozenset[str]:
 def clock_changes(start_us: int, end_us: int, zone: tzinfo) -> tuple[ClockChange, ...]:
     """Every change of the UTC offset in ``zone`` within (start, end].
     Cached: it depends only on the originals and the zone, not on the
-    settings a wizard changes."""
-    return _clock_changes(start_us, end_us, zone)
+    settings a wizard changes. Times of any integer type are accepted
+    (``operator.index``); anything else raises ``TypeError``, so the cache
+    only ever holds int results."""
+    return _clock_changes(operator.index(start_us), operator.index(end_us), zone)
 
 
 @lru_cache(maxsize=4096)
@@ -438,7 +440,7 @@ def plan_shifts(
     """Plan every recording's shift. Never raises for data problems (those
     become blockers or refusals); raises ``ValueError`` for caller mistakes:
     duplicate ids, a reference id that is not in the batch, a ``new_time``
-    with a time zone."""
+    with a time zone, a ``new_date`` that is not a ``datetime.date``."""
     settings = settings or ShiftSettings()
     recs: Sequence[RecordingTimes] = tuple(recordings)
     ids = [r.id for r in recs]
