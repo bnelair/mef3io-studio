@@ -16,6 +16,7 @@ available to scripts too. See [docs/architecture.md](docs/architecture.md).
 
 ## Ways to help
 
+- **Try a test version** from the [Releases page](https://github.com/bnelair/mef3io-studio/releases) and report what is unclear or broken.
 - **Comment on the design:** the [roadmap](docs/roadmap.md) and the [design notes](docs/design/).
 - **Report a bug** or **request a feature** via issues; please use the templates.
 - **Send a pull request** (see below).
