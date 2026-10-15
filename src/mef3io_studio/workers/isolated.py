@@ -20,7 +20,9 @@ builds therefore call ``multiprocessing.freeze_support()`` first thing
 from __future__ import annotations
 
 import multiprocessing
+import os
 import pickle
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -34,35 +36,75 @@ _POLL_SECONDS = 0.05
 HelperProcessError = HelperCrashed
 
 
-def _child(conn, fn, args, kwargs) -> None:  # runs in the helper process
+def _watch_parent() -> None:
+    """Exit as soon as the app that started this helper is gone.
+
+    Without this, a helper outlives an app that was killed or crashed
+    (bnelair/mef3io-studio#20) and keeps reading the recording. The parent's
+    sentinel becomes ready when the parent process ends, on every platform.
+    """
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        return
+
+    def watch() -> None:
+        parent.join()
+        os._exit(1)
+
+    threading.Thread(target=watch, name="parent-watch", daemon=True).start()
+
+
+def _child(conn, fn, args, kwargs, messages: bool) -> None:  # runs in the helper process
+    _watch_parent()
     try:
+        if messages:
+
+            def send(item: Any) -> None:
+                conn.send(("message", item))
+
+            kwargs = dict(kwargs, send=send)
         result = fn(*args, **kwargs)
-        message = (True, result)
+        message = ("result", True, result)
     except BaseException as exc:  # noqa: BLE001 - everything goes back to the parent
-        message = (False, exc)
+        message = ("result", False, exc)
     try:
         conn.send(message)
     except Exception:
         # The result or the exception could not be pickled: send a plain one.
-        ok, value = message
-        conn.send((False, RuntimeError(f"{type(value).__name__} (not transferable)")))
+        _tag, _ok, value = message
+        conn.send(("result", False, RuntimeError(f"{type(value).__name__} (not transferable)")))
     finally:
         conn.close()
 
 
 def run_isolated(
-    fn: Callable[..., Any], *args: Any, cancel: CancelToken | None = None, **kwargs: Any
+    fn: Callable[..., Any],
+    *args: Any,
+    cancel: CancelToken | None = None,
+    on_message: Callable[[Any], None] | None = None,
+    on_poll: Callable[[], None] | None = None,
+    **kwargs: Any,
 ) -> Any:
     """Call ``fn(*args, **kwargs)`` in a helper process and return its result
     (or raise its exception). ``fn`` and its arguments must be picklable.
     If ``cancel`` is set while it runs, the helper is stopped and
-    :class:`JobCancelled` is raised."""
+    :class:`JobCancelled` is raised.
+
+    ``on_message``: ``fn`` is also given ``send=``, a function that passes a
+    picklable item back while it works (one opened recording, a progress
+    step); each item reaches ``on_message`` here, in this thread, in order.
+    ``on_poll`` is called about every 50 ms while the helper runs (e.g. to
+    measure how far a copy has got)."""
     cancel = cancel or CancelToken()
     cancel.raise_if_cancelled()
     pickle.dumps((fn, args, kwargs))  # fail early and clearly, in this process
     ctx = multiprocessing.get_context("spawn")
     receiver, sender = ctx.Pipe(duplex=False)
-    proc = ctx.Process(target=_child, args=(sender, fn, args, kwargs), daemon=True)
+    proc = ctx.Process(
+        target=_child,
+        args=(sender, fn, args, kwargs, on_message is not None),
+        daemon=True,
+    )
     proc.start()
     sender.close()
     finished = False
@@ -72,14 +114,21 @@ def run_isolated(
                 raise JobCancelled()
             if receiver.poll(_POLL_SECONDS):
                 try:
-                    ok, value = receiver.recv()
+                    message = receiver.recv()
                 except EOFError:
                     proc.join(1)
                     raise HelperCrashed(proc.exitcode) from None
+                if message[0] == "message":
+                    if on_message is not None:
+                        on_message(message[1])
+                    continue
+                _tag, ok, value = message
                 finished = True
                 if ok:
                     return value
                 raise value
+            if on_poll is not None:
+                on_poll()
             if not proc.is_alive() and not receiver.poll():
                 raise HelperCrashed(proc.exitcode)
     finally:

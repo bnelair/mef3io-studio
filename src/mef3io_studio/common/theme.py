@@ -77,6 +77,15 @@ QListWidget#ModuleList:focus { outline: none; }
 QListWidget#ModuleList::item:focus { border: 2px solid $accent; }
 QLabel#AppTitle { color: $text; padding: 0.9em 0.9em 0.25em 0.9em; }
 QLabel#Muted, QLabel#Caption { color: $muted; }
+QLabel#Danger { color: $danger; }
+QFrame#Notice { background: $accent_soft; border-radius: 8px; }
+QFrame#Warning { background: $surface; border: 1px solid $danger; border-radius: 8px; }
+QFrame#DropZone { background: $surface; border: 2px dashed $border; border-radius: 12px; }
+QTabWidget::pane { border: 1px solid $divider; border-radius: 8px; background: $surface; top: -1px; }
+QTabBar::tab { padding: 0.35em 0.9em; color: $muted; border: 2px solid transparent; }
+QTabBar::tab:selected { color: $text; border-bottom: 2px solid $accent; }
+QTabBar::tab:focus { border: 2px solid $accent; }
+QScrollArea#Panel { background: transparent; border: none; }
 QLabel#Pill { background: $accent_soft; color: $text; border-radius: 10px; padding: 0.2em 0.7em; }
 QFrame#Card { background: $surface; border: 1px solid $divider; border-radius: 12px; }
 QStatusBar { background: $window; border-top: 1px solid $divider; color: $muted; }

@@ -72,6 +72,50 @@ def _describe(exc: BaseException) -> UserMessage:
             detail,
         )
 
+    from .archive import CopyMismatch, InsideRecording, NotEnoughSpace, TargetExists
+    from .scan import NotAFolder
+
+    if isinstance(exc, InsideRecording):
+        return UserMessage(
+            "Choose a folder outside the recording",
+            "The chosen folder is inside a recording, and a copy there would mix into "
+            "it. Nothing was written. Choose a folder that is not part of any recording.",
+            detail,
+        )
+    if isinstance(exc, NotAFolder):
+        return UserMessage(
+            "This is not a recording",
+            "Recordings are folders ending in .mefd, or single files ending in "
+            ".mefd.tar. Nothing was opened. Choose a recording, or use Scan a folder to "
+            "find the recordings inside a folder.",
+            detail,
+        )
+
+    if isinstance(exc, TargetExists):
+        return UserMessage(
+            "That name is already taken",
+            "A file or folder with the new recording's name is already in the chosen "
+            "folder, so nothing was written and nothing was replaced. Choose another "
+            "folder, or move the existing one first.",
+            detail,
+        )
+    if isinstance(exc, NotEnoughSpace):
+        return UserMessage(
+            "Not enough free space",
+            "The chosen drive does not have room for the new copy, so nothing was "
+            "written. The original was not changed. Free some space or choose another "
+            "drive, then try again.",
+            detail,
+        )
+    if isinstance(exc, CopyMismatch):
+        return UserMessage(
+            "The new copy did not match the original",
+            "The copy was checked against the original and they differ, so the copy "
+            "was removed. The original was not changed. Try again; if it keeps "
+            'happening, use "Check for problems" on the original.',
+            detail,
+        )
+
     m = _mef3io_errors()
     # Without the C++ backend mef3io aliases all of these to RuntimeError,
     # which would make every RuntimeError look like a password problem.

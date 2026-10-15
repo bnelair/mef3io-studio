@@ -375,3 +375,141 @@ def test_stop_all_helpers_leaves_no_orphans():
     assert time.monotonic() - start < 5
     assert not multiprocessing.active_children()
     assert outcome and isinstance(outcome[0], HelperCrashed)
+
+
+def test_helper_messages_arrive_in_order_before_the_result():
+    import helper_targets
+
+    from mef3io_studio.workers.isolated import run_isolated
+
+    got = []
+    assert run_isolated(helper_targets.count_to, 5, on_message=got.append) == "counted"
+    assert got == [0, 1, 2, 3, 4]
+
+
+def test_published_items_reach_the_ui_before_the_outcome(qtbot, jobs):
+    order = []
+
+    def work(ctx):
+        for i in range(3):
+            ctx.publish(i)
+        return "done"
+
+    handle = jobs.submit("Publishing", work)
+    handle.published.connect(lambda items: order.append(("items", items)))
+    handle.succeeded.connect(lambda r: order.append(("result", r)))
+    with qtbot.waitSignal(handle.finished, timeout=5000):
+        pass
+    assert order[-1] == ("result", "done")
+    assert [i for kind, items in order if kind == "items" for i in items] == [0, 1, 2]
+
+
+@pytest.mark.skipif(
+    not hasattr(__import__("os"), "kill") or __import__("sys").platform == "win32",
+    reason="POSIX signals",
+)
+def test_helper_exits_when_the_app_dies(tmp_path):
+    """bnelair/mef3io-studio#20 item 4: a killed app leaves no helper behind."""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    pid_file = tmp_path / "pid"
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import helper_targets;"
+            " helper_targets.orphan_parent(sys.argv[2])",
+            os.path.dirname(__file__),
+            str(pid_file),
+        ]
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (pid_file.exists() and pid_file.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child = int(pid_file.read_text())
+        parent.send_signal(signal.SIGKILL)
+        parent.wait(10)
+        deadline = time.monotonic() + 10
+        alive = True
+        while alive and time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+                time.sleep(0.05)
+            except ProcessLookupError:
+                alive = False
+        assert not alive, "the helper outlived the app"
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+
+
+class _FakeCtx:
+    """Just enough of a JobContext for the open task, with a scripted
+    helper: each run answers some requests, then crashes."""
+
+    job_id = 0
+    cancel_token = None
+
+    def __init__(self, script):
+        self.script = list(script)  # answers per run before it crashes; None = no crash
+        self.runs = 0
+        self.published = []
+
+    def report(self, *_args):
+        pass
+
+    def publish(self, item):
+        self.published.append(item)
+
+    def run_isolated(self, fn, requests, on_message=None):
+        from mef3io_studio.model.errors import HelperCrashed
+        from mef3io_studio.model.recording import InspectOutcome
+
+        self.runs += 1
+        answers = self.script.pop(0) if self.script else None
+        for i, (location, _pw) in enumerate(requests):
+            if answers is not None and i >= answers:
+                raise HelperCrashed(-6)
+            on_message(InspectOutcome(location))
+        if answers is not None and answers >= len(requests):
+            raise HelperCrashed(-6)  # answered everything, then died while exiting
+        return []
+
+
+class _Source:
+    isolate = True
+
+    def inspect_many(self, requests, send=None):  # pragma: no cover - never called
+        raise AssertionError
+
+
+def _run_open(script, n=5):
+    from mef3io_studio.workers.tasks import open_recordings
+
+    ctx = _FakeCtx(script)
+    requests = [(f"/r/{i}.mefd", "") for i in range(n)]
+    open_recordings(ctx, _Source(), requests)
+    return ctx
+
+
+def test_open_survives_a_helper_that_dies_after_its_last_answer():
+    ctx = _run_open([5])
+    assert [o.location for o in ctx.published] == [f"/r/{i}.mefd" for i in range(5)]
+    assert all(o.error is None for o in ctx.published) and ctx.runs == 1
+
+
+def test_open_stops_restarting_helpers_that_die_before_reading_anything():
+    ctx = _run_open([0, 0, 0, 0, 0])
+    assert ctx.runs == 2
+    assert len(ctx.published) == 5
+    assert all(o.error is not None for o in ctx.published)
+
+
+def test_open_continues_after_one_helper_crash():
+    ctx = _run_open([1])  # second recording crashes the first helper
+    errors = [o.location for o in ctx.published if o.error is not None]
+    assert errors == ["/r/1.mefd"] and len(ctx.published) == 5 and ctx.runs == 2

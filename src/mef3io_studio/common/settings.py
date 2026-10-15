@@ -37,6 +37,10 @@ PREFERENCES: dict[str, Preference] = {
         Preference("ui/window_state", QByteArray(), QByteArray),
         Preference("ui/main_splitter", QByteArray(), QByteArray),
         Preference("ui/activity_visible", False, bool),
+        Preference("ui/explorer_splitter", QByteArray(), QByteArray),
+        # The recording site's IANA time zone ("" = show UTC). One per app
+        # profile; the explorer validates it against the tz database.
+        Preference("time/site_zone", "", str),
     )
 }
 

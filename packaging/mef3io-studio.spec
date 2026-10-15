@@ -23,12 +23,17 @@ LINUX = sys.platform.startswith("linux")
 # mef3io: its native extension (_mef3io*.so / .pyd) and its submodules, some of
 # which are imported lazily inside functions. Its dist metadata lets
 # mef3io.__version__ report the bundled version in About.
-hiddenimports = collect_submodules("mef3io") + collect_submodules("mef3io_studio")
+hiddenimports = (
+    collect_submodules("mef3io") + collect_submodules("mef3io_studio") + collect_submodules("tzdata")
+)
 binaries = collect_dynamic_libs("mef3io")
 datas = [
     (str(ROOT / "VERSION"), "."),
     *collect_data_files("mef3io_studio", includes=["resources/**/*"]),
     *copy_metadata("mef3io"),
+    # The IANA time-zone database behind zoneinfo (Windows has none of its
+    # own); the explorer shows times in the site's time zone.
+    *collect_data_files("tzdata"),
 ]
 # QtSvg renders the icon set.
 hiddenimports += ["PySide6.QtSvg"]

@@ -92,6 +92,9 @@ After that, local times are correct across daylight-saving changes.
 
 You can also **pack** a recording into one file, or **unpack** it again.
 
+The Explorer is available in development builds; see the
+[user guide](docs/user-guide.md#explore-recordings).
+
 **2. Order and rename.** Got a folder of sessions whose names are long random
 codes? See them sorted by when they were recorded, then rename them safely:
 - **preview** every change first;
@@ -273,6 +276,7 @@ LGPL v3; Help → About says so and links to the licence texts and sources.
 
 ### Design
 
+- [User guide](docs/user-guide.md)
 - [Vision and scope](docs/vision.md)
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)

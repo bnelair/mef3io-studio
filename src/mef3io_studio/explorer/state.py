@@ -1,0 +1,48 @@
+"""The explorer's per-recording state, kept in memory only.
+
+Nothing here is ever written to disk or the log: not the location, not the
+password, not whether patient details were shown. Closing the app forgets it
+all (docs/design/explorer.md, "Recovery artifacts" and SECURITY.md).
+
+Plain Python, no Qt.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from ..model.errors import UserMessage
+from ..model.problems import CheckReport
+from ..model.recording import InspectOutcome, location_key, recording_name
+
+
+@dataclass(eq=False)
+class RecordingEntry:
+    location: str
+    #: None while its details are being read.
+    outcome: InspectOutcome | None = None
+    #: The password that opened it, so "Check for problems" can use it again.
+    #: Memory only; registered with the log filter so it is never logged.
+    password: str = ""
+    #: "Show" was chosen for this recording's patient details.
+    revealed: bool = False
+    check: CheckReport | None = None
+    check_error: UserMessage | None = None
+    #: A task for this recording is running ("Reading…", "Checking…").
+    busy: str = ""
+    #: The id of the opening task that owns this row (None when none does).
+    open_job: int | None = None
+
+    def __post_init__(self) -> None:
+        # Computed once: sorting asks for these thousands of times.
+        self.key = location_key(self.location)
+        self.name = recording_name(self.location)
+        self.sort_name = self.name.casefold()
+
+    @property
+    def details(self):
+        return self.outcome.details if self.outcome is not None else None
+
+    @property
+    def needs_password(self) -> bool:
+        return self.outcome is not None and self.outcome.needs_password

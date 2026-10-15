@@ -1,7 +1,8 @@
-"""Markers for user-facing text. See docs/ui-language.md."""
+"""Markers for user-facing text. See docs/ui-language.md.
 
+Defined in ``model`` (which has no Qt), so plain-Python code can mark its
+technical text too; re-exported here for the widgets."""
 
-def technical(text: str) -> str:
-    """Mark ``text`` as shown only inside a "Technical details" panel, where
-    technical terms are allowed. The UI-language test skips these."""
-    return text
+from ..model.text import technical
+
+__all__ = ["technical"]

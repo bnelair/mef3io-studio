@@ -120,6 +120,9 @@ def _build_main_window_class():
     from .common.pages import PlaceholderPage, scaled_font
     from .common.settings import Settings, clear_qt_dialog_history
     from .common.theme import Theme, ThemeManager
+    from .explorer import ExplorerPage
+    from .explorer.dialogs import TimeZoneDialog
+    from .model.timefmt import zone_names
     from .workers.jobs import JobManager
     from .workers.tasks import self_check
 
@@ -153,13 +156,18 @@ def _build_main_window_class():
             side.addWidget(self.module_list, 1)
 
             self.pages = QStackedWidget(self)
-            self.page_widgets: list[PlaceholderPage] = []
+            self.page_widgets: list[QWidget] = []
             self.module_keys: list[str] = []
+            self.explorer = ExplorerPage(jobs, parent=self.pages)
+            self.explorer.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, icon_name)
                 self.module_list.addItem(item)
-                page = PlaceholderPage(icon_name, page_title, page_text, self.pages)
+                if key == "explorer":
+                    page = self.explorer
+                else:
+                    page = PlaceholderPage(icon_name, page_title, page_text, self.pages)
                 self.pages.addWidget(page)
                 self.page_widgets.append(page)
                 self.module_keys.append(key)
@@ -193,6 +201,7 @@ def _build_main_window_class():
             jobs.job_added.connect(lambda _h: self.show_activity())
 
             self._build_menus()
+            self.explorer.zone_button.clicked.connect(self.choose_time_zone)
             self.module_list.currentRowChanged.connect(self._switch_module)
             themes.changed.connect(self.apply_theme)
             self.apply_theme(themes.theme)
@@ -202,6 +211,23 @@ def _build_main_window_class():
         def _build_menus(self) -> None:
             bar = self.menuBar()
             file_menu = bar.addMenu("&File")
+            self.open_action = QAction("&Open a recording…", self)
+            self.open_action.setShortcut(QKeySequence.StandardKey.Open)
+            self.open_action.triggered.connect(
+                lambda: self._in_explorer(self.explorer.choose_folder_recording)
+            )
+            file_menu.addAction(self.open_action)
+            self.open_file_action = QAction("Open a single-file recording…", self)
+            self.open_file_action.triggered.connect(
+                lambda: self._in_explorer(self.explorer.choose_file_recording)
+            )
+            file_menu.addAction(self.open_file_action)
+            self.scan_action = QAction("&Scan a folder for recordings…", self)
+            self.scan_action.triggered.connect(
+                lambda: self._in_explorer(self.explorer.choose_scan_folder)
+            )
+            file_menu.addAction(self.scan_action)
+            file_menu.addSeparator()
             self.quit_action = QAction("&Quit", self)
             self.quit_action.setShortcut(QKeySequence.StandardKey.Quit)
             self.quit_action.setMenuRole(QAction.MenuRole.QuitRole)
@@ -223,6 +249,9 @@ def _build_main_window_class():
                 group.addAction(action)
                 appearance.addAction(action)
                 self.theme_actions[mode] = action
+            self.time_zone_action = QAction("Time zone…", self)
+            self.time_zone_action.triggered.connect(self.choose_time_zone)
+            view_menu.addAction(self.time_zone_action)
             self.activity_action = self.activity_dock.toggleViewAction()
             self.activity_action.setText("Activity panel")
             view_menu.addAction(self.activity_action)
@@ -241,6 +270,22 @@ def _build_main_window_class():
             help_menu.addAction(self.about_action)
 
         # -- behaviour --------------------------------------------------------
+        def _in_explorer(self, action) -> None:
+            self.module_list.setCurrentRow(self.module_keys.index("explorer"))
+            action()
+
+        def choose_time_zone(self) -> None:
+            dialog = TimeZoneDialog(self.settings.get("time/site_zone"), self)
+            dialog.accepted.connect(lambda: self.set_time_zone(dialog.zone_name()))
+            dialog.open()
+            self._time_zone_dialog = dialog
+
+        def set_time_zone(self, name: str) -> None:
+            if name not in zone_names():
+                return
+            self.settings.set("time/site_zone", "" if name == "UTC" else name)
+            self.explorer.set_zone_name(name)
+
         def _switch_module(self, row: int) -> None:
             if row < 0:
                 return
@@ -270,6 +315,7 @@ def _build_main_window_class():
             self.activity.set_theme(theme)
             self.indicator.set_theme(theme)
             self.about_action.setIcon(icons.icon("info", theme.text))
+            self.open_action.setIcon(icons.icon("folder", theme.text))
             self.self_check_action.setIcon(icons.icon("check", theme.text))
             self.open_logs_action.setIcon(icons.icon("folder", theme.text))
             self.quit_action.setIcon(icons.icon("quit", theme.text))
@@ -338,6 +384,10 @@ def _build_main_window_class():
             splitter = self.settings.get("ui/main_splitter")
             if not splitter.isEmpty():
                 self.splitter.restoreState(splitter)
+            explorer_splitter = self.settings.get("ui/explorer_splitter")
+            if not explorer_splitter.isEmpty():
+                self.explorer.splitter.restoreState(explorer_splitter)
+            self.explorer.set_zone_name(self.settings.get("time/site_zone"))
             self.activity_dock.setVisible(self.settings.get("ui/activity_visible"))
             key = self.settings.get("ui/module")
             self.module_list.setCurrentRow(
@@ -348,6 +398,7 @@ def _build_main_window_class():
             self.settings.set("ui/window_geometry", self.saveGeometry())
             self.settings.set("ui/window_state", self.saveState())
             self.settings.set("ui/main_splitter", self.splitter.saveState())
+            self.settings.set("ui/explorer_splitter", self.explorer.splitter.saveState())
             self.settings.set("ui/activity_visible", self.activity_dock.isVisible())
             self.settings.sync()
 
@@ -546,6 +597,36 @@ def _finish_self_test(line: str, code: int, report_path: str | None) -> int:
     return code
 
 
+def _explore_test_recording(app, window, folder: str, timeout: float = 120.0) -> str:
+    """Open the synthetic recording in the Explorer, as a user would, and
+    wait (without blocking the event loop) until its details are shown."""
+    import time
+    from pathlib import Path
+
+    from .selftest import CHANNELS, write_test_recording
+
+    path = Path(folder) / "explore-test.mefd"
+    write_test_recording(path)
+    page = window.explorer
+    page.open_paths([str(path)], interactive=False)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        entries = page.entries()
+        if entries and not entries[0].busy and entries[0].outcome is not None:
+            break
+        time.sleep(0.02)
+    else:
+        raise RuntimeError("the Explorer did not open the test recording in time")
+    outcome = page.entries()[0].outcome
+    if outcome.details is None:
+        raise RuntimeError(f"the Explorer could not open the test recording: {outcome.error}")
+    channels = len(outcome.details.channels)
+    if channels != len(CHANNELS) or page.detail_stack.currentWidget() is not page.tabs:
+        raise RuntimeError(f"the Explorer showed {channels} channels, expected {len(CHANNELS)}")
+    return f"{channels} channels in the Explorer"
+
+
 def self_test(report_path: str | None = None, gui: bool = False) -> int:
     """Run the installation check. Returns the exit code.
 
@@ -594,6 +675,7 @@ def self_test(report_path: str | None = None, gui: bool = False) -> int:
                 shown = state["shown"]
             else:
                 app.processEvents()
+            explored = _explore_test_recording(app, window, tmp)
             platform_name = app.platformName()
             window.jobs.dispose()
             window.hide()
@@ -605,7 +687,8 @@ def self_test(report_path: str | None = None, gui: bool = False) -> int:
                 "without a display, can cause this)"
             )
         line = (
-            f"mef3io-studio self-test OK: wrote and read {result.channel_count} channels "
+            f"mef3io-studio self-test OK: wrote and read {result.channel_count} channels, "
+            f"explored {explored} "
             f"(app {app_version()}, mef3io {result.mef3io_version}, Qt {qt_version()}, "
             f"display {platform_name})"
         )

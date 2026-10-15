@@ -17,6 +17,8 @@ import os
 from dataclasses import dataclass
 
 from .cancel import CancelToken
+from .problems import CheckReport
+from .recording import InspectOutcome
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,16 @@ class RecordingSource(abc.ABC):
         """Return a summary of the recording at ``location`` without reading
         its signal."""
 
+    @abc.abstractmethod
+    def inspect_many(self, requests: list[tuple[str, str]], send=None) -> list[InspectOutcome]:
+        """Everything the explorer shows about each ``(location, password)``,
+        without reading any signal (see :mod:`.inspect`). With ``send``, each
+        outcome is passed to it as soon as it is ready."""
+
+    @abc.abstractmethod
+    def check(self, location: str, password: str = "") -> CheckReport:
+        """Check the recording for problems. Reads only."""
+
 
 class LocalRecordingSource(RecordingSource):
     """Recordings on this computer (``.mefd`` folders or ``.mefd.tar`` files)."""
@@ -84,3 +96,13 @@ class LocalRecordingSource(RecordingSource):
                 channels.append(ChannelSummary(name, float(info["sampling_frequency"])))
             incomplete = bool(reader.declaration_issues)
         return RecordingSummary(tuple(channels), declarations_incomplete=incomplete)
+
+    def inspect_many(self, requests: list[tuple[str, str]], send=None) -> list[InspectOutcome]:
+        from .inspect import inspect_many
+
+        return inspect_many(requests, send=send)
+
+    def check(self, location: str, password: str = "") -> CheckReport:
+        from .problems import check_recording
+
+        return check_recording(os.fspath(location), password)

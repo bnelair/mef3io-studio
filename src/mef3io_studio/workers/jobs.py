@@ -28,6 +28,9 @@ Usage::
   half-written copy.
 * **Helper process:** ``ctx.run_isolated(fn, ...)`` runs a call that holds the
   GIL (see :mod:`.isolated`) in a helper process, cancellable.
+* **Results while working:** ``ctx.publish(item)`` hands an item to the UI
+  before the job ends (``JobHandle.published`` delivers a list of them, on
+  the same throttled timer as progress, and always before the outcome).
 
 The log gets the job's id, outcome and, on failure, the exception type and
 traceback (scrubbed by the privacy filter) — never the job's arguments, which
@@ -47,7 +50,13 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 from ..model.cancel import CancelToken, JobCancelled
 from ..model.errors import UserMessage, describe_error
 from ..model.jobs import JobRecord, JobStatus
-from ..model.progress import UI_UPDATES_PER_SECOND, EtaEstimator, Progress, ProgressSlot
+from ..model.progress import (
+    UI_UPDATES_PER_SECOND,
+    EtaEstimator,
+    Mailbox,
+    Progress,
+    ProgressSlot,
+)
 from .isolated import run_isolated
 
 log = logging.getLogger(__name__)
@@ -56,10 +65,17 @@ log = logging.getLogger(__name__)
 class JobContext:
     """Handed to the job function on the worker thread."""
 
-    def __init__(self, token: CancelToken, slot: ProgressSlot, job_id: int = 0):
+    def __init__(
+        self,
+        token: CancelToken,
+        slot: ProgressSlot,
+        job_id: int = 0,
+        mailbox: Mailbox | None = None,
+    ):
         self.cancel_token = token
         self.job_id = job_id
         self._slot = slot
+        self._mailbox = mailbox if mailbox is not None else Mailbox()
         self._cleanups: list[Callable[[], Any]] = []
 
     @property
@@ -75,14 +91,29 @@ class JobContext:
         Cheap: it only overwrites the latest report."""
         self._slot.put(Progress(done, total, phase))
 
+    def publish(self, item: Any) -> None:
+        """Hand ``item`` to the UI now, before the job ends (see
+        ``JobHandle.published``)."""
+        self._mailbox.put(item)
+
     def add_cleanup(self, fn: Callable[[], Any]) -> None:
         """Run ``fn()`` if the job is cancelled or fails (last added runs
         first). Use it to remove partial output."""
         self._cleanups.append(fn)
 
-    def run_isolated(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        """Run ``fn`` in a helper process; Cancel stops the helper."""
-        return run_isolated(fn, *args, cancel=self.cancel_token, **kwargs)
+    def run_isolated(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        on_message: Callable[[Any], None] | None = None,
+        on_poll: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Run ``fn`` in a helper process; Cancel stops the helper. See
+        :func:`.isolated.run_isolated` for ``on_message`` / ``on_poll``."""
+        return run_isolated(
+            fn, *args, cancel=self.cancel_token, on_message=on_message, on_poll=on_poll, **kwargs
+        )
 
     def _run_cleanups(self) -> None:
         while self._cleanups:
@@ -111,16 +142,19 @@ def _safe_describe(exc: BaseException) -> UserMessage:
 
 
 class _Runnable(QRunnable):
-    def __init__(self, fn, args, kwargs, token: CancelToken, slot: ProgressSlot, bridge, job_id):
+    def __init__(
+        self, fn, args, kwargs, token: CancelToken, slot: ProgressSlot, bridge, job_id, mailbox
+    ):
         super().__init__()
         self.setAutoDelete(True)
         self._fn, self._args, self._kwargs = fn, args, kwargs
         self._token, self._slot, self._bridge, self._job_id = token, slot, bridge, job_id
+        self._mailbox = mailbox
 
     def run(self) -> None:  # worker thread
         bridge = self._bridge
         outcome, payload = "failed", None
-        ctx = JobContext(self._token, self._slot, self._job_id)
+        ctx = JobContext(self._token, self._slot, self._job_id, self._mailbox)
         try:
             bridge.started.emit()
             self._token.raise_if_cancelled()
@@ -148,6 +182,7 @@ class JobHandle(QObject):
     """The UI thread's view of one job."""
 
     progress = Signal(object)  # Progress
+    published = Signal(list)  # items from ctx.publish, oldest first
     succeeded = Signal(object)  # the job function's return value
     failed = Signal(object)  # UserMessage
     cancelled = Signal()
@@ -159,6 +194,7 @@ class JobHandle(QObject):
         self.record = record
         self.token = token
         self.slot = ProgressSlot()
+        self.mailbox = Mailbox()
         self.result: Any = None
         self.error: UserMessage | None = None
         self._eta: EtaEstimator | None = None
@@ -185,6 +221,7 @@ class JobHandle(QObject):
 
     def pull_progress(self) -> None:
         """Called by the manager's timer on the UI thread."""
+        self._deliver_published()
         progress = self.slot.take()
         if progress is None or self.record.status.finished:
             return
@@ -193,11 +230,19 @@ class JobHandle(QObject):
         self.progress.emit(progress)
         self.changed.emit()
 
+    def _deliver_published(self) -> None:
+        items = self.mailbox.take_all()
+        if items:
+            self.published.emit(items)
+
     @Slot(str, object)
     def _on_done(self, outcome: str, payload: object) -> None:
         record = self.record
         if record.status.finished:  # pragma: no cover - the runnable emits once
             return
+        # Whatever the outcome, items published before it are real results
+        # (the recordings opened before Stop was pressed).
+        self._deliver_published()
         if outcome == "succeeded":
             # Flush the final report so the last update is never lost.
             self.pull_progress()
@@ -268,7 +313,11 @@ class JobManager(QObject):
         self.running_changed.emit(self.running_count())
         if not self._timer.isActive():
             self._timer.start()
-        self.pool.start(_Runnable(fn, args, kwargs, token, handle.slot, handle._bridge, record.id))
+        self.pool.start(
+            _Runnable(
+                fn, args, kwargs, token, handle.slot, handle._bridge, record.id, handle.mailbox
+            )
+        )
         return handle
 
     def _pull_progress(self) -> None:
@@ -314,7 +363,15 @@ class JobManager(QObject):
         reference. (deleteLater on an object Python still wraps crashed
         PySide6 6.12 when the wrapper was later touched.)
         """
-        signals = ("progress", "succeeded", "failed", "cancelled", "finished", "changed")
+        signals = (
+            "progress",
+            "published",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "finished",
+            "changed",
+        )
         for handle in handles:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
