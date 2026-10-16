@@ -8,6 +8,7 @@ import csv
 import io
 import os
 from datetime import UTC
+from decimal import Decimal
 
 import pytest
 
@@ -32,9 +33,11 @@ from mef3io_studio.model.export import (
     iso_local,
     iso_utc,
     part_table,
+    readable,
     recording_table,
     safe_cell,
     seconds_text,
+    unix_seconds,
     write_csv,
 )
 from mef3io_studio.model.recording import (
@@ -340,6 +343,60 @@ def test_site_time_columns_carry_the_offset():
     assert iso_utc(T0 + 1) == "2000-01-01T00:00:00.000001Z"
     assert iso_local(T0 + 1, UTC) == "2000-01-01T00:00:00.000001+00:00"
     assert seconds_text(1_500_000) == "1.5" and seconds_text(2_000_000) == "2"
+
+
+def test_every_time_is_written_for_people_and_for_machines(tmp_path):
+    """Start and end each come readable (spreadsheets parse it as a date and
+    time) and in machine forms: ISO 8601, Unix seconds, microseconds. All
+    of them name the same instant, in both layouts and with a site zone."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    for zone in (UTC, resolve_zone("Europe/Prague")):
+        local = zone is not UTC
+        for header, rows in (recording_table(_items(), zone), part_table(_items(), zone)):
+            path = tmp_path / "t.csv"
+            write_csv(str(path), header, rows)
+            head, out = _read(path)
+            for prefix in ("start", "end"):
+                want = [
+                    f"{prefix}_utc_readable",
+                    f"{prefix}_utc",
+                    f"{prefix}_unix_seconds",
+                    f"{prefix}_microseconds_utc",
+                ]
+                if local:
+                    want += [f"{prefix}_site_time_readable", f"{prefix}_site_time"]
+                assert set(want) <= set(head)
+                # Readable comes before the machine forms.
+                assert head.index(f"{prefix}_utc_readable") < head.index(f"{prefix}_utc")
+            timed = [r for r in out if r["start_microseconds_utc"]]
+            assert timed
+            for r in timed:
+                for prefix in ("start", "end"):
+                    us = int(r[f"{prefix}_microseconds_utc"])
+                    when = datetime.fromisoformat(r[f"{prefix}_utc_readable"]).replace(tzinfo=UTC)
+                    assert when == datetime.fromisoformat(r[f"{prefix}_utc"].replace("Z", "+00:00"))
+                    assert round(when.timestamp() * 1_000_000) == us
+                    assert Decimal(r[f"{prefix}_unix_seconds"]) * 1_000_000 == us
+                    if local:
+                        wall = datetime.fromisoformat(r[f"{prefix}_site_time_readable"])
+                        assert wall.replace(tzinfo=ZoneInfo("Europe/Prague")) == when
+            # A row without times leaves every time column empty.
+            for r in out:
+                if not r["start_microseconds_utc"]:
+                    assert all(r[c] == "" for c in head if c.startswith(("start_", "end_")))
+
+
+def test_readable_and_unix_seconds_are_exact():
+    assert readable(T0) == "2000-01-01 00:00:00"
+    assert readable(T0 + 1) == "2000-01-01 00:00:00.000001"
+    assert readable(T0, resolve_zone("Europe/Prague")) == "2000-01-01 01:00:00"
+    assert str(unix_seconds(T0)) == "946684800"
+    assert str(unix_seconds(T0 + 1)) == "946684800.000001"
+    assert str(unix_seconds(T0 + 500_000)) == "946684800.5"
+    assert str(unix_seconds(1_760_520_600_123_456)) == "1760520600.123456"
+    assert readable(None) == "" and unix_seconds(None) == ""
 
 
 def test_patient_details_follow_show():

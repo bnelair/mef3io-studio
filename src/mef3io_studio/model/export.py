@@ -9,11 +9,19 @@ layouts:
   in the table, and whether its times are verified;
 * one row per part of each channel.
 
-Times are written three ways: UTC in ISO 8601 with ``Z`` (the reference),
-microseconds since 1970 UTC as whole numbers (exact for scripts; spreadsheet
-programs keep only 15 digits of a number, so they round these unless the
-column is imported as text), and, when a site time zone is chosen, the
-site's local time with its offset (e.g. ``2026-10-15T09:30:00+02:00``). Recordings whose times are
+Every time is written for people **and** for machines:
+
+* readable: ``2000-01-01 00:00:00`` in UTC (and, when a site time zone is
+  chosen, the site's wall-clock time), the form spreadsheet programs
+  recognise as a date and time; fractions of a second only when not zero;
+* ISO 8601: UTC with ``Z`` (the reference) and, with a site zone, the site
+  time with its offset (e.g. ``2026-10-15T09:30:00+02:00``);
+* Unix time in seconds, exact to the microsecond (``946684800.000001``);
+* microseconds since 1970 UTC as whole numbers (exact for scripts;
+  spreadsheet programs keep only 15 digits of a number, so they round these
+  unless the column is imported as text).
+
+Recordings whose times are
 not verified say so in their own columns; their times are never presented
 as verified.
 
@@ -42,6 +50,7 @@ import tempfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, tzinfo
+from decimal import Decimal
 
 from .cancel import JobCancelled
 from .coverage import (
@@ -117,6 +126,29 @@ def iso_local(us: int | None, zone: tzinfo) -> str:
     return moment.isoformat(timespec="microseconds" if moment.microsecond else "seconds")
 
 
+def readable(us: int | None, zone: tzinfo = UTC) -> str:
+    """``2000-01-01 00:00:00`` in ``zone`` (no offset: the column name or the
+    ``site_time_zone`` column says which clock). Spreadsheets read it as a
+    date and time. Microseconds are added only when not zero."""
+    if us is None:
+        return ""
+    moment = to_datetime(us, zone)
+    text = moment.strftime("%Y-%m-%d %H:%M:%S")
+    if moment.microsecond:
+        text += f".{moment.microsecond:06d}"
+    return text
+
+
+def unix_seconds(us: int | None) -> Decimal | str:
+    """Seconds since 1970 UTC, exact to the microsecond, no trailing zeros
+    (a Decimal, so it is written as a number and never rounded)."""
+    if us is None:
+        return ""
+    return (
+        Decimal(int(us)).scaleb(-6).normalize() if us % 1_000_000 else Decimal(int(us) // 1_000_000)
+    )
+
+
 def seconds_text(us: int | float | None) -> str:
     """Microseconds as seconds, exact to the microsecond, no trailing zeros."""
     if us is None:
@@ -165,18 +197,25 @@ PATIENT_COLUMNS = [
 
 
 def _time_columns(prefix: str, local: bool) -> list[str]:
-    cols = [f"{prefix}_utc"]
+    """Readable first (for people), then the machine forms."""
+    cols = [f"{prefix}_utc_readable"]
+    if local:
+        cols.append(f"{prefix}_site_time_readable")
+    cols.append(f"{prefix}_utc")
     if local:
         cols.append(f"{prefix}_site_time")
-    cols.append(f"{prefix}_microseconds_utc")
+    cols += [f"{prefix}_unix_seconds", f"{prefix}_microseconds_utc"]
     return cols
 
 
 def _time_values(us: int | None, zone: tzinfo, local: bool) -> list:
-    values: list = [iso_utc(us)]
+    values: list = [readable(us)]
+    if local:
+        values.append(readable(us, zone))
+    values.append(iso_utc(us))
     if local:
         values.append(iso_local(us, zone))
-    values.append("" if us is None else int(us))
+    values += [unix_seconds(us), "" if us is None else int(us)]
     return values
 
 

@@ -151,11 +151,24 @@ table (CSV)…** to save just the selected recordings. Two layouts:
   start, end, duration, samples, sampling rate, and whether the part has gaps
   inside it.
 
-Every time is written in **UTC** (for example `2000-01-06T07:00:00Z`) and as a
-whole number of **microseconds since 1970 in UTC**, which converts back
-exactly in scripts. (Spreadsheet programs keep only 15 digits of a number and
-round these; import that column as text to keep it exact.) When you have chosen a site time zone, the table also has the time
-in that zone with its offset (for example `2000-01-06T08:00:00+01:00`).
+Every start and end is written both for **people** and for **machines**:
+
+- **Readable:** `2000-01-06 07:00:00` in UTC. Spreadsheet programs recognise
+  this as a date and time, so you can sort and calculate with it. When you
+  have chosen a site time zone, a second readable column gives the time on
+  the site's clock (for example `2000-01-06 08:00:00`); the
+  `site_time_zone` column says which zone.
+- **ISO 8601:** `2000-01-06T07:00:00Z` in UTC, and with a site time zone
+  also the site time with its offset (`2000-01-06T08:00:00+01:00`).
+- **Unix time in seconds:** `947142000`, with decimals down to the
+  microsecond when needed, as most programming languages and databases
+  expect.
+- **Microseconds since 1970 in UTC:** a whole number that converts back
+  exactly in scripts. (Spreadsheet programs keep only 15 digits of a number
+  and round these; import that column as text to keep it exact.)
+
+The column names say which is which, for example `start_utc_readable`,
+`start_utc`, `start_unix_seconds` and `start_microseconds_utc`.
 
 - **Before saving, the app warns you:** *"This file will contain the dates of
   the recordings, which can identify people. Store it like the recordings
