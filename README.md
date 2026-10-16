@@ -323,5 +323,5 @@ pre-releases. Progress is tracked in the [roadmap](docs/roadmap.md) and the
 
 ## License
 
-[Apache 2.0](LICENSE). Developed at the Mayo Clinic Bioelectronics
-Neurophysiology and Engineering Lab (BNEL).
+[Apache 2.0](LICENSE). Maintained by Filip Mivalt, Bioelectronics
+Neurophysiology and Engineering Laboratory (BNEL) at Mayo Clinic.
