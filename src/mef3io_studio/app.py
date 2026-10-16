@@ -114,6 +114,7 @@ def _build_main_window_class():
         QWidget,
     )
 
+    from .anonymizer import AnonymizerPage
     from .common import icons
     from .common.activity import ActivityIndicator, ActivityPanel
     from .common.dialogs import MessageDialog
@@ -161,12 +162,17 @@ def _build_main_window_class():
             self.module_keys: list[str] = []
             self.explorer = ExplorerPage(jobs, parent=self.pages)
             self.explorer.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
+            self.anonymizer = AnonymizerPage(jobs, self.explorer, parent=self.pages)
+            self.anonymizer.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
+            self.anonymizer.open_copy.connect(self.open_copy_in_explorer)
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, icon_name)
                 self.module_list.addItem(item)
                 if key == "explorer":
                     page = self.explorer
+                elif key == "anonymizer":
+                    page = self.anonymizer
                 else:
                     page = PlaceholderPage(icon_name, page_title, page_text, self.pages)
                 self.pages.addWidget(page)
@@ -275,6 +281,11 @@ def _build_main_window_class():
             self.module_list.setCurrentRow(self.module_keys.index("explorer"))
             action()
 
+        def open_copy_in_explorer(self, path: str, password: str = "") -> None:
+            """Show a copy the anonymizer made, straight on its Privacy check."""
+            self.module_list.setCurrentRow(self.module_keys.index("explorer"))
+            self.explorer.open_for_privacy_check(path, password)
+
         def choose_time_zone(self) -> None:
             dialog = TimeZoneDialog(self.settings.get("time/site_zone"), self)
             dialog.accepted.connect(lambda: self.set_time_zone(dialog.zone_name()))
@@ -286,6 +297,7 @@ def _build_main_window_class():
                 return
             self.settings.set("time/site_zone", "" if name == "UTC" else name)
             self.explorer.set_zone_name(name)
+            self.anonymizer.set_zone_name(name)
 
         def _switch_module(self, row: int) -> None:
             if row < 0:
@@ -389,6 +401,7 @@ def _build_main_window_class():
             if not explorer_splitter.isEmpty():
                 self.explorer.splitter.restoreState(explorer_splitter)
             self.explorer.set_zone_name(self.settings.get("time/site_zone"))
+            self.anonymizer.set_zone_name(self.settings.get("time/site_zone"))
             self.activity_dock.setVisible(self.settings.get("ui/activity_visible"))
             key = self.settings.get("ui/module")
             self.module_list.setCurrentRow(

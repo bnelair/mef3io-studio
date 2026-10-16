@@ -670,38 +670,77 @@ def test_a_blocked_reference_or_an_all_blocked_batch_is_refused():
     assert codes(plan.refusals) == [RefusalCode.NOTHING_TO_PLAN] and not plan.runnable
 
 
-def _details(rto, access):
+def _details(rto, access, status=None, ambiguous=False, first=None, last=None):
     t = utc(2021, 6, 1, 9)
     channels = (
         ChannelInfo("a", 256.0, "uV", 10, t, t + HOUR),
         ChannelInfo("b", 256.0, "uV", 10, t - 5, t + 2 * HOUR),
     )
+    if status is None:
+        status = "none" if rto == 0 else ("applied" if rto is not None else "locked")
     return RecordingDetails(
-        location="x.mefd", channels=channels, recording_time_offset=rto, access=access
+        location="x.mefd",
+        channels=channels,
+        recording_time_offset=rto,
+        access=access,
+        time_offset_status=status,
+        time_offset_ambiguous=ambiguous,
+        first_time=first,
+        last_time=last,
     )
 
 
 @pytest.mark.parametrize(
-    ("rto", "access", "reasons"),
+    ("rto", "access", "status", "ambiguous", "reasons"),
     [
-        (0, ACCESS_OPEN, ()),
-        (0, ACCESS_FULL, ()),
-        (123, ACCESS_FULL, (Blocker.TIMES_UNVERIFIED,)),
-        # Locked: the password is the one thing to fix, so one code only.
-        (None, ACCESS_BASIC, (Blocker.LOCKED,)),
-        # Not locked, but the offset could not be read: unverified.
-        (None, ACCESS_FULL, (Blocker.TIMES_UNVERIFIED,)),
-        (123, ACCESS_BASIC, (Blocker.LOCKED, Blocker.TIMES_UNVERIFIED)),
+        (0, ACCESS_OPEN, None, False, ()),
+        (0, ACCESS_FULL, None, False, ()),
+        # mef3io#70: a non-zero offset that resolves cleanly is anonymized
+        # (its true times are read, the copy has none): not blocked any more.
+        (123, ACCESS_FULL, None, False, ()),
+        (123, ACCESS_OPEN, None, False, ()),
+        # What mef3io still refuses:
+        # - parts that disagree on the offset;
+        (None, ACCESS_OPEN, "disputed", False, (Blocker.TIMES_UNVERIFIED,)),
+        # - a time at or before a non-zero offset (the bytes can't tell);
+        (123, ACCESS_FULL, None, True, (Blocker.TIMES_UNVERIFIED,)),
+        # - an offset that could not be read although not locked;
+        (None, ACCESS_FULL, "unknown", False, (Blocker.TIMES_UNVERIFIED,)),
+        # - locked: the password is the one thing to fix, so one code only.
+        (None, ACCESS_BASIC, None, False, (Blocker.LOCKED,)),
+        (123, ACCESS_BASIC, None, False, (Blocker.LOCKED,)),
     ],
 )
-def test_explorer_details_become_planner_input(rto, access, reasons):
-    times = recording_times(_details(rto, access), "id-1")
+def test_explorer_details_become_planner_input(rto, access, status, ambiguous, reasons):
+    times = recording_times(_details(rto, access, status, ambiguous), "id-1")
     assert times.start_us == utc(2021, 6, 1, 9) - 5 and times.end_us == utc(2021, 6, 1, 11)
     plan = plan_shifts([times], ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC))
     if reasons:
         assert plan.blocked[0].reasons == reasons
     else:
         assert plan.runnable
+
+
+def test_notes_outside_the_signal_widen_the_floor_and_the_earliest_time():
+    # mef3io measures the span over samples AND notes (inspect's first_time
+    # / last_time); the planner must too, or it calls a plan runnable that
+    # mef3io then refuses.
+    t = utc(2021, 6, 1, 9)
+    note_early = t - 10 * DAY_US
+    times = recording_times(_details(0, ACCESS_OPEN, first=note_early, last=t + 2 * HOUR), "x")
+    plan = plan_shifts([times], ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC))
+    assert plan.batch_span_us == t + 2 * HOUR - note_early
+    # A shift that clears the signal's span but not the notes' is refused.
+    small = ShiftSettings(time_of_day=TimeOfDay.KEEP_UTC, new_date=date(2021, 6, 6))
+    plan = plan_shifts([times], small)
+    assert RefusalCode.BELOW_FLOOR in codes(plan.refusals)
+    # A note before the copy's start must still land after 1970-01-02.
+    rec_ = RecordingTimes("n", 40 * DAY_US, 41 * DAY_US, span_start_us=3 * DAY_US)
+    plan = plan_shifts([rec_], ShiftSettings(time_of_day=TimeOfDay.SET, new_date=date(1970, 1, 9)))
+    assert RefusalCode.TOO_EARLY in codes(plan.refusals)
+    # Nonsense note times are damaged times.
+    bad = RecordingTimes("b", t, t + HOUR, span_start_us=-5)
+    assert plan_shifts([bad]).blocked[0].reasons == (Blocker.TIMES_INVALID,)
 
 
 def test_a_recording_without_channels_is_blocked():

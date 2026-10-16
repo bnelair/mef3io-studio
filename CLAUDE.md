@@ -104,7 +104,7 @@ Code (app shell, #2/#3):
   without channel names until mef3io's ChannelSummary carries them (#96). Never read/read_raw/toc;
   tests/test_explorer_bytes.py pins < 1% of bytes read via /proc/self/io in
   the helper. Widgets (`explorer/`,
-  `common/`) never import mef3io (test). Pack/unpack (`model/archive.py`)
+  `common/`, `anonymizer/`) never import mef3io (tests). Pack/unpack (`model/archive.py`)
   writes to an opaque `.mef3io-studio-<hex>` temp name, checks the copy, then
   finishes without replacing anything. Patient details, descriptions and
   note text are masked until "Show" per recording; Copy summary also hides
@@ -122,5 +122,19 @@ Code (app shell, #2/#3):
   ShiftPlan` with per-recording `shift_us`, warnings/blockers/refusals as
   enum CODES (words belong to the UI). It never imports mef3io or logging;
   original times and shifts are `repr=False` (the shift re-identifies).
-  Recordings with unverified times (rto != 0 or unknown) or no full-access
-  password are BLOCKED, not planned. Running the copy is mef3io#70's job.
+  `TIMES_UNVERIFIED` = exactly what mef3io#70 refuses (disputed or unreadable
+  offset, a time at/before a non-zero offset); a resolving rto != 0 IS
+  planned. No full-access password = LOCKED. The floor's span covers notes
+  too (`span_start_us`/`span_end_us` from inspect's first/last_time).
+  The wizard (`anonymizer/page.py` + `picker.py`) runs on mef3io's
+  `anonymize_session` (bnelair/mef3io#104; pin still 1.3.0, so tests that
+  make copies skip on 1.3.0 and the page says it cannot start). Model in
+  `model/anonymize.py` (CopyRequest/CopyResult, `make_copy` in a helper,
+  `check_names` = mef3io's own name refusal surfaced early by stopping the
+  copy at its first progress report in a private temp folder,
+  `describe_copy_error`, `write_date_key`) and `model/channels.py` (picker
+  rules, undo). Tasks: `workers.tasks.anonymize_recordings` /
+  `check_copy_names`. The date key is shown on screen and saved only on
+  opt-in; never logged, never in settings. Privacy check card:
+  `model/privacycheck.py` + `explorer/privacy.py`, from inspect() only
+  ("made by the anonymizer" = every part's history has `anonymize`).

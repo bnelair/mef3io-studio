@@ -10,10 +10,12 @@ location, a name or anything read from a recording.
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from ..common.privacy import register_identity
-from ..model import archive
+from ..model import anonymize, archive
+from ..model.cancel import JobCancelled, is_stop
 from ..model.coverage import Stopped, combine
 from ..model.errors import HelperCrashed, describe_error
 from ..model.export import LEVEL_PARTS, ExportItem, part_rows, recording_table, write_csv
@@ -240,6 +242,79 @@ def pack_or_unpack(
     result = archive.finish(plan)
     log.info("job %d: %s finished", ctx.job_id, "packing" if plan.packing else "unpacking")
     return result
+
+
+def _register_copy_identity(requests: list[anonymize.CopyRequest]) -> None:
+    """Everything a copy request carries that identifies or unlocks: the
+    original's name and password, the new names and passwords."""
+    values: list[str] = []
+    for r in requests:
+        values += [recording_name(r.source), r.name, r.pseudonym, r.password]
+        if r.output_password:
+            values += list(r.output_password)
+    register_identity(*(v for v in values if v))
+
+
+def check_copy_names(ctx: JobContext, requests: list[anonymize.CopyRequest]) -> dict[str, object]:
+    """mef3io's own verdict on each copy's name and pseudonym, before
+    anything is written: ``{key: None (accepted) or UserMessage}``. One
+    helper process for the whole batch (it reads only details)."""
+    _register_copy_identity(requests)
+    ctx.report(0, len(requests), "Checking the names")
+    verdicts = ctx.run_isolated(
+        anonymize.check_names_many, list(requests), stop_grace=STOP_GRACE_SECONDS
+    )
+    refused = sum(1 for v in verdicts.values() if v is not None)
+    log.info("job %d: checked %d name(s), %d refused", ctx.job_id, len(verdicts), refused)
+    return verdicts
+
+
+def anonymize_recordings(
+    ctx: JobContext, requests: list[anonymize.CopyRequest]
+) -> list[anonymize.CopyResult]:
+    """Make each anonymized copy in turn, in a helper process, with mef3io's
+    byte progress. A refusal or failure of one copy is reported for that copy
+    and the batch goes on; Stop ends the batch (mef3io removes the unfinished
+    copy; the cleanup below catches what a helper ended after the grace
+    could leave). Each result is published as soon as it is known."""
+    _register_copy_identity(requests)
+    total = len(requests)
+    results: list[anonymize.CopyResult] = []
+    for i, request in enumerate(requests):
+        ctx.check_cancelled()
+        phase = f"Making anonymized copy {i + 1} of {total}"
+        ctx.report(i, total, phase)
+        if not os.path.lexists(request.destination + ".partial"):
+            destination = request.destination
+            ctx.add_cleanup(lambda d=destination: anonymize.remove_unfinished(d))
+
+        def got(message, i=i, phase=phase) -> None:
+            if isinstance(message, ByteProgress):
+                ctx.report(i + message.fraction, total, phase)
+
+        try:
+            result = ctx.run_isolated(
+                anonymize.make_copy, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
+            )
+        except JobCancelled:
+            raise
+        except Exception as exc:
+            if is_stop(exc):
+                raise
+            # The helper itself failed (a crash): this copy only.
+            anonymize.remove_unfinished(request.destination)
+            result = anonymize.CopyResult(
+                request.key,
+                request.destination,
+                ok=False,
+                message=anonymize.describe_copy_error(exc, request),
+            )
+        results.append(result)
+        ctx.publish(result)
+        ctx.report(i + 1, total, phase)
+    saved = sum(1 for r in results if r.ok)
+    log.info("job %d: %d of %d anonymized copies saved and checked", ctx.job_id, saved, total)
+    return results
 
 
 def self_check(ctx: JobContext) -> SelfTestResult:

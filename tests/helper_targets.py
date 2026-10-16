@@ -50,10 +50,15 @@ def measure_inspect(warm_up, location):
     # Exact, independent of the byte count: these calls are never made.
     for name in ("read", "read_raw", "toc"):
         setattr(mef3io.Reader, name, forbidden)
+    from mef3io_studio.model.privacycheck import build_check
+
     before = _rchar()
     (outcome,) = source.inspect_many([(location, "")])
-    read = _rchar() - before
     assert outcome.details is not None, outcome.error
+    # The Privacy check card is built from the same details: counted too.
+    check = build_check(outcome.details)
+    read = _rchar() - before
+    assert check.items
     return read, len(outcome.details.channels), outcome.details.part_count
 
 

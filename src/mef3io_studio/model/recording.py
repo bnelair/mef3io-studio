@@ -49,6 +49,9 @@ def is_recording_location(location: str) -> bool:
     return lowered.endswith(SUFFIXES)
 
 
+#: mef3io's name for the anonymizer's operation (its history code 6).
+ANONYMIZE_OPERATION = "anonymize"
+
 #: Everyday words for what mef3io records having done to a file (the keys
 #: are mef3io's operation names).
 OPERATION_WORDS = {
@@ -57,6 +60,7 @@ OPERATION_WORDS = {
     technical("header-repair"): "details fixed",
     "recovery": "rescued after an interrupted write",
     technical("segment-repaired"): "an earlier part was fixed",
+    "anonymize": "made by the anonymizer",
 }
 
 
@@ -115,6 +119,8 @@ class ChannelInfo:
     start: int
     end: int
     parts: tuple[Part, ...] = ()
+    #: Bytes of every file of the channel (sizes only, never read).
+    bytes: int = 0
 
     @property
     def missing_seconds(self) -> float:
@@ -222,6 +228,21 @@ ACCESS_OPEN = "open"  # not password-protected
 ACCESS_BASIC = "basic"  # the basic (level-1) password: no patient details
 ACCESS_FULL = "full"  # the full-access (level-2) password
 
+
+@dataclass(frozen=True)
+class IdentityFact:
+    """Whether one identifying field of the recording holds anything
+    (from mef3io's inspect). ``present`` is None when it could not be read
+    (behind the full-access password, or in a part that could not be read).
+    ``values`` are the texts themselves: masked in the UI until "Show"."""
+
+    name: str
+    present: bool | None
+    values: tuple[str, ...] = ()
+    #: In how many places (files, or notes for note text) it is set.
+    occurrences: int = 0
+
+
 #: What mef3io found about how the times are stored (its time_offset status).
 OFFSET_NONE = "none"  # the common case: times as stored
 OFFSET_APPLIED = "applied"  # meflib's deprecated date masking is in use
@@ -272,6 +293,20 @@ class RecordingDetails:
     #: Every other identifying value the recording holds (stored names,
     #: descriptions), for the log filter only. Never shown.
     identity_extra: tuple[str, ...] = ()
+    #: A stored time is at or before the recording-time offset, so it cannot
+    #: be told apart from an absolute time (mef3io's "ambiguous").
+    time_offset_ambiguous: bool = False
+    #: The span a time shift must cover: samples AND notes (None if unknown).
+    first_time: int | None = None
+    last_time: int | None = None
+    #: What mef3io would refuse to anonymize, as ``(code, technical text)``.
+    anonymize_blockers: tuple[tuple[str, str], ...] = ()
+    #: Every identifying field mef3io knows, with presence and values (the
+    #: privacy check). Empty for details built before this was read.
+    identity: tuple[IdentityFact, ...] = ()
+    #: The daylight-saving start and end are set (a location hint); None
+    #: when they could not be read.
+    dst_set: bool | None = False
 
     @property
     def name(self) -> str:
@@ -365,6 +400,23 @@ class RecordingDetails:
             for part in channel.parts:
                 counts[part.history] = counts.get(part.history, 0) + 1
         return sorted(counts.items(), key=lambda item: (item[0] is None, -item[1]))
+
+    def identity_fact(self, name: str) -> IdentityFact | None:
+        for fact in self.identity:
+            if fact.name == name:
+                return fact
+        return None
+
+    @property
+    def made_by_anonymizer(self) -> bool:
+        """Every part's files say they were written by mef3io's anonymizer
+        (its history lists "anonymize"), and no part was left unread."""
+        parts = [p for c in self.channels for p in c.parts]
+        if not parts or self.part_problems:
+            return False
+        return all(
+            p.history is not None and ANONYMIZE_OPERATION in p.history.operations for p in parts
+        )
 
     def identity_values(self) -> list[str]:
         """Every identifying string this recording holds, for the log filter."""

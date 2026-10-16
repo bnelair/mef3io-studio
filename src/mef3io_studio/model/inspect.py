@@ -47,6 +47,7 @@ from .recording import (
     OFFSET_NONE,
     ChannelInfo,
     History,
+    IdentityFact,
     InspectOutcome,
     Note,
     Part,
@@ -210,6 +211,7 @@ def _channels(summary, location: str) -> tuple[list[ChannelInfo], list[PartProbl
                 start=int(c.start_time),
                 end=int(c.end_time),
                 parts=tuple(parts),
+                bytes=int(getattr(c, "bytes", 0) or 0),
             )
         )
     # A channel without one complete part. If mef3io also listed its parts
@@ -282,6 +284,21 @@ def _details(summary, location: str, access: str, legacy: bool) -> RecordingDeta
     extra: list[str] = []
     for name in _LOGGED_IDENTITY:
         extra += _texts(values(name))
+    facts = tuple(
+        IdentityFact(
+            name=str(f.name),
+            present=f.present,
+            values=tuple(_texts(f.values)),
+            occurrences=int(f.occurrences or 0),
+        )
+        for f in summary.identity
+    )
+    if names_available:
+        dst_set: bool | None = summary.dst_start_time is not None or (
+            summary.dst_end_time is not None
+        )
+    else:
+        dst_set = None
     return RecordingDetails(
         location=location,
         channels=tuple(channels),
@@ -301,7 +318,21 @@ def _details(summary, location: str, access: str, legacy: bool) -> RecordingDeta
         channel_descriptions=tuple(_texts(values("channel_description"))),
         legacy_password=legacy,
         identity_extra=tuple(dict.fromkeys(extra)),
+        time_offset_ambiguous=bool(summary.time_offset.get("ambiguous")),
+        first_time=_int_or_none(summary.first_time),
+        last_time=_int_or_none(summary.last_time),
+        anonymize_blockers=tuple(
+            (str(w.code), _strip_location(str(w.message), location))
+            for w in summary.warnings
+            if w.blocks_anonymize
+        ),
+        identity=facts,
+        dst_set=dst_set,
     )
+
+
+def _int_or_none(value) -> int | None:
+    return int(value) if value is not None else None
 
 
 def opened_with_legacy_password(location: str, password: str) -> bool:

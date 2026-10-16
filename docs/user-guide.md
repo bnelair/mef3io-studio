@@ -260,3 +260,109 @@ opposite. You choose where the new copy goes:
   name, and it is added to the list.
 
 If you stop the task, the unfinished copy is removed.
+
+## Anonymize recordings
+
+The **Anonymize** page makes **anonymized copies** of recordings: the patient
+details are removed and every date and time is moved by the same amount. The
+originals are never changed. A wizard takes you through it step by step, with
+**Back** and **Next**; **nothing is written until the last step**.
+
+![The channel step: 256 channels grouped by electrode, with a filter and the count of channels kept.](img/screenshots/anonymize-channels-light.png)
+
+1. **Recordings.** Tick the recordings to anonymize. They come from the list
+   in Explore (open or scan for more here). A recording that cannot be
+   anonymized says why, and cannot be ticked: for example, a
+   password-protected recording opened only with its basic password (open it
+   again with the full-access password), or one whose parts disagree about
+   its dates.
+2. **Channels.** Every channel is kept unless you leave it out.
+   - Click a box to leave a channel out. **Shift+click** another box to do
+     the same for every channel in between. **Ctrl+click** (Cmd+click on a
+     Mac) highlights channels; **Space** then ticks or unticks them all.
+   - Channels are **grouped by electrode** (`LA1 … LA16`); a group's box
+     ticks or unticks the whole electrode, and shows a dash when only some
+     of it is kept. Long lists start folded.
+   - Type in the **filter** to narrow the list; **Exclude N shown** and
+     **Keep N shown** act on exactly what the filter shows.
+   - **Keep all**, **Exclude all** and **Invert** act on every channel;
+     **Undo** and **Redo** (Ctrl+Z, Ctrl+Shift+Z) take back any change.
+   - **"Keeping N of M channels"** is always shown; you cannot continue with
+     no channel kept.
+   - With several recordings, the choice is made **by channel name** and
+     applies to all of them. A name that is not in every recording is marked
+     ⚠ and listed below the list.
+3. **Dates.** Choose how the dates move:
+   - **one shift for all** (keeps the order and spacing of the recordings),
+     or **every copy starts at the same moment**;
+   - keep the **local** time of day (needs the time zone where the
+     recordings were made), keep the **UTC** time of day, or change the time
+     of day too;
+   - the **new date** of the reference recording (by default the earliest
+     one), and optionally **keep the day of the week**.
+
+   The preview shows each recording's original start and its new start and
+   end, and warns about daylight-saving changes and recordings made in the
+   other season. The dates must move by at least the time the recordings
+   span plus one day; otherwise a moved date could be mistaken for a real one.
+4. **Identity.** Give each copy a **name** (it becomes the folder name and is
+   stored in every file) and a **pseudonym** (stored as the patient's code).
+   Neither may contain the patient's name, ID or location, or the original
+   recording's name: when you press Next, the app asks the mef3io library to
+   check them, and a refused name is shown on this step. Choose which
+   details to clear (all, by default) and what happens to the **text of notes
+   and events**: **remove** it (the default; the notes and their moved times
+   stay) or **keep** it. Kept text has the patient's known details taken out,
+   but dates and other people's names in free text are **not** found: read it
+   yourself before sharing.
+5. **Passwords.** No password (the usual choice for sharing), or two new
+   passwords: a **basic** one and a **full-access** one. Passwords lock the
+   patient details and the text of notes; they do not hide the signal, the
+   recording's name or its timing. The original's passwords are never carried
+   over, and the app never stores passwords.
+6. **Review.** Choose where to save the copies, then check, for every
+   recording: the channels kept and the ones left out (by name), the original
+   and new start and end, how far the dates move, where the copy goes, its
+   estimated size and the free space. The app refuses to start if a name is
+   taken or the folder is inside the original.
+7. **Make the copies.** Each copy is made and **checked** in the background,
+   with a progress bar and **Stop**. A stopped or failed copy leaves nothing
+   behind, and the others still go ahead. Each recording then says **Saved
+   and checked**, or why it was not saved.
+
+### The result and the date key
+
+![The result: each recording's original and new dates, and the copies saved and checked.](img/screenshots/anonymize-result-light.png)
+
+The result lists, for every recording, its **original and new start and
+end** and how far the dates moved ("Moved 3,712 days later; time of day
+(UTC) kept"). **Open the copy** shows it in Explore, straight on its
+**Privacy check**.
+
+This list is the **date key**: with it, anyone can undo the anonymization.
+The app shows it here only. **Save the date key…** writes it to a separate
+file, only if you ask, after a warning: store that file like the original
+recordings, never next to the copies. The key is never written into the
+copies, the app's log or its settings.
+
+### Privacy check
+
+![The Privacy check of an anonymized copy: nothing found, made by the anonymizer, and its moved dates.](img/screenshots/explorer-privacy-light.png)
+
+The **Privacy check** tab in Explore works on any recording, original or
+copy. The first line says, in green, **No patient details found in this
+recording**, or in red, **Found N details that may identify the patient**,
+with each one listed (values stay hidden until **Show**). Below it, one line
+per kind of detail, each marked ✓ (empty) or ✗ (holds something): patient
+names and ID, the recording location, the descriptions, the recording's name
+(for a copy, its pseudonym), the text of notes and events, folder and file
+names, the time-zone details, the date-hiding offset some older tools use,
+and other programs' private areas in the files. A dash (–) means the app
+cannot tell from here: it needs the full-access password, or it can only be
+confirmed for copies the anonymizer made.
+
+When every part of the recording was **made by the anonymizer**, the card
+says so, and its start and end are labelled as the **moved dates**. For any
+other recording it says: "This recording wasn't made by the anonymizer, so we
+can't confirm its dates were moved." The check reads nothing but the
+recording's details, so it is instant even on very large recordings.

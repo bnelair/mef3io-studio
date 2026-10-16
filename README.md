@@ -146,8 +146,16 @@ details removed and every time shifted. The originals are not touched.
   remain in the copy. (The copy's time-zone and daylight-saving settings are
   not shifted: they are cleared, so the copy doesn't hint at where it was
   recorded.)
-- **Your review:** text you choose to keep (notes, descriptions) is shown to
-  you for review first, and stays your responsibility.
+- **Your review:** the text of notes is removed by default. If you choose to
+  keep it, the app warns that dates and other people's names written in free
+  text are not found, and it stays your responsibility.
+- **Choose the channels** that go into the copies, quickly even with hundreds
+  of channels: grouped by electrode, with ranges, a filter and undo.
+- **Privacy check:** a card in Explore shows, for any recording, every kind of
+  detail that could identify the patient (✓ empty / ✗ found), whether the
+  anonymizer made it, and its moved dates. The original-to-new dates (the key
+  that undoes the anonymization) are shown at the end and saved only if you
+  ask.
 
 See the [anonymizer design](docs/design/anonymizer.md) for the details.
 
@@ -252,7 +260,7 @@ src/mef3io_studio/
   common/       privacy log filter, settings (preferences only), theme, icons,
                 activity panel
   explorer/     the Explore page (list, details, timeline, pack/unpack)
-  anonymizer/   placeholder for a later roadmap step
+  anonymizer/   the Anonymize wizard (channels, dates, identity, passwords, review, run)
 packaging/      PyInstaller spec, Inno Setup script, dmg and AppImage scripts
 ```
 
@@ -313,10 +321,13 @@ The library side of the plan is tracked in
 ## Project status
 
 mef3io-studio is in **early development**. The app, its installers and the
-Explore page are ready to try. Still to come for the first full release:
-ordering and renaming recordings, viewing and editing details, adding or
-removing passwords, choosing channels and converting in batches, and
-anonymizing (work on anonymizing has started). Test versions are published on the
+Explore page are ready to try. The **Anonymize** wizard (anonymized copies
+with a choice of channels, moved dates, new names and optional passwords,
+plus a Privacy check for any recording) is built and waits for the mef3io
+release that contains its anonymizer. Still to come for the first full
+release: ordering and renaming recordings, viewing and editing details,
+adding or removing passwords, and saving channel choices and converting in
+batches. Test versions are published on the
 [Releases page](https://github.com/bnelair/mef3io-studio/releases) as
 pre-releases. Progress is tracked in the [roadmap](docs/roadmap.md) and the
 [tracking issue](https://github.com/bnelair/mef3io-studio/issues/1).

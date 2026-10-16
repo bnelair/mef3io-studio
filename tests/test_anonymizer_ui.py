@@ -1,0 +1,622 @@
+"""The anonymizer wizard, offscreen (mef3io-studio#5): every step, the
+256-channel picker, the early name check, a batch with one failing copy,
+Stop, the result page and the date key.
+
+The tests that make copies need mef3io's ``anonymize_session`` (mef3io#70,
+bnelair/mef3io#104); on a mef3io without it they are skipped, saying so. The
+rest (the picker, the steps that write nothing) run on any mef3io.
+"""
+
+from __future__ import annotations
+
+import ast
+import time
+from pathlib import Path
+
+import mef3io
+import numpy as np
+import pytest
+from explorer_sessions import (
+    LAST,
+    PATIENT_ID,
+    T0,
+    metadata,
+    write_plain,
+)
+from PySide6.QtCore import QDate, Qt
+from PySide6.QtWidgets import QApplication
+
+from mef3io_studio.anonymizer.page import (
+    STEP_CHANNELS,
+    STEP_DATES,
+    STEP_IDENTITY,
+    STEP_PASSWORDS,
+    STEP_RECORDINGS,
+    STEP_REVIEW,
+    STEP_RUN,
+)
+
+SRC = Path(__file__).resolve().parents[1] / "src" / "mef3io_studio"
+
+HAS_ANONYMIZER = callable(getattr(mef3io, "anonymize_session", None))
+needs_anonymizer = pytest.mark.skipif(
+    not HAS_ANONYMIZER,
+    reason="this mef3io has no anonymize_session (needs the release with bnelair/mef3io#104)",
+)
+
+
+def wait_loaded(qtbot, explorer, n, timeout=60_000):
+    qtbot.waitUntil(
+        lambda: len(explorer.entries()) == n and all(not e.busy for e in explorer.entries()),
+        timeout=timeout,
+    )
+
+
+def write_many_channels(path: Path, channels: int = 256, start: int = T0) -> Path:
+    """Electrode-style names: 16 groups of 16 contacts (LA1…LA16, RA1…)."""
+    prefixes = [f"{side}{x}" for side in "LR" for x in "ABCDEFGH"]
+    names = [f"{p}{i}" for p in prefixes for i in range(1, 17)][:channels]
+    with mef3io.Writer(str(path), overwrite=True, metadata=metadata()) as w:
+        for name in names:
+            w.write(name, np.zeros(256), start, 256.0)
+    return path
+
+
+@pytest.fixture
+def window_page(window):
+    window._closing = True
+    window.show()
+    page = window.anonymizer
+    # The steps that write nothing are tested on any mef3io: on one without
+    # anonymize_session the page refuses to move on (tested separately in
+    # test_without_the_library_anonymizer_nothing_can_start), so let it here.
+    page.available = True
+    page.unavailable.hide()
+    return window, page
+
+
+def open_in_explorer(qtbot, window, paths):
+    window.explorer.open_paths([str(p) for p in paths], interactive=False)
+    wait_loaded(qtbot, window.explorer, len(paths))
+
+
+def go_to_channels(page, keys=None):
+    page.go(STEP_RECORDINGS)
+    page.recordings.set_ticked(keys if keys is not None else [e.key for e in page.recordings.rows])
+    page.next()
+    assert page.step == STEP_CHANNELS
+
+
+# --------------------------------------------------------------------------
+# Structure
+
+
+def test_the_wizard_replaces_the_placeholder_and_never_imports_mef3io(window):
+    from mef3io_studio.anonymizer import AnonymizerPage
+
+    index = window.module_keys.index("anonymizer")
+    assert isinstance(window.page_widgets[index], AnonymizerPage)
+    offenders = []
+    for path in (SRC / "anonymizer").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            if any(n.split(".")[0] == "mef3io" for n in names):
+                offenders.append(str(path.relative_to(SRC)))
+    assert not offenders, offenders
+
+
+def test_nothing_is_written_before_the_last_step(window_page, qtbot, tmp_path):
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    out = tmp_path / "out"
+    out.mkdir()
+    before = sorted(p.name for p in tmp_path.rglob("*"))
+    go_to_channels(page)
+    page.next()  # dates
+    page.dates.keep_utc.setChecked(True)
+    # The default new date (2000-01-01) is this synthetic recording's own date.
+    assert page.step == STEP_DATES and not page.dates.ok
+    page.dates.new_date.setDate(QDate(2010, 3, 1))
+    assert page.dates.ok
+    page.next()  # identity
+    assert page.step == STEP_IDENTITY
+    page.back()
+    page.back()
+    page.back()
+    assert page.step == STEP_RECORDINGS
+    assert sorted(p.name for p in tmp_path.rglob("*")) == before
+
+
+# --------------------------------------------------------------------------
+# Step 1: recordings
+
+
+def test_recordings_that_cannot_be_anonymized_cannot_be_ticked(window_page, qtbot, tmp_path):
+    from explorer_sessions import PASSWORD_BASIC, write_encrypted
+
+    window, page = window_page
+    good = write_plain(tmp_path / "good.mefd", notes=False)
+    locked = write_encrypted(tmp_path / "locked.mefd")
+    window.explorer.open_paths([str(good)], interactive=False)
+    window.explorer.open_paths([str(locked)], interactive=False, password=PASSWORD_BASIC)
+    wait_loaded(qtbot, window.explorer, 2)
+    page.go(STEP_RECORDINGS)
+    page.recordings.tick_all()
+    names = [e.name for e in page.recordings.chosen()]
+    assert names == ["good"]
+    reasons = {
+        page.recordings.table.item(r, 0).text(): page.recordings.table.item(r, 3).text()
+        for r in range(page.recordings.table.rowCount())
+    }
+    assert reasons["good"] == "Yes"
+    assert "full-access password" in reasons["locked"]
+    assert page.next_button.isEnabled()
+    page.recordings.untick_all()
+    assert not page.next_button.isEnabled()
+    assert "Tick at least one" in page.why_not.text()
+
+
+# --------------------------------------------------------------------------
+# Step 2: the 256-channel picker
+
+
+@pytest.fixture
+def picker_256(window_page, qtbot, tmp_path):
+    window, page = window_page
+    src = write_many_channels(tmp_path / "big.mefd")
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    return page
+
+
+def test_picker_keeps_every_channel_by_default_and_groups_them(picker_256):
+    page = picker_256
+    picker = page.picker
+    assert picker.selection.total == 256
+    assert picker.count_text() == "Keeping 256 of 256 channels"
+    assert picker.model.rowCount() == 16  # 16 electrodes, folded
+    first = picker.model.index(0, 0)
+    assert picker.model.data(first) == "LA (16)"
+    assert picker.model.data(first, Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked
+    assert not picker.tree.isExpanded(first)  # long lists start folded
+    # Natural order inside a group: LA2 before LA10.
+    names = [picker.model.data(picker.model.index(r, 0, first)) for r in range(16)]
+    assert names[:3] == ["LA1", "LA2", "LA3"] and names[9] == "LA10"
+
+
+def test_picker_ranges_with_shift_click(picker_256):
+    picker = picker_256.picker
+    picker.tree.expandAll()
+    picker.click("LA3", keep=False)
+    picker.click("LA9", keep=False, shift=True)
+    assert picker.selection.excluded == tuple(f"LA{i}" for i in range(3, 10))
+    group = picker.model.index(0, 0)
+    state = picker.model.data(group, Qt.ItemDataRole.CheckStateRole)
+    assert state == Qt.CheckState.PartiallyChecked  # tri-state group
+    assert picker.count_text() == "Keeping 249 of 256 channels"
+    # A plain click toggles one channel; through the model, as the view does.
+    index = picker.model.index(0, 0, group)  # LA1
+    picker.model.setData(index, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+    assert not picker.selection.is_kept("LA1")
+
+
+def test_picker_group_boxes_and_space_on_highlighted_rows(picker_256):
+    picker = picker_256.picker
+    group = picker.model.index(1, 0)  # LB
+    picker.model.setData(group, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+    assert all(not picker.selection.is_kept(f"LB{i}") for i in range(1, 17))
+    picker.model.setData(group, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+    assert all(picker.selection.is_kept(f"LB{i}") for i in range(1, 17))
+    # Highlight two rows (Ctrl+click), then Space.
+    picker.tree.expandAll()
+    sel = picker.tree.selectionModel()
+    from PySide6.QtCore import QItemSelectionModel
+
+    for row in (0, 5):
+        sel.select(
+            picker.model.index(row, 0, picker.model.index(2, 0)),
+            QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+        )
+    picker.toggle_highlighted()
+    assert picker.selection.excluded == ("LC1", "LC6")
+    picker.toggle_highlighted()
+    assert picker.selection.excluded == ()
+
+
+def test_picker_filter_and_bulk_actions_apply_to_what_is_shown(picker_256):
+    picker = picker_256.picker
+    picker.filter.setText("RA")
+    assert picker.exclude_shown.text() == "Exclude 16 shown"
+    assert picker.exclude_shown.isVisible() or not picker.isVisible()
+    # Only the RA group is shown.
+    shown = [
+        picker.model.data(picker.model.index(r, 0))
+        for r in range(picker.model.rowCount())
+        if not picker.tree.isRowHidden(r, picker.model.index(r, 0).parent())
+    ]
+    assert shown == ["RA (16)"]
+    picker.exclude_shown.click()
+    assert picker.count_text() == "Keeping 240 of 256 channels"
+    assert set(picker.selection.excluded) == {f"RA{i}" for i in range(1, 17)}
+    picker.filter.setText("RA1")  # RA1, RA10…RA16
+    assert picker.keep_shown.text() == "Keep 8 shown"
+    picker.keep_shown.click()
+    assert picker.count_text() == "Keeping 248 of 256 channels"
+    picker.filter.clear()
+    picker.invert.click()
+    assert picker.count_text() == "Keeping 8 of 256 channels"
+    picker.exclude_all.click()
+    assert picker.count_text() == "Keeping 0 of 256 channels"
+    assert not picker_256.next_button.isEnabled()  # Continue disabled at 0
+    assert picker.empty_label.text()
+    picker.keep_all.click()
+    assert picker_256.next_button.isEnabled()
+
+
+def test_picker_undo_and_redo(picker_256):
+    picker = picker_256.picker
+    picker.click("LA1", keep=False)
+    picker.exclude_all.click()
+    picker.undo()
+    assert picker.selection.excluded == ("LA1",)
+    picker.undo()
+    assert picker.selection.excluded == ()
+    assert not picker.undo_button.isEnabled()
+    picker.redo()
+    assert picker.selection.excluded == ("LA1",)
+    picker.redo()
+    assert picker.count_text() == "Keeping 0 of 256 channels"
+    assert not picker.redo_button.isEnabled()
+
+
+def test_picker_stays_responsive_with_256_channels(picker_256):
+    """Every bulk action, a filter and an undo on 256 channels: each well
+    under a frame budget on the GUI thread."""
+    picker = picker_256.picker
+    actions = [
+        lambda: picker.exclude_all.click(),
+        lambda: picker.keep_all.click(),
+        lambda: picker.invert.click(),
+        lambda: picker.filter.setText("L"),
+        lambda: picker.exclude_shown.click(),
+        lambda: picker.filter.clear(),
+        lambda: picker.undo(),
+        lambda: picker.tree.expandAll(),
+        lambda: picker.click("RH16", keep=False),
+        lambda: picker.click("LA1", keep=False, shift=True),
+    ]
+    worst = 0.0
+    app = QApplication.instance()
+    for action in actions:
+        t0 = time.perf_counter()
+        action()
+        app.processEvents()  # the repaint counts too
+        worst = max(worst, time.perf_counter() - t0)
+    assert worst < 0.25, f"slowest picker action took {worst:.3f} s"
+
+
+def test_batch_selection_is_by_name_and_flags_missing_names(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_plain(tmp_path / "a.mefd", channels=("x1", "x2", "ecg"), notes=False)
+    b = write_plain(tmp_path / "b.mefd", channels=("x1", "x2"), notes=False)
+    open_in_explorer(qtbot, window, [a, b])
+    go_to_channels(page)
+    picker = page.picker
+    assert picker.selection.total == 3
+    assert picker.missing_label.isVisibleTo(picker)
+    assert "ecg" in picker.missing_label.text()
+    picker.click("ecg", keep=False)
+    keys = {c.entry.name: c.key for c in page.choices}
+    assert page.selection.excluded_in(keys["a"]) == ("ecg",)
+    assert page.selection.excluded_in(keys["b"]) == ()
+    # "In recordings" column shows the flag.
+    group = picker.model.index(0, 0)
+    texts = {
+        picker.model.data(picker.model.index(r, 0, group)): picker.model.data(
+            picker.model.index(r, 3, group)
+        )
+        for r in range(picker.model.rowCount(group))
+    }
+    other = picker.model.index(picker.model.rowCount() - 1, 0)
+    texts.update(
+        {
+            picker.model.data(picker.model.index(r, 0, other)): picker.model.data(
+                picker.model.index(r, 3, other)
+            )
+            for r in range(picker.model.rowCount(other))
+        }
+    )
+    assert texts["ecg"] == "⚠ 1 of 2" and texts["x1"] == "2 of 2"
+    # Leaving out every channel one recording has is refused.
+    picker.click("x1", keep=False)
+    picker.click("x2", keep=False)
+    assert not page.next_button.isEnabled()
+
+
+# --------------------------------------------------------------------------
+# Step 3: dates
+
+
+def test_dates_step_plans_and_refuses_in_plain_words(window_page, qtbot, tmp_path):
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    page.next()
+    dates = page.dates
+    dates.new_date.setDate(QDate(2003, 6, 1))
+    dates.zone.setCurrentText("")
+    dates.keep_local.setChecked(True)
+    assert not dates.ok
+    assert "time zone" in dates.refusals.text()
+    dates.zone.setCurrentText("Europe/Prague")
+    assert dates.ok
+    dates.new_date.setDate(QDate(2000, 1, 1))  # the original's own date: too close
+    dates.keep_utc.setChecked(True)
+    assert not dates.ok and "too close" in dates.refusals.text()
+    dates.new_date.setDate(QDate(2003, 6, 1))
+    assert dates.ok
+    assert dates.preview.item(0, 2).text().startswith("2003-06-01 00:00:00")
+
+
+# --------------------------------------------------------------------------
+# The run
+
+
+def _through_to_review(page, qtbot, folder, names=None, keep_text=False, passwords=None):
+    page.next()  # channels -> dates
+    page.dates.keep_utc.setChecked(True)
+    page.dates.new_date.setDate(QDate(2010, 3, 1))
+    assert page.dates.ok, page.dates.refusals.text()
+    page.next()  # -> identity
+    if names:
+        for row, name in enumerate(names):
+            page.identity.table.item(row, 1).setText(name)
+    if keep_text:
+        page.identity.text_keep.setChecked(True)
+    page.next()  # names are checked by mef3io in the background
+    qtbot.waitUntil(lambda: page.names_handle.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: page.step == STEP_PASSWORDS, timeout=5_000)
+    if passwords:
+        page.passwords.both.setChecked(True)
+        page.passwords.basic.setText(passwords[0])
+        page.passwords.basic_again.setText(passwords[0])
+        page.passwords.full.setText(passwords[1])
+        page.passwords.full_again.setText(passwords[1])
+    page.next()  # -> review
+    assert page.step == STEP_REVIEW
+    page.review.set_folder(str(folder))
+    assert page.review.ok, page.review.blocked.text()
+
+
+@needs_anonymizer
+def test_a_name_refusal_is_shown_on_the_identity_step(window_page, qtbot, tmp_path):
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    page.next()
+    page.dates.keep_utc.setChecked(True)
+    page.dates.new_date.setDate(QDate(2010, 3, 1))
+    page.next()
+    page.identity.table.item(0, 1).setText(f"{LAST}-copy")
+    page.next()
+    qtbot.waitUntil(lambda: page.names_handle.is_finished, timeout=60_000)
+    assert page.step == STEP_IDENTITY  # held back, nothing written
+    text = page.identity.problems.text()
+    assert "Choose another name for the copy" in text and "patient's name" in text
+    assert not list(tmp_path.glob(f"{LAST}*"))
+    # A pseudonym with the patient's ID is refused the same way.
+    page.identity.table.item(0, 1).setText("S-001")
+    page.identity.table.item(0, 2).setText(PATIENT_ID)
+    page.next()
+    qtbot.waitUntil(lambda: page.names_handle.is_finished, timeout=60_000)
+    assert page.step == STEP_IDENTITY
+    assert "Choose another pseudonym" in page.identity.problems.text()
+    # Local problems need no helper at all.
+    page.identity.table.item(0, 1).setText("a/b")
+    assert "cannot contain" in page.identity.problems.text()
+    assert not page.next_button.isEnabled()
+
+
+@needs_anonymizer
+def test_end_to_end_copy_result_and_privacy_check(window_page, qtbot, tmp_path, monkeypatch):
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd")
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    page.picker.click("a3", keep=False)
+    out = tmp_path / "out"
+    out.mkdir()
+    _through_to_review(page, qtbot, out, names=["S001"])
+    text = page.review.texts[page.choices[0].key]
+    assert "Left out: a3" in text and "Channels kept: 2 of 3" in text
+    assert "2000-01-01 00:00:00" in text and "2010-03-01 00:00:00" in text
+    handle = page.next()  # Make the copies
+    assert page.step == STEP_RUN
+    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
+        pass
+    del handle
+    assert page.run_step.result_texts[page.choices[0].key] == "Saved and checked"
+    copy = out / "S001.mefd"
+    assert copy.is_dir() and not (out / "S001.mefd.partial").exists()
+    summary = mef3io.inspect(str(copy))
+    assert [c.name for c in summary.channels] == ["a1", "a2"]
+    # The result table: original -> new dates, shift in words.
+    row = [page.run_step.table.item(0, c).text() for c in range(8)]
+    assert row[2].startswith("2000-01-01") and row[3].startswith("2010-03-01")
+    assert row[6].startswith("Moved 3,712 days later")
+    assert page.run_step.key_box.isVisibleTo(page.run_step)
+
+    # "Open the copy" shows it in Explore, on its Privacy check.
+    page.open_copy_of(page.choices[0])
+    explorer = window.explorer
+    assert window.pages.currentWidget() is explorer
+    qtbot.waitUntil(
+        lambda: (
+            explorer.current_entry() is not None
+            and explorer.current_entry().details is not None
+            and explorer.current_entry().name == "S001"
+        ),
+        timeout=60_000,
+    )
+    assert explorer.tabs.currentWidget() is explorer.privacy
+    privacy = explorer.privacy
+    assert privacy.headline.text() == "No patient details found in this recording"
+    assert privacy.origin_text == "Made by the anonymizer."
+    assert privacy.dates_note.text() == "These are the moved dates, not the real ones."
+    assert "2010-03-01" in privacy.dates.text()
+    assert all(symbol != "✗" for symbol, _ in privacy.rows.values()), privacy.rows
+
+
+@needs_anonymizer
+def test_a_batch_goes_on_after_one_copy_fails(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_plain(tmp_path / "a.mefd", notes=False)
+    b = write_plain(tmp_path / "b.mefd", notes=False)
+    open_in_explorer(qtbot, window, [a, b])
+    go_to_channels(page)
+    out = tmp_path / "out"
+    out.mkdir()
+    _through_to_review(page, qtbot, out, names=["C1", "C2"])
+    # Something takes the first copy's name after the review.
+    (out / "C1.mefd").mkdir()
+    page.start()
+    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
+        pass
+    results = page.run_step.result_texts
+    names = {c.name: c.key for c in page.choices}
+    assert results[names["C1"]] == "That name is already taken"
+    assert results[names["C2"]] == "Saved and checked"
+    assert (out / "C2.mefd").is_dir()
+    assert not any(p.name.endswith(".partial") for p in out.iterdir())
+
+
+@needs_anonymizer
+def test_stop_leaves_nothing_behind(window_page, qtbot, tmp_path):
+    from explorer_sessions import write_large
+
+    window, page = window_page
+    src = write_large(tmp_path / "large.mefd", channels=2, parts=2, seconds=600)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    out = tmp_path / "out"
+    out.mkdir()
+    _through_to_review(page, qtbot, out, names=["BIG1"])
+    page.start()
+    qtbot.waitUntil(
+        lambda: (
+            page.handle.record.progress is not None
+            and (page.handle.record.progress.fraction or 0) > 0
+        ),
+        timeout=60_000,
+    )
+    page.stop()
+    with qtbot.waitSignal(page.handle.finished, timeout=60_000):
+        pass
+    assert page.run.stopped
+    assert list(out.iterdir()) == []
+    assert "Stopped" in page.run_step.heading.text()
+
+
+@needs_anonymizer
+def test_date_key_is_written_only_on_request(window_page, qtbot, tmp_path, monkeypatch):
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    out = tmp_path / "out"
+    out.mkdir()
+    _through_to_review(page, qtbot, out, names=["K1"])
+    page.start()
+    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
+        pass
+    key = tmp_path / "keys" / "key.csv"
+    key.parent.mkdir()
+    asked = []
+    monkeypatch.setattr(page, "choose_date_key_path", lambda: asked.append(1) or str(key))
+    # Declined at the warning: no file, and the path is not even asked for.
+    monkeypatch.setattr(page, "confirm_date_key", lambda: False)
+    assert page.save_date_key() is False
+    assert not key.exists() and not asked
+    monkeypatch.setattr(page, "confirm_date_key", lambda: True)
+    assert page.save_date_key() is True
+    text = key.read_text(encoding="utf-8")
+    assert "orig" in text and "K1" in text
+    assert "2000-01-01T00:00:00" in text and "2010-03-01T00:00:00" in text
+    assert list(key.parent.iterdir()) == [key]  # no temporary file left
+    # Nothing of it anywhere else: not in the copies, not in the settings.
+    for path in out.rglob("*"):
+        if path.is_file():
+            assert b"orig" not in path.read_bytes()
+    window.save_preferences()
+    settings_file = Path(window.settings._qs.fileName())
+    settings_text = settings_file.read_text(encoding="utf-8", errors="replace")
+    assert str(key) not in settings_text and "orig" not in settings_text
+
+
+@needs_anonymizer
+def test_password_protected_copy_opens_with_the_new_password(window_page, qtbot, tmp_path):
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    out = tmp_path / "out"
+    out.mkdir()
+    _through_to_review(page, qtbot, out, names=["P1"], passwords=("bas-1", "full-2"))
+    page.start()
+    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
+        pass
+    copy = str(out / "P1.mefd")
+    summary = mef3io.inspect(copy, "full-2")
+    assert summary.encryption["encrypted"] and summary.encryption["access"] == "full"
+    # The form forgot the passwords once the copies started.
+    assert page.passwords.basic.text() == "" and page.passwords.none.isChecked()
+
+
+def test_passwords_step_rules(window_page):
+    _window, page = window_page
+    step = page.passwords
+    assert step.problem_text() == "" and step.passwords() is None
+    step.both.setChecked(True)
+    assert "Type both" in step.problem_text()
+    step.basic.setText("a")
+    step.basic_again.setText("b")
+    step.full.setText("c")
+    step.full_again.setText("c")
+    assert "basic passwords are not the same" in step.problem_text()
+    step.basic_again.setText("a")
+    step.full.setText("a")
+    step.full_again.setText("a")
+    assert "must be different" in step.problem_text()
+    step.full.setText("c")
+    step.full_again.setText("c")
+    assert step.problem_text() == "" and step.passwords() == ("a", "c")
+
+
+def test_without_the_library_anonymizer_nothing_can_start(qtbot, jobs, monkeypatch):
+    import mef3io_studio.anonymizer.page as page_module
+    from mef3io_studio.explorer import ExplorerPage
+
+    monkeypatch.setattr(page_module, "library_supports_anonymize", lambda: False)
+    explorer = ExplorerPage(jobs)
+    qtbot.addWidget(explorer)
+    page = page_module.AnonymizerPage(jobs, explorer)
+    qtbot.addWidget(page)
+    assert page.unavailable.isVisibleTo(page)
+    assert not page.next_button.isEnabled()
+
+
+def test_identity_and_review_wording_is_plain():
+    """The fixed texts of the wizard name the risks plainly."""
+    from mef3io_studio.anonymizer import page as p
+
+    assert "NOT" in p.KEEP_TEXT_WARNING and "dates" in p.KEEP_TEXT_WARNING
+    assert "undo the anonymization" in p.DATE_KEY_WARNING
+    assert "do not hide the signal" in p.PASSWORD_EXPLANATION

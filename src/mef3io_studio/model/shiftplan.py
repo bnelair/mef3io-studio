@@ -40,12 +40,16 @@ The rules, exactly as the design states them:
 
 Recordings that cannot be planned are listed in :attr:`ShiftPlan.blocked`
 with :class:`Blocker` codes and take no part in the plan (nor in the batch
-span). In particular a recording whose times are not verified (a non-zero
-recording-time offset, meflib's deprecated date masking, whose sign
-convention the bytes cannot settle) is blocked: a wrong reading of its times
-would put a wrong date in the copy and defeat the leak scan. A recording
-opened without the full-access password is blocked as ``LOCKED`` (its offset
-is behind that password, and anonymizing needs it anyway).
+span). A recording whose times cannot be read unambiguously is blocked as
+``TIMES_UNVERIFIED``: exactly the cases mef3io's ``anonymize_session``
+(mef3io#70) refuses, namely parts that disagree on the recording-time offset
+(meflib's deprecated date masking), an offset that could not be read, and a
+stored time at or before a non-zero offset (whose sign convention the bytes
+cannot settle). A wrong reading of such times would put a wrong date in the
+copy and defeat the leak scan. A recording whose offset is set and resolves
+cleanly IS planned: mef3io reads its true times and the copy has none. A
+recording opened without the full-access password is blocked as ``LOCKED``
+(its offset is behind that password, and anonymizing needs it anyway).
 
 Privacy: original times, shifts, and anything they can be worked back from
 (D, off_ref, the weekday-adjusted date, clock-change positions, the site
@@ -68,7 +72,7 @@ from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from functools import cache, cached_property, lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from .recording import ACCESS_BASIC, RecordingDetails
+from .recording import ACCESS_BASIC, OFFSET_DISPUTED, RecordingDetails
 
 #: One day in microseconds.
 DAY_US = 86_400_000_000
@@ -118,8 +122,9 @@ class TimeOfDay(enum.StrEnum):
 class Blocker(enum.StrEnum):
     """Why a recording cannot be planned."""
 
-    #: Its times may not be the real ones (a non-zero recording-time offset,
-    #: or one that could not be read).
+    #: Its times cannot be read unambiguously: parts disagree on the
+    #: recording-time offset, the offset could not be read, or a time is at
+    #: or before a non-zero offset (what mef3io#70 refuses).
     TIMES_UNVERIFIED = "times_unverified"
     #: Opened without the full-access password; anonymizing needs it.
     LOCKED = "locked"
@@ -163,27 +168,57 @@ class RecordingTimes:
     id: str
     start_us: int | None = field(repr=False)
     end_us: int | None = field(repr=False)
-    #: False when the times may not be the real ones: a non-zero
-    #: recording-time offset, or one that could not be read although the
-    #: recording is not locked.
+    #: False when the times cannot be read unambiguously: parts disagree on
+    #: the recording-time offset, it could not be read although the
+    #: recording is not locked, or a time is at or before a non-zero offset.
+    #: A non-zero offset that resolves cleanly is verified.
     times_verified: bool = True
     #: True when the full-access password is missing.
     locked: bool = False
+    #: The span the copy's times must cover, samples AND notes (mef3io's
+    #: ``first_time`` / ``last_time``). Used for the leak-scan floor and the
+    #: earliest-time check, so a plan called runnable here is not refused by
+    #: mef3io because a note lies outside the signal. None = start/end.
+    span_start_us: int | None = field(default=None, repr=False)
+    span_end_us: int | None = field(default=None, repr=False)
+
+    @property
+    def first_us(self) -> int:
+        """The earliest time the shift moves (start, or an earlier note)."""
+        s = _as_int(self.span_start_us)
+        return self.start_us if s is None else min(s, self.start_us)
+
+    @property
+    def last_us(self) -> int:
+        """The latest time the shift moves (end, or a later note)."""
+        e = _as_int(self.span_end_us)
+        return self.end_us if e is None else max(e, self.end_us)
 
 
 def recording_times(details: RecordingDetails, recording_id: str) -> RecordingTimes:
     """What the Explorer knows about a recording, as planner input. A
     locked recording's unknown offset is reported as LOCKED only: the
     password is the one thing to fix, and its times are judged once it is
-    given."""
+    given. A non-zero offset that resolves is fine (mef3io reads the true
+    times); only a disputed, unreadable or ambiguous one blocks."""
     locked = details.access == ACCESS_BASIC
     rto = details.recording_time_offset
+    if locked:
+        verified = True  # judged once the full-access password is given
+    else:
+        verified = (
+            rto is not None
+            and details.time_offset_status != OFFSET_DISPUTED
+            and not details.time_offset_ambiguous
+        )
     return RecordingTimes(
         id=recording_id,
         start_us=details.start,
         end_us=details.end,
-        times_verified=rto == 0 or (rto is None and locked),
+        times_verified=verified,
         locked=locked,
+        span_start_us=getattr(details, "first_time", None),
+        span_end_us=getattr(details, "last_time", None),
     )
 
 
@@ -425,8 +460,13 @@ def _checked(rec: RecordingTimes) -> tuple[RecordingTimes, tuple[Blocker, ...]]:
     s, e = _as_int(rec.start_us), _as_int(rec.end_us)
     if s is None or e is None or not (0 < s <= e <= MAX_TIME_US) or e - s > MAX_DURATION_US:
         out.append(Blocker.TIMES_INVALID)
-    else:
-        rec = replace(rec, start_us=s, end_us=e)
+        return rec, tuple(out)
+    rec = replace(rec, start_us=s, end_us=e)
+    # Notes outside the signal widen what the shift must cover; nonsense
+    # there is damaged times as much as a bad start or end.
+    first, last = rec.first_us, rec.last_us
+    if not (0 < first <= last <= MAX_TIME_US) or last - first > MAX_DURATION_US:
+        out.append(Blocker.TIMES_INVALID)
     return rec, tuple(out)
 
 
@@ -504,13 +544,11 @@ def plan_shifts(
         off_ref = _offset_us(ref.start_us, clock) if tod is TimeOfDay.KEEP_LOCAL else None
         ref_shift = days * DAY_US + (off_ref or 0)
 
-    # The span of the originals as their start/end times give it.
-    # TODO(mef3io#70): if verify's leak scan counts note times outside the
-    # signal's range as part of "the original range", take the span from the
-    # same source (inspect()) so the two floors agree.
-    first = min(plannable, key=lambda r: r.start_us)
-    last = max(plannable, key=lambda r: r.end_us)
-    span = last.end_us - first.start_us
+    # The span of the originals: samples and notes, as mef3io measures it
+    # (inspect's first_time / last_time), so the two floors agree.
+    first = min(plannable, key=lambda r: r.first_us)
+    last = max(plannable, key=lambda r: r.last_us)
+    span = last.last_us - first.first_us
     floor = span + DAY_US
     target = ref.start_us + ref_shift
 
@@ -528,10 +566,11 @@ def plan_shifts(
             for p in planned
             if abs(p.shift_us) < floor
         ]
+    by_id = {r.id: r for r in plannable}
     for p in planned:
-        if p.new_start_us < MIN_SHIFTED_US:
+        if by_id[p.id].first_us + p.shift_us < MIN_SHIFTED_US:
             refusals.append(Refusal(RefusalCode.TOO_EARLY, p.id, shift_us=p.shift_us))
-        if p.new_end_us > MAX_TIME_US:
+        if by_id[p.id].last_us + p.shift_us > MAX_TIME_US:
             refusals.append(Refusal(RefusalCode.TOO_LATE, p.id, shift_us=p.shift_us))
 
     warnings: dict[str, list[PlanWarning]] = {p.id: [] for p in planned}
