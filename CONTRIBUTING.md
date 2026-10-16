@@ -6,6 +6,9 @@ development:** the design lives in [`docs/`](docs/) and the work in
 [issues](https://github.com/bnelair/mef3io-studio/issues). Comments on the
 design are among the most useful contributions right now.
 
+Everyone taking part is expected to follow our
+[code of conduct](CODE_OF_CONDUCT.md).
+
 ## The one rule
 
 **The app never reads or writes MEF bytes itself.** Every file operation goes
