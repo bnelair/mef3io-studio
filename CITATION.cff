@@ -3,7 +3,9 @@ title: "mef3io-studio: a desktop app for exploring and anonymizing MEF 3.0 recor
 message: "If you use mef3io-studio in research, please cite it."
 type: software
 authors:
-  - name: "Mayo Clinic — Bioelectronics Neurophysiology and Engineering Lab (BNEL)"
+  - family-names: "Mivalt"
+    given-names: "Filip"
+    affiliation: "Bioelectronics Neurophysiology and Engineering Laboratory (BNEL), Mayo Clinic"
 repository-code: "https://github.com/bnelair/mef3io-studio"
 license: Apache-2.0
 keywords:
