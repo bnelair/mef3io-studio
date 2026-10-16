@@ -23,7 +23,11 @@ A recording is a folder ending in `.mefd`, or a single file ending in
   random-looking names.
 
 Recordings open in the background. Each task appears in the Activity panel
-with a progress bar and a **Stop task** button; the window stays usable.
+with a progress bar and a **Stop task** button; the window stays usable. The
+bar follows how much the app has actually read or copied, and **Stop task**
+stops the work straight away, even in the middle of a large recording.
+Stopping is never an error: the list says **Stopped**, and anything the task
+had started to write is removed.
 
 **Password-protected recordings** ask for their password when you open them
 on their own. When they are found by a scan, the list says **Password needed**;
@@ -36,6 +40,14 @@ select the recording and choose **Enter the password…**.
 Passwords are kept only while the app is open. They are never saved and never
 written to the app's log. Note that MEF passwords don't hide the signal, the
 recording's name or its timing.
+
+Passwords with accented or other non-English letters (for example "é") are
+now handled exactly the way other MEF programs handle them. A recording that
+was protected by an older version of the mef3io library may open only with
+the older rule. It still opens, and the Overview shows a short note: *"This
+password works here because the recording was protected by an older version
+of the mef3io library. Other programs may not accept this password for this
+recording."* Nothing is wrong with the recording itself.
 
 ### The list of recordings
 
@@ -63,7 +75,11 @@ Times marked **(unverified)** may not be the real ones. They are listed
 after the others when you sort by time. This happens in two cases:
 
 - the part of the recording that confirms the times is locked until the
-  full-access password is given;
+  full-access password is given (with only the basic password, the times are
+  worked out the way they are stored in almost every recording, but they
+  can't be confirmed);
+- different parts of the recording say different things about how their
+  times are stored;
 - the recording carries a **time offset** that older software used to hide the
   real date. The app shows a warning for these: *"This recording hides its real
   date in a way that can be undone; treat it as identifiable."* The real date
@@ -78,13 +94,20 @@ Select a recording to see its details in the tabs below the list:
 
 | Tab | What it shows |
 |---|---|
-| **Overview** | Start, end, duration, channels, sampling rates, parts, gaps, size and password protection, plus any warnings |
+| **Overview** | Start, end, duration, channels, sampling rates, parts, gaps, size and password protection, plus any warnings (for example a part that could not be read) |
 | **Channels** | Each channel's sampling rate, units, number of samples and parts, and first and last sample time |
 | **Timeline** | Each channel as a bar over time. Filled: recorded. Empty: a gap. Striped: a part that has gaps inside it. Point at a part to see its times |
-| **Notes and events** | Notes stored for the whole recording, with each channel, and with each part. Their text is hidden until you choose Show under Patient details |
+| **Notes and events** | Notes stored for the whole recording, with each channel, and with each part. Their text is hidden until you choose Show under Patient details. With only the basic password, their text reads *Locked: needs the full-access password* |
 | **Patient details** | Name, patient ID, location and descriptions, **hidden until you choose Show** |
 | **History** | Which version of the mef3io library created the files and last changed them, and what was done (for example "added to"). No dates are recorded. Files written by other programs have no history |
 | **Check for problems** | Compares what the recording says about itself with its data. Choose **Check now**; the results are explained in plain words, with the technical details one click away. Checking never changes the recording |
+
+**A recording with a damaged part still opens.** If one part of a channel
+can't be read, the rest of the recording is shown, the missing time appears
+as a gap, and the Overview says how many parts could not be read (the list
+says *Some parts could not be read* until you run a check). Use **Check for
+problems** to see why. Nothing is changed. Only when no part at all can be
+read does the recording show *This recording looks damaged* instead.
 
 ![The timeline of a recording with a gap between its two parts.](img/screenshots/explorer-timeline-light.png)
 
