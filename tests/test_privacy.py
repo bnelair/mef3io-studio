@@ -181,17 +181,25 @@ def test_short_strings_are_not_registered():
     assert scrub("x marks", registry) == "x marks"
 
 
-def test_reader_is_opened_without_path_bearing_warnings(monkeypatch, synthetic_session):
-    seen = {}
-    real = mef3io.Reader
+def test_inspect_warnings_never_escape(monkeypatch, synthetic_session):
+    """mef3io's warning texts start with the full path; the summary and the
+    Explorer catch them instead of letting them reach the log."""
+    import warnings
 
-    def spy(*args, **kwargs):
-        seen.update(kwargs)
-        return real(*args, **kwargs)
+    from mef3io_studio.model.inspect import inspect_recording
 
-    monkeypatch.setattr(mef3io, "Reader", spy)
-    LocalRecordingSource().summarize(synthetic_session)
-    assert seen.get("warn_declarations") is False
+    real = mef3io.inspect
+
+    def noisy(path, *args, **kwargs):
+        warnings.warn(f"{path}: metadata section 2 leaves sizes unset", UserWarning, stacklevel=1)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(mef3io, "inspect", noisy)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        LocalRecordingSource().summarize(synthetic_session)
+        assert inspect_recording(str(synthetic_session)).details is not None
+    assert not [w for w in caught if str(synthetic_session) in str(w.message)]
 
 
 def test_real_hooks_scrub_everything(tmp_path):

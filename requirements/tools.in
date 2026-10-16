@@ -1,3 +1,4 @@
 # Build backend, installed from the lock so `pip install --no-build-isolation`
-# never fetches an unpinned setuptools.
-setuptools==80.9.0
+# never fetches an unpinned setuptools. 83+ fixes a MANIFEST.in exclusion
+# bypass in sdists (Dependabot alert #1).
+setuptools==84.0.0

@@ -52,10 +52,20 @@ Code (app shell, #2/#3):
   the UI thread; `fn(ctx, ...)` reports via `ctx.report(done, total, phase)`
   (throttled) and polls `ctx.check_cancelled()`. Titles shown to users carry
   no patient data.
+- Stop inside mef3io: `model.cancel.CancelToken.for_library()` gives a
+  linked `mef3io.CancelToken`; `mef3io.Cancelled` is a stop (`is_stop`),
+  never a failure. Helper calls that can stop by themselves use
+  `ctx.run_isolated(fn, ..., stop_grace=STOP_GRACE_SECONDS)`: `fn` gets
+  `cancel=`, and is ended only after the grace. mef3io byte progress travels
+  from helpers as `model.progress.ByteProgress` via `send`.
 - Data access goes through `model.source.RecordingSource` (server source later).
-  `LocalRecordingSource.isolate = True` runs opens in a spawn helper process
-  until mef3io#79 releases the GIL (xfail test pins it); `freeze_support()` is
-  the first thing the launcher does.
+  `LocalRecordingSource.isolate = True` runs opens in a spawn helper process:
+  `mef3io.Reader` still holds the GIL for a whole open (mef3io#79), while
+  `mef3io.inspect()` lets other threads run (measured: ~60 ms longest stall
+  vs ~1.7 s for the Reader; test_jobs pins the inspect-based summary on a
+  thread; it skips, saying so, when the call takes <= 1.5x the stall bound,
+  too short to show a held GIL). The helper also contains native crashes, so it stays for now;
+  `freeze_support()` is the first thing the launcher does.
 - UI text: everyday words only (docs/ui-language.md, enforced by
   tests/test_ui_language.py); jargon only behind "Technical details".
 - Packaging: the spec DROPS network/kiosk Qt plugins, QtNetwork, GTK theme,
@@ -71,9 +81,29 @@ Code (app shell, #2/#3):
 - Look: Fusion + palette + QSS in `common/theme.py`; icons are bundled SVGs
   with `currentColor`; no pixel font sizes.
 - Explorer (#4): `model/inspect.py` is the ONLY place that reads a recording
-  for display (thin adapter over the public Reader; swap for mef3io.inspect()
-  #67). It never calls read/read_raw/toc; tests/test_explorer_bytes.py pins
-  < 1% of bytes read via /proc/self/io in the helper. Widgets (`explorer/`,
+  for display: a thin adapter over `mef3io.inspect(strict=False,
+  include_values=True)` (mef3io 1.3). Unreadable parts -> `part_problems`,
+  the rest shown; `offset_assumed_zero` (basic password) = unverified times;
+  a non-ASCII password that matched only mef3io's pre-1.3 rule (#84) ->
+  `legacy_password` note (inspect() does not report it: a lenient
+  `Reader(strict=False)` open with warnings caught detects it, non-ASCII
+  passwords only; `detect_legacy=False` where the note is not shown, e.g.
+  archive's copy check). A disputed offset has no single value but
+  `date_recoverable` still makes `uses_time_offset` true (date warning).
+  mef3io warnings name the path: every mef3io call that may warn (inspect,
+  the legacy Reader open, Validator, archive/extract) runs inside
+  `model.quiet.library_warnings_caught()`, never logged. ALL
+  `warnings.catch_warnings` in the app go through model/quiet.py under one
+  lock (`ignoring_warnings` for the job layer's own): it is process-wide
+  and not thread-safe. Only the self-test's Writer (synthetic, temp folder)
+  is deliberately outside. A channel failed in several ways is listed once.
+  Unreadable parts never pass as gaps: coverage marks the recording
+  `incomplete` (timeline tag + note, never "time with data"); the CSV has an
+  `unreadable_parts` column in both layouts and a "could not be read" row per
+  part in the per-part layout. Patient details list channel descriptions
+  without channel names until mef3io's ChannelSummary carries them (#96). Never read/read_raw/toc;
+  tests/test_explorer_bytes.py pins < 1% of bytes read via /proc/self/io in
+  the helper. Widgets (`explorer/`,
   `common/`) never import mef3io (test). Pack/unpack (`model/archive.py`)
   writes to an opaque `.mef3io-studio-<hex>` temp name, checks the copy, then
   finishes without replacing anything. Patient details, descriptions and

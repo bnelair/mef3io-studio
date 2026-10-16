@@ -137,3 +137,39 @@ def format_duration(seconds: float | None) -> str:
     if hours < 10:
         return f"about {hours:.1f} hours"
     return f"about {round(hours)} hours"
+
+
+@dataclass(frozen=True)
+class ByteProgress:
+    """How far one mef3io call has got, from its ``progress(done, total)``
+    callback (both in bytes). Plain data, so a helper process can send it."""
+
+    done: int
+    total: int
+
+    @property
+    def fraction(self) -> float:
+        if self.total <= 0:
+            return 0.0
+        return min(1.0, max(0.0, self.done / self.total))
+
+
+def byte_progress(
+    send: Callable[[ByteProgress], object],
+    interval: float = 1.0 / UI_UPDATES_PER_SECOND,
+    clock: Callable[[], float] = time.monotonic,
+) -> Callable[[int, int], None]:
+    """A ``progress(done, total)`` callback for mef3io that passes
+    :class:`ByteProgress` to ``send`` at most once per ``interval`` (the UI
+    shows no more than that), plus the final report. mef3io already limits
+    how often it calls; this also keeps a helper's pipe quiet."""
+    last = [-math.inf]
+
+    def progress(done: int, total: int) -> None:
+        now = clock()
+        if now - last[0] < interval and done < total:
+            return
+        last[0] = now
+        send(ByteProgress(int(done), int(total)))
+
+    return progress

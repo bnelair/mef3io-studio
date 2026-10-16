@@ -16,8 +16,10 @@ import abc
 import os
 from dataclasses import dataclass
 
-from .cancel import CancelToken
+from .cancel import CancelToken, stopped_by_library
 from .problems import CheckReport
+from .progress import byte_progress
+from .quiet import library_warnings_caught
 from .recording import InspectOutcome
 
 
@@ -29,8 +31,8 @@ class ChannelSummary:
 
 @dataclass(frozen=True)
 class RecordingSummary:
-    """A deliberately small summary. Fuller details come with mef3io.inspect()
-    (mef3io#67) in the Explorer step."""
+    """A deliberately small summary (from ``mef3io.inspect()``). The
+    Explorer's fuller details come from :mod:`.inspect`."""
 
     channels: tuple[ChannelSummary, ...]
     #: The recording leaves some size declarations unset (common in files
@@ -60,21 +62,28 @@ class RecordingSource(abc.ABC):
         its signal."""
 
     @abc.abstractmethod
-    def inspect_many(self, requests: list[tuple[str, str]], send=None) -> list[InspectOutcome]:
+    def inspect_many(
+        self, requests: list[tuple[str, str]], send=None, cancel: CancelToken | None = None
+    ) -> list[InspectOutcome]:
         """Everything the explorer shows about each ``(location, password)``,
         without reading any signal (see :mod:`.inspect`). With ``send``, each
-        outcome is passed to it as soon as it is ready."""
+        outcome is passed to it as soon as it is ready, and so is progress
+        (:class:`~.progress.ByteProgress`) for the one being read. ``cancel``
+        stops it from inside the library."""
 
     @abc.abstractmethod
-    def check(self, location: str, password: str = "") -> CheckReport:
-        """Check the recording for problems. Reads only."""
+    def check(
+        self, location: str, password: str = "", send=None, cancel: CancelToken | None = None
+    ) -> CheckReport:
+        """Check the recording for problems. Reads only. ``send`` gets
+        :class:`~.progress.ByteProgress`; ``cancel`` stops it."""
 
 
 class LocalRecordingSource(RecordingSource):
     """Recordings on this computer (``.mefd`` folders or ``.mefd.tar`` files)."""
 
     display_name = "This computer"
-    isolate = True  # until bnelair/mef3io#79 releases the GIL during an open
+    isolate = True  # until bnelair/mef3io#79 releases the GIL during an open / inspect
 
     def summarize(
         self, location: str | os.PathLike, password: str = "", cancel: CancelToken | None = None
@@ -83,26 +92,32 @@ class LocalRecordingSource(RecordingSource):
 
         cancel = cancel or CancelToken()
         cancel.raise_if_cancelled()
-        channels: list[ChannelSummary] = []
-        # warn_declarations=False: mef3io's warning text starts with the full
-        # path, which must not reach the log. The same fact is returned as a
-        # flag and logged by the caller in fixed, path-free words.
-        with mef3io.Reader(
-            os.fspath(location), password=password, warn_declarations=False
-        ) as reader:
-            for name in reader.channels:
-                cancel.raise_if_cancelled()
-                info = reader.info(name)
-                channels.append(ChannelSummary(name, float(info["sampling_frequency"])))
-            incomplete = bool(reader.declaration_issues)
-        return RecordingSummary(tuple(channels), declarations_incomplete=incomplete)
+        # mef3io.inspect reads the details only. Strict: a summary is
+        # all-or-nothing (the Explorer uses inspect_many, which is lenient).
+        # Its warnings are caught: their text starts with the full path,
+        # which must not reach the log. The declarations fact is returned as
+        # a flag and logged by the caller in fixed, path-free words.
+        with stopped_by_library(), library_warnings_caught():
+            summary = mef3io.inspect(os.fspath(location), password, cancel=cancel.for_library())
+        encryption = summary.encryption
+        if encryption.get("encrypted") and encryption.get("access") == "none":
+            raise mef3io.PasswordError("the recording needs its password")
+        channels = tuple(
+            ChannelSummary(c.name, float(c.sampling_frequency or 0.0)) for c in summary.channels
+        )
+        return RecordingSummary(channels, declarations_incomplete=bool(summary.declaration_issues))
 
-    def inspect_many(self, requests: list[tuple[str, str]], send=None) -> list[InspectOutcome]:
+    def inspect_many(
+        self, requests: list[tuple[str, str]], send=None, cancel: CancelToken | None = None
+    ) -> list[InspectOutcome]:
         from .inspect import inspect_many
 
-        return inspect_many(requests, send=send)
+        return inspect_many(requests, send=send, cancel=cancel)
 
-    def check(self, location: str, password: str = "") -> CheckReport:
+    def check(
+        self, location: str, password: str = "", send=None, cancel: CancelToken | None = None
+    ) -> CheckReport:
         from .problems import check_recording
 
-        return check_recording(os.fspath(location), password)
+        progress = byte_progress(send) if send is not None else None
+        return check_recording(os.fspath(location), password, cancel=cancel, progress=progress)

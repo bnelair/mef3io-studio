@@ -26,6 +26,9 @@ import shutil
 import sys
 from dataclasses import dataclass
 
+from .cancel import CancelToken, stopped_by_library
+from .progress import byte_progress
+from .quiet import library_warnings_caught
 from .recording import is_packed, recording_name
 from .scan import TEMP_PREFIX
 
@@ -122,58 +125,62 @@ def remove_temporary(plan_: ArchivePlan) -> None:
                 pass
 
 
-def written_bytes(plan_: ArchivePlan) -> int:
-    """How much of the copy exists so far (for progress)."""
-    total = 0
-    for path in _temporary_paths(plan_):
-        try:
-            if os.path.isfile(path):
-                total += os.stat(path).st_size
-                continue
-            for folder, _dirs, files in os.walk(path):
-                for name in files:
-                    try:
-                        total += os.stat(os.path.join(folder, name)).st_size
-                    except OSError:
-                        pass
-        except OSError:
-            pass
-    return total
-
-
-def _shape(
-    location: str, password: str = ""
-) -> list[tuple[str, float, tuple[tuple[int, int, int, int], ...]]]:
-    """Channels, rates and every part's times and sample count."""
+def _shape(location: str, password: str = "", cancel: CancelToken | None = None) -> list:
+    """Channels, rates, every part's times and sample count, and which
+    parts could not be read."""
     from .inspect import inspect_recording
 
-    outcome = inspect_recording(location, password)
+    outcome = inspect_recording(location, password, cancel=cancel, detect_legacy=False)
     if outcome.details is None:
         raise CopyMismatch("the copy could not be opened")
+    details = outcome.details
     return [
         (
             c.name,
             c.sampling_frequency,
             tuple((p.start, p.end, p.samples, p.blocks) for p in c.parts),
         )
-        for c in outcome.details.channels
-    ]
+        for c in details.channels
+    ] + [(p.channel, p.part) for p in details.part_problems]
 
 
-def run_in_helper(plan_: ArchivePlan, password: str = "", send=None) -> None:
+def run_in_helper(
+    plan_: ArchivePlan, password: str = "", send=None, cancel: CancelToken | None = None
+) -> None:
     """mef3io writes the temporary copy, then the copy is compared with the
     original (opened with the same password: a copy keeps its protection).
     Runs in a helper process; never touches the final name.
-    ``send("checking")`` announces the second step."""
+
+    ``send`` gets :class:`~.progress.ByteProgress` while mef3io copies, then
+    ``"checking"`` when the second step starts. ``cancel`` stops mef3io from
+    inside; it then removes what it had written itself (and the job's
+    cleanup removes anything left under the temporary name)."""
     import mef3io
 
-    if plan_.packing:
-        mef3io.archive_session(plan_.source, plan_.temporary, False)
-    else:
-        mef3io.extract_session(plan_.source, plan_.temporary, False)
+    cancel = cancel or CancelToken()
+    cancel.raise_if_cancelled()
+    progress = byte_progress(send) if send is not None else None
+    with stopped_by_library(), library_warnings_caught():
+        if plan_.packing:
+            mef3io.archive_session(
+                plan_.source,
+                plan_.temporary,
+                False,
+                cancel=cancel.for_library(),
+                progress=progress,
+            )
+        else:
+            mef3io.extract_session(
+                plan_.source,
+                plan_.temporary,
+                False,
+                cancel=cancel.for_library(),
+                progress=progress,
+            )
     if send is not None:
         send("checking")
-    if _shape(plan_.source, password) != _shape(plan_.temporary, password):
+    original = _shape(plan_.source, password, cancel)
+    if original != _shape(plan_.temporary, password, cancel):
         raise CopyMismatch("the copy does not list the same channels and parts as the original")
 
 

@@ -41,13 +41,12 @@ from __future__ import annotations
 
 import logging
 import traceback
-import warnings
 from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 
-from ..model.cancel import CancelToken, JobCancelled
+from ..model.cancel import CancelToken, is_stop
 from ..model.errors import UserMessage, describe_error
 from ..model.jobs import JobRecord, JobStatus
 from ..model.progress import (
@@ -57,6 +56,7 @@ from ..model.progress import (
     Progress,
     ProgressSlot,
 )
+from ..model.quiet import ignoring_warnings
 from .isolated import run_isolated
 
 log = logging.getLogger(__name__)
@@ -106,13 +106,19 @@ class JobContext:
         fn: Callable[..., Any],
         *args: Any,
         on_message: Callable[[Any], None] | None = None,
-        on_poll: Callable[[], None] | None = None,
+        stop_grace: float | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Run ``fn`` in a helper process; Cancel stops the helper. See
-        :func:`.isolated.run_isolated` for ``on_message`` / ``on_poll``."""
+        """Run ``fn`` in a helper process; Stop stops the helper. See
+        :func:`.isolated.run_isolated` for ``on_message`` /
+        ``stop_grace``."""
         return run_isolated(
-            fn, *args, cancel=self.cancel_token, on_message=on_message, on_poll=on_poll, **kwargs
+            fn,
+            *args,
+            cancel=self.cancel_token,
+            on_message=on_message,
+            stop_grace=stop_grace,
+            **kwargs,
         )
 
     def _run_cleanups(self) -> None:
@@ -160,16 +166,17 @@ class _Runnable(QRunnable):
             self._token.raise_if_cancelled()
             payload = self._fn(ctx, *self._args, **self._kwargs)
             outcome = "succeeded"
-        except JobCancelled:
-            outcome, payload = "cancelled", None
         except BaseException as exc:  # noqa: BLE001 - incl. SystemExit/KeyboardInterrupt
-            log.error(
-                "job %d failed with %s\n%s",
-                self._job_id,
-                type(exc).__name__,
-                "".join(traceback.format_tb(exc.__traceback__)),
-            )
-            outcome, payload = "failed", _safe_describe(exc)
+            if is_stop(exc):  # ours, or mef3io.Cancelled: stopped on request, not a failure
+                outcome, payload = "cancelled", None
+            else:
+                log.error(
+                    "job %d failed with %s\n%s",
+                    self._job_id,
+                    type(exc).__name__,
+                    "".join(traceback.format_tb(exc.__traceback__)),
+                )
+                outcome, payload = "failed", _safe_describe(exc)
         finally:
             if outcome != "succeeded":
                 ctx._run_cleanups()
@@ -373,8 +380,7 @@ class JobManager(QObject):
             "changed",
         )
         for handle in handles:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
+            with ignoring_warnings(RuntimeWarning):
                 for name in signals:
                     try:
                         getattr(handle, name).disconnect()

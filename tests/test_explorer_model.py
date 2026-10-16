@@ -32,7 +32,14 @@ from mef3io_studio.model import archive
 from mef3io_studio.model.cancel import CancelToken, JobCancelled
 from mef3io_studio.model.inspect import inspect_many, inspect_recording
 from mef3io_studio.model.problems import PLAIN_CHECKS, check_recording
-from mef3io_studio.model.recording import ACCESS_BASIC, ACCESS_FULL, ACCESS_OPEN, recording_name
+from mef3io_studio.model.progress import ByteProgress
+from mef3io_studio.model.recording import (
+    ACCESS_BASIC,
+    ACCESS_FULL,
+    ACCESS_OPEN,
+    InspectOutcome,
+    recording_name,
+)
 from mef3io_studio.model.scan import find_recordings
 from mef3io_studio.model.summary import HIDDEN, as_json, as_text, build_summary
 from mef3io_studio.model.timefmt import (
@@ -140,12 +147,25 @@ def test_single_file_recording(tmp_path):
     assert [c.parts for c in outcome.details.channels] == [c.parts for c in direct.channels]
 
 
+def test_damaged_part_does_not_hide_the_rest(tmp_path):
+    """mef3io.inspect(strict=False): the damaged part is listed, the rest shown."""
+    path = damage_details(write_plain(tmp_path / "partly.mefd", notes=False))
+    outcome = inspect_recording(str(path))
+    assert outcome.error is None and outcome.details is not None
+    d = outcome.details
+    assert [c.name for c in d.channels] == ["a2", "a3"]
+    (problem,) = d.part_problems
+    assert problem.channel == "a1" and problem.part == 0 and problem.where == "a1, part 1"
+    assert problem.detail and str(tmp_path) not in problem.detail
+
+
 def test_damaged_recording_explains_itself(tmp_path):
-    path = damage_details(write_plain(tmp_path / "damaged.mefd", notes=False))
+    path = damage_details(write_plain(tmp_path / "damaged.mefd", notes=False), every_part=True)
     outcome = inspect_recording(str(path))
     assert outcome.details is None and not outcome.needs_password
-    assert outcome.error.title == "Part of this recording looks damaged"
+    assert outcome.error.title == "This recording looks damaged"
     assert "Check for problems" in outcome.error.text
+    assert str(tmp_path) not in outcome.error.detail
     # The technical text never names the location: check the check, too.
     report = check_recording(str(path))
     assert not report.ok and report.problem_count >= 1
@@ -162,7 +182,13 @@ def test_inspect_many_streams_outcomes(tmp_path):
     b = str(write_encrypted(tmp_path / "b.mefd"))
     sent = []
     assert inspect_many([(a, ""), (b, "")], send=sent.append) == []
-    assert [o.location for o in sent] == [a, b]
+    outcomes = [o for o in sent if isinstance(o, InspectOutcome)]
+    assert [o.location for o in outcomes] == [a, b]
+    # mef3io's progress (bytes of details read) arrives before each outcome.
+    progress = [o for o in sent if isinstance(o, ByteProgress)]
+    assert progress and all(0 <= p.done <= p.total for p in progress)
+    assert progress[-1].done == progress[-1].total
+    assert isinstance(sent[0], ByteProgress)
     assert [o.location for o in inspect_many([(a, "")])] == [a]
 
 
@@ -383,7 +409,6 @@ def test_temporary_cleanup_includes_mef3io_working_files(tmp_path):
     working = plan.temporary + ".tmp"  # what archive_session writes before renaming
     with open(working, "wb") as fh:
         fh.write(b"x" * 1000)
-    assert archive.written_bytes(plan) == 1000
     (out / "unrelated.txt").write_text("keep me")
     archive.remove_temporary(plan)
     assert sorted(p.name for p in out.iterdir()) == ["unrelated.txt"]

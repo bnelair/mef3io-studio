@@ -206,7 +206,7 @@ def test_locked_unreadable_and_unverified_rows(page, qtbot, tmp_path):
     good = _write(tmp_path / "good.mefd", T0)
     masked = set_time_offset(_write(tmp_path / "masked.mefd", T0), 86_400 * SECOND)
     locked = write_encrypted(tmp_path / "locked.mefd")
-    broken = damage_details(_write(tmp_path / "broken.mefd", T0))
+    broken = damage_details(_write(tmp_path / "broken.mefd", T0), every_part=True)
     page.open_paths([str(p) for p in (good, masked, locked, broken)], interactive=False)
     wait_loaded(qtbot, page, 4)
     page.show_combined(True)

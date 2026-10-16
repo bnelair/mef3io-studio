@@ -166,23 +166,33 @@ def test_ui_event_loop_keeps_running_during_a_slow_job(qtbot, jobs):
     assert probe.max_gap < 0.5, f"UI stalled for {probe.max_gap:.2f} s"
 
 
-@pytest.mark.xfail(
-    reason="bnelair/mef3io#79: mef3io.Reader holds the GIL for the whole open, "
-    "so an open on a worker THREAD freezes the UI. Remove this xfail when it ships.",
-    strict=False,
-)
 def test_real_open_on_a_thread_does_not_freeze_the_ui(qtbot, jobs, multisegment_session):
-    """Pins the requirement against the real library call on a thread."""
+    """Pins the requirement against the real library call on a thread.
+
+    The summary uses ``mef3io.inspect`` (mef3io 1.3), which lets other
+    threads run while it works. ``mef3io.Reader`` still holds the GIL for a
+    whole open (bnelair/mef3io#79), which is why opens stay in a helper
+    process (``LocalRecordingSource.isolate``).
+
+    Only meaningful when the call itself takes clearly longer than the
+    allowed stall (then an inspect that held the GIL throughout would fail
+    the bound). On a machine fast enough to finish sooner it is skipped,
+    saying so, rather than passing on nothing."""
 
     class InThread(LocalRecordingSource):
         isolate = False
 
+    bound = 0.2
     with TimerProbe() as probe:
+        start = time.monotonic()
         handle = jobs.submit("Opening", summarize_recording, InThread(), str(multisegment_session))
         with qtbot.waitSignal(handle.succeeded, timeout=60_000):
             pass
+        took = time.monotonic() - start
     assert handle.result.channel_count == 64
-    assert probe.max_gap < 0.2, f"UI stalled for {probe.max_gap:.2f} s"
+    if took <= 1.5 * bound:
+        pytest.skip(f"call took {took:.2f}s, too short to show a held GIL")
+    assert probe.max_gap < bound, f"UI stalled for {probe.max_gap:.2f} s"
 
 
 def test_real_open_in_the_app_does_not_freeze_the_ui(qtbot, jobs, multisegment_session):
@@ -465,7 +475,7 @@ class _FakeCtx:
     def publish(self, item):
         self.published.append(item)
 
-    def run_isolated(self, fn, requests, on_message=None):
+    def run_isolated(self, fn, requests, on_message=None, **_kwargs):
         from mef3io_studio.model.errors import HelperCrashed
         from mef3io_studio.model.recording import InspectOutcome
 
@@ -483,7 +493,7 @@ class _FakeCtx:
 class _Source:
     isolate = True
 
-    def inspect_many(self, requests, send=None):  # pragma: no cover - never called
+    def inspect_many(self, requests, send=None, cancel=None):  # pragma: no cover - never called
         raise AssertionError
 
 

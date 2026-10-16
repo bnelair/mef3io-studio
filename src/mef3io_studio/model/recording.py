@@ -115,9 +115,6 @@ class ChannelInfo:
     start: int
     end: int
     parts: tuple[Part, ...] = ()
-    #: Free text the recording system stored about the channel. It can hold
-    #: anything, so it is treated as a patient detail (masked).
-    description: str | None = None
 
     @property
     def missing_seconds(self) -> float:
@@ -126,6 +123,29 @@ class ChannelInfo:
     @property
     def parts_with_gaps_inside(self) -> int:
         return sum(1 for p in self.parts if p.missing_seconds(self.sampling_frequency) > 0)
+
+
+@dataclass(frozen=True)
+class PartProblem:
+    """A part of a channel that could not be read. The rest of the
+    recording is still shown. This part's times are unknown: its stretch
+    shows as empty on its channel's timeline, it is never counted as time
+    with data, and the recording is marked incomplete (a gap there may be
+    time that was recorded)."""
+
+    channel: str
+    #: The part's number (from 0), or None when the channel has no complete
+    #: part at all.
+    part: int | None
+    #: mef3io's reason, without the location: for "Technical details" only.
+    detail: str = ""
+
+    @property
+    def where(self) -> str:
+        """Which part, in everyday words."""
+        if self.part is None:
+            return self.channel
+        return f"{self.channel}, part {self.part + 1}"
 
 
 @dataclass(frozen=True)
@@ -142,6 +162,8 @@ class Note:
     level: str = "channel"
     #: The part it is stored with (segment level only).
     segment: int | None = None
+    #: Its text is behind the full-access password (``text`` is empty).
+    locked: bool = False
 
     @property
     def where(self) -> str:
@@ -200,6 +222,12 @@ ACCESS_OPEN = "open"  # not password-protected
 ACCESS_BASIC = "basic"  # the basic (level-1) password: no patient details
 ACCESS_FULL = "full"  # the full-access (level-2) password
 
+#: What mef3io found about how the times are stored (its time_offset status).
+OFFSET_NONE = "none"  # the common case: times as stored
+OFFSET_APPLIED = "applied"  # meflib's deprecated date masking is in use
+OFFSET_DISPUTED = "disputed"  # parts of the recording disagree
+OFFSET_LOCKED = "locked"  # behind the full-access password: not known
+
 
 @dataclass(frozen=True)
 class RecordingDetails:
@@ -210,6 +238,16 @@ class RecordingDetails:
     #: meflib's recording-time offset; None when it cannot be read (it is
     #: stored behind the full-access password).
     recording_time_offset: int | None = 0
+    #: One of the ``OFFSET_*`` values above.
+    time_offset_status: str = OFFSET_NONE
+    #: A recording-time offset is set in at least one part, so the real date
+    #: is stored in the file (meflib's deprecated date masking): true even
+    #: when the parts disagree and no single offset can be given.
+    date_recoverable: bool = False
+    #: mef3io could not confirm how the times are stored (the full-access
+    #: password is missing) and read them assuming the common case. They are
+    #: right for almost every file, but not verified.
+    offset_assumed_zero: bool = False
     #: The file's fixed offset from UTC in seconds (raw, technical details
     #: only; never used to show times). None when it cannot be read.
     gmt_offset: int | None = None
@@ -218,7 +256,22 @@ class RecordingDetails:
     note_levels: tuple[str, ...] = ("session", "channel", "segment")
     #: Why the notes could not be read (plain words), or None.
     notes_problem: UserMessage | None = None
+    #: Notes whose time is unknown because a part they belong to could not
+    #: be read. They are not listed.
+    notes_without_times: int = 0
     declarations_incomplete: bool = False
+    #: Parts that could not be read (the rest is shown without them).
+    part_problems: tuple[PartProblem, ...] = ()
+    #: Free text the recording system stored about the channels. It can hold
+    #: anything, so it is treated as a patient detail (masked).
+    channel_descriptions: tuple[str, ...] = ()
+    #: The password opened the recording only through the rule mef3io used
+    #: up to 1.2.0 for accented and other non-ASCII characters; other
+    #: programs will not accept it for this recording.
+    legacy_password: bool = False
+    #: Every other identifying value the recording holds (stored names,
+    #: descriptions), for the log filter only. Never shown.
+    identity_extra: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -258,16 +311,23 @@ class RecordingDetails:
         """False when the times may not be the real ones
         (docs/design/explorer.md, "Times you can't trust"): the
         recording-time offset is unknown (it is behind the full-access
-        password), or it is not zero, where older tools stored times with the
-        opposite sign convention to meflib and the bytes cannot tell which.
-        The times are still shown as mef3io returns them, labelled."""
-        return self.recording_time_offset == 0
+        password, so mef3io assumed 0: ``offset_assumed_zero``), the parts
+        disagree about it, or it is not zero, where older tools stored times
+        with the opposite sign convention to meflib and the bytes cannot tell
+        which. The times are still shown as mef3io returns them, labelled."""
+        return self.recording_time_offset == 0 and not self.offset_assumed_zero
+
+    @property
+    def notes_locked(self) -> int:
+        """Notes whose text needs the full-access password."""
+        return sum(1 for n in self.notes if n.locked)
 
     @property
     def uses_time_offset(self) -> bool:
         """meflib's deprecated date masking is in use: the real date can be
-        worked out again, so the recording stays identifiable."""
-        return bool(self.recording_time_offset)
+        worked out again, so the recording stays identifiable. Also when the
+        parts disagree about the offset (no single value is known)."""
+        return bool(self.recording_time_offset) or self.date_recoverable
 
     def gaps(self) -> list[tuple[int, int]]:
         """Stretches where no channel has data, from the parts' start and end
@@ -309,7 +369,7 @@ class RecordingDetails:
     def identity_values(self) -> list[str]:
         """Every identifying string this recording holds, for the log filter."""
         values = [self.name, *self.patient.values()]
-        values += [c.description for c in self.channels if c.description]
+        values += [*self.channel_descriptions, *self.identity_extra]
         # Note text is NOT registered: it is masked in the UI and never
         # logged, and a recording can hold thousands of notes, which would
         # make the log filter's pattern huge (and short texts like "ok"

@@ -152,7 +152,7 @@ details removed and every time shifted. The originals are not touched.
 See the [anonymizer design](docs/design/anonymizer.md) for the details.
 
 Everything that takes time (converting, anonymizing, checking big recordings)
-runs in the background with a **progress bar** and a **cancel** button. The
+runs in the background with a **progress bar** and a **Stop** button. The
 app never freezes.
 
 ### Next directions (to be specified later)
