@@ -92,10 +92,13 @@ the window through the interpreter lock), and painted per pixel column, so
 
 - **Copy summary:** a text or JSON summary of a recording, for an email or a data-management log. This is a **user-initiated export**: the user's explicit act, not something the app writes on its own. **Names and dates are masked** in it unless the user chose "Show" for that recording, in which case the app warns that the summary will contain them before copying.
 - **Save times as a table (CSV):** one row per recording, or one per part of
-  each channel, for the combined timeline's recordings or the selection. UTC
-  ISO 8601 with `Z`, microseconds since 1970 (exact in scripts; spreadsheets
-  keep 15 digits, so import that column as text) and, when a
-  site zone is chosen, site time with its offset. A **user-initiated export**
+  each channel, for the combined timeline's recordings or the selection.
+  Every start and end is written for people and for machines: readable
+  `YYYY-MM-DD HH:MM:SS` in UTC (spreadsheets parse it as a date), UTC ISO
+  8601 with `Z`, Unix seconds (exact decimal), microseconds since 1970
+  (exact in scripts; spreadsheets keep 15 digits, so import that column as
+  text) and, when a site zone is chosen, site time readable and in ISO 8601
+  with its offset. A **user-initiated export**
   that contains dates: the app warns before writing. Patient details only
   where "Show" was chosen (`[hidden]` otherwise); unverified times are marked
   as such. UTF-8 with BOM, formula-like text cells prefixed with `'`, written
