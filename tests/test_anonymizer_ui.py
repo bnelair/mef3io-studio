@@ -19,6 +19,7 @@ import pytest
 from explorer_sessions import (
     LAST,
     PATIENT_ID,
+    SECOND,
     T0,
     metadata,
     write_plain,
@@ -151,8 +152,8 @@ def test_recordings_that_cannot_be_anonymized_cannot_be_ticked(window_page, qtbo
     names = [e.name for e in page.recordings.chosen()]
     assert names == ["good"]
     reasons = {
-        page.recordings.table.item(r, 0).text(): page.recordings.table.item(r, 3).text()
-        for r in range(page.recordings.table.rowCount())
+        page.recordings.model.text(r, 0): page.recordings.model.text(r, 3)
+        for r in range(page.recordings.model.rowCount())
     }
     assert reasons["good"] == "Yes"
     assert "full-access password" in reasons["locked"]
@@ -546,6 +547,16 @@ def test_date_key_is_written_only_on_request(window_page, qtbot, tmp_path, monke
     assert page.save_date_key() is False
     assert not key.exists() and not asked
     monkeypatch.setattr(page, "confirm_date_key", lambda: True)
+    # Next to the copies: refused, with a plain warning, nothing written.
+    beside = out / "key.csv"
+    warned = []
+    monkeypatch.setattr(
+        "mef3io_studio.anonymizer.page.QMessageBox.warning", lambda *a: warned.append(a[1])
+    )
+    monkeypatch.setattr(page, "choose_date_key_path", lambda: str(beside))
+    assert page.save_date_key() is False and not beside.exists()
+    assert warned == ["Choose another place for the date key"]
+    monkeypatch.setattr(page, "choose_date_key_path", lambda: asked.append(1) or str(key))
     assert page.save_date_key() is True
     text = key.read_text(encoding="utf-8")
     assert "orig" in text and "K1" in text
@@ -578,6 +589,12 @@ def test_password_protected_copy_opens_with_the_new_password(window_page, qtbot,
     assert summary.encryption["encrypted"] and summary.encryption["access"] == "full"
     # The form forgot the passwords once the copies started.
     assert page.passwords.basic.text() == "" and page.passwords.none.isChecked()
+    # Only what "Open the copy" needs stays in memory: the full-access password.
+    assert all(r.output_password is None and r.password == "" for r in page.run.requests)
+    opened = []
+    page.open_copy.connect(lambda path, pw: opened.append(pw))
+    page.open_copy_of(page.choices[0])
+    assert opened == ["full-2"]
 
 
 def test_passwords_step_rules(window_page):
@@ -620,3 +637,212 @@ def test_identity_and_review_wording_is_plain():
     assert "NOT" in p.KEEP_TEXT_WARNING and "dates" in p.KEEP_TEXT_WARNING
     assert "undo the anonymization" in p.DATE_KEY_WARNING
     assert "do not hide the signal" in p.PASSWORD_EXPLANATION
+
+
+# --------------------------------------------------------------------------
+# Review round 1
+
+
+def test_shift_ranges_skip_folded_groups_and_say_how_many_changed(picker_256):
+    picker = picker_256.picker
+    model = picker.model
+    picker.tree.collapseAll()
+    picker.tree.expand(model.index(0, 0))  # LA open
+    picker.tree.expand(model.index(2, 0))  # LC open; LB folded between them
+    picker.click("LA15", keep=False)
+    picker.click("LC2", keep=False, shift=True)
+    assert picker.selection.excluded == ("LA15", "LA16", "LC1", "LC2")
+    assert all(picker.selection.is_kept(f"LB{i}") for i in range(1, 17))
+    assert picker.changed_label.text() == "3 channels changed. Undo takes it back."
+    picker.exclude_all.click()
+    assert picker.changed_label.text().startswith("252 channels changed")
+
+
+def test_a_group_box_acts_on_shown_channels_only_while_filtering(picker_256):
+    picker = picker_256.picker
+    picker.filter.setText("LA1")  # LA1, LA10..LA16
+    picker.model.setData(
+        picker.model.index(0, 0), Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole
+    )
+    assert set(picker.selection.excluded) == {"LA1", *(f"LA1{i}" for i in range(7))}
+    assert picker.selection.is_kept("LA2")
+    picker.model.setData(
+        picker.model.index(0, 0), Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole
+    )
+    assert picker.selection.excluded == ()
+
+
+def test_changing_the_batch_carries_the_choice_over_by_name(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_plain(tmp_path / "a.mefd", channels=("x1", "x2", "ecg"), notes=False)
+    b = write_plain(tmp_path / "b.mefd", channels=("x1", "x2"), notes=False)
+    open_in_explorer(qtbot, window, [a, b])
+    go_to_channels(page)
+    page.picker.click("x2", keep=False)
+    page.picker.click("ecg", keep=False)
+    page.back()
+    keys = {e.name: e.key for e in page.recordings.rows}
+    page.recordings.set_ticked([keys["a"]])
+    page.next()
+    assert page.step == STEP_CHANNELS
+    assert set(page.selection.excluded) == {"x2", "ecg"}
+    notice = page.picker.notice_label.text()
+    assert "recordings changed" in notice and "2 channels" in notice
+    assert "Undo starts again" in notice
+    assert not page.selection.can_undo
+
+
+def test_the_recordings_step_stays_quick_with_2000_recordings(window_page, qtbot, monkeypatch):
+    """The Explore list changing while the step is hidden costs nothing; one
+    coalesced rebuild when it is shown, quickly."""
+    from mef3io_studio.explorer.state import RecordingEntry
+    from mef3io_studio.model.recording import ChannelInfo, InspectOutcome, Part, RecordingDetails
+
+    window, page = window_page
+    entries = []
+    for i in range(2000):
+        loc = f"/nowhere/r{i:04d}.mefd"
+        part = Part(0, T0 + i, T0 + i + 10 * SECOND, 10, 1)
+        channel = ChannelInfo("c", 256.0, "uV", 10, T0 + i, T0 + i + 10 * SECOND, (part,))
+        details = RecordingDetails(location=loc, channels=(channel,))
+        entries.append(RecordingEntry(location=loc, outcome=InspectOutcome(loc, details=details)))
+    rebuilds = []
+    real = page.recordings.refresh
+    monkeypatch.setattr(page.recordings, "refresh", lambda: rebuilds.append(1) or real())
+    window.module_list.setCurrentRow(window.module_keys.index("explorer"))
+    for chunk in range(0, 2000, 200):  # a scan delivers recordings in bursts
+        window.explorer.model.add(entries[chunk : chunk + 200])
+    qtbot.wait(300)
+    assert rebuilds == []  # hidden: only marked out of date
+    window.module_list.setCurrentRow(window.module_keys.index("anonymizer"))
+    t0 = time.perf_counter()
+    qtbot.waitUntil(lambda: page.recordings.model.rowCount() == 2000, timeout=5_000)
+    assert len(rebuilds) == 1
+    page.recordings._reasons.clear()
+    t0 = time.perf_counter()
+    page._recordings_dirty = True
+    page._refresh_recordings()
+    QApplication.instance().processEvents()
+    assert time.perf_counter() - t0 < 0.5
+    t0 = time.perf_counter()
+    page.recordings.tick_all()  # works out every reason once, then cached
+    assert len(page.recordings.ticked) == 2000
+    assert time.perf_counter() - t0 < 3.0
+
+
+def test_passwords_other_programs_may_not_accept_are_warned(window_page):
+    _window, page = window_page
+    step = page.passwords
+    step.both.setChecked(True)
+    for field_, value in ((step.basic, "ok-basic"), (step.full, "ok-full")):
+        field_.setText(value)
+    assert step.interop_text() == ""
+    step.full.setText("a-much-longer-password")
+    assert "Other programs may not open the copies" in step.interop_text()
+    assert step.interop.isVisibleTo(step)
+    step.full.setText("pass€")
+    assert step.interop_text()
+
+
+def test_passwords_are_cleared_when_the_page_is_left(window_page, qtbot, tmp_path):
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    window.module_list.setCurrentRow(window.module_keys.index("anonymizer"))
+    go_to_channels(page)
+    page.next()
+    page.dates.keep_utc.setChecked(True)
+    page.dates.new_date.setDate(QDate(2010, 3, 1))
+    page.next()
+    # Skip mef3io's name check (it needs the anonymizer): straight on.
+    page.go(STEP_PASSWORDS)
+    step = page.passwords
+    step.both.setChecked(True)
+    for field_ in (step.basic, step.basic_again):
+        field_.setText("bas-1")
+    for field_ in (step.full, step.full_again):
+        field_.setText("full-2")
+    page.next()
+    assert page.step == STEP_REVIEW
+    window.module_list.setCurrentRow(window.module_keys.index("explorer"))
+    assert step.basic.text() == "" and step.full.text() == "" and step.none.isChecked()
+    window.module_list.setCurrentRow(window.module_keys.index("anonymizer"))
+    # Never on without them: back to the passwords step, saying why.
+    assert page.step == STEP_PASSWORDS
+    assert step.cleared.isVisibleTo(step) and "cleared" in step.cleared.text()
+
+
+def test_a_stale_name_verdict_is_ignored(window_page, qtbot, tmp_path):
+    from mef3io_studio.model.errors import UserMessage
+
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    page.next()
+    page.dates.keep_utc.setChecked(True)
+    page.dates.new_date.setDate(QDate(2010, 3, 1))
+    page.next()
+    checked = page._names_now()
+    page.identity.table.item(0, 1).setText("S-OTHER")  # edited while mef3io looked
+    key = page.choices[0].key
+    page._names_checked({key: None}, checked)
+    assert page.step == STEP_IDENTITY  # the "accepted" was about the old name
+    page._names_checked({key: UserMessage("Choose another name for the copy", "x")}, checked)
+    assert page.choices[0].names_message is None
+    page._names_checked({key: None}, page._names_now())
+    assert page.step == STEP_PASSWORDS
+
+
+def test_a_recording_removed_from_explore_is_taken_out_of_the_run(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_plain(tmp_path / "a.mefd", notes=False)
+    b = write_plain(tmp_path / "b.mefd", notes=False)
+    open_in_explorer(qtbot, window, [a, b])
+    go_to_channels(page)
+    explorer = window.explorer
+    gone = next(e for e in explorer.entries() if e.name == "b")
+    explorer.model.remove([gone])
+    page.next()  # dates: re-checked first
+    assert page.step == STEP_RECORDINGS
+    assert "b" in page.recordings.lost.text() and page.recordings.lost.isVisibleTo(page)
+    assert [c.entry.name for c in page.choices] == ["a"]
+
+
+def test_an_output_folder_inside_another_recording_is_refused(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_plain(tmp_path / "a.mefd", notes=False)
+    b = write_plain(tmp_path / "b.mefd", notes=False)
+    open_in_explorer(qtbot, window, [a, b])
+    go_to_channels(page)
+    page.next()
+    page.dates.keep_utc.setChecked(True)
+    page.dates.new_date.setDate(QDate(2010, 3, 1))
+    page.next()
+    page.go(STEP_REVIEW)
+    page.review.set_folder(str(b / "a1.timd"))  # inside the OTHER recording of the batch
+    assert not page.review.ok
+    assert "inside a recording" in page.review.blocked.text()
+
+
+def test_an_unfinished_copy_that_stays_is_reported_plainly(window_page):
+    from mef3io_studio.anonymizer.page import RunState
+    from mef3io_studio.model.anonymize import Leftover
+
+    _window, page = window_page
+    page.run = RunState()
+    page._on_results([Leftover("k", "/somewhere/S1.mefd.partial")])
+    page.run.stopped = True
+    page.run.finished = True
+    page.run_step.finish()
+    text = page.run_step.heading.text()
+    assert "could NOT be removed" in text and "S1.mefd.partial" in text
+    assert "was removed" not in text
+
+
+def test_reserved_names_and_the_swap_button(window_page):
+    _window, page = window_page
+    assert page.picker.invert.text() == "Swap kept and left out"
+    from mef3io_studio.model.anonymize import name_problem
+
+    assert name_problem("CON") and name_problem("nul.mefd")

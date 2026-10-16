@@ -211,7 +211,7 @@ class ChannelPicker(QWidget):
         self.keep_all.clicked.connect(lambda: self._do(lambda s: s.keep_all()))
         self.exclude_all = QPushButton("Exclude all", self)
         self.exclude_all.clicked.connect(lambda: self._do(lambda s: s.exclude_all()))
-        self.invert = QPushButton("Invert", self)
+        self.invert = QPushButton("Swap kept and left out", self)
         self.invert.clicked.connect(lambda: self._do(lambda s: s.invert()))
         self.undo_button = QPushButton("Undo", self)
         self.undo_button.clicked.connect(self.undo)
@@ -230,6 +230,12 @@ class ChannelPicker(QWidget):
         self.missing_label = QLabel("", self)
         self.missing_label.setWordWrap(True)
         self.missing_label.setObjectName("Bad")
+        self.notice_label = QLabel("", self)
+        self.notice_label.setWordWrap(True)
+        self.notice_label.setObjectName("Caution")
+        self.notice_label.setVisible(False)
+        self.changed_label = QLabel("", self)
+        self.changed_label.setObjectName("Muted")
         self.empty_label = QLabel("", self)
         self.empty_label.setWordWrap(True)
         self.empty_label.setObjectName("Bad")
@@ -247,7 +253,11 @@ class ChannelPicker(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(intro)
-        layout.addWidget(self.count_label)
+        layout.addWidget(self.notice_label)
+        count_row = QHBoxLayout()
+        count_row.addWidget(self.count_label)
+        count_row.addWidget(self.changed_label, 1)
+        layout.addLayout(count_row)
         layout.addLayout(filter_row)
         layout.addLayout(bulk)
         layout.addWidget(self.tree, 1)
@@ -263,9 +273,12 @@ class ChannelPicker(QWidget):
             shortcut.activated.connect(slot)
 
     # -- setting up ------------------------------------------------------------
-    def set_selection(self, selection: ChannelSelection, recordings: int) -> None:
+    def set_selection(self, selection: ChannelSelection, recordings: int, notice: str = "") -> None:
         self.selection = selection
         self._anchor = None
+        self.notice_label.setText(notice)
+        self.notice_label.setVisible(bool(notice))
+        self.changed_label.setText("")
         old = self.model
         self.model = ChannelTreeModel(selection, recordings, self)
         self.model.channel_clicked.connect(self._on_channel_clicked)
@@ -294,6 +307,19 @@ class ChannelPicker(QWidget):
         self._update()
 
     # -- what is shown -------------------------------------------------------------
+    def rows_on_screen(self) -> tuple[str, ...]:
+        """Channels the list shows right now, in order: matching the filter
+        AND in an open group."""
+        if self.model is None or self.selection is None:
+            return ()
+        shown = set(self.visible_names())
+        out = []
+        for gi, group in enumerate(self.model.groups):
+            if not self.tree.isExpanded(self.model.index(gi, 0)):
+                continue
+            out += [n for n in group.names if n in shown]
+        return tuple(out)
+
     def visible_names(self) -> tuple[str, ...]:
         if self.selection is None:
             return ()
@@ -324,7 +350,12 @@ class ChannelPicker(QWidget):
     def _do(self, action) -> None:
         if self.selection is None:
             return
+        before = self.selection.kept
         if action(self.selection):
+            changed = len(before ^ self.selection.kept)
+            self.changed_label.setText(
+                f"{format_count(changed, 'channel')} changed. Undo takes it back."
+            )
             self.model.refresh()
             self.tree.viewport().update()
             self._update()
@@ -338,7 +369,9 @@ class ChannelPicker(QWidget):
         """A click on a channel's box (Shift: the range from the last click)."""
         anchor = self._anchor
         if shift and anchor is not None:
-            self._do(lambda s: s.set_range(anchor, name, keep, self.visible_names()))
+            # Only rows on screen: never channels in a folded group or hidden
+            # by the filter.
+            self._do(lambda s: s.set_range(anchor, name, keep, self.rows_on_screen()))
         else:
             self._do(lambda s: s.set_kept([name], keep))
         self._anchor = name
@@ -346,9 +379,18 @@ class ChannelPicker(QWidget):
     def _on_group_clicked(self, group_index: int, keep: bool) -> None:
         self.set_group(group_index, keep)
 
-    def set_group(self, group_index: int, keep: bool) -> None:
+    def set_group(self, group_index: int, keep: bool | None = None) -> None:
+        """A group's box: every channel of the group, or, while a filter is
+        on, only the group's channels the filter shows. ``keep`` None: keep
+        them unless all of them are kept already."""
         group = self.model.groups[group_index]
-        self._do(lambda s: s.set_kept(group.names, keep))
+        shown = set(self.visible_names())
+        names = [n for n in group.names if n in shown]
+        if not names:
+            return
+        if keep is None or self.filter.text().strip():
+            keep = not all(self.selection.is_kept(n) for n in names)
+        self._do(lambda s: s.set_kept(names, keep))
 
     def _shown(self, keep: bool) -> None:
         names = self.visible_names()

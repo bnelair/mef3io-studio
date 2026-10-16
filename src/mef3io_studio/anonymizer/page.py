@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, time, tzinfo
 
-from PySide6.QtCore import QDate, Qt, QTime, Signal
+from PySide6.QtCore import QAbstractTableModel, QDate, QModelIndex, Qt, QTime, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QStackedWidget,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QTimeEdit,
@@ -69,11 +70,15 @@ from ..model.anonymize import (
     CopyResult,
     DateKeyRow,
     DestinationReview,
+    Leftover,
     blocker_words,
+    date_key_too_close,
     destination_for,
     estimate_bytes,
+    inside_any_recording,
     library_supports_anonymize,
     name_problem,
+    password_may_not_work_elsewhere,
     review_destination,
     shift_words,
     write_date_key,
@@ -102,6 +107,10 @@ from ..model.timefmt import (
 from ..workers.jobs import JobManager
 from ..workers.tasks import anonymize_recordings, check_copy_names
 from .picker import ChannelPicker
+
+#: Wait this long after the last change of the Explore list before listing
+#: the recordings again (a scan delivers them in quick bursts).
+REFRESH_DELAY_MS = 150
 
 STEPS = (
     "Recordings",
@@ -292,6 +301,8 @@ class Choice:
 class RunState:
     requests: list[CopyRequest] = field(default_factory=list)
     results: dict[str, CopyResult] = field(default_factory=dict)
+    #: Unfinished copies that could not be removed after a stop or a crash.
+    leftovers: list = field(default_factory=list)
     finished: bool = False
     stopped: bool = False
 
@@ -300,16 +311,87 @@ class RunState:
 # The steps
 
 
+class RecordingsModel(QAbstractTableModel):
+    """The Explore list as the Recordings step shows it. Texts are worked
+    out when a row is painted, and why a recording cannot be anonymized is
+    cached per recording, so a list of thousands rebuilds in a moment."""
+
+    COLUMNS = ("Recording", "Channels", "Start", "Can it be anonymized?")
+
+    def __init__(self, step: RecordingsStep):
+        super().__init__(step)
+        self.step = step
+        self.rows: list[RecordingEntry] = []
+
+    def rowCount(self, parent=QModelIndex()):  # noqa: B008, N802
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QModelIndex()):  # noqa: B008, N802
+        return 0 if parent.isValid() else len(self.COLUMNS)
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return self.COLUMNS[section]
+        return None
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        entry = self.rows[index.row()]
+        col = index.column()
+        if role == Qt.ItemDataRole.CheckStateRole and col == 0:
+            kept = entry.key in self.step.ticked
+            return Qt.CheckState.Checked if kept else Qt.CheckState.Unchecked
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        details = entry.details
+        if col == 0:
+            return entry.name
+        if col == 1:
+            return str(len(details.channels)) if details else ""
+        if col == 2:
+            return (
+                format_time(details.start, self.step.page.zone) if details and details.start else ""
+            )
+        return self.step.reason(entry) or "Yes"
+
+    def flags(self, index):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        flags = Qt.ItemFlag.ItemIsSelectable
+        if self.step.reason(self.rows[index.row()]) is None:
+            flags |= Qt.ItemFlag.ItemIsEnabled
+            if index.column() == 0:
+                flags |= Qt.ItemFlag.ItemIsUserCheckable
+        return flags
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole):  # noqa: N802
+        if role != Qt.ItemDataRole.CheckStateRole or not index.isValid():
+            return False
+        entry = self.rows[index.row()]
+        state = Qt.CheckState(value) if not isinstance(value, Qt.CheckState) else value
+        self.step.tick(entry.key, state == Qt.CheckState.Checked)
+        self.dataChanged.emit(index, index, [Qt.ItemDataRole.CheckStateRole])
+        return True
+
+    def set_rows(self, rows: list[RecordingEntry]) -> None:
+        self.beginResetModel()
+        self.rows = rows
+        self.endResetModel()
+
+    def text(self, row: int, col: int) -> str:
+        return str(self.data(self.index(row, col)) or "")
+
+
 class RecordingsStep(QWidget):
     changed = Signal()
 
-    COLUMNS = ("Recording", "Channels", "Start", "Can it be anonymized?")
+    COLUMNS = RecordingsModel.COLUMNS
 
     def __init__(self, page: AnonymizerPage):
         super().__init__(page)
         self.page = page
         self.ticked: set[str] = set()
-        self._building = False
         intro = _label(
             "Choose the recordings to anonymize, from the list in Explore. Each one gets "
             "its own anonymized copy; the originals are never changed.",
@@ -325,13 +407,28 @@ class RecordingsStep(QWidget):
         self.all_button.clicked.connect(self.tick_all)
         self.none_button = QPushButton("Untick all")
         self.none_button.clicked.connect(self.untick_all)
-        self.table = _table(self.COLUMNS)
-        self.table.itemChanged.connect(self._on_item_changed)
+        self.model = RecordingsModel(self)
+        self.table = QTableView()
+        self.table.setModel(self.model)
+        self.table.verticalHeader().hide()
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        em = self.fontMetrics().height()
+        for col, width in enumerate((14, 6, 14)):
+            header.resizeSection(col, int(em * width))
         self.count = _label(bold=True)
         self.empty = _label(
             "No recordings are open yet. Open or scan for recordings here or in Explore.",
             muted=True,
         )
+        self.lost = _label()
+        self.lost.setObjectName("Bad")
+        self.lost.setVisible(False)
         row = QHBoxLayout()
         for b in (self.open_button, self.open_file_button, self.scan_button):
             row.addWidget(b)
@@ -345,12 +442,27 @@ class RecordingsStep(QWidget):
         layout.addWidget(intro)
         layout.addLayout(row)
         layout.addLayout(row2)
+        layout.addWidget(self.lost)
         layout.addWidget(self.empty)
         layout.addWidget(self.table, 1)
-        self.rows: list[RecordingEntry] = []
+        self._reasons: dict[str, tuple[tuple, str | None]] = {}
+
+    @property
+    def rows(self) -> list[RecordingEntry]:
+        return self.model.rows
 
     def reason(self, entry: RecordingEntry) -> str | None:
-        """Why this recording cannot be anonymized (plain words), or None."""
+        """Why this recording cannot be anonymized (plain words), or None.
+        Cached per recording until what the Explorer read for it changes."""
+        stamp = (id(entry.outcome), entry.busy)
+        cached = self._reasons.get(entry.key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        reason = self._reason(entry)
+        self._reasons[entry.key] = (stamp, reason)
+        return reason
+
+    def _reason(self, entry: RecordingEntry) -> str | None:
         details = entry.details
         if entry.busy:
             return "Still being read…"
@@ -371,49 +483,26 @@ class RecordingsStep(QWidget):
 
     def refresh(self) -> None:
         entries = self.page.explorer.entries()
-        self._building = True
-        self.table.setRowCount(0)
-        self.rows = []
-        zone = self.page.zone
-        for entry in entries:
-            reason = self.reason(entry)
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            name = _item(entry.name)
-            name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            if reason is not None:
-                name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-                self.ticked.discard(entry.key)
-            name.setCheckState(
-                Qt.CheckState.Checked if entry.key in self.ticked else Qt.CheckState.Unchecked
-            )
-            details = entry.details
-            self.table.setItem(row, 0, name)
-            self.table.setItem(row, 1, _item(str(len(details.channels)) if details else ""))
-            self.table.setItem(
-                row, 2, _item(format_time(details.start, zone) if details and details.start else "")
-            )
-            self.table.setItem(row, 3, _item(reason or "Yes"))
-            self.rows.append(entry)
-        keys = {e.key for e in entries}
-        self.ticked &= keys
-        self._building = False
+        live = {e.key for e in entries}
+        for key in [k for k in self._reasons if k not in live]:
+            del self._reasons[key]
+        # A ticked recording that can no longer be anonymized is unticked.
+        self.ticked = {e.key for e in entries if e.key in self.ticked and self.reason(e) is None}
+        self.model.set_rows(list(entries))
         self.empty.setVisible(not entries)
         self.table.setVisible(bool(entries))
         self._update_count()
 
-    def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        if self._building or item.column() != 0:
-            return
-        entry = self.rows[item.row()]
-        if item.checkState() == Qt.CheckState.Checked:
-            self.ticked.add(entry.key)
+    def tick(self, key: str, on: bool) -> None:
+        if on:
+            self.ticked.add(key)
         else:
-            self.ticked.discard(entry.key)
+            self.ticked.discard(key)
         self._update_count()
         self.changed.emit()
 
     def set_ticked(self, keys) -> None:
+        self.page._refresh_recordings()  # a pending rebuild first
         usable = {e.key for e in self.rows if self.reason(e) is None}
         self.ticked = set(keys) & usable
         self.refresh()
@@ -472,6 +561,7 @@ class DatesStep(QWidget):
             "Keep the day of the week (the nearest date with the same weekday)"
         )
         self.reference = QComboBox()
+        self.reference.setToolTip("The recording that gets the new date; the others follow it")
         form = QFormLayout()
         form.addRow("Copies:", self._stack(self.relative, self.aligned))
         form.addRow("Time of day:", self._stack(self.keep_local, self.keep_utc, self.set_time))
@@ -479,6 +569,13 @@ class DatesStep(QWidget):
         form.addRow("New date of the reference:", self.new_date)
         form.addRow("New time of day:", self.new_time)
         form.addRow("Reference recording:", self.reference)
+        reference_help = _label(
+            'The reference recording is the one that gets the new date above. In "one shift '
+            'for all", every other recording moves by the same amount; in "the same '
+            "moment\", every copy starts when the reference's copy starts.",
+            muted=True,
+        )
+        form.addRow("", reference_help)
         form.addRow("", self.weekday)
         self.refusals = _label()
         self.refusals.setObjectName("Bad")
@@ -756,16 +853,39 @@ class PasswordsStep(QWidget):
         form.addRow("Full-access password again:", self.full_again)
         self.problem = _label()
         self.problem.setObjectName("Bad")
+        self.interop = _label()
+        self.interop.setObjectName("Caution")
+        self.cleared_once = False
+        self.cleared = _label(
+            "For safety, the passwords you typed were cleared when you left this page. "
+            "Type them again, or choose No password."
+        )
+        self.cleared.setObjectName("Caution")
+        self.cleared.setVisible(False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(_label(PASSWORD_EXPLANATION, muted=True))
+        layout.addWidget(self.cleared)
         layout.addWidget(self.none)
         layout.addWidget(self.both)
         layout.addWidget(self.form)
         layout.addWidget(self.problem)
+        layout.addWidget(self.interop)
         layout.addStretch(1)
         self.none.toggled.connect(self._update)
         self._update()
+
+    def interop_text(self) -> str:
+        """A plain warning when other programs may not open the copies."""
+        if not self.both.isChecked():
+            return ""
+        if any(password_may_not_work_elsewhere(f.text()) for f in (self.basic, self.full)):
+            return (
+                "Other programs may not open the copies with these passwords: keep each "
+                "password to at most 15 characters, using letters, digits and common "
+                "punctuation (accented letters such as é count twice). This app will open them."
+            )
+        return ""
 
     def problem_text(self) -> str:
         if not self.both.isChecked():
@@ -785,6 +905,10 @@ class PasswordsStep(QWidget):
         text = self.problem_text()
         self.problem.setText(text)
         self.problem.setVisible(bool(text))
+        if hasattr(self, "interop"):
+            warning = self.interop_text()
+            self.interop.setText(warning)
+            self.interop.setVisible(bool(warning))
         self.changed.emit()
 
     def passwords(self) -> tuple[str, str] | None:
@@ -793,6 +917,10 @@ class PasswordsStep(QWidget):
         return (self.basic.text(), self.full.text())
 
     def forget(self) -> None:
+        if self.both.isChecked() or any(
+            f.text() for f in (self.basic, self.basic_again, self.full, self.full_again)
+        ):
+            self.cleared_once = True
         for field_ in (self.basic, self.basic_again, self.full, self.full_again):
             field_.clear()
         self.none.setChecked(True)
@@ -894,6 +1022,9 @@ class ReviewStep(QWidget):
             if self.folder:
                 destination = destination_for(self.folder, c.name)
                 review = review_destination(c.entry.location, destination, estimate, free=free)
+                sources = [x.entry.location for x in page.choices]
+                if not review.inside_source and inside_any_recording(destination, sources):
+                    review = replace(review, inside_source=True)
                 self.reviews[c.key] = review
                 lines.append(f"Saved as: {destination}")
                 if review.exists:
@@ -904,7 +1035,10 @@ class ReviewStep(QWidget):
                         "Delete it if no copy is running."
                     )
                 if review.inside_source:
-                    warn.append("The folder is inside the original recording.")
+                    warn.append(
+                        "The folder is inside a recording. Choose a folder that is not part "
+                        "of any recording."
+                    )
             text = "\n".join(lines + [f"⚠ {w}" for w in warn])
             self.texts[c.key] = text
             card = QFrame()
@@ -1047,7 +1181,16 @@ class RunStep(QWidget):
         results = page.run.results
         saved = [c for c in page.choices if results.get(c.key) and results[c.key].ok]
         failed = [c for c in page.choices if results.get(c.key) and not results[c.key].ok]
-        if page.run.stopped:
+        left = page.run.leftovers
+        if left:
+            folders = ", ".join(sorted({os.path.basename(x.partial) for x in left}))
+            self.heading.setText(
+                f"{'Stopped' if page.run.stopped else 'Finished'}. "
+                f"{format_count(len(saved), 'copy', 'copies')} saved and checked. An unfinished "
+                f"copy could NOT be removed: delete the folder {folders} in the chosen folder "
+                "yourself. The originals were not changed."
+            )
+        elif page.run.stopped:
             self.heading.setText(
                 f"Stopped. {format_count(len(saved), 'copy', 'copies')} saved and checked; "
                 "the unfinished copy was removed."
@@ -1121,6 +1264,8 @@ class AnonymizerPage(QWidget):
         self.run = RunState()
         self.handle = None
         self.names_handle = None
+        self._open_password = ""
+        self._passwords_dropped = False
         em = self.fontMetrics().height()
 
         title = _label("Anonymize recordings", wrap=False)
@@ -1183,6 +1328,11 @@ class AnonymizerPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.scroll)
 
+        self._recordings_dirty = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(REFRESH_DELAY_MS)
+        self._refresh_timer.timeout.connect(self._refresh_recordings)
         model = explorer.model
         for signal in (
             model.rowsInserted,
@@ -1208,11 +1358,60 @@ class AnonymizerPage(QWidget):
         return self.stack.currentIndex()
 
     def _explorer_changed(self, *_args) -> None:
-        if self.step == STEP_RECORDINGS:
-            self.recordings.refresh()
-            self._update_buttons()
+        """The Explore list changed. A scan sends many signals: the list is
+        marked out of date and rebuilt once, a moment later, and only while
+        the step is on screen (else when it is shown again)."""
+        self._recordings_dirty = True
+        if self.isVisible() and self.step == STEP_RECORDINGS:
+            self._refresh_timer.start()
+
+    def _refresh_recordings(self) -> None:
+        if not self._recordings_dirty:
+            return
+        self._recordings_dirty = False
+        self.recordings.refresh()
+        self._update_buttons()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._passwords_dropped:
+            self._passwords_dropped = False
+            self.go(STEP_PASSWORDS)
+        if self.step == STEP_PASSWORDS:
+            self.passwords.cleared.setVisible(self.passwords.cleared_once)
+        if self.step == STEP_RECORDINGS and self._recordings_dirty:
+            self._refresh_timer.start()
+
+    def _choices_still_readable(self) -> bool:
+        """Every chosen recording is still in the Explore list with its
+        details (it may have been removed, or opened again, meanwhile). If
+        not, go back to the first step and say why."""
+        listed = {e.key: e for e in self.explorer.entries()}
+        lost = []
+        for c in self.choices:
+            entry = listed.get(c.key)
+            if entry is None or entry.details is None or entry.busy:
+                lost.append(c.entry.name)
+            else:
+                c.entry = entry
+        if not lost:
+            return True
+        self.choices = [c for c in self.choices if c.entry.name not in lost]
+        self.recordings.ticked -= {k for k in self.recordings.ticked if k not in listed}
+        self.go(STEP_RECORDINGS)
+        self.recordings.lost.setText(
+            "These recordings were removed from Explore, or are being read again, so they "
+            f"were taken out of this run: {', '.join(lost)}. Check the list and continue."
+        )
+        self.recordings.lost.setVisible(True)
+        return False
 
     def go(self, step: int) -> None:
+        if step > STEP_RECORDINGS and step != STEP_RUN and not self._choices_still_readable():
+            return
+        if step != STEP_RECORDINGS:
+            self.recordings.lost.setVisible(False)
+        self.passwords.cleared.setVisible(step == STEP_PASSWORDS and self.passwords.cleared_once)
         self.stack.setCurrentIndex(step)
         for i, label in enumerate(self.step_labels):
             label.setObjectName(
@@ -1222,6 +1421,7 @@ class AnonymizerPage(QWidget):
             label.style().unpolish(label)
             label.style().polish(label)
         if step == STEP_RECORDINGS:
+            self._recordings_dirty = False
             self.recordings.refresh()
         elif step == STEP_CHANNELS:
             self._prepare_channels()
@@ -1254,9 +1454,28 @@ class AnonymizerPage(QWidget):
                     present_in=len(channels),
                 )
             )
-        self.selection = ChannelSelection(recordings, rows)
+        previous = self.selection.excluded if self._selection_keys else ()
+        selection = ChannelSelection(recordings, rows)
+        notice = ""
+        if self._selection_keys:
+            # The batch changed: carry the choice over by name, and say so.
+            carried = [n for n in previous if n in selection.rows]
+            if carried:
+                selection.set_kept(carried, False)
+                selection.clear_history()
+            notice = (
+                "The chosen recordings changed. "
+                + (
+                    f"{format_count(len(carried), 'channel')} you had left out "
+                    f"{'is' if len(carried) == 1 else 'are'} still left out, by name. "
+                    if carried
+                    else ""
+                )
+                + "Undo starts again from here."
+            )
+        self.selection = selection
         self._selection_keys = keys
-        self.picker.set_selection(self.selection, len(self.choices))
+        self.picker.set_selection(self.selection, len(self.choices), notice)
 
     def _blocker_text(self) -> str:
         """Why Next is not possible on this step ("" when it is)."""
@@ -1311,6 +1530,7 @@ class AnonymizerPage(QWidget):
         if self._blocker_text():
             return
         if step == STEP_RECORDINGS:
+            self._refresh_recordings()
             chosen = self.recordings.chosen()
             old = {c.key: c for c in self.choices}
             self.choices = [old.get(e.key) or Choice(e) for e in chosen]
@@ -1318,6 +1538,8 @@ class AnonymizerPage(QWidget):
                 c.entry = e
         if step == STEP_IDENTITY:
             self.check_names()
+            return
+        if step >= STEP_CHANNELS and not self._choices_still_readable():
             return
         if step == STEP_REVIEW:
             self.start()
@@ -1352,16 +1574,29 @@ class AnonymizerPage(QWidget):
         background); move on to the next step only when all are."""
         for c in self.choices:
             c.names_message = None
-        requests = self.requests()
+        # The new passwords play no part in the names: never sent.
+        requests = [replace(r, output_password=None) for r in self.requests()]
+        checked = self._names_now()
         handle = self.jobs.submit("Checking the names of the copies", check_copy_names, requests)
         self.names_handle = handle
-        handle.succeeded.connect(self._names_checked)
+        # Locked while mef3io looks: a verdict always answers the names shown.
+        self.identity.table.setEnabled(False)
+        handle.finished.connect(lambda: self.identity.table.setEnabled(True))
+        handle.succeeded.connect(lambda verdicts: self._names_checked(verdicts, checked))
         handle.failed.connect(self._names_failed)
         handle.finished.connect(self._update_buttons)
         self._update_buttons()
         return handle
 
-    def _names_checked(self, verdicts: dict) -> None:
+    def _names_now(self) -> dict[str, tuple]:
+        """What a name check answers for: each recording's name and
+        pseudonym, and the choices that change what the names may contain."""
+        shared = (self.identity.clear(), self.dates.plan.reference_id if self.dates.plan else None)
+        return {c.key: (c.name, c.pseudonym, shared) for c in self.choices}
+
+    def _names_checked(self, verdicts: dict, checked: dict | None = None) -> None:
+        if checked is not None and checked != self._names_now():
+            return  # the names changed since: this verdict is about others
         for c in self.choices:
             c.names_message = verdicts.get(c.key)
         self.identity.show_problems()
@@ -1392,7 +1627,13 @@ class AnonymizerPage(QWidget):
         handle.cancelled.connect(self._on_stopped)
         handle.failed.connect(self._on_failed)
         handle.finished.connect(self._on_finished)
-        self.passwords.forget()  # the request carries them; the form need not
+        # The task has the requests; the page keeps only what "Open the copy"
+        # needs (the copies' full-access password), not the basic one, and
+        # the form is emptied.
+        output = self.passwords.passwords()
+        self._open_password = output[1] if output else ""
+        self.run.requests = [replace(r, output_password=None, password="") for r in requests]
+        self.passwords.forget()
         self.go(STEP_RUN)
         self.run_step.start(handle, requests)
         self._update_buttons()
@@ -1403,8 +1644,11 @@ class AnonymizerPage(QWidget):
             self.handle.cancel()
 
     def _on_results(self, items: list) -> None:
-        for result in items:
-            self.run.results[result.key] = result
+        for item in items:
+            if isinstance(item, Leftover):
+                self.run.leftovers.append(item)
+            else:
+                self.run.results[item.key] = item
         self.run_step.fill_table()
 
     def _on_stopped(self) -> None:
@@ -1420,7 +1664,19 @@ class AnonymizerPage(QWidget):
         saved = sum(1 for r in self.run.results.values() if r.ok)
         self.status.emit(f"{format_count(saved, 'anonymized copy', 'anonymized copies')} saved.")
 
+    def hideEvent(self, event) -> None:  # noqa: N802
+        # Passwords typed but not used yet are not kept while the page is away.
+        had = self.passwords.both.isChecked()
+        self.passwords.forget()
+        if had and STEP_PASSWORDS < self.step < STEP_RUN:
+            # Never go on without them: back to that step when shown again.
+            self._passwords_dropped = True
+        super().hideEvent(event)
+
     def restart(self) -> None:
+        self.passwords.forget()
+        self.passwords.cleared_once = False
+        self._open_password = ""
         self.choices = []
         self.run = RunState()
         self.handle = None
@@ -1432,9 +1688,7 @@ class AnonymizerPage(QWidget):
         result = self.run.results.get(choice.key)
         if result is None or not result.ok:
             return
-        request = next(r for r in self.run.requests if r.key == choice.key)
-        password = request.output_password[1] if request.output_password else ""
-        self.open_copy.emit(result.destination, password)
+        self.open_copy.emit(result.destination, self._open_password)
 
     # -- the date key ----------------------------------------------------------------------
     def date_key_rows(self) -> list[DateKeyRow]:
@@ -1454,7 +1708,7 @@ class AnonymizerPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save the date key",
-            "date-key.csv",
+            os.path.join(os.path.expanduser("~"), "date-key.csv"),
             "Table (*.csv)",
             options=QFileDialog.Option.DontUseNativeDialog,
         )
@@ -1477,6 +1731,18 @@ class AnonymizerPage(QWidget):
             return False
         path = self.choose_date_key_path()
         if not path:
+            return False
+        places = [self.review.folder] if self.review.folder else []
+        places += [r.destination for r in self.run.results.values()]
+        places += [c.entry.location for c in self.choices]
+        if date_key_too_close(path, places):
+            QMessageBox.warning(
+                self,
+                "Choose another place for the date key",
+                "The date key would be stored next to the copies or inside a recording, where "
+                "anyone who gets the copies would get it too. Nothing was saved. Choose a "
+                "folder that is stored like the original recordings.",
+            )
             return False
         try:
             write_date_key(path, rows)

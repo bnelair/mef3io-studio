@@ -131,17 +131,29 @@ the copies".
 - **Recordings** come from the Explore list (no second open). A recording is
   untickable, with the reason in plain words, when `inspect()` marks it as
   blocking anonymization (`SummaryWarning.blocks_anonymize`), when it was
-  opened with the basic password only, or when the planner blocks it.
+  opened with the basic password only, or when the planner blocks it. The
+  list is a lazy model (texts worked out when painted, the reason cached per
+  recording) and is rebuilt once, a moment after the Explore list stops
+  changing, and only while the step is on screen: 2000 recordings rebuild in
+  well under a second (test). Every later step re-checks that the chosen
+  recordings are still listed with their details; one that was removed or is
+  being read again is taken out, and the wizard goes back to say so.
 - **Channels** (`model/channels.py`, `anonymizer/picker.py`), per the
-  256-channel comment on #5: all kept by default; groups by electrode prefix
-  (trailing number stripped; prefixes with one channel pooled into "Other
+  256-channel comment on #5: all kept by default; groups by electrode
+  (recorder labels `EEG ` / `POL ` and references `-Ref` / `-AVG` stripped,
+  a bipolar `LAH1-LAH2` grouped by its first contact, the trailing number
+  stripped, case ignored; prefixes with one channel pooled into "Other
   channels"), tri-state group boxes, folded when there are more than 64
-  channels; Shift+click ranges over the channels shown; Ctrl/Cmd+click
-  highlights and Space toggles; a filter with "Exclude N shown" / "Keep N
-  shown"; Keep all / Exclude all / Invert; undo/redo; "Keeping N of M
-  channels" always shown, Continue disabled at 0 or when any recording of a
-  batch would keep none. In a batch the choice is by name; a name missing
-  from some recordings is marked ⚠ and listed. Each recording gets
+  channels; Shift+click ranges over the rows ON SCREEN only (never a folded
+  group or a filtered-out channel); Ctrl/Cmd+click highlights and Space
+  toggles; a filter with "Exclude N shown" / "Keep N shown", and while it is
+  on a group box acts on the group's shown channels only; Keep all / Exclude
+  all / "Swap kept and left out"; undo/redo; "N channels changed" after
+  every change; "Keeping N of M channels" always shown, Continue disabled at
+  0 or when any recording of a batch would keep none. In a batch the choice
+  is by name; a name missing from some recordings is marked ⚠ and listed.
+  Changing the batch carries the left-out names over and says so (undo
+  starts again). Each recording gets
   `exclude_channels=` with the excluded names it actually has. Bulk actions
   repaint instead of signalling every row, so each stays well under 50 ms on
   256 channels (a test pins < 250 ms including the repaint).
@@ -162,40 +174,74 @@ the copies".
   locally (empty, characters a folder name cannot hold, duplicates) and then
   **by mef3io itself** before leaving the step, so a refusal ("the name of
   the copy contains the patient's name…") appears where the name is typed.
-  mef3io has no separate name check, so `model.anonymize.check_names` starts
-  the copy into a private temporary folder and stops it at mef3io's first
-  progress report, which comes only after every refusal it makes before
-  writing (options, paths, the recording, the channels, the shift, the
-  names); the folder is removed either way. `tests/test_anonymizer_ui.py`
-  pins it.
+  mef3io (up to #104) has no separate name check, so
+  `model.anonymize.check_names` starts the copy into a throw-away folder
+  with an opaque name under the app's own per-user cache folder and stops it
+  at mef3io's first progress report. In #104 that report comes only after
+  every refusal mef3io makes before writing (options, paths, the recording,
+  the channels, the shift, the names). That is observed behaviour, not a
+  documented promise: `tests/test_anonymizer_model.py` pins it on the real
+  library. The folder is removed either way, and leftovers of a killed
+  helper are swept when the app starts. The copy's new passwords are never
+  passed to it (the original's full-access password is, to open it). The
+  name table is locked while mef3io checks, and a verdict is used only for
+  the names it was asked about. To be replaced by mef3io#111's `check()`,
+  which writes nothing.
 - **Passwords:** none (default) or a basic + full-access pair, typed twice,
-  which must differ. The form is cleared as soon as the copies start.
+  which must differ. A plain warning when other programs may not accept a
+  password (longer than 15 characters or 15 UTF-8 bytes, or a character
+  above U+00FF: mef3io's `PasswordInteropWarning` rule, mirrored until
+  mef3io#111 exposes it). The form is cleared when the copies start, when
+  the wizard restarts and whenever the page is hidden; if that happens after
+  the passwords step, the wizard goes back to it and says why. During and
+  after the run only the copies' full-access password is kept, for "Open the
+  copy".
 - **Review:** output folder; per recording the copy's name and pseudonym,
   kept/excluded channels (excluded listed by name), original → new start and
   end, the shift in plain words, the destination, estimated size (the kept
   channels' files), free space. Start is refused when a name is taken, an
-  unfinished `<copy>.partial` is in the way, the folder is inside the
-  original, or space is short.
+  unfinished `<copy>.partial` is in the way, the folder is inside any
+  recording of the batch or any `.mefd` folder, or space is short. Names
+  Windows reserves (CON, NUL, COM1, …) are refused on the identity step.
 - **Run:** one task, copies in sequence, each in a helper process with
   mef3io's byte progress and Stop (`ctx.run_isolated(...,
   stop_grace=STOP_GRACE_SECONDS)`). A refusal or failure ends that copy
-  only; mef3io's messages are translated (`describe_copy_error`), its text
-  kept under "Technical details" without paths. `VerifyReport.notes` and the
+  only. mef3io's refusals are translated by a stable key
+  (`refusal_code`: an exception's `.code` once mef3io#111 has them, its
+  wording until then), then by kind of error (a folder that cannot be
+  written, damaged data, a risk of a wrong date). Its text is kept under
+  "Technical details" without paths, without the recording's name (also
+  inside file names and a single file's inner folder) and passed through the
+  log filter's `scrub()` (dates, raw times). `VerifyReport.notes` and the
   report's notes are listed under "Technical details" with a plain summary.
-  On Stop, mef3io removes `<copy>.partial`; a cleanup removes it too if the
-  helper had to be ended after the grace.
+  On Stop, mef3io removes `<copy>.partial`; the task then checks it is really
+  gone (removing it if the helper had to be ended after the grace) and, if it
+  is still there, the result says so plainly and names the folder.
 - **Result:** original → new start and end per recording and the shift in
   words; "Open the copy" opens it in Explore on its Privacy check (with the
   new full-access password, memory only). **Date key:** shown on screen;
-  "Save the date key…" asks first, then writes a CSV (original name, copy
-  name, original and new start/end in UTC, shift in µs) through a temporary
-  file to a path the user picks. Never logged, never in settings, never in
-  the copy (`tests/test_privacy.py`, `tests/test_anonymizer_ui.py`).
+  "Save the date key…" asks first, then writes a CSV with the columns
+  original recording, anonymized copy (its name; the pseudonym is not a
+  column), original start and end, new start and end (UTC, ISO 8601) and the
+  shift in microseconds, through a temporary file to a path the user picks
+  (the dialog starts in the home folder), readable by its owner only on
+  POSIX. A path inside the output folder, a copy or a recording is refused.
+  Never logged, never in settings, never in the copy (`tests/test_privacy.py`,
+  `tests/test_anonymizer_ui.py`). This replaces the "key file" of step 4
+  above, which also listed the pseudonym.
 - **Privacy check card** (`model/privacycheck.py`, `explorer/privacy.py`):
-  green / red headline, values masked until Show (shared with Patient
+  red headline when something is found; amber "Some details could not be
+  checked: open it with the full-access password" when nothing was found
+  but an identity row (names, location, descriptions, note text, time zone,
+  date-hiding offset) could not be read; green only when every one was
+  checked and empty. Values masked until Show (shared with Patient
   details), a ✓/✗/– checklist, "Made by the anonymizer" when every part's
-  history lists `anonymize` (code 6), otherwise "This recording wasn't made
-  by the anonymizer, so we can't confirm its dates were moved.", and the
+  history has `anonymize` (code 6) as its LAST operation (the set of
+  operations ever done is inherited from the source, and an append to a copy
+  leaves "anonymize" in it), "changed afterwards, so we can't confirm" when
+  some parts were anonymized and later changed, otherwise "This recording
+  wasn't made by the anonymizer, so we can't confirm its dates were moved.",
+  and the
   start/end labelled as moved dates. Kept note text on an anonymizer copy is
   "!" ("Kept, as chosen"), not a found detail. Other programs' private areas
   cannot be seen through `inspect()`: ✓ only for an anonymizer copy (mef3io

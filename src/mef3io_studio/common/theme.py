@@ -80,7 +80,7 @@ QLabel#Muted, QLabel#Caption { color: $muted; }
 QLabel#Danger { color: $danger; }
 QLabel#Good, QLabel#PrivacyGood { color: $success; }
 QLabel#Bad, QLabel#PrivacyBad { color: $danger; }
-QLabel#Caution { color: $accent; }
+QLabel#Caution, QLabel#PrivacyUnknown { color: $accent; }
 QFrame#StepBar { background: transparent; }
 QLabel#StepDone { color: $muted; }
 QLabel#StepCurrent { color: $text; border-bottom: 2px solid $accent; }

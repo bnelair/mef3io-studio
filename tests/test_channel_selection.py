@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from mef3io_studio.model.channels import (
     OTHER_GROUP,
     ChannelRow,
     ChannelSelection,
+    contact_of,
     group_channels,
+    group_key,
     natural_key,
     prefix_of,
 )
@@ -106,3 +110,44 @@ def test_fast_enough_for_hundreds_of_channels():
         s.missing_from()
         s.recordings_left_empty()
     assert time.perf_counter() - t0 < 1.0
+
+
+# --------------------------------------------------------------------------
+# Real montages (review round 1)
+
+
+def montage(style: str, n=256) -> list[str]:
+    contacts = electrodes(n)
+    if style == "eeg-ref":
+        return [f"EEG {c}-Ref" for c in contacts]
+    if style == "pol-avg":
+        return [f"POL {c}-AVG" for c in contacts]
+    if style == "bipolar":
+        # LA1-LA2, LA2-LA3, ... per electrode (15 pairs of 16 contacts) + 16 more
+        out = []
+        for p in dict.fromkeys(prefix_of(c) for c in contacts):
+            out += [f"{p}{i}-{p}{i + 1}" for i in range(1, 17)]
+        return out[:n]
+    if style == "mixed-case":
+        return [c.lower() if i % 2 else c for i, c in enumerate(contacts)]
+    raise AssertionError(style)
+
+
+@pytest.mark.parametrize("style", ["eeg-ref", "pol-avg", "bipolar", "mixed-case"])
+def test_256_channel_montages_group_by_electrode(style):
+    names = montage(style)
+    assert len(names) == 256
+    s = ChannelSelection({"r": names})
+    assert len(s.groups) == 16, [g.prefix for g in s.groups]
+    assert all(len(g.rows) == 16 for g in s.groups)
+    assert OTHER_GROUP not in [g.prefix for g in s.groups]
+
+
+def test_recorder_labels_references_and_bipolar_pairs():
+    assert contact_of("EEG LA1-Ref") == "LA1"
+    assert contact_of("POL RH12-REF") == "RH12"
+    assert contact_of("C3-AVG") == "C3"
+    assert contact_of("LAH1-LAH2") == "LAH1"
+    assert prefix_of("LAH1-LAH2") == "LAH"
+    assert prefix_of("RH-3") == "RH"  # a dash before a number is not a pair
+    assert group_key("La1") == group_key("LA2") == "la"

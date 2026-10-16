@@ -24,9 +24,11 @@ from PySide6.QtWidgets import (
 
 from ..common.pages import scaled_font
 from ..model.privacycheck import (
+    CHANGED_AFTER,
     MOVED_DATES,
     NOT_MADE_BY_ANONYMIZER,
     SYMBOLS,
+    UNCHECKED,
     Mark,
     PrivacyCheck,
     build_check,
@@ -123,8 +125,10 @@ class PrivacyPanel(QWidget):
         self.button.setEnabled(True)
         check = self.check = build_check(details)
         self.headline.setText(headline(check))
-        self.headline.setProperty("state", "bad" if check.found else "good")
-        self.headline.setObjectName("PrivacyBad" if check.found else "PrivacyGood")
+        self.headline.setProperty("state", check.state)
+        self.headline.setObjectName(
+            {"bad": "PrivacyBad", "unknown": "PrivacyUnknown"}.get(check.state, "PrivacyGood")
+        )
         self.headline.style().unpolish(self.headline)
         self.headline.style().polish(self.headline)
         lines = []
@@ -134,6 +138,10 @@ class PrivacyPanel(QWidget):
             else:
                 shown = HIDDEN
             lines.append(f"• {item.label}: {shown}")
+        if check.found and check.unchecked:
+            lines.append(f"• {UNCHECKED}.")
+        for item in check.unchecked if not check.found else ():
+            lines.append(f"• {item.label}: could not be checked.")
         if check.kept_text and not check.found:
             lines.append("• Note text was kept, as chosen: read it before sharing.")
         self.found_list.setText("\n".join(lines))
@@ -143,13 +151,8 @@ class PrivacyPanel(QWidget):
             self.origin_text = "Made by the anonymizer."
             self.origin.addWidget(_notice(self.origin_text))
         else:
-            self.origin_text = NOT_MADE_BY_ANONYMIZER
-            detail = (
-                "Some of its parts were made by the anonymizer and some were not, or some "
-                "could not be read."
-                if check.partly_anonymizer
-                else ""
-            )
+            self.origin_text = CHANGED_AFTER if check.partly_anonymizer else NOT_MADE_BY_ANONYMIZER
+            detail = ""
             self.origin.addWidget(_notice(self.origin_text, warning=True, detail=detail))
 
         start, end = details.start, details.end

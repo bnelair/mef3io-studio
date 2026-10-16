@@ -249,3 +249,102 @@ def test_privacy_tab_sits_next_to_patient_details(explorer):
 
     assert TABS.index("Privacy check") == TABS.index("Patient details") + 1
     assert Path(__file__).exists()
+
+
+# --------------------------------------------------------------------------
+# Review round 1
+
+
+def _locked_details(**kw) -> RecordingDetails:
+    """As the basic password leaves a recording: section 3 locked (names,
+    location, time zone, the offset) and note text behind the full-access
+    password; nothing found in what could be read."""
+    plain = History("1.3.0", "1.3.0", "create", ("create",), 0)
+    parts = (Part(0, T0, T0 + 10, 10, 1, plain),)
+    base = dict(
+        location="locked.mefd",
+        channels=(ChannelInfo("c", 256.0, "uV", 10, T0, T0 + 10, parts),),
+        identity=(
+            IdentityFact("subject_name_1", None),
+            IdentityFact("subject_id", None),
+            IdentityFact("recording_location", None),
+            IdentityFact("session_description", False),
+            IdentityFact("record_text", None),
+        ),
+        gmt_offset=None,
+        dst_set=None,
+        time_offset_status="locked",
+        access="basic",
+    )
+    base.update(kw)
+    return RecordingDetails(**base)
+
+
+def test_never_green_while_identity_rows_could_not_be_checked(tmp_path):
+    from explorer_sessions import PASSWORD_BASIC, write_encrypted
+
+    from mef3io_studio.model.privacycheck import UNCHECKED
+
+    check = build_check(_locked_details())
+    assert not check.found and check.unchecked
+    assert check.state == "unknown" and not check.clean
+    assert headline(check) == UNCHECKED
+    # A real recording opened with the basic password: its locked rows are
+    # never counted as empty either.
+    outcome = inspect_recording(str(write_encrypted(tmp_path / "l.mefd")), PASSWORD_BASIC)
+    real = build_check(outcome.details)
+    assert {i.key for i in real.unchecked} >= {"patient", "location", "zone", "offset"}
+    assert headline(real) != "No patient details found in this recording"
+
+
+def test_card_with_unchecked_rows_is_not_green(explorer, qtbot):
+    from mef3io_studio.explorer.state import RecordingEntry
+    from mef3io_studio.model.recording import InspectOutcome
+
+    details = _locked_details()
+    entry = RecordingEntry(
+        location="/nowhere/locked.mefd",
+        outcome=InspectOutcome("/nowhere/locked.mefd", details=details),
+    )
+    explorer.model.add([entry])
+    explorer._refresh_body()
+    explorer.select_entry(entry)
+    explorer.tabs.setCurrentWidget(explorer.privacy)
+    card = explorer.privacy
+    assert card.headline.objectName() == "PrivacyUnknown"
+    assert card.headline.text().startswith("Some details could not be checked")
+    assert "could not be checked" in card.found_list.text()
+
+
+def test_appending_after_anonymizing_is_not_made_by_the_anonymizer():
+    from mef3io_studio.model.privacycheck import CHANGED_AFTER
+
+    appended = History("1.4.0", "1.4.0", "append", ("create", "anonymize", "append"), 2)
+    details = _synthetic(
+        channels=(
+            ChannelInfo(
+                "c", 256.0, "uV", 10, T0, T0 + 10, (Part(0, T0, T0 + 10, 10, 1, appended),)
+            ),
+        )
+    )
+    assert not details.made_by_anonymizer and details.changed_after_anonymizing
+    check = build_check(details)
+    assert not check.made_by_anonymizer and check.partly_anonymizer
+    assert check.item("private").mark is Mark.UNKNOWN
+    assert "changed afterwards" in CHANGED_AFTER
+
+
+@needs_anonymizer
+def test_card_on_a_copy_with_data_added_afterwards(explorer, qtbot, tmp_path):
+    import numpy as np
+
+    from mef3io_studio.model.privacycheck import CHANGED_AFTER
+
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    copy = tmp_path / "S2.mefd"
+    mef3io.anonymize_session(str(src), str(copy), SHIFT)
+    with mef3io.Writer(str(copy)) as w:  # an append with a time from the real dates
+        w.write("a1", np.zeros(256), T0 + SHIFT + 20 * 1_000_000, 256.0)
+    card = show_card(qtbot, explorer, copy)
+    assert card.origin_text == CHANGED_AFTER
+    assert card.dates_note.text() == ""

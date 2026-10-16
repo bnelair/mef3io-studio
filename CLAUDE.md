@@ -131,10 +131,19 @@ Code (app shell, #2/#3):
   make copies skip on 1.3.0 and the page says it cannot start). Model in
   `model/anonymize.py` (CopyRequest/CopyResult, `make_copy` in a helper,
   `check_names` = mef3io's own name refusal surfaced early by stopping the
-  copy at its first progress report in a private temp folder,
-  `describe_copy_error`, `write_date_key`) and `model/channels.py` (picker
-  rules, undo). Tasks: `workers.tasks.anonymize_recordings` /
-  `check_copy_names`. The date key is shown on screen and saved only on
-  opt-in; never logged, never in settings. Privacy check card:
-  `model/privacycheck.py` + `explorer/privacy.py`, from inspect() only
-  ("made by the anonymizer" = every part's history has `anonymize`).
+  copy at its first progress report in a throw-away folder under the app's
+  cache dir (swept at start; no output passwords; TODO mef3io#111 check()),
+  `describe_copy_error` (stable `refusal_code` key, `.code` first, then
+  class fallbacks; details via `technical_text`: no paths, no recording
+  name, `scrub()`ed), `write_date_key` (0600, never next to the copies)).
+  Picker rules in `model/channels.py` (electrode grouping strips EEG/POL,
+  -Ref/-AVG, bipolar pairs, case; ranges only over rows on screen; group box
+  = shown members while filtering; batch change carries exclusions by name).
+  Tasks: `workers.tasks.anonymize_recordings` (publishes `Leftover` when a
+  `.partial` survives) / `check_copy_names`. The date key is shown on screen
+  and saved only on opt-in; never logged, never in settings. Passwords: the
+  form clears on start/restart/hide; only the copies' full-access password is
+  kept for "Open the copy". Privacy check card: `model/privacycheck.py` +
+  `explorer/privacy.py`, from inspect() only; NEVER green while an identity
+  row is unknown (amber); "made by the anonymizer" = every part's LAST
+  operation is `anonymize` (the ops set is inherited and survives appends).

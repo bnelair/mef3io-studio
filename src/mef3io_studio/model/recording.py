@@ -409,14 +409,30 @@ class RecordingDetails:
 
     @property
     def made_by_anonymizer(self) -> bool:
-        """Every part's files say they were written by mef3io's anonymizer
-        (its history lists "anonymize"), and no part was left unread."""
+        """Every part's files were last written by mef3io's anonymizer (their
+        history's LAST operation is "anonymize", code 6), and no part was left
+        unread. The history's set of operations ever done is not enough: a
+        copy inherits its source's, and data appended to a copy afterwards
+        (with real dates, possibly) leaves "anonymize" in it."""
         parts = [p for c in self.channels for p in c.parts]
         if not parts or self.part_problems:
             return False
         return all(
-            p.history is not None and ANONYMIZE_OPERATION in p.history.operations for p in parts
+            p.history is not None and p.history.last_operation == ANONYMIZE_OPERATION for p in parts
         )
+
+    @property
+    def changed_after_anonymizing(self) -> bool:
+        """Some part was anonymized and then changed again (for example,
+        data was added), or new parts were added next to anonymized ones: its
+        dates can no longer be confirmed as moved."""
+        parts = [p for c in self.channels for p in c.parts]
+        stamped = [
+            p
+            for p in parts
+            if p.history is not None and ANONYMIZE_OPERATION in p.history.operations
+        ]
+        return bool(stamped) and not self.made_by_anonymizer
 
     def identity_values(self) -> list[str]:
         """Every identifying string this recording holds, for the log filter."""

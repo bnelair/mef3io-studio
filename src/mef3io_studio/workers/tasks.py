@@ -12,8 +12,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import replace
 
-from ..common.privacy import register_identity
+from ..common.privacy import register_identity, scrub
 from ..model import anonymize, archive
 from ..model.cancel import JobCancelled, is_stop
 from ..model.coverage import Stopped, combine
@@ -255,6 +256,15 @@ def _register_copy_identity(requests: list[anonymize.CopyRequest]) -> None:
     register_identity(*(v for v in values if v))
 
 
+def scrubbed(message):
+    """A plain message whose technical detail went through the log filter's
+    scrub (dates, raw times, known identities), as every detail that came
+    back from a copy or a name check does before the UI shows it."""
+    if message is None or not getattr(message, "detail", ""):
+        return message
+    return replace(message, detail=scrub(message.detail))
+
+
 def check_copy_names(ctx: JobContext, requests: list[anonymize.CopyRequest]) -> dict[str, object]:
     """mef3io's own verdict on each copy's name and pseudonym, before
     anything is written: ``{key: None (accepted) or UserMessage}``. One
@@ -264,6 +274,7 @@ def check_copy_names(ctx: JobContext, requests: list[anonymize.CopyRequest]) -> 
     verdicts = ctx.run_isolated(
         anonymize.check_names_many, list(requests), stop_grace=STOP_GRACE_SECONDS
     )
+    verdicts = {k: scrubbed(v) for k, v in verdicts.items()}
     refused = sum(1 for v in verdicts.values() if v is not None)
     log.info("job %d: checked %d name(s), %d refused", ctx.job_id, len(verdicts), refused)
     return verdicts
@@ -296,19 +307,26 @@ def anonymize_recordings(
             result = ctx.run_isolated(
                 anonymize.make_copy, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
             )
-        except JobCancelled:
-            raise
         except Exception as exc:
-            if is_stop(exc):
+            if not (isinstance(exc, JobCancelled) or is_stop(exc)):
+                raise_stop = False
+            else:
+                raise_stop = True
+            # Stopped, or the helper itself failed (a crash): make sure the
+            # unfinished copy is gone, and say so if it is not.
+            if not anonymize.remove_unfinished(request.destination):
+                ctx.publish(anonymize.Leftover(request.key, request.destination + ".partial"))
+                log.warning("job %d: an unfinished copy could not be removed", ctx.job_id)
+            if raise_stop:
                 raise
-            # The helper itself failed (a crash): this copy only.
-            anonymize.remove_unfinished(request.destination)
             result = anonymize.CopyResult(
                 request.key,
                 request.destination,
                 ok=False,
                 message=anonymize.describe_copy_error(exc, request),
             )
+        if result.message is not None:
+            result = replace(result, message=scrubbed(result.message))
         results.append(result)
         ctx.publish(result)
         ctx.report(i + 1, total, phase)

@@ -47,6 +47,11 @@ SYMBOLS = {
 }
 
 
+#: Rows that describe identifying content: while any of them could not be
+#: checked, the card never says "no patient details found".
+IDENTITY_KEYS = frozenset({"patient", "location", "descriptions", "notes", "zone", "offset"})
+
+
 @dataclass(frozen=True)
 class CheckItem:
     key: str
@@ -64,7 +69,8 @@ class CheckItem:
 class PrivacyCheck:
     items: tuple[CheckItem, ...]
     made_by_anonymizer: bool
-    #: Some parts carry the stamp but not all (or some could not be read).
+    #: Some parts were anonymized but the recording was changed afterwards
+    #: (data added, parts added, or some could not be read).
     partly_anonymizer: bool
 
     @property
@@ -73,7 +79,21 @@ class PrivacyCheck:
 
     @property
     def clean(self) -> bool:
-        return not self.found
+        """Nothing found AND everything that identifies could be checked."""
+        return not self.found and not self.unchecked
+
+    @property
+    def unchecked(self) -> tuple[CheckItem, ...]:
+        """Identity rows that could not be checked (locked, or unreadable)."""
+        return tuple(i for i in self.items if i.key in IDENTITY_KEYS and i.mark is Mark.UNKNOWN)
+
+    @property
+    def state(self) -> str:
+        """ "bad" (something found), "unknown" (nothing found, but some rows
+        could not be checked: never shown as green) or "good"."""
+        if self.found:
+            return "bad"
+        return "unknown" if self.unchecked else "good"
 
     @property
     def kept_text(self) -> bool:
@@ -131,13 +151,7 @@ def _identity_item(
 
 def build_check(details: RecordingDetails) -> PrivacyCheck:
     anonymizer = details.made_by_anonymizer
-    stamped = [
-        p
-        for c in details.channels
-        for p in c.parts
-        if p.history is not None and "anonymize" in p.history.operations
-    ]
-    partly = bool(stamped) and not anonymizer
+    partly = details.changed_after_anonymizing
     items: list[CheckItem] = []
     items.append(
         _identity_item(
@@ -345,14 +359,23 @@ def build_check(details: RecordingDetails) -> PrivacyCheck:
     return PrivacyCheck(tuple(items), anonymizer, partly)
 
 
+UNCHECKED = "Some details could not be checked: open it with the full-access password"
+
+
 def headline(check: PrivacyCheck) -> str:
     found = len(check.found)
-    if not found:
-        return "No patient details found in this recording"
-    return f"Found {found} detail{'s' if found != 1 else ''} that may identify the patient"
+    if found:
+        return f"Found {found} detail{'s' if found != 1 else ''} that may identify the patient"
+    if check.unchecked:
+        return UNCHECKED
+    return "No patient details found in this recording"
 
 
 NOT_MADE_BY_ANONYMIZER = (
     "This recording wasn't made by the anonymizer, so we can't confirm its dates were moved."
 )
 MOVED_DATES = "These are the moved dates, not the real ones."
+CHANGED_AFTER = (
+    "Parts of it were made by the anonymizer, but it was changed afterwards (for example, "
+    "data was added), so we can't confirm all its dates were moved."
+)

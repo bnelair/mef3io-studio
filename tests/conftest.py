@@ -25,6 +25,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _LOG_DIR = tempfile.mkdtemp(prefix="mef3io-studio-test-logs-")
 os.environ["MEF3IO_STUDIO_LOG_DIR"] = _LOG_DIR
+os.environ["MEF3IO_STUDIO_SCRATCH_DIR"] = os.path.join(_LOG_DIR, "scratch")
 os.environ["MEF3IO_STUDIO_CRASH_DIR"] = os.path.join(
     _LOG_DIR, "..", "crash-" + os.path.basename(_LOG_DIR)
 )

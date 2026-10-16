@@ -772,6 +772,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .common.settings import clear_qt_dialog_history
 
         clear_qt_dialog_history()
+        from .model.anonymize import sweep_scratch
+
+        if sweep_scratch():  # name-check folders a killed helper left behind
+            log.info("removed leftover name-check folders")
         app = create_application()
         window = build_main_window(app)
         window.show()

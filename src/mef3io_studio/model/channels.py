@@ -32,16 +32,42 @@ OTHER_GROUP = ""
 
 _PREFIX = re.compile(r"^(.*?)[\s_\-.]*\d+$")
 _NATURAL = re.compile(r"(\d+)")
+#: Recorder labels in front of the electrode name ("EEG LA1", "POL RH3").
+_LEAD_LABEL = re.compile(r"^(?:eeg|pol|seeg|ecog)[\s_]+", re.IGNORECASE)
+#: Reference labels after it ("LA1-Ref", "LA1-AVG").
+_REFERENCE = re.compile(r"[\s_\-]+(?:ref|avg|ave|car)$", re.IGNORECASE)
+#: A bipolar pair: the first contact, a dash, the second ("LAH1-LAH2").
+_BIPOLAR = re.compile(r"^([^\W\d_][\w ]*?\d+)\s*-\s*[^\W\d_][\w ]*?\d+$")
+
+
+def contact_of(name: str) -> str:
+    """The electrode contact a channel name stands for, without recorder
+    labels and references: ``EEG LA1-Ref`` → ``LA1``; a bipolar pair
+    ``LAH1-LAH2`` → its first contact ``LAH1``."""
+    text = _LEAD_LABEL.sub("", name.strip())
+    text = _REFERENCE.sub("", text).strip()
+    bipolar = _BIPOLAR.match(text)
+    if bipolar:
+        text = bipolar.group(1)
+    return text
 
 
 def prefix_of(name: str) -> str:
-    """The electrode prefix of a channel name: the name without its
-    trailing number (and the separator before it). ``LA12`` → ``LA``,
-    ``RH-3`` → ``RH``; a name without a trailing number is its own prefix."""
-    match = _PREFIX.match(name.strip())
+    """The electrode a channel belongs to: its contact without the trailing
+    number (and the separator before it). ``LA12`` → ``LA``, ``RH-3`` →
+    ``RH``, ``EEG LA1-Ref`` → ``LA``, ``LAH1-LAH2`` → ``LAH``; a name without
+    a trailing number is its own prefix. Compare prefixes with
+    :func:`group_key` (case does not matter)."""
+    contact = contact_of(name)
+    match = _PREFIX.match(contact)
     if match and match.group(1):
         return match.group(1)
-    return name.strip()
+    return contact
+
+
+def group_key(name: str) -> str:
+    """What channels are grouped by: the prefix, case-folded."""
+    return prefix_of(name).casefold()
 
 
 def natural_key(name: str) -> tuple:
@@ -80,10 +106,14 @@ def group_channels(rows: Sequence[ChannelRow]) -> tuple[ChannelGroup, ...]:
     """Groups by prefix, in order of first appearance; prefixes with one
     channel only are pooled into one :data:`OTHER_GROUP` at the end."""
     by_prefix: dict[str, list[ChannelRow]] = {}
+    shown: dict[str, str] = {}  # the first spelling seen names the group
     for row in rows:
-        by_prefix.setdefault(prefix_of(row.name), []).append(row)
+        key = group_key(row.name)
+        shown.setdefault(key, prefix_of(row.name))
+        by_prefix.setdefault(key, []).append(row)
     groups, other = [], []
-    for prefix, members in by_prefix.items():
+    for key, members in by_prefix.items():
+        prefix = shown[key]
         if len(members) == 1:
             other.extend(members)
         else:
@@ -150,8 +180,8 @@ class ChannelSelection:
         return False if kept == 0 else None
 
     def matching(self, text: str) -> tuple[str, ...]:
-        """The channels a filter text shows (case-insensitive, matching the
-        name or its group's prefix), in list order. Empty text: all."""
+        """The channels a filter text shows: those whose name contains the
+        text (ignoring case), in list order. Empty text: all."""
         needle = text.strip().casefold()
         if not needle:
             return self.order
@@ -230,6 +260,11 @@ class ChannelSelection:
     def replace_kept(self, names: Iterable[str]) -> bool:
         """Set the kept channels exactly (one undo step)."""
         return self._apply(names)
+
+    def clear_history(self) -> None:
+        """Forget undo and redo (a new batch starts its own history)."""
+        self._undo.clear()
+        self._redo.clear()
 
     @property
     def can_undo(self) -> bool:
