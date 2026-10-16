@@ -83,12 +83,29 @@ class CrashOnSecond:
 
     isolate = True
 
-    def inspect_many(self, requests, send=None):
+    def inspect_many(self, requests, send=None, cancel=None):
         from mef3io_studio.model.source import LocalRecordingSource
 
         real = LocalRecordingSource()
         for location, password in requests:
             if location.endswith("crash.mefd"):
                 os.abort()
-            real.inspect_many([(location, password)], send=send)
+            real.inspect_many([(location, password)], send=send, cancel=cancel)
         return []
+
+
+def stop_cleanly(marker, cancel):
+    """Waits for Stop, then stops by itself the way mef3io does (raising
+    mef3io.Cancelled) after leaving a mark that it saw the request."""
+    import mef3io
+
+    while not cancel.cancelled:
+        time.sleep(0.01)
+    with open(marker, "w") as fh:
+        fh.write("stopped cleanly")
+    raise mef3io.Cancelled("operation cancelled")
+
+
+def ignore_stop(cancel):
+    """Never looks at the token: must be ended after the grace period."""
+    time.sleep(60)

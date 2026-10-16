@@ -9,7 +9,7 @@ from __future__ import annotations
 import errno
 from dataclasses import dataclass
 
-from .cancel import JobCancelled
+from .cancel import is_stop
 
 
 class HelperCrashed(RuntimeError):
@@ -55,7 +55,7 @@ def describe_error(exc: BaseException) -> UserMessage:
 
 def _describe(exc: BaseException) -> UserMessage:
     detail = f"{type(exc).__name__}: {exc}"
-    if isinstance(exc, JobCancelled):
+    if is_stop(exc):  # ours, or mef3io.Cancelled
         return UserMessage(
             "Stopped",
             "The task was stopped before it finished. Your recordings were not changed, "

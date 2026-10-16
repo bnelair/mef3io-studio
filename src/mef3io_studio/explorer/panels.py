@@ -31,7 +31,7 @@ from ..common.pages import scaled_font
 from ..common.text import technical
 from ..common.theme import Theme
 from ..model.recording import ACCESS_BASIC, ACCESS_FULL, note_kind_label, operation_words
-from ..model.summary import DATE_OFFSET_NOTE, unverified_note
+from ..model.summary import DATE_OFFSET_NOTE, LEGACY_PASSWORD_NOTE, unverified_note
 from ..model.timefmt import (
     format_count,
     format_rate,
@@ -65,6 +65,27 @@ DECLARATIONS_NOTE = (
     "Some other programs may have trouble opening this recording. This app reads it "
     "correctly. Use Check for problems to see why."
 )
+LEGACY_PASSWORD_DETAIL = (
+    "To make the password work everywhere, the recording needs to be protected again "
+    "with a current version. The app will offer this in a later version."
+)
+
+
+def unreadable_parts_note(details) -> str:
+    """What it means that some parts could not be read, in everyday words."""
+    count = len(details.part_problems)
+    which = "One part" if count == 1 else f"{count} parts"
+    return (
+        f"{which} of this recording could not be read. Everything else is shown; "
+        "the missing time shows as a gap. Nothing was changed. Use Check for problems "
+        "to see why, and keep a copy of the original."
+    )
+
+
+def unreadable_parts_detail(details) -> str:
+    return "\n".join(f"{p.where}: {p.detail}" for p in details.part_problems)
+
+
 NOTE_LEVELS_NOTE = (
     "Notes and events stored for the whole recording, with each channel, and with "
     "each part of a channel."
@@ -264,8 +285,13 @@ class OverviewPanel(QWidget):
             self.notices.addWidget(_notice(DATE_OFFSET_NOTE, True, DATE_OFFSET_DETAIL))
         if not details.times_verified:
             self.notices.addWidget(_notice(unverified_note(details), False, UNVERIFIED_DETAIL))
+        if details.part_problems:
+            self.notices.addWidget(_notice(unreadable_parts_note(details), True))
+            self.notices.addWidget(TechnicalDetails(unreadable_parts_detail(details)))
         if details.access == ACCESS_BASIC:
             self.notices.addWidget(_notice(BASIC_ACCESS_NOTE))
+        if details.legacy_password:
+            self.notices.addWidget(_notice(LEGACY_PASSWORD_NOTE, False, LEGACY_PASSWORD_DETAIL))
         if details.declarations_incomplete:
             self.notices.addWidget(_notice(DECLARATIONS_NOTE))
 
@@ -285,12 +311,16 @@ class OverviewPanel(QWidget):
         self._row("Gaps", self._gaps_text(details))
         self._row("Size on disk", format_size(entry.outcome.size_bytes) or "Unknown")
         self._row("Password", self._access_text(details.access))
-        self._row(
-            "Notes and events",
-            "Could not be read"
-            if details.notes_problem is not None
-            else format_count(len(details.notes), "item"),
-        )
+        self._row("Notes and events", self._notes_text(details))
+
+    @staticmethod
+    def _notes_text(details) -> str:
+        count = format_count(len(details.notes), "item")
+        if details.notes_problem is not None and not details.notes:
+            return "Could not be read"
+        if details.notes_problem is not None or details.notes_without_times:
+            return f"{count}; some could not be read"
+        return count
 
     @staticmethod
     def _parts_text(details) -> str:
@@ -420,6 +450,8 @@ class NotesPanel(QWidget):
     COLUMNS = ("Time", "Stored with", "Kind", "Text", "Length")
 
     def _text(self, note) -> str:
+        if note.locked:
+            return LOCKED
         if self.revealed:
             return note.text
         return HIDDEN if note.text else ""
@@ -483,13 +515,37 @@ class NotesPanel(QWidget):
         if problem is not None:
             self.problem_slot.addWidget(
                 _notice(
-                    "The notes and events could not be read. " + problem.text,
+                    (
+                        "Some notes and events could not be read. "
+                        if notes
+                        else "The notes and events could not be read. "
+                    )
+                    + problem.text,
                     warning=True,
                 )
             )
             if problem.detail:
                 self.problem_slot.addWidget(TechnicalDetails(problem.detail))
-        self.empty.setVisible(details is not None and not notes and problem is None)
+        unplaced = details.notes_without_times if details is not None else 0
+        if unplaced:
+            self.problem_slot.addWidget(
+                _notice(
+                    "Not listed here: "
+                    f"{format_count(unplaced, 'note or event', 'notes and events')}, because "
+                    "their time depends on a part of the recording that could not be read."
+                )
+            )
+        locked = details.notes_locked if details is not None else 0
+        if locked:
+            self.problem_slot.addWidget(
+                _notice(
+                    f"The text of {format_count(locked, 'item')} is locked: it needs the "
+                    "full-access password."
+                )
+            )
+        self.empty.setVisible(
+            details is not None and not notes and problem is None and not unplaced
+        )
         self.table.setVisible(bool(notes))
         self.hidden_note.setVisible(bool(notes) and not entry.revealed)
         self.zone = zone
@@ -571,8 +627,7 @@ class PatientPanel(QWidget):
                 text = getattr(patient, attr) or "(empty)"
             self._add(label, text)
         if entry.revealed:
-            described = [c for c in details.channels if c.description]
-            text = "; ".join(f"{c.name}: {c.description}" for c in described) or "(empty)"
+            text = "; ".join(details.channel_descriptions) or "(empty)"
         else:
             text = HIDDEN
         self._add("Channel descriptions", text)

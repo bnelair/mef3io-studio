@@ -14,9 +14,10 @@ Plain Python, no Qt. Runs in a helper process (see ``workers.isolated``).
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from .cancel import CancelToken
+from .cancel import CancelToken, stopped_by_library
 from .text import technical
 
 # Check id -> (title, what it means). docs/ui-language.md: no format words.
@@ -227,12 +228,21 @@ def to_report(report, location: str) -> CheckReport:
 
 
 def check_recording(
-    location: str, password: str = "", cancel: CancelToken | None = None
+    location: str,
+    password: str = "",
+    cancel: CancelToken | None = None,
+    progress: Callable[[int, int], object] | None = None,
 ) -> CheckReport:
-    """Run every check mef3io has on the recording. Reads only."""
+    """Run every check mef3io has on the recording. Reads only. ``cancel``
+    stops it from inside mef3io (as JobCancelled); ``progress(done, total)``
+    gets mef3io's progress, in bytes."""
     import mef3io
 
-    (cancel or CancelToken()).raise_if_cancelled()
+    cancel = cancel or CancelToken()
+    cancel.raise_if_cancelled()
     location = os.fspath(location)
-    report = mef3io.Validator(location, password=password).validate()
+    with stopped_by_library():
+        report = mef3io.Validator(location, password=password).validate(
+            cancel=cancel.for_library(), progress=progress
+        )
     return to_report(report, location)

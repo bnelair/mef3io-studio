@@ -18,10 +18,12 @@ from ..model.coverage import Stopped, combine
 from ..model.errors import HelperCrashed, describe_error
 from ..model.export import LEVEL_PARTS, ExportItem, part_rows, recording_table, write_csv
 from ..model.problems import CheckReport
+from ..model.progress import ByteProgress
 from ..model.recording import InspectOutcome, location_key, recording_name
 from ..model.scan import ScanResult, find_recordings
 from ..model.source import RecordingSource, RecordingSummary
 from ..selftest import SelfTestResult, run_self_test
+from .isolated import STOP_GRACE_SECONDS
 from .jobs import JobContext
 
 log = logging.getLogger(__name__)
@@ -32,7 +34,9 @@ def summarize_recording(
 ) -> RecordingSummary:
     ctx.report(0, None, "Opening the recording")
     if source.isolate:
-        summary = ctx.run_isolated(source.summarize, location, password)
+        summary = ctx.run_isolated(
+            source.summarize, location, password, stop_grace=STOP_GRACE_SECONDS
+        )
     else:
         summary = source.summarize(location, password=password, cancel=ctx.cancel_token)
     if summary.declarations_incomplete:
@@ -64,7 +68,11 @@ def _inspect(ctx: JobContext, source: RecordingSource, requests: list[tuple[str,
         *(password for _location, password in requests),
     )
 
-    def got(outcome: InspectOutcome) -> None:
+    def got(outcome: InspectOutcome | ByteProgress) -> None:
+        if isinstance(outcome, ByteProgress):
+            # How far into the recording being read now (bytes of details).
+            ctx.report(len(delivered) + outcome.fraction, total, phase)
+            return
         register_identity(outcome.name)
         if outcome.details is not None:
             register_identity(*outcome.details.identity_values())
@@ -79,7 +87,12 @@ def _inspect(ctx: JobContext, source: RecordingSource, requests: list[tuple[str,
         empty_crashes = 0
         while remaining:
             try:
-                ctx.run_isolated(source.inspect_many, remaining, on_message=got)
+                ctx.run_isolated(
+                    source.inspect_many,
+                    remaining,
+                    on_message=got,
+                    stop_grace=STOP_GRACE_SECONDS,
+                )
                 break
             except HelperCrashed as exc:
                 done = len(delivered) - (total - len(remaining))
@@ -98,7 +111,7 @@ def _inspect(ctx: JobContext, source: RecordingSource, requests: list[tuple[str,
     else:
         for request in requests:
             ctx.check_cancelled()
-            source.inspect_many([request], send=got)
+            source.inspect_many([request], send=got, cancel=ctx.cancel_token)
     log.info("job %d: read the details of %d recording(s)", ctx.job_id, len(delivered))
     return len(delivered)
 
@@ -175,11 +188,18 @@ def export_times(ctx: JobContext, items: list[ExportItem], zone, level: str, pat
 def check_recording(
     ctx: JobContext, source: RecordingSource, location: str, password: str = ""
 ) -> CheckReport:
-    ctx.report(0, None, "Checking the recording for problems")
+    phase = "Checking the recording for problems"
+    ctx.report(0, None, phase)
+
+    def got(progress: ByteProgress) -> None:
+        ctx.report(progress.done, progress.total or None, phase)
+
     if source.isolate:
-        report = ctx.run_isolated(source.check, location, password)
+        report = ctx.run_isolated(
+            source.check, location, password, on_message=got, stop_grace=STOP_GRACE_SECONDS
+        )
     else:
-        report = source.check(location, password)
+        report = source.check(location, password, send=got, cancel=ctx.cancel_token)
     log.info(
         "job %d: checked %d part(s), %d problem(s)",
         ctx.job_id,
@@ -202,24 +222,20 @@ def pack_or_unpack(
     plan = archive.plan(location, destination_folder)
     archive.check_space(plan, size_bytes)
     ctx.add_cleanup(lambda: archive.remove_temporary(plan))
-    phase = {"text": "Packing into one file" if plan.packing else "Unpacking into a folder"}
-    total = size_bytes or None
-    last = {"t": 0.0}
-    ctx.report(0, total, phase["text"])
+    phase = "Packing into one file" if plan.packing else "Unpacking into a folder"
+    ctx.report(0, None, phase)
 
-    def poll() -> None:
-        now = time.monotonic()
-        if now - last["t"] < 0.25 or phase["text"] == "Checking the copy":
-            return
-        last["t"] = now
-        done = archive.written_bytes(plan)
-        ctx.report(min(done, total) if total else done, total, phase["text"])
+    def got(message) -> None:
+        if isinstance(message, ByteProgress):  # mef3io's own count, in bytes
+            ctx.report(message.done, message.total or None, phase)
+        else:  # "checking": the copy is written, now it is compared
+            ctx.report(0, None, "Checking the copy")
 
-    def step(_name: str) -> None:
-        phase["text"] = "Checking the copy"
-        ctx.report(0, None, phase["text"])
-
-    ctx.run_isolated(archive.run_in_helper, plan, password, on_message=step, on_poll=poll)
+    # mef3io stops by itself on Stop and removes what it had written; the
+    # cleanup above removes anything still under the temporary name.
+    ctx.run_isolated(
+        archive.run_in_helper, plan, password, on_message=got, stop_grace=STOP_GRACE_SECONDS
+    )
     ctx.check_cancelled()
     result = archive.finish(plan)
     log.info("job %d: %s finished", ctx.job_id, "packing" if plan.packing else "unpacking")

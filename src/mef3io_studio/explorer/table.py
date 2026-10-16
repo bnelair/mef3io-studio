@@ -141,6 +141,8 @@ class RecordingTableModel(QAbstractTableModel):
                 return entry.check.short_status()
             if entry.check_error is not None:
                 return "Could not be checked"
+            if details is not None and details.part_problems:
+                return "Some parts could not be read"
             return "Not checked yet"
         if details is None or entry.busy == "Reading…":
             return status_text(entry) if col == COL_START else ""

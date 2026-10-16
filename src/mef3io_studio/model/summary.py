@@ -20,6 +20,7 @@ from .problems import CheckReport
 from .recording import (
     ACCESS_BASIC,
     ACCESS_FULL,
+    OFFSET_DISPUTED,
     InspectOutcome,
     note_kind_label,
     operation_words,
@@ -41,7 +42,20 @@ UNVERIFIED_OFFSET_NOTE = (
 )
 
 
+UNVERIFIED_DISPUTED_NOTE = (
+    "The times may not be the real ones: different parts of this recording say "
+    "different things about how their times are stored."
+)
+LEGACY_PASSWORD_NOTE = (
+    "This password works here because the recording was protected by an older version "
+    "of the mef3io library. Other programs may not accept this password for this "
+    "recording. Nothing is wrong with the recording."
+)
+
+
 def unverified_note(details) -> str:
+    if details.time_offset_status == OFFSET_DISPUTED:
+        return UNVERIFIED_DISPUTED_NOTE
     return UNVERIFIED_OFFSET_NOTE if details.recording_time_offset else UNVERIFIED_NOTE
 
 
@@ -110,6 +124,10 @@ def build_summary(
         for c in details.channels
     ]
     out["password_protected"] = _access_words(details.access)
+    if details.legacy_password:
+        out["password_note"] = LEGACY_PASSWORD_NOTE
+    if details.part_problems:
+        out["unreadable_parts"] = [p.where for p in details.part_problems]
     patient = details.patient
     if show:
         if patient.names_available:
@@ -128,8 +146,10 @@ def build_summary(
     else:
         out["patient"] = HIDDEN
     notes = details.notes
-    if details.notes_problem is not None:
+    if details.notes_problem is not None and not notes:
         out["notes_and_events"] = {"count": "could not be read"}
+    elif details.notes_problem is not None or details.notes_without_times:
+        out["notes_and_events"] = {"count": f"{len(notes)}, some could not be read"}
     else:
         out["notes_and_events"] = {"count": len(notes)}
     if show:
@@ -138,7 +158,7 @@ def build_summary(
                 "time": format_time(n.time, zone),
                 "stored_with": n.where,
                 "kind": note_kind_label(n.kind),
-                "text": n.text,
+                "text": "locked (needs the full-access password)" if n.locked else n.text,
             }
             for n in notes
         ]
@@ -181,6 +201,8 @@ _LABELS = {
     "channel_count": "Channels",
     "channels": "Channel list",
     "password_protected": "Password-protected",
+    "password_note": "Note on the password",
+    "unreadable_parts": "Parts that could not be read",
     "patient": "Patient details",
     "notes_and_events": "Notes and events",
     "history": "History",
@@ -204,6 +226,8 @@ def _text_value(key: str, value) -> list[str]:
             f"{c['samples']} samples, {c['parts']} part(s)"
             for c in value
         ]
+    if key == "unreadable_parts" and isinstance(value, list):
+        return [f"  {where}" for where in value]
     if key == "sampling_rates_hz":
         return [", ".join(f"{r:g}" for r in value)]
     if key == "patient" and isinstance(value, dict):
