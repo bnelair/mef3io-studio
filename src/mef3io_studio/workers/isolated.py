@@ -124,7 +124,6 @@ def run_isolated(
     *args: Any,
     cancel: CancelToken | None = None,
     on_message: Callable[[Any], None] | None = None,
-    on_poll: Callable[[], None] | None = None,
     stop_grace: float | None = None,
     **kwargs: Any,
 ) -> Any:
@@ -140,9 +139,7 @@ def run_isolated(
 
     ``on_message``: ``fn`` is also given ``send=``, a function that passes a
     picklable item back while it works (one opened recording, a progress
-    step); each item reaches ``on_message`` here, in this thread, in order.
-    ``on_poll`` is called about every 50 ms while the helper runs (e.g. to
-    measure how far a copy has got)."""
+    step); each item reaches ``on_message`` here, in this thread, in order."""
     cancel = cancel or CancelToken()
     cancel.raise_if_cancelled()
     pickle.dumps((fn, args, kwargs))  # fail early and clearly, in this process
@@ -186,8 +183,6 @@ def run_isolated(
                 if ok:
                     return value
                 raise value
-            if on_poll is not None and stop_by is None:
-                on_poll()
             if not proc.is_alive() and not receiver.poll():
                 if stop_by is not None:
                     raise JobCancelled()

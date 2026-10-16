@@ -237,6 +237,10 @@ class RecordingDetails:
     recording_time_offset: int | None = 0
     #: One of the ``OFFSET_*`` values above.
     time_offset_status: str = OFFSET_NONE
+    #: A recording-time offset is set in at least one part, so the real date
+    #: is stored in the file (meflib's deprecated date masking): true even
+    #: when the parts disagree and no single offset can be given.
+    date_recoverable: bool = False
     #: mef3io could not confirm how the times are stored (the full-access
     #: password is missing) and read them assuming the common case. They are
     #: right for almost every file, but not verified.
@@ -318,8 +322,9 @@ class RecordingDetails:
     @property
     def uses_time_offset(self) -> bool:
         """meflib's deprecated date masking is in use: the real date can be
-        worked out again, so the recording stays identifiable."""
-        return bool(self.recording_time_offset)
+        worked out again, so the recording stays identifiable. Also when the
+        parts disagree about the offset (no single value is known)."""
+        return bool(self.recording_time_offset) or self.date_recoverable
 
     def gaps(self) -> list[tuple[int, int]]:
         """Stretches where no channel has data, from the parts' start and end

@@ -70,6 +70,22 @@ STATUS_TEXT = {
 }
 NO_PARTS_TEXT = "No part of this recording holds any data."
 UNVERIFIED_TAG = "unverified time"
+INCOMPLETE_TAG = "some parts unreadable"
+INCOMPLETE_TEXT = (
+    "Some parts of this recording could not be read. Their time is not counted as "
+    "time with data, and a gap here may be time that was recorded."
+)
+
+
+def row_tag(row) -> str:
+    """The short label drawn after a row's bar ("" for none)."""
+    tags = []
+    if not row.verified:
+        tags.append(UNVERIFIED_TAG)
+    if row.incomplete:
+        tags.append(INCOMPLETE_TAG)
+    return ", ".join(tags)
+
 
 #: The shortest stretch the view zooms in to (10 ms).
 MIN_SPAN = 10_000
@@ -358,6 +374,8 @@ class CombinedTimelineWidget(QWidget):
                 "Unverified time: these times may not be the real ones, so they are "
                 "not counted with the others."
             )
+        if row.incomplete:
+            lines.append(INCOMPLETE_TEXT)
         if pos.x() < self.plot_rect().left():
             lines.append(
                 f"{format_time(row.first, self.zone)} to {format_time(row.last, self.zone)}"
@@ -530,8 +548,9 @@ class CombinedTimelineWidget(QWidget):
                     painter.drawRect(
                         QRectF(plot.left() + a, bar.bottom() + 1, max(1, b - a), row_h * 0.1)
                     )
-            if not row.verified:
-                tag_w = fm.horizontalAdvance(UNVERIFIED_TAG) + em * 0.6
+            tag = row_tag(row)
+            if tag:
+                tag_w = fm.horizontalAdvance(tag) + em * 0.6
                 tx = max(plot.left(), x1 + em * 0.4)
                 if tx + tag_w > plot.right():
                     tx = max(plot.left(), x0 - tag_w - em * 0.4)
@@ -539,7 +558,7 @@ class CombinedTimelineWidget(QWidget):
                 painter.drawText(
                     QRectF(tx, y, tag_w, row_h),
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    UNVERIFIED_TAG,
+                    tag,
                 )
         painter.end()
 
@@ -781,6 +800,13 @@ def note_text(layout: CombinedLayout) -> str:
         notes.append(
             f"Not counted: {format_count(len(unverified), 'recording')} with unverified "
             "times, which may not be the real ones."
+        )
+    incomplete = layout.incomplete
+    if incomplete:
+        notes.append(
+            f"{format_count(len(incomplete), 'recording')} with parts that could not be "
+            "read: their time is not counted as time with data, and their gaps may "
+            "include time that was recorded."
         )
     missing = layout.without_data
     if missing:

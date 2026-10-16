@@ -124,31 +124,12 @@ def remove_temporary(plan_: ArchivePlan) -> None:
                 pass
 
 
-def written_bytes(plan_: ArchivePlan) -> int:
-    """How much of the copy exists so far (for progress)."""
-    total = 0
-    for path in _temporary_paths(plan_):
-        try:
-            if os.path.isfile(path):
-                total += os.stat(path).st_size
-                continue
-            for folder, _dirs, files in os.walk(path):
-                for name in files:
-                    try:
-                        total += os.stat(os.path.join(folder, name)).st_size
-                    except OSError:
-                        pass
-        except OSError:
-            pass
-    return total
-
-
 def _shape(location: str, password: str = "", cancel: CancelToken | None = None) -> list:
     """Channels, rates, every part's times and sample count, and which
     parts could not be read."""
     from .inspect import inspect_recording
 
-    outcome = inspect_recording(location, password, cancel=cancel)
+    outcome = inspect_recording(location, password, cancel=cancel, detect_legacy=False)
     if outcome.details is None:
         raise CopyMismatch("the copy could not be opened")
     details = outcome.details

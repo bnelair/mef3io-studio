@@ -14,12 +14,12 @@ from __future__ import annotations
 
 import abc
 import os
-import warnings
 from dataclasses import dataclass
 
 from .cancel import CancelToken, stopped_by_library
 from .problems import CheckReport
 from .progress import byte_progress
+from .quiet import library_warnings_caught
 from .recording import InspectOutcome
 
 
@@ -97,8 +97,7 @@ class LocalRecordingSource(RecordingSource):
         # Its warnings are caught: their text starts with the full path,
         # which must not reach the log. The declarations fact is returned as
         # a flag and logged by the caller in fixed, path-free words.
-        with stopped_by_library(), warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
+        with stopped_by_library(), library_warnings_caught():
             summary = mef3io.inspect(os.fspath(location), password, cancel=cancel.for_library())
         encryption = summary.encryption
         if encryption.get("encrypted") and encryption.get("access") == "none":

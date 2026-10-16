@@ -17,6 +17,7 @@ import numpy as np
 
 T0 = 946_684_800_000_000  # 2000-01-01 00:00:00 UTC
 SECOND = 1_000_000
+DAY = 86_400 * SECOND
 FIRST, LAST, PATIENT_ID, SITE = "Quentin", "Zebedee", "MRN-77001234", "Ward 9"
 PASSWORD_BASIC, PASSWORD_FULL = "basic-pw-1", "full-pw-2"
 
@@ -95,10 +96,11 @@ def write_encrypted(path: Path) -> Path:
     return path
 
 
-def set_time_offset(path: Path, rto: int) -> Path:
-    """Give section 3 of every part this recording-time offset (meflib's
-    deprecated date masking), resealing the CRCs over the fixed record."""
-    for tmet in sorted(Path(path).glob("*.timd/*.segd/*.tmet")):
+def set_time_offset(path: Path, rto: int, parts: int | None = None) -> Path:
+    """Give section 3 of every part (or of the first ``parts``) this
+    recording-time offset (meflib's deprecated date masking), resealing the
+    CRCs over the fixed record. Only some parts: they then disagree."""
+    for tmet in sorted(Path(path).glob("*.timd/*.segd/*.tmet"))[:parts]:
         raw = bytearray(tmet.read_bytes())
         struct.pack_into("<q", raw, S3_RTO_OFFSET, rto)
         struct.pack_into("<I", raw, 4, crc32(bytes(raw[UH_BYTES:METADATA_FILE_BYTES])))
@@ -144,7 +146,7 @@ def write_large(path: Path, channels: int = 2, parts: int = 2, seconds: int = 18
     return path
 
 
-def write_legacy_password(path: Path) -> tuple[Path, str]:
+def write_legacy_password(path: Path, channels=("c",)) -> tuple[Path, str]:
     """A recording whose password opens it only through the rule mef3io used
     up to 1.2.0 (bnelair/mef3io#84). That rule took the last UTF-8 byte of
     each character: for "é" (C3 A9) that is A9, the byte meflib's rule gives
@@ -153,7 +155,8 @@ def write_legacy_password(path: Path) -> tuple[Path, str]:
     with mef3io.Writer(
         str(path), overwrite=True, password1="b©1", password2="f©2", metadata=metadata()
     ) as w:
-        w.write("c", np.zeros(2560), T0, 256.0)
+        for name in channels:
+            w.write(name, np.zeros(2560), T0, 256.0)
     return path, "fé2"
 
 

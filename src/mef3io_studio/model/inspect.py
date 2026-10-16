@@ -32,12 +32,12 @@ Never logs anything: the locations and values it handles identify people.
 from __future__ import annotations
 
 import os
-import warnings
 from collections.abc import Callable
 
 from .cancel import CancelToken, JobCancelled, is_stop, stopped_by_library
 from .errors import UserMessage, describe_error
 from .progress import ByteProgress, byte_progress
+from .quiet import library_warnings_caught
 from .recording import (
     ACCESS_BASIC,
     ACCESS_FULL,
@@ -285,6 +285,7 @@ def _details(summary, location: str, access: str, legacy: bool) -> RecordingDeta
         access=access,
         recording_time_offset=rto,
         time_offset_status=status,
+        date_recoverable=bool(summary.time_offset.get("date_recoverable")),
         offset_assumed_zero=bool(summary.offset_assumed_zero),
         gmt_offset=int(summary.gmt_offset) if summary.gmt_offset is not None else None,
         notes=tuple(notes),
@@ -314,10 +315,10 @@ def opened_with_legacy_password(location: str, password: str) -> bool:
     legacy_warning = getattr(mef3io, "LegacyPasswordWarning", None)
     if legacy_warning is None:  # pragma: no cover - mef3io before 1.3
         return False
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+    with library_warnings_caught() as caught:
         try:
-            with mef3io.Reader(location, password=password, warn_declarations=False):
+            # Lenient, like inspect: a damaged part must not hide the note.
+            with mef3io.Reader(location, password=password, warn_declarations=False, strict=False):
                 pass
         except Exception:
             return False
@@ -329,11 +330,15 @@ def inspect_recording(
     password: str = "",
     cancel: CancelToken | None = None,
     progress: Callable[[int, int], object] | None = None,
+    detect_legacy: bool = True,
 ) -> InspectOutcome:
     """Everything the explorer shows about one recording. Never raises for a
     recording that cannot be opened: the reason comes back in the outcome,
     in plain language (only a stop request is raised, as JobCancelled).
-    ``progress(done, total)`` gets bytes of details files read."""
+    ``progress(done, total)`` gets bytes of details files read.
+    ``detect_legacy=False`` skips :func:`opened_with_legacy_password` (a
+    second open, for non-ASCII passwords only) where the note is not shown,
+    e.g. when a copy is compared with its original."""
     import mef3io
 
     cancel = cancel or CancelToken()
@@ -343,8 +348,7 @@ def inspect_recording(
     try:
         # Warnings are caught, not shown: mef3io's warning texts start with
         # the full path, which must not reach the log.
-        with stopped_by_library(), warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
+        with stopped_by_library(), library_warnings_caught():
             summary = mef3io.inspect(
                 location,
                 password,
@@ -359,7 +363,7 @@ def inspect_recording(
                 location, size_bytes=size, needs_password=True, wrong_password=bool(password)
             )
         cancel.raise_if_cancelled()
-        legacy = opened_with_legacy_password(location, password)
+        legacy = detect_legacy and opened_with_legacy_password(location, password)
         details = _details(summary, location, access, legacy)
     except JobCancelled:
         raise

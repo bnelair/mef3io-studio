@@ -6,16 +6,19 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import UTC
 from pathlib import Path
 
 import helper_targets
 import mef3io
 import pytest
 from explorer_sessions import (
+    DAY,
     LAST,
     PASSWORD_BASIC,
     PASSWORD_FULL,
     damage_details,
+    set_time_offset,
     write_encrypted,
     write_encrypted_with_notes,
     write_large,
@@ -30,7 +33,7 @@ from mef3io_studio.model.inspect import inspect_recording
 from mef3io_studio.model.jobs import JobStatus
 from mef3io_studio.model.progress import ByteProgress
 from mef3io_studio.model.summary import LEGACY_PASSWORD_NOTE, UNVERIFIED_NOTE, unverified_note
-from mef3io_studio.workers.isolated import run_isolated
+from mef3io_studio.workers.isolated import STOP_GRACE_SECONDS, run_isolated
 
 # --------------------------------------------------------------------------
 # One stop flag, inside the library too
@@ -136,22 +139,19 @@ def test_stop_while_packing_leaves_nothing_behind(medium, tmp_path, packing):
     out.mkdir()
     plan = archive.plan(source, str(out))
     token = CancelToken()
+    seen = []
+
+    def got(message):
+        seen.append(message)
+        if isinstance(message, ByteProgress):
+            token.cancel()  # Stop, once mef3io has started copying
+
     with pytest.raises(JobCancelled):
-        archive.run_in_helper(plan, send=lambda _m: token.cancel(), cancel=token)
-    archive.remove_temporary(plan)  # what the job's cleanup does
+        archive.run_in_helper(plan, send=got, cancel=token)
+    assert seen and isinstance(seen[0], ByteProgress) and "checking" not in seen
+    # mef3io removed what it had started itself: nothing for the cleanup to do.
     assert os.listdir(out) == []
-
-
-def test_stop_button_stops_packing_in_the_job_layer(qtbot, jobs, medium, tmp_path):
-    from mef3io_studio.workers.tasks import pack_or_unpack
-
-    out = tmp_path / "out"
-    out.mkdir()
-    handle = jobs.submit("Packing", pack_or_unpack, str(medium), str(out))
-    handle.cancel()
-    with qtbot.waitSignal(handle.finished, timeout=30_000):
-        pass
-    assert handle.record.status is JobStatus.CANCELLED
+    archive.remove_temporary(plan)
     assert os.listdir(out) == []
 
 
@@ -177,6 +177,37 @@ class _RecordingCtx:
 
     def run_isolated(self, fn, *args, **kwargs):
         return run_isolated(fn, *args, cancel=self.cancel_token, **kwargs)
+
+
+@pytest.mark.parametrize("packing", [True, False])
+def test_stop_during_a_pack_task_stops_the_helper_cleanly(medium, tmp_path, packing):
+    """The real task in a real helper process: Stop is pressed once mef3io
+    has reported progress; mef3io stops by itself within the grace period
+    and leaves nothing behind, before the task's cleanup runs."""
+    from mef3io_studio.workers.tasks import pack_or_unpack
+
+    source = str(medium)
+    if not packing:
+        source = mef3io.archive_session(source, str(tmp_path / "medium.mefd.tar"))
+    out = tmp_path / "out"
+    out.mkdir()
+    ctx = _RecordingCtx()
+
+    def report(done, total=None, phase=""):
+        ctx.reports.append((done, total, phase))
+        if total:  # the first byte count from mef3io
+            ctx.cancel_token.cancel()
+
+    ctx.report = report
+    start = time.monotonic()
+    with pytest.raises(JobCancelled):
+        pack_or_unpack(ctx, source, str(out))
+    assert time.monotonic() - start < STOP_GRACE_SECONDS + 5
+    assert any(total for _d, total, _p in ctx.reports)
+    assert os.listdir(out) == []  # before the cleanup: mef3io removed its own
+    for fn in ctx.cleanups:
+        fn()
+    assert os.listdir(out) == []
 
 
 def test_pack_job_reports_mef3io_bytes(medium, tmp_path):
@@ -278,3 +309,94 @@ def test_legacy_password_note_on_screen(page, qtbot, tmp_path):
     assert entry.details is not None and entry.details.legacy_password
     page.select_entry(entry)
     assert LEGACY_PASSWORD_NOTE in _notice_texts(page.overview)
+
+
+def test_legacy_password_note_survives_a_damaged_part(tmp_path):
+    """The legacy check opens the Reader leniently, like inspect."""
+    path, legacy = write_legacy_password(tmp_path / "old.mefd", channels=("c", "d"))
+    damage_details(path)
+    d = inspect_recording(str(path), legacy).details
+    assert d is not None and d.part_problems
+    assert d.legacy_password
+
+
+def test_disputed_offset_still_warns_about_the_date(tmp_path):
+    from mef3io_studio.model.recording import OFFSET_DISPUTED
+    from mef3io_studio.model.summary import (
+        DATE_OFFSET_NOTE,
+        UNVERIFIED_DISPUTED_NOTE,
+        build_summary,
+    )
+
+    path = set_time_offset(write_plain(tmp_path / "mixed.mefd", notes=False), DAY, parts=1)
+    outcome = inspect_recording(str(path))
+    d = outcome.details
+    assert d.time_offset_status == OFFSET_DISPUTED and d.recording_time_offset is None
+    # No single offset, but the real date is in the file: identifiable.
+    assert d.date_recoverable and d.uses_time_offset and not d.times_verified
+    assert unverified_note(d) == UNVERIFIED_DISPUTED_NOTE
+    summary = build_summary(outcome, UTC)
+    assert summary["date_note"] == DATE_OFFSET_NOTE
+    assert summary["times_note"] == UNVERIFIED_DISPUTED_NOTE
+
+
+# --------------------------------------------------------------------------
+# Unreadable parts in the table export and the combined timeline
+# --------------------------------------------------------------------------
+
+
+def _export_items(tmp_path):
+    from mef3io_studio.model.coverage import RecordingInput
+    from mef3io_studio.model.export import ExportItem
+
+    good = inspect_recording(str(write_plain(tmp_path / "good.mefd", notes=False))).details
+    partly = inspect_recording(
+        str(damage_details(write_plain(tmp_path / "partly.mefd", notes=False)))
+    ).details
+    return [
+        ExportItem(RecordingInput("good", "good", good), "good.mefd"),
+        ExportItem(RecordingInput("partly", "partly", partly), "partly.mefd"),
+    ]
+
+
+def test_export_counts_unreadable_parts(tmp_path):
+    from mef3io_studio.model.export import UNREADABLE_PART, part_count, part_table, recording_table
+
+    items = _export_items(tmp_path)
+    header, rows = recording_table(items)
+    col = header.index("unreadable_parts")
+    assert [r[col] for r in rows] == [0, 1]
+
+    header, rows = part_table(items)
+    status, count = header.index("part_status"), header.index("unreadable_parts")
+    assert len(rows) == part_count(items) == 3 + 3  # 3 readable + 2 readable + 1 not
+    bad = [r for r in rows if r[status] == UNREADABLE_PART]
+    assert len(bad) == 1 and bad[0][header.index("channel")] == "a1"
+    assert bad[0][header.index("part")] == 1
+    assert bad[0][header.index("start_utc")] == ""  # no time is invented
+    assert all(len(r) == len(header) for r in rows)
+    assert {r[count] for r in rows if r[0] == "partly"} == {1}
+
+
+def test_export_time_note_for_disputed_offsets(tmp_path):
+    from mef3io_studio.model.export import time_note
+
+    path = set_time_offset(write_plain(tmp_path / "mixed.mefd", notes=False), DAY, parts=1)
+    note = time_note(inspect_recording(str(path)).details)
+    assert note.startswith("unverified: different parts of the recording")
+    assert "password" not in note
+
+
+def test_coverage_marks_incomplete_recordings(tmp_path):
+    from mef3io_studio.explorer.combined import INCOMPLETE_TAG, note_text, row_tag
+    from mef3io_studio.model.coverage import combine
+
+    items = [i.recording for i in _export_items(tmp_path)]
+    layout, _ = combine(items)
+    good, partly = layout.row("good"), layout.row("partly")
+    assert not good.incomplete and partly.incomplete and partly.unreadable_parts == 1
+    assert layout.incomplete == [partly]
+    # The unreadable part's time is unknown: never counted as time with data.
+    assert partly.data_seconds == pytest.approx(10.0)
+    assert row_tag(partly) == INCOMPLETE_TAG and row_tag(good) == ""
+    assert "could not be read" in note_text(layout)

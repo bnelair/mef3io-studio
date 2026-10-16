@@ -409,7 +409,6 @@ def test_temporary_cleanup_includes_mef3io_working_files(tmp_path):
     working = plan.temporary + ".tmp"  # what archive_session writes before renaming
     with open(working, "wb") as fh:
         fh.write(b"x" * 1000)
-    assert archive.written_bytes(plan) == 1000
     (out / "unrelated.txt").write_text("keep me")
     archive.remove_temporary(plan)
     assert sorted(p.name for p in out.iterdir()) == ["unrelated.txt"]

@@ -106,19 +106,17 @@ class JobContext:
         fn: Callable[..., Any],
         *args: Any,
         on_message: Callable[[Any], None] | None = None,
-        on_poll: Callable[[], None] | None = None,
         stop_grace: float | None = None,
         **kwargs: Any,
     ) -> Any:
         """Run ``fn`` in a helper process; Stop stops the helper. See
-        :func:`.isolated.run_isolated` for ``on_message`` / ``on_poll`` /
+        :func:`.isolated.run_isolated` for ``on_message`` /
         ``stop_grace``."""
         return run_isolated(
             fn,
             *args,
             cancel=self.cancel_token,
             on_message=on_message,
-            on_poll=on_poll,
             stop_grace=stop_grace,
             **kwargs,
         )

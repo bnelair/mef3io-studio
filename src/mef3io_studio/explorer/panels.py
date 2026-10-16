@@ -67,7 +67,7 @@ DECLARATIONS_NOTE = (
 )
 LEGACY_PASSWORD_DETAIL = (
     "To make the password work everywhere, the recording needs to be protected again "
-    "with a current version. The app will offer this in a later version."
+    "with a current version of this app. The app will offer this in a later version."
 )
 
 

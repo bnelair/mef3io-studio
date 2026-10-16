@@ -48,7 +48,7 @@ UNVERIFIED_DISPUTED_NOTE = (
 )
 LEGACY_PASSWORD_NOTE = (
     "This password works here because the recording was protected by an older version "
-    "of the mef3io library. Other programs may not accept this password for this "
+    "of this app's software. Other programs may not accept this password for this "
     "recording. Nothing is wrong with the recording."
 )
 

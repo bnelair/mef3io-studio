@@ -63,7 +63,8 @@ Code (app shell, #2/#3):
   `mef3io.Reader` still holds the GIL for a whole open (mef3io#79), while
   `mef3io.inspect()` lets other threads run (measured: ~60 ms longest stall
   vs ~1.7 s for the Reader; test_jobs pins the inspect-based summary on a
-  thread). The helper also contains native crashes, so it stays for now;
+  thread, with a guard that the call takes > 1.5x the stall bound so a held
+  GIL could not pass). The helper also contains native crashes, so it stays for now;
   `freeze_support()` is the first thing the launcher does.
 - UI text: everyday words only (docs/ui-language.md, enforced by
   tests/test_ui_language.py); jargon only behind "Technical details".
@@ -84,9 +85,19 @@ Code (app shell, #2/#3):
   include_values=True)` (mef3io 1.3). Unreadable parts -> `part_problems`,
   the rest shown; `offset_assumed_zero` (basic password) = unverified times;
   a non-ASCII password that matched only mef3io's pre-1.3 rule (#84) ->
-  `legacy_password` note (inspect() does not report it: a Reader open with
-  warnings caught detects it, non-ASCII passwords only). mef3io warnings name
-  the path: always caught, never logged. Never read/read_raw/toc;
+  `legacy_password` note (inspect() does not report it: a lenient
+  `Reader(strict=False)` open with warnings caught detects it, non-ASCII
+  passwords only; `detect_legacy=False` where the note is not shown, e.g.
+  archive's copy check). A disputed offset has no single value but
+  `date_recoverable` still makes `uses_time_offset` true (date warning).
+  mef3io warnings name the path: always caught via
+  `model.quiet.library_warnings_caught()` (a process-wide lock around
+  `warnings.catch_warnings`, which is not thread-safe), never logged.
+  Unreadable parts never pass as gaps: coverage marks the recording
+  `incomplete` (timeline tag + note, never "time with data"); the CSV has an
+  `unreadable_parts` column in both layouts and a "could not be read" row per
+  part in the per-part layout. Patient details list channel descriptions
+  without channel names until mef3io's ChannelSummary carries them (#96). Never read/read_raw/toc;
   tests/test_explorer_bytes.py pins < 1% of bytes read via /proc/self/io in
   the helper. Widgets (`explorer/`,
   `common/`) never import mef3io (test). Pack/unpack (`model/archive.py`)

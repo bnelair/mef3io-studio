@@ -9,6 +9,11 @@ layouts:
   in the table, and whether its times are verified;
 * one row per part of each channel.
 
+Parts that could not be read are never passed off as gaps: both layouts
+have an ``unreadable_parts`` count per recording (its "gaps" may then
+include time that was recorded), and the per-part layout lists each such
+part as its own row, ``part_status`` "could not be read", without times.
+
 Every time is written for people **and** for machines:
 
 * readable: ``2000-01-01 00:00:00`` in UTC (and, when a site time zone is
@@ -72,7 +77,7 @@ from .coverage import (
     RecordingInput,
     combine,
 )
-from .recording import RecordingDetails
+from .recording import OFFSET_DISPUTED, RecordingDetails
 from .summary import HIDDEN
 from .timefmt import to_datetime, zone_label
 
@@ -88,6 +93,7 @@ STATUS_WORDS = {
     STATUS_UNREADABLE: "could not be opened",
 }
 LOCKED_DETAIL = "locked"
+UNREADABLE_PART = "could not be read"
 TOO_MANY = "several, too many to list"
 
 #: Characters that make a spreadsheet treat a cell as a formula.
@@ -173,6 +179,11 @@ def time_note(details: RecordingDetails | None) -> str:
     """Why the times are unverified, or ""."""
     if details is None or details.times_verified:
         return ""
+    if details.time_offset_status == OFFSET_DISPUTED:
+        return (
+            "unverified: different parts of the recording say different things about "
+            "how their times are stored"
+        )
     if details.recording_time_offset is None:
         return "unverified: needs the full-access password to confirm the times"
     return (
@@ -269,6 +280,7 @@ def recording_table(
         "gaps_between_parts",
         "gaps_between_parts_seconds",
         "parts_with_gaps_inside",
+        "unreadable_parts",
         "overlaps_with",
         "overlap_seconds",
         *PATIENT_COLUMNS,
@@ -309,6 +321,7 @@ def recording_table(
             row.append(coverage.parts_with_gaps_inside)
         else:
             row += ["0", 0, "0", 0]
+        row.append(len(details.part_problems))
         others = layout.overlapping.get(rec.key, ())
         shared = layout.overlap_spans_of.get(rec.key, ())
         if others:
@@ -343,6 +356,7 @@ def part_count(items: Sequence[ExportItem]) -> int:
             total += 1
         else:
             total += sum(len(c.parts) for c in rec.details.channels)
+            total += len(rec.details.part_problems)
     return total
 
 
@@ -365,6 +379,7 @@ def part_rows(
         *(["site_time_zone"] if local else []),
         "channel",
         "part",
+        "part_status",
         *_time_columns("start", local),
         *_time_columns("end", local),
         "duration_seconds",
@@ -372,6 +387,7 @@ def part_rows(
         "sampling_rate_hz",
         "gaps_inside",
         "missing_inside_seconds",
+        "unreadable_parts",
     ]
 
     def rows() -> Iterator[list]:
@@ -392,6 +408,7 @@ def part_rows(
                 yield [safe_cell(v) for v in lead + [""] * (len(header) - len(lead))]
                 continue
             lead = [safe_cell(v) for v in lead]
+            unreadable = len(details.part_problems)
             for channel in details.channels:
                 fs = channel.sampling_frequency
                 channel_name = safe_cell(channel.name)
@@ -404,6 +421,7 @@ def part_rows(
                         *lead,
                         channel_name,
                         part.number + 1,
+                        "read",
                         *_time_values(part.start, zone, local),
                         *_time_values(part.end, zone, local),
                         seconds_text(max(0, part.end - part.start)),
@@ -411,7 +429,16 @@ def part_rows(
                         rate,
                         "yes" if missing else "no",
                         seconds_text(round(missing * 1e6)) if missing else "0",
+                        unreadable,
                     ]
+            # Never a gap: these parts exist, but their times are unknown.
+            blank = [""] * (len(header) - len(lead) - 4)
+            for problem in details.part_problems:
+                if pause is not None:
+                    pause()
+                number = problem.part + 1 if problem.part is not None else ""
+                where = [safe_cell(problem.channel), number, UNREADABLE_PART]
+                yield [*lead, *where, *blank, unreadable]
 
     return header, rows(), part_count(items)
 

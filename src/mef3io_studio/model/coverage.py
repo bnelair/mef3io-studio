@@ -13,7 +13,10 @@ For each recording:
   samples cover less time than it spans; where exactly the gaps are is only
   in the block table, so the whole part is marked);
 * **stretches with data** and the **gaps** between them, with the same
-  rounding rule as the Overview tab (``RecordingDetails.gaps``).
+  rounding rule as the Overview tab (``RecordingDetails.gaps``). A part
+  that could not be read has no known times: it never counts as time with
+  data, and the recording is marked ``incomplete`` because its gaps may
+  include recorded time.
 
 Across recordings (only those whose times are verified; unverified times
 are kept out of the absolute order, docs/design/explorer.md):
@@ -101,6 +104,9 @@ class RecordingCoverage:
     channel_count: int = 0
     part_count: int = 0
     parts_with_gaps_inside: int = 0
+    #: Parts that could not be read. Their time is unknown, so it is not in
+    #: ``runs`` (time with data); the ``gaps`` may include it.
+    unreadable_parts: int = 0
     first: int | None = None
     last: int | None = None
     #: Coverage steps, sorted, not overlapping: [starts[i], ends[i]) has
@@ -123,6 +129,11 @@ class RecordingCoverage:
     @property
     def has_data(self) -> bool:
         return bool(self.runs)
+
+    @property
+    def incomplete(self) -> bool:
+        """Some parts could not be read: a gap may be time that was recorded."""
+        return self.unreadable_parts > 0
 
     @property
     def data_seconds(self) -> float:
@@ -217,6 +228,11 @@ class CombinedLayout:
     @property
     def unverified(self) -> list[RecordingCoverage]:
         return [r for r in self.rows if r.has_data and not r.verified]
+
+    @property
+    def incomplete(self) -> list[RecordingCoverage]:
+        """Recordings with data and parts that could not be read."""
+        return [r for r in self.rows if r.has_data and r.incomplete]
 
     @property
     def without_data(self) -> list[RecordingCoverage]:
@@ -384,6 +400,7 @@ def recording_coverage_steps(item: RecordingInput) -> Generator[None, None, Reco
             uses_time_offset=details.uses_time_offset,
             offset_unknown=details.recording_time_offset is None,
             channel_count=len(details.channels),
+            unreadable_parts=len(details.part_problems),
         )
     # Stretches with data and the gaps between them (the Overview's rule).
     tolerance = _tolerance([c.sampling_frequency for c in details.channels])
@@ -415,6 +432,7 @@ def recording_coverage_steps(item: RecordingInput) -> Generator[None, None, Reco
         channel_count=len(details.channels),
         part_count=part_count,
         parts_with_gaps_inside=gappy,
+        unreadable_parts=len(details.part_problems),
         first=runs[0][0],
         last=max(e for _, e in runs),
         starts=starts,

@@ -172,17 +172,26 @@ def test_real_open_on_a_thread_does_not_freeze_the_ui(qtbot, jobs, multisegment_
     The summary uses ``mef3io.inspect`` (mef3io 1.3), which lets other
     threads run while it works. ``mef3io.Reader`` still holds the GIL for a
     whole open (bnelair/mef3io#79), which is why opens stay in a helper
-    process (``LocalRecordingSource.isolate``)."""
+    process (``LocalRecordingSource.isolate``).
+
+    Not vacuous: the call itself must take clearly longer than the allowed
+    stall, so an inspect that held the GIL throughout would fail the bound.
+    If a faster machine or library makes it too quick, the fixture must grow
+    (the guard fails rather than passing on nothing)."""
 
     class InThread(LocalRecordingSource):
         isolate = False
 
+    bound = 0.2
     with TimerProbe() as probe:
+        start = time.monotonic()
         handle = jobs.submit("Opening", summarize_recording, InThread(), str(multisegment_session))
         with qtbot.waitSignal(handle.succeeded, timeout=60_000):
             pass
+        took = time.monotonic() - start
     assert handle.result.channel_count == 64
-    assert probe.max_gap < 0.2, f"UI stalled for {probe.max_gap:.2f} s"
+    assert took > 1.5 * bound, f"the call took only {took:.2f} s: too short to catch a held GIL"
+    assert probe.max_gap < bound, f"UI stalled for {probe.max_gap:.2f} s"
 
 
 def test_real_open_in_the_app_does_not_freeze_the_ui(qtbot, jobs, multisegment_session):
