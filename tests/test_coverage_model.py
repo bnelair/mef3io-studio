@@ -397,6 +397,36 @@ def test_readable_and_unix_seconds_are_exact():
     assert str(unix_seconds(T0 + 500_000)) == "946684800.5"
     assert str(unix_seconds(1_760_520_600_123_456)) == "1760520600.123456"
     assert readable(None) == "" and unix_seconds(None) == ""
+    # Before 1970.
+    assert unix_seconds(-1_500_000) == Decimal("-1.5") and str(unix_seconds(-1_500_000)) == "-1.5"
+    assert readable(-1) == "1969-12-31 23:59:59.999999"
+
+
+def test_site_readable_time_repeats_when_the_clocks_go_back_and_iso_tells_them_apart():
+    """Deliberate: the readable site time is the wall clock, which repeats an
+    hour in autumn. The ISO site column (with the offset) and every UTC
+    column stay distinct, which is what the user guide tells people to use."""
+    from mef3io_studio.model.export import _time_values
+
+    zone = resolve_zone("Europe/Prague")
+    first = 1_761_438_600_000_000  # 2025-10-26 00:30:00 UTC = 02:30 CEST
+    second = first + 3600 * S  # 01:30 UTC = 02:30 CET
+    a, b = _time_values(first, zone, True), _time_values(second, zone, True)
+    # utc_readable, site_readable, utc_iso, site_iso, unix, microseconds
+    assert a[1] == b[1] == "2025-10-26 02:30:00"
+    assert a[3] == "2025-10-26T02:30:00+02:00" and b[3] == "2025-10-26T02:30:00+01:00"
+    assert a[0] != b[0] and a[2] != b[2] and a[4] != b[4] and a[5] != b[5]
+
+
+def test_a_time_no_computer_can_show_as_a_date_still_exports():
+    """A damaged header time must not stop the table: the date columns say
+    so, the numbers keep the stored value."""
+    from mef3io_studio.model.export import INVALID_TIME, _time_values
+
+    huge = 2**62
+    values = _time_values(huge, resolve_zone("Europe/Prague"), True)
+    assert values[:4] == [INVALID_TIME] * 4
+    assert values[5] == huge and Decimal(str(values[4])) * 1_000_000 == huge
 
 
 def test_patient_details_follow_show():

@@ -13,13 +13,21 @@ Every time is written for people **and** for machines:
 
 * readable: ``2000-01-01 00:00:00`` in UTC (and, when a site time zone is
   chosen, the site's wall-clock time), the form spreadsheet programs
-  recognise as a date and time; fractions of a second only when not zero;
+  recognise as a date and time; a 6-digit fraction of a second only when
+  it is not zero. Sort and calculate with the UTC one: the site's clock
+  repeats an hour when the clocks go back, so its readable time can repeat
+  (the ISO column with the offset tells them apart);
 * ISO 8601: UTC with ``Z`` (the reference) and, with a site zone, the site
   time with its offset (e.g. ``2026-10-15T09:30:00+02:00``);
 * Unix time in seconds, exact to the microsecond (``946684800.000001``);
 * microseconds since 1970 UTC as whole numbers (exact for scripts;
   spreadsheet programs keep only 15 digits of a number, so they round these
-  unless the column is imported as text).
+  unless the column is imported as text; so are Unix seconds with a
+  fraction).
+
+A time a computer cannot show as a date (a damaged header) reads
+``not a valid time`` in the readable and ISO columns; the two number columns
+keep the stored value, so a table is always written.
 
 Recordings whose times are
 not verified say so in their own columns; their times are never presented
@@ -208,13 +216,25 @@ def _time_columns(prefix: str, local: bool) -> list[str]:
     return cols
 
 
+INVALID_TIME = "not a valid time"
+
+
+def _as_date(fn: Callable[[], str]) -> str:
+    """``fn()``, or :data:`INVALID_TIME` for a value outside the dates a
+    computer can show (years 1 to 9999), as on screen."""
+    try:
+        return fn()
+    except (OverflowError, ValueError, OSError):
+        return INVALID_TIME
+
+
 def _time_values(us: int | None, zone: tzinfo, local: bool) -> list:
-    values: list = [readable(us)]
+    values: list = [_as_date(lambda: readable(us))]
     if local:
-        values.append(readable(us, zone))
-    values.append(iso_utc(us))
+        values.append(_as_date(lambda: readable(us, zone)))
+    values.append(_as_date(lambda: iso_utc(us)))
     if local:
-        values.append(iso_local(us, zone))
+        values.append(_as_date(lambda: iso_local(us, zone)))
     values += [unix_seconds(us), "" if us is None else int(us)]
     return values
 
