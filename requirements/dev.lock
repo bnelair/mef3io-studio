@@ -163,9 +163,9 @@ ruff==0.17.0 \
     --hash=sha256:d66de796b726c4801e05fa99a2a8d7a780e107be222486c304ab61765561e866 \
     --hash=sha256:db4f74c533403ab70fe4007873f6ae0c9f94a8b03158cf48d78788e47cdbe399
     # via mef3io-studio (pyproject.toml)
-setuptools==80.9.0 \
-    --hash=sha256:062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922 \
-    --hash=sha256:f36b47402ecde768dbfafc46e8e4207b4360c654f1f3bb84475f0a28628fb19c
+setuptools==84.0.0 \
+    --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670 \
+    --hash=sha256:f4695c21257f0d9b537ec2692c941d02ee143b7cc1276941349a546573b2ef73
     # via -r requirements/tools.in
 shiboken6==6.12.0 \
     --hash=sha256:3bde565bb0890044b5c7f63808adddede5abc241e9395a2bfed61919884d6240 \
