@@ -63,8 +63,8 @@ Code (app shell, #2/#3):
   `mef3io.Reader` still holds the GIL for a whole open (mef3io#79), while
   `mef3io.inspect()` lets other threads run (measured: ~60 ms longest stall
   vs ~1.7 s for the Reader; test_jobs pins the inspect-based summary on a
-  thread, with a guard that the call takes > 1.5x the stall bound so a held
-  GIL could not pass). The helper also contains native crashes, so it stays for now;
+  thread; it skips, saying so, when the call takes <= 1.5x the stall bound,
+  too short to show a held GIL). The helper also contains native crashes, so it stays for now;
   `freeze_support()` is the first thing the launcher does.
 - UI text: everyday words only (docs/ui-language.md, enforced by
   tests/test_ui_language.py); jargon only behind "Technical details".
@@ -90,9 +90,13 @@ Code (app shell, #2/#3):
   passwords only; `detect_legacy=False` where the note is not shown, e.g.
   archive's copy check). A disputed offset has no single value but
   `date_recoverable` still makes `uses_time_offset` true (date warning).
-  mef3io warnings name the path: always caught via
-  `model.quiet.library_warnings_caught()` (a process-wide lock around
-  `warnings.catch_warnings`, which is not thread-safe), never logged.
+  mef3io warnings name the path: every mef3io call that may warn (inspect,
+  the legacy Reader open, Validator, archive/extract) runs inside
+  `model.quiet.library_warnings_caught()`, never logged. ALL
+  `warnings.catch_warnings` in the app go through model/quiet.py under one
+  lock (`ignoring_warnings` for the job layer's own): it is process-wide
+  and not thread-safe. Only the self-test's Writer (synthetic, temp folder)
+  is deliberately outside. A channel failed in several ways is listed once.
   Unreadable parts never pass as gaps: coverage marks the recording
   `incomplete` (timeline tag + note, never "time with data"); the CSV has an
   `unreadable_parts` column in both layouts and a "could not be read" row per

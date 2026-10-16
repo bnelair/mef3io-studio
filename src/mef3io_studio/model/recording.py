@@ -128,7 +128,10 @@ class ChannelInfo:
 @dataclass(frozen=True)
 class PartProblem:
     """A part of a channel that could not be read. The rest of the
-    recording is still shown; this part's time shows as a gap."""
+    recording is still shown. This part's times are unknown: its stretch
+    shows as empty on its channel's timeline, it is never counted as time
+    with data, and the recording is marked incomplete (a gap there may be
+    time that was recorded)."""
 
     channel: str
     #: The part's number (from 0), or None when the channel has no complete

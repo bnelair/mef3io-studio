@@ -182,8 +182,11 @@ class _RecordingCtx:
 @pytest.mark.parametrize("packing", [True, False])
 def test_stop_during_a_pack_task_stops_the_helper_cleanly(medium, tmp_path, packing):
     """The real task in a real helper process: Stop is pressed once mef3io
-    has reported progress; mef3io stops by itself within the grace period
-    and leaves nothing behind, before the task's cleanup runs."""
+    has reported progress, and the task stops within the grace period.
+    The stop crosses a process boundary, so mef3io may already have finished
+    its copy under the temporary name when it lands; only the state after
+    the task's cleanup is pinned (the in-process test above pins that mef3io
+    removes its own output)."""
     from mef3io_studio.workers.tasks import pack_or_unpack
 
     source = str(medium)
@@ -204,9 +207,39 @@ def test_stop_during_a_pack_task_stops_the_helper_cleanly(medium, tmp_path, pack
         pack_or_unpack(ctx, source, str(out))
     assert time.monotonic() - start < STOP_GRACE_SECONDS + 5
     assert any(total for _d, total, _p in ctx.reports)
-    assert os.listdir(out) == []  # before the cleanup: mef3io removed its own
     for fn in ctx.cleanups:
         fn()
+    assert os.listdir(out) == []
+
+
+def test_stop_button_stops_a_pack_job(qtbot, jobs, medium, tmp_path, monkeypatch):
+    """Through the job layer: Stop is pressed (the job's token, as
+    ``JobHandle.cancel`` sets it) the moment mef3io's first byte count
+    reaches the job's progress slot, i.e. once the helper is copying.
+    The window only samples that slot ten times a second, too late for a
+    copy this small. Afterwards (the job's cleanup has run) nothing is left
+    in the destination."""
+    from mef3io_studio.model.progress import ProgressSlot
+    from mef3io_studio.workers.tasks import pack_or_unpack
+
+    holder = {}
+    put = ProgressSlot.put
+
+    def put_then_stop(self, progress):
+        put(self, progress)
+        handle = holder.get("handle")
+        if handle is not None and progress.determinate:
+            handle.token.cancel()
+
+    monkeypatch.setattr(ProgressSlot, "put", put_then_stop)
+    out = tmp_path / "out"
+    out.mkdir()
+    handle = holder["handle"] = jobs.submit("Packing", pack_or_unpack, str(medium), str(out))
+    with qtbot.waitSignal(handle.finished, timeout=60_000):
+        pass
+    if handle.record.status is JobStatus.SUCCEEDED:
+        pytest.skip("the job was submitted after its first progress report")
+    assert handle.record.status is JobStatus.CANCELLED and handle.error is None
     assert os.listdir(out) == []
 
 
@@ -400,3 +433,24 @@ def test_coverage_marks_incomplete_recordings(tmp_path):
     assert partly.data_seconds == pytest.approx(10.0)
     assert row_tag(partly) == INCOMPLETE_TAG and row_tag(good) == ""
     assert "could not be read" in note_text(layout)
+
+
+def test_a_failed_channel_is_listed_once():
+    """Segment problems and an incomplete-channel entry for the same channel
+    give one set of rows, not duplicates (per-part CSV, Overview)."""
+    from types import SimpleNamespace
+
+    from mef3io_studio.model.inspect import _channels
+
+    bad = SimpleNamespace(
+        segment=0, readable=False, problem="damaged", start_time=None, end_time=None
+    )
+    summary = SimpleNamespace(
+        channels=[
+            SimpleNamespace(name="x", segments=[bad], start_time=None, end_time=None),
+        ],
+        incomplete_channels=["x", "y", "y"],
+    )
+    channels, problems = _channels(summary, "/nowhere.mefd")
+    assert channels == []
+    assert [(p.channel, p.part) for p in problems] == [("x", 0), ("y", None)]

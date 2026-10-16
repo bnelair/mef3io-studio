@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .cancel import CancelToken, stopped_by_library
+from .quiet import library_warnings_caught
 from .text import technical
 
 # Check id -> (title, what it means). docs/ui-language.md: no format words.
@@ -241,7 +242,7 @@ def check_recording(
     cancel = cancel or CancelToken()
     cancel.raise_if_cancelled()
     location = os.fspath(location)
-    with stopped_by_library():
+    with stopped_by_library(), library_warnings_caught():
         report = mef3io.Validator(location, password=password).validate(
             cancel=cancel.for_library(), progress=progress
         )

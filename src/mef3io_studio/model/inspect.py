@@ -212,8 +212,12 @@ def _channels(summary, location: str) -> tuple[list[ChannelInfo], list[PartProbl
                 parts=tuple(parts),
             )
         )
-    for name in summary.incomplete_channels:
-        problems.append(PartProblem(str(name), None, "no complete part (files missing)"))
+    # A channel without one complete part. If mef3io also listed its parts
+    # as unreadable, those rows already say it: one entry per problem.
+    listed = {p.channel for p in problems}
+    for name in dict.fromkeys(str(n) for n in summary.incomplete_channels):
+        if name not in listed:
+            problems.append(PartProblem(name, None, "no complete part (files missing)"))
     return channels, problems
 
 

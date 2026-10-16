@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from .cancel import CancelToken, stopped_by_library
 from .progress import byte_progress
+from .quiet import library_warnings_caught
 from .recording import is_packed, recording_name
 from .scan import TEMP_PREFIX
 
@@ -159,7 +160,7 @@ def run_in_helper(
     cancel = cancel or CancelToken()
     cancel.raise_if_cancelled()
     progress = byte_progress(send) if send is not None else None
-    with stopped_by_library():
+    with stopped_by_library(), library_warnings_caught():
         if plan_.packing:
             mef3io.archive_session(
                 plan_.source,

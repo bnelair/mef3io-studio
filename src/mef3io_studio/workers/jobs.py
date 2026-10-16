@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import logging
 import traceback
-import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -57,6 +56,7 @@ from ..model.progress import (
     Progress,
     ProgressSlot,
 )
+from ..model.quiet import ignoring_warnings
 from .isolated import run_isolated
 
 log = logging.getLogger(__name__)
@@ -380,8 +380,7 @@ class JobManager(QObject):
             "changed",
         )
         for handle in handles:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
+            with ignoring_warnings(RuntimeWarning):
                 for name in signals:
                     try:
                         getattr(handle, name).disconnect()
