@@ -961,6 +961,151 @@ def test_make_again_keeps_a_copy_with_other_identity_choices(qtbot, window, tmp_
     assert page.handle is None  # nothing started
 
 
+# Review of PR #38: what must survive when the batch KEPT text, descriptions
+# or patient details
+
+
+def _source(path, notes=(), acquisition=None, subject=None, channels=("a1", "a2", "a3")):
+    """A made-up recording: patient details, descriptions and notes as given
+    (notes: (seconds after the start, text, channel or None))."""
+    import numpy as np
+
+    subject = subject or mef3io.Subject(
+        name_1=FIRST, name_2=LAST, id=PATIENT_ID, recording_location="Ward 9"
+    )
+    meta = mef3io.Metadata(subject=subject, acquisition=acquisition or mef3io.Acquisition())
+    with mef3io.Writer(str(path), overwrite=True, units="uV", metadata=meta) as w:
+        for name in channels:
+            w.write(name, np.sin(np.arange(2560) / 10.0), T0, 256.0)
+        # One call per place: a second call for the same place replaces it.
+        for place in dict.fromkeys(channel for _s, _t, channel in notes):
+            w.write_annotations(
+                [
+                    {"time": T0 + seconds * 1_000_000, "text": text}
+                    for seconds, text, channel in notes
+                    if channel == place
+                ],
+                place,
+            )
+    return path
+
+
+def _copy(src, path, exclude=("a3",), **options):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mef3io.anonymize_session(
+        str(src), str(path), SHIFT, exclude_channels=list(exclude) or None, **options
+    )
+    return path
+
+
+def _asked(path, src, exclude=("a3",), clear=a.CLEAR_ALL, text="drop"):
+    return dict(_check(path, src, exclude=exclude), clear=list(clear), text=text)
+
+
+NAME_ONLY_NOTES = (
+    (1, LAST, None),  # only a name
+    (2, f"{FIRST} {LAST}, {PATIENT_ID}", None),  # only names and the ID
+    (3, f"{LAST} moved", None),  # more than names: must survive
+    (4, "eyes open", "a1"),
+    (5, "artefact", "a3"),  # on a channel this batch leaves out
+)
+
+
+def test_kept_note_text_must_survive_in_the_copy(tmp_path):
+    """Finding 1: a batch that KEPT note text does not take a copy whose
+    text was dropped; its own copy, where the notes holding only names came
+    out empty, is still its own."""
+    src = _source(tmp_path / "orig.mefd", NAME_ONLY_NOTES)
+    ours = _copy(src, tmp_path / "ours" / "S9.mefd", text="keep")
+    dropped = _copy(src, tmp_path / "dropped" / "S9.mefd")
+    from mef3io_studio.model.inspect import inspect_recording
+
+    texts = [n.text for n in inspect_recording(str(ours), "").details.notes]
+    # mef3io took every word out of the two notes holding only names.
+    assert texts[:2] == ["", " , "] and texts[2] == " moved"
+    asked = [_asked(p, src, text="keep") for p in (ours, dropped)]
+    assert pipeline.made_by_this_batch(asked) == [True, False]
+
+
+def test_kept_names_and_text_own_copy_is_recognised(tmp_path):
+    """Patient details kept too: mef3io leaves the names in the text, and
+    the batch's own copy is still its own; the dropped one still is not."""
+    src = _source(tmp_path / "orig.mefd", NAME_ONLY_NOTES)
+    keep = ("location",)
+    ours = _copy(src, tmp_path / "ours" / "S9.mefd", text="keep", clear=keep)
+    dropped = _copy(src, tmp_path / "dropped" / "S9.mefd", clear=keep)
+    asked = [_asked(p, src, clear=keep, text="keep") for p in (ours, dropped)]
+    assert pipeline.made_by_this_batch(asked) == [True, False]
+
+
+def test_the_known_limit_of_kept_note_text(tmp_path):
+    """What remains: when every note holds only names, a copy that dropped
+    the text cannot be told from this batch's (both come out empty)."""
+    src = _source(tmp_path / "orig.mefd", NAME_ONLY_NOTES[:2])
+    dropped = _copy(src, tmp_path / "dropped" / "S9.mefd")
+    assert pipeline.made_by_this_batch([_asked(dropped, src, text="keep")]) == [True]
+
+
+DESCRIBED = dict(
+    session_description="Overnight study, ward round",
+    channel_description="left hippocampus",
+    reference_description="linked mastoids",
+)
+
+
+@pytest.mark.parametrize("exclude", [("a3",), ()], ids=["a3 left out", "all channels"])
+def test_kept_descriptions_must_survive_in_the_copy(tmp_path, exclude):
+    """Finding 2: a batch that KEPT the descriptions does not take a copy
+    whose descriptions were cleared; its own copy is its own."""
+    src = _source(tmp_path / "orig.mefd", acquisition=mef3io.Acquisition(**DESCRIBED))
+    keep = ("subject", "location")
+    ours = _copy(src, tmp_path / "ours" / "S9.mefd", exclude=exclude, clear=keep)
+    cleared = _copy(src, tmp_path / "cleared" / "S9.mefd", exclude=exclude)
+    asked = [_asked(p, src, exclude=exclude, clear=keep) for p in (ours, cleared)]
+    assert pipeline.made_by_this_batch(asked) == [True, False]
+
+
+def test_only_the_reference_description_kept_is_still_required(tmp_path):
+    """No channel left out: the reference description (it holds no names)
+    must be there when the batch kept descriptions."""
+    acquisition = mef3io.Acquisition(reference_description="linked mastoids")
+    src = _source(tmp_path / "orig.mefd", acquisition=acquisition)
+    keep = ("subject", "location")
+    ours = _copy(src, tmp_path / "ours" / "S9.mefd", exclude=(), clear=keep)
+    cleared = _copy(src, tmp_path / "cleared" / "S9.mefd", exclude=())
+    asked = [_asked(p, src, exclude=(), clear=keep) for p in (ours, cleared)]
+    assert pipeline.made_by_this_batch(asked) == [True, False]
+
+
+def _mixed_patients(tmp_path):
+    """a1 and a2 of one patient record, a3 written with other details (as a
+    recording assembled from two exports would be)."""
+    import shutil
+
+    main = _source(tmp_path / "a" / "orig.mefd", channels=("a1", "a2"))
+    other = mef3io.Subject(
+        name_1="Ottilie", name_2="Quist", id="MRN-1", recording_location="Ward 9"
+    )
+    extra = _source(tmp_path / "b" / "orig.mefd", subject=other, channels=("a3",))
+    shutil.copytree(extra / "a3.timd", main / "a3.timd")
+    return main
+
+
+def test_kept_patient_details_with_a_channel_left_out(tmp_path):
+    """Finding 3: patient details that differ between channels. Kept, with
+    the differing channel left out, the batch's own copy is still its own;
+    with nothing left out, its own copy is too, and a copy without the
+    patient details is not."""
+    src = _mixed_patients(tmp_path)
+    keep = ("location", "descriptions")
+    ours = _copy(src, tmp_path / "ours" / "S9.mefd", clear=keep)
+    assert pipeline.made_by_this_batch([_asked(ours, src, clear=keep)]) == [True]
+    all_kept = _copy(src, tmp_path / "all" / "S9.mefd", exclude=(), clear=keep)
+    cleared = _copy(src, tmp_path / "cleared" / "S9.mefd", exclude=())
+    asked = [_asked(p, src, exclude=(), clear=keep) for p in (all_kept, cleared)]
+    assert pipeline.made_by_this_batch(asked) == [True, False]
+
+
 def test_resume_dialog_names_each_original_and_can_share_a_password(qtbot):
     from mef3io_studio.anonymizer.resume import ResumePasswordsDialog
 

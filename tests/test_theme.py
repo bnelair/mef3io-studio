@@ -253,3 +253,20 @@ def test_a_focused_field_has_an_accent_frame(themes, qtbot, mode, name):
     themes.set_mode(mode)
     ratio = _frame_ratio(qtbot, themes, _fields()[name], focused=True)
     assert ratio >= MINIMUM, (mode, name, round(ratio, 2))
+
+
+@pytest.mark.parametrize("mode", ["light", "dark"])
+@pytest.mark.parametrize("kind", [QLineEdit, QSpinBox, QComboBox], ids=lambda k: k.__name__)
+def test_a_field_without_a_frame_gets_none(themes, qtbot, mode, kind):
+    """setFrame(False) is respected: no outline is drawn round the field
+    (ours measures >= 4.6:1; what Fusion still draws of the arrow buttons
+    and their shading stays near 2:1)."""
+    themes.set_mode(mode)
+
+    def make():
+        field = kind()
+        field.setFrame(False)
+        return field
+
+    ratio = _frame_ratio(qtbot, themes, make)
+    assert ratio < MINIMUM, (mode, kind.__name__, round(ratio, 2))

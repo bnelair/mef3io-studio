@@ -259,9 +259,10 @@ class StudioStyle(QProxyStyle):
 
     def drawComplexControl(self, control, option, painter, widget=None):  # noqa: N802 (Qt)
         super().drawComplexControl(control, option, painter, widget)
-        if control in _FRAMED_CONTROLS:
+        if control in _FRAMED_CONTROLS and getattr(option, "frame", True):
             # Fusion's own outline (window colour made darker) is painted
-            # over with ours, at the same place.
+            # over with ours, at the same place. A field set to have no
+            # frame (setFrame(False)) gets none.
             paint_field_frame(self.theme, option, painter)
 
 

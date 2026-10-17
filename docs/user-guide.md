@@ -426,8 +426,11 @@ for a recording that was being made when the batch stopped, you choose to
 keep it (marked as not confirmed) or make it again. It is made again only
 if the app can tell it made it itself: the same name, dates, channels and
 passwords, and the patient details, descriptions and note text removed or
-kept exactly as this batch asked. Anything else with that name is left
-alone, and the app says so. Unfinished copies and
+kept as this batch asked. (When some of these were kept and hold nothing
+but names, or a channel was left out, the app cannot always tell such a
+copy from one made with those details removed; it is still a copy of the
+same recording with the same name and dates.) Anything else with that name
+is left alone, and the app says so. Unfinished copies and
 archives left behind are never kept silently: the app offers to remove them
 ("They should hold no patient details, but they were never checked: do not
 use or share them").

@@ -120,7 +120,9 @@ Code (app shell, #2/#3):
   `incomplete` (timeline tag + note, never "time with data"); the CSV has an
   `unreadable_parts` column in both layouts and a "could not be read" row per
   part in the per-part layout. Patient details list channel descriptions
-  without channel names until mef3io's ChannelSummary carries them (#96). Never read/read_raw/toc;
+  without channel names (#96); mef3io 1.4's ChannelSummary does carry them
+  (`ChannelInfo.description`, so far used only by the batch's ownership
+  check). Never read/read_raw/toc;
   tests/test_explorer_bytes.py pins < 1% of bytes read via /proc/self/io in
   the helper. Widgets (`explorer/`,
   `common/`, `anonymizer/`) never import mef3io (tests). Pack/unpack (`model/archive.py`)
@@ -185,9 +187,15 @@ Code (app shell, #2/#3):
   `pipeline.made_by_this_batch` (last op anonymize + stored name + start ==
   original + shift + exact kept channels + the asked password state + the
   identity as asked, #36: pseudonym stored, cleared patient/location/
-  descriptions EMPTY, kept patient/location == the original's, notes ==
-  original's minus left-out channels at +shift, no note text when dropped,
-  text only where the original had it when kept; inspect facts only). A late
+  descriptions EMPTY; kept patient/location values <= the original's (and
+  present == original's when nothing left out); kept descriptions/note
+  text PRESENT where they must survive (`_has_content`: something left
+  after removing ALL identity values + left-out channel names + their
+  words; a superset of mef3io's redaction, which has no public API, so the
+  batch's OWN copy always passes; channel descriptions per channel via
+  `ChannelInfo.description`); notes == original's minus left-out channels
+  at +shift; no note text when dropped; inspect facts only; remaining blind
+  spots listed in docs/design/anonymizer.md). A late
   Stop credits a folder that appeared only through the same check
   (`_appeared` + `_is_this_copy`). The batch-archive name refusal names the
   matched text on screen (never logged). Journal (`model/journal.py`): opaque ids in clear, everything else

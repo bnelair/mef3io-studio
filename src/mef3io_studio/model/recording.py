@@ -121,6 +121,10 @@ class ChannelInfo:
     parts: tuple[Part, ...] = ()
     #: Bytes of every file of the channel (sizes only, never read).
     bytes: int = 0
+    #: The channel's description (identifying text: masked in the UI like
+    #: the other descriptions, never logged). Used by the batch's check of
+    #: an existing copy, which needs it per channel.
+    description: str = field(default="", repr=False, compare=False)
 
     @property
     def missing_seconds(self) -> float:

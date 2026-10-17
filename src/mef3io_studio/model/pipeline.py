@@ -32,8 +32,11 @@ Plain Python, no Qt. Never logs anything.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import shutil
+import unicodedata
+from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 
 from .anonymize import (
@@ -225,25 +228,85 @@ def _note_key(note, shift: int = 0) -> tuple:
     return (note.time + shift, note.kind, note.channel or "")
 
 
+#: Identity values whose text mef3io takes out of what it keeps (and more:
+#: see :func:`_has_content`).
+_REMOVED_FACTS = (
+    "subject_name_1",
+    "subject_name_2",
+    "subject_id",
+    "recording_location",
+    "session_name",
+    "anonymized_name",
+)
+
+
+def _folded(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
+
+
+def _has_content(text: str, removed: list[str]) -> bool:
+    """Whether ``text`` clearly holds more than the names mef3io takes out
+    when it keeps text, so that SOME of it must survive in a copy.
+
+    mef3io has no public call for its redaction, so this errs towards
+    "no": it takes out every identity value of the original (cleared or
+    not), the left-out channels' names and every word of each, anywhere,
+    ignoring case and accents. That is at least what mef3io takes out, so
+    whatever is left here is left in this batch's own copy too, and the
+    batch never fails to recognise its own copy."""
+    folded = _folded(text)
+    for value in removed:
+        folded = folded.replace(value, " ")
+    return any(ch.isalnum() for ch in folded)
+
+
+def _removed_values(source, excluded: set[str]) -> list[str]:
+    values = set(excluded)
+    for fact in source.identity:
+        if fact.name in _REMOVED_FACTS:
+            values.update(fact.values)
+    pieces = set()
+    for value in values:
+        folded = _folded(value)
+        pieces.add(folded)
+        pieces.update(word for word in re.split(r"[^\w]+", folded) if word)
+    pieces.discard("")
+    return sorted(pieces, key=len, reverse=True)
+
+
 def _identity_as_asked(source, copy, c: dict) -> bool:
     """The copy's identity matches this batch's choices (metadata only):
 
     * the pseudonym (or, without one, the copy's name) is stored;
-    * what the batch cleared is empty; patient details and location it kept
-      are the original's, unchanged (mef3io never edits them); descriptions
-      it kept are no more than the original had (they are rewritten: the old
-      name is replaced, removed names are taken out);
+    * what the batch cleared is empty;
+    * patient details and location it kept: no value the original did not
+      have (mef3io never edits them), and with no channel left out exactly
+      as present as in the original (a left-out channel may have held the
+      only value: inspect does not say per channel);
+    * descriptions it kept: no more of them than the original had, and
+      present where they must survive (:func:`_has_content`): the
+      recording's description always, each kept channel's own description
+      channel by channel, the reference descriptions when no channel was
+      left out (inspect does not say which channel holds which);
     * the notes are the original's, minus those of channels left out, at
       the original's times plus the shift;
     * note text: none at all when the batch removed it; when it kept it,
-      text only on notes whose original had text, and never more of it.
+      text on every note whose original text must survive, text only on
+      notes whose original had text, and never more of it.
     A fact that could not be read (``present`` None) proves nothing."""
     facts = {f.name: f for f in copy.identity}
     originals = {f.name: f for f in source.identity}
+    excluded = set(c.get("exclude", ()))
+    removed = _removed_values(source, excluded)
 
     def known(name):
         fact = facts.get(name)
         return fact if fact is not None and fact.present is not None else None
+
+    def must_survive(name) -> bool:
+        original = originals.get(name)
+        return original is not None and any(_has_content(v, removed) for v in original.values)
 
     stored = known("anonymized_name")
     if stored is None or set(stored.values) != {c.get("pseudonym") or c["name"]}:
@@ -258,13 +321,27 @@ def _identity_as_asked(source, copy, c: dict) -> bool:
             if choice in cleared:
                 if fact.present:
                     return False
-            elif choice != CLEAR_DESCRIPTIONS:
-                if original is None or set(fact.values) != set(original.values):
-                    return False
-            elif original is not None and fact.occurrences > original.occurrences:
+                continue
+            if original is None or original.present is None:
                 return False
+            if choice != CLEAR_DESCRIPTIONS:
+                if not set(fact.values) <= set(original.values):
+                    return False
+                if not excluded and fact.present != original.present:
+                    return False
+                continue
+            if fact.occurrences > original.occurrences:
+                return False
+            if name == "session_description" or (name != "channel_description" and not excluded):
+                if must_survive(name) and not fact.present:
+                    return False
+        if choice == CLEAR_DESCRIPTIONS and choice not in cleared:
+            kept = {ch.name: ch.description for ch in copy.channels}
+            for ch in source.channels:
+                if ch.name in kept and _has_content(ch.description, removed):
+                    if not kept[ch.name]:
+                        return False
 
-    excluded = set(c.get("exclude", ()))
     shift = int(c["shift"])
     expected = sorted(_note_key(n, shift) for n in source.notes if n.channel not in excluded)
     if copy.notes_problem is not None or sorted(map(_note_key, copy.notes)) != expected:
@@ -275,11 +352,15 @@ def _identity_as_asked(source, copy, c: dict) -> bool:
     if c.get("text", TEXT_DROP) == TEXT_DROP:
         return not text.present and not any(n.text for n in copy.notes)
     original_text = originals.get("record_text")
-    with_text = {_note_key(n, shift) for n in source.notes if n.text}
+    kept_notes = [n for n in source.notes if n.channel not in excluded]
+    with_text = {_note_key(n, shift) for n in kept_notes if n.text}
+    needed = Counter(_note_key(n, shift) for n in kept_notes if _has_content(n.text, removed))
+    have = Counter(_note_key(n) for n in copy.notes if n.text)
     return (
         original_text is not None
         and text.occurrences <= original_text.occurrences
-        and all(_note_key(n) in with_text for n in copy.notes if n.text)
+        and all(key in with_text for key in have)
+        and all(have[key] >= count for key, count in needed.items())
     )
 
 
