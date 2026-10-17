@@ -516,9 +516,13 @@ def test_headings_line_up_with_cells_on_screen(qapp, page, qtbot, tmp_path):
     """Rendered offscreen with the Fusion style (what the app uses): for
     each column of the recordings list, the heading's text and a cell's
     text start (left-aligned) or end (right-aligned) at the same place."""
-    # The app sets Fusion; with its style sheet on top Qt reports the
-    # style-sheet wrapper around it.
-    assert qapp.style().metaObject().className() in ("QFusionStyle", "QStyleSheetStyle")
+    # The app sets Fusion (StudioStyle wraps it); with its style sheet on
+    # top Qt reports the style-sheet wrapper around it.
+    assert qapp.style().metaObject().className() in (
+        "QFusionStyle",
+        "StudioStyle",
+        "QStyleSheetStyle",
+    )
     rec = tmp_path / "rates.mefd"
     with mef3io.Writer(str(rec), overwrite=True) as w:
         w.write("fast", np.zeros(8000), T0, 8000.0)

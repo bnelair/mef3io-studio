@@ -339,7 +339,47 @@ archives" (2026-10-16) is built as follows.
   a start equal to the original's plus the shift, exactly the original's
   channels minus those left out, and protected exactly as asked (opens with
   the copies' full-access password and not without, or unprotected when none
-  were set), read with `inspect` for a folder or an archive; anything else,
+  were set), and its identity handled as this batch asked
+  ([#36](https://github.com/bnelair/mef3io-studio/issues/36)): the
+  pseudonym (or the copy's name) stored as `anonymized_name`; patient
+  names/ID, location and descriptions EMPTY where the batch cleared them.
+  Kept patient details and location: no value the original lacks, and,
+  with no channel left out, present exactly when the original's are. Kept
+  descriptions: no more than the original's, and PRESENT where they must
+  survive: each kept channel's own description channel by channel; the
+  recording and reference descriptions when no channel was left out (both
+  are stored per channel, and inspect does not say which channel holds
+  which). The notes exactly the original's minus those of left-out
+  channels, at original + shift; NO note text where the batch removed it;
+  where it kept it, text on every note whose original text must survive,
+  text only on notes whose original had text, never more of it. "Must
+  survive" (`pipeline._has_content`) MIRRORS mef3io's redaction
+  (`build_redactor` in mef3io 1.4.0's anonymize.cpp; there is no public
+  call for it): a text survives when one of its words (maximal
+  alphanumeric runs, as mef3io splits them) contains none of the pieces
+  mef3io may search for: each whole value, its letter runs of 3+, its
+  digit runs of 3+, and the whole value's first and last runs. It uses
+  every identity value of the original (cleared or not) and the left-out
+  channels' names, with a coarser case/accent fold than mef3io's, so it
+  asks for no more than mef3io leaves, and the batch's own copy passes
+  (rejecting it would block Continue). A FUTURE mef3io change to its
+  redaction rules must be mirrored here:
+  `test_own_copy_is_recognised_whatever_the_names_look_like` (letter runs
+  inside "Mary_Ann", "Jane2", "Ward9North"; ID digit runs in "AB12345CD",
+  "MRN12345") fails when the app asks for text mef3io removed. Identity
+  facts, notes and per-channel descriptions from `inspect` only, no signal
+  read; a fact that cannot be read proves nothing. What remains
+  undetected, all copies of the same original with the same name, shift,
+  channels and passwords: a copy that dropped note text, or cleared
+  descriptions, where every such text holds only names (it comes out
+  empty in this batch's copy too), or where every word contains even part
+  of an identity value or a left-out channel name, however short (the "o"
+  of "O'Brien", the "a" of "A-12345", a left-out channel "E"), because
+  such a word counts as a name even when mef3io keeps it (tightening:
+  #39); with a channel left out, a copy that
+  cleared the patient details or location, or the recording or reference
+  descriptions. Read with
+  `inspect` for a folder or an archive; anything else,
   even another anonymized copy of the same original, is left as it is, with
   a plain message), then continues. A Stop that arrives after a folder with
   the copy's name appeared credits it only if the same check says it is this
@@ -367,7 +407,4 @@ archives" (2026-10-16) is built as follows.
 drop/keep choice for all text today); pseudonym generation per subject and a
 naming pattern; running copies in parallel; a PDF/CSV report export (the
 date key is the only file written about a batch); the "set the time too"
-weekday uses the site zone when one is chosen. "Make them again" on
-Continue does not yet compare the identity choices (patient details
-cleared, note text dropped) with the existing result
-([#36](https://github.com/bnelair/mef3io-studio/issues/36)).
+weekday uses the site zone when one is chosen.

@@ -89,7 +89,16 @@ Code (app shell, #2/#3):
   Never log paths or recording contents.
 - New preferences must be declared in `common/settings.PREFERENCES` (UI only).
 - Look: Fusion + palette + QSS in `common/theme.py`; icons are bundled SVGs
-  with `currentColor`; no pixel font sizes.
+  with `currentColor`; no pixel font sizes. Radio buttons and checkboxes
+  (also in item views, also disabled) are painted by `theme.StudioStyle`
+  (a QProxyStyle over Fusion) in `Theme.indicator`: Fusion's own outline is
+  window.darker() = invisible in dark (1.1:1). Same for the FRAMES of input
+  fields: StudioStyle paints PE_FrameLineEdit and overdraws CC_SpinBox/
+  CC_ComboBox (line/spin/date/time/combo, enabled/disabled/read-only) in
+  `indicator`, accent 2 px on focus; QPlainTextEdit/QTextEdit via QSS.
+  tests/test_theme.py pins >= 3:1 against every `indicator_backgrounds()`
+  colour AND on rendered pixels (indicators and frames), both themes. QTreeView selection = accent_soft (like QTableView),
+  so a box on a selected row keeps its outline.
 - Explorer (#4): `model/inspect.py` is the ONLY place that reads a recording
   for display: a thin adapter over `mef3io.inspect(strict=False,
   include_values=True)` (mef3io 1.3). Unreadable parts -> `part_problems`,
@@ -111,7 +120,9 @@ Code (app shell, #2/#3):
   `incomplete` (timeline tag + note, never "time with data"); the CSV has an
   `unreadable_parts` column in both layouts and a "could not be read" row per
   part in the per-part layout. Patient details list channel descriptions
-  without channel names until mef3io's ChannelSummary carries them (#96). Never read/read_raw/toc;
+  without channel names (#96); mef3io 1.4's ChannelSummary does carry them
+  (`ChannelInfo.description`, so far used only by the batch's ownership
+  check). Never read/read_raw/toc;
   tests/test_explorer_bytes.py pins < 1% of bytes read via /proc/self/io in
   the helper. Widgets (`explorer/`,
   `common/`, `anonymizer/`) never import mef3io (tests). Pack/unpack (`model/archive.py`)
@@ -174,7 +185,21 @@ Code (app shell, #2/#3):
   keeps the temp archive + journal ("Finish the archive with what is done" =
   partial). "Make them again" on Continue removes a result only if
   `pipeline.made_by_this_batch` (last op anonymize + stored name + start ==
-  original + shift + exact kept channels + the asked password state). A late
+  original + shift + exact kept channels + the asked password state + the
+  identity as asked, #36: pseudonym stored, cleared patient/location/
+  descriptions EMPTY; kept patient/location values <= the original's (and
+  present == original's when nothing left out); kept descriptions/note
+  text PRESENT where they must survive (`_has_content` MIRRORS mef3io
+  1.4.0's `build_redactor`, which has no public API: a word survives if it
+  contains no whole value, letter run >= 3, digit run >= 3 or first/last
+  run of any identity value or left-out channel name; coarser fold. A
+  mef3io redaction change must be mirrored, or the batch rejects its OWN
+  copy and Continue is blocked: test_own_copy_is_recognised_whatever_the_
+  names_look_like catches it. Channel descriptions per channel via
+  `ChannelInfo.description`; recording/reference descriptions only when
+  nothing was left out); notes == original's minus left-out channels
+  at +shift; no note text when dropped; inspect facts only; remaining blind
+  spots listed in docs/design/anonymizer.md). A late
   Stop credits a folder that appeared only through the same check
   (`_appeared` + `_is_this_copy`). The batch-archive name refusal names the
   matched text on screen (never logged). Journal (`model/journal.py`): opaque ids in clear, everything else

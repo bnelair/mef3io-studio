@@ -212,6 +212,7 @@ def _channels(summary, location: str) -> tuple[list[ChannelInfo], list[PartProbl
                 end=int(c.end_time),
                 parts=tuple(parts),
                 bytes=int(getattr(c, "bytes", 0) or 0),
+                description=str(getattr(c, "channel_description", "") or ""),
             )
         )
     # A channel without one complete part. If mef3io also listed its parts

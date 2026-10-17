@@ -9,6 +9,15 @@ not fit this Apache-2.0 app). The style sheet only adds what a palette cannot:
 rounded corners, the sidebar, spacing. Font sizes are never set in pixels, so
 text follows the operating system's font settings.
 
+Radio buttons and checkboxes are drawn by the app (``StudioStyle``), not by
+Fusion: Fusion outlines them in the window colour made darker, which is almost
+invisible on the dark theme (near-black on near-black) and too faint on the
+light one. Ours use the theme's ``indicator`` colour (>= 3:1, a test renders them
+and measures), also when disabled and inside lists such as the channel picker.
+The frames of input fields (text, number, date and time fields, lists to
+choose from, text boxes) had the same fault and get the same colour, with an
+accent frame while focused.
+
 The theme follows the operating system's light/dark setting live, unless the
 user picked one under View > Appearance.
 """
@@ -18,9 +27,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from string import Template
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPalette, QPen
+from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOption
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,12 @@ class Theme:
     #: Outline of interactive controls and progress tracks: >= 3:1 against
     #: window, surface and surface_alt (WCAG 1.4.11; a test checks it).
     border: str
+    #: Outline of unselected radio buttons and checkboxes, and the frame of
+    #: input fields: >= 3:1 against
+    #: every background they sit on, list rows included (``indicator_
+    #: backgrounds``; a test renders them and measures). Stronger than
+    #: ``border`` because a small ring reads weaker than a long edge.
+    indicator: str
     #: Decorative separators between panels (no contrast requirement).
     divider: str
     hover: str
@@ -49,7 +64,8 @@ class Theme:
 LIGHT = Theme(
     name="light", dark=False,
     window="#f5f6f8", surface="#ffffff", surface_alt="#f0f2f5", sidebar="#eceff3",
-    text="#1d2228", muted="#5b6573", border="#848b95", divider="#d6dbe1", hover="#e2e7ee",
+    text="#1d2228", muted="#5b6573", border="#848b95", indicator="#68707b",
+    divider="#d6dbe1", hover="#e2e7ee",
     accent="#2f6feb", accent_text="#ffffff", accent_soft="#dbe6fd",
     success="#1f883d", danger="#cf222e",
 )  # fmt: skip
@@ -57,7 +73,8 @@ LIGHT = Theme(
 DARK = Theme(
     name="dark", dark=True,
     window="#15171c", surface="#1c1f25", surface_alt="#22262d", sidebar="#191c21",
-    text="#e5e8ec", muted="#98a2b0", border="#6b7380", divider="#2e333c", hover="#272c34",
+    text="#e5e8ec", muted="#98a2b0", border="#6b7380", indicator="#868e9a",
+    divider="#2e333c", hover="#272c34",
     accent="#5b93ff", accent_text="#0d1117", accent_soft="#1f3157",
     success="#3fb950", danger="#f85149",
 )  # fmt: skip
@@ -102,6 +119,7 @@ QTableView { background: $surface; alternate-background-color: $surface_alt;
              border: 1px solid $border; border-radius: 8px; gridline-color: transparent;
              selection-background-color: $accent_soft; selection-color: $text; }
 QTableView:focus { border: 2px solid $accent; }
+QTreeView { selection-background-color: $accent_soft; selection-color: $text; }
 QHeaderView::section { background: $surface_alt; color: $muted; border: none;
                        border-bottom: 1px solid $divider; padding: 0.3em 0.55em; }
 QPushButton, QToolButton { border: 1px solid $border; border-radius: 7px; padding: 0.3em 0.8em;
@@ -117,7 +135,9 @@ QToolButton#StatusButton { border: 2px solid transparent; padding: 0.1em 0.4em; 
 QToolButton#StatusButton:hover { background: $hover; }
 QToolButton#StatusButton:focus { border: 2px solid $accent; }
 QToolButton#DetailsToggle { border: none; background: transparent; color: $accent; padding: 0.1em 0; }
-QPlainTextEdit { background: $surface_alt; color: $text; border: 1px solid $border; border-radius: 6px; }
+QPlainTextEdit { background: $surface_alt; color: $text; border: 1px solid $indicator; border-radius: 6px; }
+QTextEdit { background: $surface; color: $text; border: 1px solid $indicator; border-radius: 6px; }
+QPlainTextEdit:focus, QTextEdit:focus { border: 2px solid $accent; }
 QProgressBar { border: 1px solid $border; border-radius: 4px; background: $surface; max-height: 0.6em; }
 QProgressBar::chunk { border-radius: 3px; background: $accent; }
 QMenu { background: $surface; border: 1px solid $divider; padding: 0.25em; }
@@ -188,6 +208,152 @@ def contrast_ratio(a: str, b: str) -> float:
     return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
 
+#: Backgrounds an unselected radio button or checkbox can sit on: pages,
+#: panels, alternating and hovered list rows, selected list rows. The
+#: indicator's outline (``indicator``) must reach 3:1 against every one of them.
+def indicator_backgrounds(theme: Theme) -> dict[str, str]:
+    return {
+        "window": theme.window,
+        "surface": theme.surface,
+        "surface_alt": theme.surface_alt,
+        "sidebar": theme.sidebar,
+        "hover": theme.hover,
+        "selected row": theme.accent_soft,
+    }
+
+
+_PE = QStyle.PrimitiveElement
+_INDICATORS = (
+    _PE.PE_IndicatorRadioButton,
+    _PE.PE_IndicatorCheckBox,
+    _PE.PE_IndicatorItemViewItemCheck,
+)
+
+
+class StudioStyle(QProxyStyle):
+    """Fusion, with radio buttons, checkboxes and the frames of input fields
+    drawn in the theme's colours.
+
+    Only the indicator and the frame are painted here (sizes, labels, arrows
+    and buttons stay Fusion's), so the controls keep their size and layout
+    everywhere. Indicators: unselected = the theme's surface inside an
+    ``indicator`` outline, enabled or not; selected = accent; disabled and
+    selected = muted; hover and keyboard focus = accent outline. Text, number,
+    date and time fields and lists to choose from (enabled, disabled,
+    read-only): an ``indicator`` outline, accent (2 px) while focused. Text
+    boxes get the same through the style sheet.
+    """
+
+    def __init__(self, theme: Theme):
+        super().__init__("Fusion")
+        self.theme = theme
+
+    def drawPrimitive(self, element, option, painter, widget=None):  # noqa: N802 (Qt)
+        if element in _INDICATORS:
+            paint_indicator(self.theme, element, option, painter)
+            return
+        if element == _PE.PE_FrameLineEdit:
+            paint_field_frame(self.theme, option, painter)
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+    def drawComplexControl(self, control, option, painter, widget=None):  # noqa: N802 (Qt)
+        super().drawComplexControl(control, option, painter, widget)
+        if control in _FRAMED_CONTROLS and getattr(option, "frame", True):
+            # Fusion's own outline (window colour made darker) is painted
+            # over with ours, at the same place. A field set to have no
+            # frame (setFrame(False)) gets none.
+            paint_field_frame(self.theme, option, painter)
+
+
+_CC = QStyle.ComplexControl
+_FRAMED_CONTROLS = (_CC.CC_SpinBox, _CC.CC_ComboBox)
+
+
+def paint_field_frame(theme: Theme, option: QStyleOption, painter: QPainter) -> None:
+    """The outline of an input field: ``indicator``, accent while focused."""
+    state = option.state
+    focus = bool(state & QStyle.StateFlag.State_HasFocus) and bool(
+        state & QStyle.StateFlag.State_Enabled
+    )
+    pen_width = 2.0 if focus else 1.0
+    inset = pen_width / 2
+    rect = QRectF(option.rect).adjusted(inset, inset, -inset, -inset)
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(QPen(QColor(theme.accent if focus else theme.indicator), pen_width))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(rect, 3.0, 3.0)
+    painter.restore()
+
+
+def paint_indicator(theme: Theme, element, option: QStyleOption, painter: QPainter) -> None:
+    state = option.state
+    S = QStyle.StateFlag
+    enabled = bool(state & S.State_Enabled)
+    radio = element == _PE.PE_IndicatorRadioButton
+    on = bool(state & S.State_On)
+    partial = bool(state & S.State_NoChange) and not radio
+    focus = bool(state & S.State_HasFocus) and bool(state & S.State_KeyboardFocusChange)
+    hover = enabled and bool(state & S.State_MouseOver)
+    filled = (on or partial) and not radio
+    mark = QColor(theme.accent if enabled else theme.muted)
+
+    side = min(option.rect.width(), option.rect.height())
+    box = QRectF(
+        option.rect.x() + (option.rect.width() - side) / 2,
+        option.rect.y() + (option.rect.height() - side) / 2,
+        side,
+        side,
+    )
+    pen_width = 2.0 if focus else 1.0
+    inset = pen_width / 2
+    ring = box.adjusted(inset, inset, -inset, -inset)
+    if focus or (hover and not filled):
+        outline = QColor(theme.accent)
+    elif filled or (on and radio):
+        outline = mark
+    else:
+        outline = QColor(theme.indicator)
+    if filled:
+        fill = mark
+    elif enabled and state & S.State_Sunken:
+        fill = QColor(theme.hover)
+    else:
+        fill = QColor(theme.surface)
+
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(QPen(outline, pen_width))
+    painter.setBrush(fill)
+    if radio:
+        painter.drawEllipse(ring)
+        if on:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(mark)
+            r = side * 0.25
+            painter.drawEllipse(box.center(), r, r)
+    else:
+        corner = max(2.0, side * 0.18)
+        painter.drawRoundedRect(ring, corner, corner)
+        if filled:
+            tick = QPen(QColor(theme.accent_text if enabled else theme.surface))
+            tick.setWidthF(max(1.5, side / 8))
+            tick.setCapStyle(Qt.PenCapStyle.RoundCap)
+            tick.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(tick)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            x, y, w, h = box.x(), box.y(), box.width(), box.height()
+            if partial and not on:
+                painter.drawLine(QPointF(x + w * 0.27, y + h / 2), QPointF(x + w * 0.73, y + h / 2))
+            else:
+                path = QPainterPath(QPointF(x + w * 0.25, y + h * 0.52))
+                path.lineTo(QPointF(x + w * 0.43, y + h * 0.70))
+                path.lineTo(QPointF(x + w * 0.76, y + h * 0.31))
+                painter.drawPath(path)
+    painter.restore()
+
+
 MODES = ("system", "light", "dark")
 
 
@@ -201,7 +367,10 @@ class ThemeManager(QObject):
         self._app = app
         self._mode = mode if mode in MODES else "system"
         self.theme: Theme = LIGHT
-        app.setStyle("Fusion")
+        # Kept referenced here as well: the app owns it, Python must not
+        # collect the wrapper while Qt still paints with it.
+        self.style = StudioStyle(self.theme)
+        app.setStyle(self.style)
         app.styleHints().colorSchemeChanged.connect(self._on_system_changed)
         self.apply()
 
@@ -232,6 +401,7 @@ class ThemeManager(QObject):
         if hasattr(hints, "setColorScheme"):
             hints.setColorScheme(scheme)
         self.theme = self.resolve()
+        self.style.theme = self.theme
         self._app.setPalette(build_palette(self.theme))
         self._app.setStyleSheet(style_sheet(self.theme))
         self.changed.emit(self.theme)

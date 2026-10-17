@@ -32,11 +32,22 @@ Plain Python, no Qt. Never logs anything.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import shutil
+import unicodedata
+from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 
-from .anonymize import CopyRequest, inside_any_recording
+from .anonymize import (
+    CLEAR_ALL,
+    CLEAR_DESCRIPTIONS,
+    CLEAR_LOCATION,
+    CLEAR_PATIENT,
+    TEXT_DROP,
+    CopyRequest,
+    inside_any_recording,
+)
 
 FOLDERS = "folders"
 ARCHIVES = "archives"
@@ -199,7 +210,209 @@ def result_check(item: BatchItem, path: str | None = None) -> dict:
         "shift": int(r.shift_us),
         "exclude": list(r.exclude_channels),
         "output_password": list(r.output_password) if r.output_password else None,
+        "pseudonym": r.pseudonym,
+        "clear": list(r.clear),
+        "text": r.text,
     }
+
+
+#: The identity facts (mef3io's inspect) each "clear" choice empties.
+_CLEARED_FACTS = {
+    CLEAR_PATIENT: ("subject_name_1", "subject_name_2", "subject_id"),
+    CLEAR_LOCATION: ("recording_location",),
+    CLEAR_DESCRIPTIONS: ("session_description", "channel_description", "reference_description"),
+}
+
+
+def _note_key(note, shift: int = 0) -> tuple:
+    return (note.time + shift, note.kind, note.channel or "")
+
+
+#: Identity values of the original whose text mef3io may take out of what
+#: it keeps (see :func:`_has_content`).
+_REMOVED_FACTS = (
+    "subject_name_1",
+    "subject_name_2",
+    "subject_id",
+    "recording_location",
+    "session_name",
+    "anonymized_name",
+)
+
+
+def _folded(text: str) -> str:
+    """Case and accents folded: coarser than mef3io's own fold (ASCII and
+    Latin letters, accents kept), so whatever matches there matches here."""
+    # Canonical decomposition only: compatibility forms ("…" -> "...") would
+    # split words mef3io keeps whole.
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
+
+
+def _is_alnum(ch: str) -> bool:
+    # mef3io's is_alnum: ASCII letters and digits, and every non-ASCII byte.
+    return ch != "_" and (ch.isalnum() or ord(ch) >= 0x80)
+
+
+def _tokens(text: str) -> list[str]:
+    """Maximal runs of mef3io-alphanumeric characters ('_', '-' and the
+    rest split)."""
+    out, current = [], []
+    for ch in text:
+        if _is_alnum(ch):
+            current.append(ch)
+        elif current:
+            out.append("".join(current))
+            current = []
+    if current:
+        out.append("".join(current))
+    return out
+
+
+def _pieces(value: str) -> set[str]:
+    """What mef3io may search for, for one value (folded), and a little
+    more (``build_redactor``): the whole value (whitespace collapsed); its
+    letter runs of 3+ characters (``name_words``; any non-ASCII character
+    counts as a letter); its digit runs of 3+ (``id_digit_runs``, for every
+    value, not only an ID); and the whole value's first and last
+    alphanumeric run, whatever their length (see :func:`_has_content`)."""
+    whole = " ".join(_folded(value).split())
+    if not whole:
+        return set()
+    pieces = {whole}
+    tokens = _tokens(whole)
+    if tokens:
+        pieces.update((tokens[0], tokens[-1]))
+    letters = re.findall(r"(?:[^\W\d_]|[^\x00-\x7f])+", whole)
+    pieces.update(run for run in letters if len(run) >= 3)
+    pieces.update(run for run in re.findall(r"\d+", whole) if len(run) >= 3)
+    return pieces
+
+
+def _has_content(text: str, removed: set[str]) -> bool:
+    """Whether some of ``text`` certainly survives mef3io's redaction when
+    it keeps text, so that the copy must carry text there.
+
+    mef3io has no public call for its redaction (1.4.0: anonymize.cpp,
+    ``build_redactor``), so this mirrors its rules from the safe side: a
+    word of the text (a maximal alphanumeric run, as mef3io splits) that
+    contains none of the pieces of any value mef3io may remove
+    (:func:`_pieces`) cannot be touched by any of its needles: a needle
+    without separators lies inside one word, so the word would contain it;
+    one reaching into the word from outside is a whole value, and the part
+    inside is that value's first or last run, also a piece. (Not covered:
+    a removal joining two words into a new one that a later, shorter needle
+    matches; this takes a value that starts or ends with punctuation.) Such a word
+    survives in this batch's own copy. Values used: every identity value
+    of the original, cleared or not, and the names of the left-out
+    channels; mef3io uses only some of them, and matches case and accents
+    more narrowly. If mef3io ever removes more than this (a new rule), this
+    batch would no longer recognise its own copy:
+    ``test_own_copy_is_recognised_whatever_the_names_look_like`` in
+    tests/test_batch_pipeline.py exercises the shapes that matter."""
+    return any(not any(piece in word for piece in removed) for word in _tokens(_folded(text)))
+
+
+def _removed_values(source, excluded: set[str]) -> set[str]:
+    values = set(excluded)
+    for fact in source.identity:
+        if fact.name in _REMOVED_FACTS:
+            values.update(fact.values)
+    pieces: set[str] = set()
+    for value in values:
+        pieces |= _pieces(value)
+    pieces.discard("")
+    return pieces
+
+
+def _identity_as_asked(source, copy, c: dict) -> bool:
+    """The copy's identity matches this batch's choices (metadata only):
+
+    * the pseudonym (or, without one, the copy's name) is stored;
+    * what the batch cleared is empty;
+    * patient details and location it kept: no value the original did not
+      have (mef3io never edits them), and with no channel left out exactly
+      as present as in the original (a left-out channel may have held the
+      only value: inspect does not say per channel);
+    * descriptions it kept: no more of them than the original had, and
+      present where they must survive (:func:`_has_content`): each kept
+      channel's own description channel by channel; the recording's and
+      the reference descriptions when no channel was left out (they are
+      stored per channel and inspect does not say which channel holds
+      which: only a left-out channel may have held the surviving text);
+    * the notes are the original's, minus those of channels left out, at
+      the original's times plus the shift;
+    * note text: none at all when the batch removed it; when it kept it,
+      text on every note whose original text must survive, text only on
+      notes whose original had text, and never more of it.
+    A fact that could not be read (``present`` None) proves nothing."""
+    facts = {f.name: f for f in copy.identity}
+    originals = {f.name: f for f in source.identity}
+    excluded = set(c.get("exclude", ()))
+    removed = _removed_values(source, excluded)
+
+    def known(name):
+        fact = facts.get(name)
+        return fact if fact is not None and fact.present is not None else None
+
+    def must_survive(name) -> bool:
+        original = originals.get(name)
+        return original is not None and any(_has_content(v, removed) for v in original.values)
+
+    stored = known("anonymized_name")
+    if stored is None or set(stored.values) != {c.get("pseudonym") or c["name"]}:
+        return False
+    cleared = set(c.get("clear", CLEAR_ALL))
+    for choice, names in _CLEARED_FACTS.items():
+        for name in names:
+            fact = known(name)
+            if fact is None:
+                return False
+            original = originals.get(name)
+            if choice in cleared:
+                if fact.present:
+                    return False
+                continue
+            if original is None or original.present is None:
+                return False
+            if choice != CLEAR_DESCRIPTIONS:
+                if not set(fact.values) <= set(original.values):
+                    return False
+                if not excluded and fact.present != original.present:
+                    return False
+                continue
+            if fact.occurrences > original.occurrences:
+                return False
+            if name != "channel_description" and not excluded:
+                if must_survive(name) and not fact.present:
+                    return False
+        if choice == CLEAR_DESCRIPTIONS and choice not in cleared:
+            kept = {ch.name: ch.description for ch in copy.channels}
+            for ch in source.channels:
+                if ch.name in kept and _has_content(ch.description, removed):
+                    if not kept[ch.name]:
+                        return False
+
+    shift = int(c["shift"])
+    expected = sorted(_note_key(n, shift) for n in source.notes if n.channel not in excluded)
+    if copy.notes_problem is not None or sorted(map(_note_key, copy.notes)) != expected:
+        return False
+    text = known("record_text")
+    if text is None or any(n.locked for n in copy.notes):
+        return False
+    if c.get("text", TEXT_DROP) == TEXT_DROP:
+        return not text.present and not any(n.text for n in copy.notes)
+    original_text = originals.get("record_text")
+    kept_notes = [n for n in source.notes if n.channel not in excluded]
+    with_text = {_note_key(n, shift) for n in kept_notes if n.text}
+    needed = Counter(_note_key(n, shift) for n in kept_notes if _has_content(n.text, removed))
+    have = Counter(_note_key(n) for n in copy.notes if n.text)
+    return (
+        original_text is not None
+        and text.occurrences <= original_text.occurrences
+        and all(key in with_text for key in have)
+        and all(have[key] >= count for key, count in needed.items())
+    )
 
 
 def made_by_this_batch(checks: list[dict], cancel=None) -> list[bool]:
@@ -212,7 +425,10 @@ def made_by_this_batch(checks: list[dict], cancel=None) -> list[bool]:
     * holding exactly the original's channels minus those left out;
     * protected exactly as asked: it opens with the copies' full-access
       password and not without one when passwords were set, and it is not
-      protected when none were.
+      protected when none were;
+    * its identity as asked (:func:`_identity_as_asked`): the pseudonym,
+      the patient details, location and descriptions cleared or kept, the
+      notes and their text removed or kept.
 
     Anything else (a folder or archive someone put there, even another
     anonymized copy of the same original) is never ours to remove or to call
@@ -253,6 +469,7 @@ def made_by_this_batch(checks: list[dict], cancel=None) -> list[bool]:
             and c["name"] in names
             and copy.start == source.start + c["shift"]
             and sorted(ch.name for ch in copy.channels) == expected_channels
+            and _identity_as_asked(source, copy, c)
         )
     return out
 

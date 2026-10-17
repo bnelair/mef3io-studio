@@ -424,8 +424,14 @@ they share one, tick "They all use the same full-access password"), and the
 copies' two new passwords twice; each is tried before anything is made. If a result is already there
 for a recording that was being made when the batch stopped, you choose to
 keep it (marked as not confirmed) or make it again. It is made again only
-if the app can tell it made it itself; anything else with that name is left
-alone, and the app says so. Unfinished copies and
+if the app can tell it made it itself: the same name, dates, channels and
+passwords, and the patient details, descriptions and note text removed or
+kept as this batch asked. (When some of these were kept and hold nothing
+but names, or every word in them contains part of a name, even a single
+letter of it, or a channel was left out, the app cannot always tell such a
+copy from one made with those details removed; it is still a copy of the
+same recording with the same name and dates.) Anything else with that name
+is left alone, and the app says so. Unfinished copies and
 archives left behind are never kept silently: the app offers to remove them
 ("They should hold no patient details, but they were never checked: do not
 use or share them").
@@ -497,7 +503,9 @@ recording's details, so it is instant even on very large recordings.
 - **Help → Check this installation** tests the app with a small made-up
   recording. If something seems wrong with the app itself, start there.
 - **View → Appearance** switches between the light and the dark look, or
-  follows your computer's setting.
+  follows your computer's setting. In both, every round option button,
+  every tick box and every field you type in or choose from has a clear
+  outline, also when it is not chosen or cannot be used at the moment.
 - **Help → Open the log folder** shows the app's log. It leaves out patient
   details, recording names, folder paths and dates; still, read it before
   you share it.
