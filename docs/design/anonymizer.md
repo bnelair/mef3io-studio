@@ -372,7 +372,11 @@ archives" (2026-10-16) is built as follows.
   undetected, all copies of the same original with the same name, shift,
   channels and passwords: a copy that dropped note text, or cleared
   descriptions, where every such text holds only names (it comes out
-  empty in this batch's copy too); with a channel left out, a copy that
+  empty in this batch's copy too), or where every word contains even part
+  of an identity value or a left-out channel name, however short (the "o"
+  of "O'Brien", the "a" of "A-12345", a left-out channel "E"), because
+  such a word counts as a name even when mef3io keeps it (tightening:
+  #39); with a channel left out, a copy that
   cleared the patient details or location, or the recording or reference
   descriptions. Read with
   `inspect` for a folder or an archive; anything else,

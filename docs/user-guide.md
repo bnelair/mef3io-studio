@@ -427,7 +427,8 @@ keep it (marked as not confirmed) or make it again. It is made again only
 if the app can tell it made it itself: the same name, dates, channels and
 passwords, and the patient details, descriptions and note text removed or
 kept as this batch asked. (When some of these were kept and hold nothing
-but names, or a channel was left out, the app cannot always tell such a
+but names, or every word in them contains part of a name, even a single
+letter of it, or a channel was left out, the app cannot always tell such a
 copy from one made with those details removed; it is still a copy of the
 same recording with the same name and dates.) Anything else with that name
 is left alone, and the app says so. Unfinished copies and
