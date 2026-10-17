@@ -127,16 +127,21 @@ Code (app shell, #2/#3):
   offset, a time at/before a non-zero offset); a resolving rto != 0 IS
   planned. No full-access password = LOCKED. The floor's span covers notes
   too (`span_start_us`/`span_end_us` from inspect's first/last_time).
-  The wizard (`anonymizer/page.py` + `picker.py`) runs on mef3io's
-  `anonymize_session` (bnelair/mef3io#104; pin still 1.3.0, so tests that
-  make copies skip on 1.3.0 and the page says it cannot start). Model in
-  `model/anonymize.py` (CopyRequest/CopyResult, `make_copy` in a helper,
-  `check_names` = mef3io's own name refusal surfaced early by stopping the
-  copy at its first progress report in a throw-away folder under the app's
-  cache dir (swept at start; no output passwords; TODO mef3io#111 check()),
-  `describe_copy_error` (stable `refusal_code` key, `.code` first, then
-  class fallbacks; details via `technical_text`: no paths, no recording
-  name, `scrub()`ed), `write_date_key` (0600, never next to the copies)).
+  The wizard (`anonymizer/page.py` + `picker.py`) runs on mef3io 1.4.0
+  (pinned): `anonymize_session`, `anonymize.check` (writes nothing), refusal
+  `.code`s and the report's original times. Model in `model/anonymize.py`
+  (CopyRequest/CopyResult, `make_copy` in a helper; the report crosses back
+  via `with_original_times_in_pickle()` THERE ONLY, in memory, never
+  persisted; `check_names` (name step: `check()` with a placeholder
+  destination, path codes ignored) / `check_copies` (batch up-front: the real
+  destination); no output passwords ever passed to `check()`;
+  `describe_copy_error` = `model/refusals.py` words for EVERY code of
+  `REFUSAL_CODES` (test) + class fallbacks; details via `technical_text`: no
+  paths, no recording name, `scrub()`ed; `password_may_not_work_elsewhere` =
+  `mef3io.password_interop_issue`; `write_date_key` (0600, never next to
+  the copies)). The old name-check scratch folders of pre-1.4 dev builds are
+  swept once at start. Caught mef3io warnings are matched by
+  `MefWarning.path` (data), never by text.
   Picker rules in `model/channels.py` (electrode grouping strips EEG/POL,
   -Ref/-AVG, bipolar pairs, case; ranges only over rows on screen; group box
   = shown members while filtering; batch change carries exclusions by name).

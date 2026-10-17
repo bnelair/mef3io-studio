@@ -4,8 +4,7 @@ the work copy; Stop, a failing recording, a crash and resume, free space,
 keeping awake, and nothing identifying in the log, the journal or the
 settings.
 
-Tests that make copies need mef3io's ``anonymize_session``; on a mef3io
-without it they are skipped, saying so."""
+mef3io 1.4.0 (the pinned version) has everything these tests use."""
 
 from __future__ import annotations
 
@@ -24,11 +23,6 @@ from mef3io_studio.model import bundle, journal, pipeline
 from mef3io_studio.model.awake import KeepAwake
 from mef3io_studio.workers import tasks
 
-HAS_ANONYMIZER = callable(getattr(mef3io, "anonymize_session", None))
-needs_anonymizer = pytest.mark.skipif(
-    not HAS_ANONYMIZER,
-    reason="this mef3io has no anonymize_session (needs the release with bnelair/mef3io#104)",
-)
 SHIFT = 4000 * DAY
 
 
@@ -93,7 +87,6 @@ def three(tmp_path):
 # The three outputs
 
 
-@needs_anonymizer
 def test_a_batch_of_three_into_archives(qtbot, jobs, tmp_path):
     batch, dest, work = make_batch(tmp_path, pipeline.ARCHIVES, three(tmp_path))
     handle, published = run(qtbot, jobs, batch)
@@ -111,7 +104,6 @@ def test_a_batch_of_three_into_archives(qtbot, jobs, tmp_path):
     assert journal.unfinished() == []
 
 
-@needs_anonymizer
 def test_a_batch_of_three_into_one_bundle(qtbot, jobs, tmp_path):
     batch, dest, work = make_batch(tmp_path, pipeline.BUNDLE, three(tmp_path))
     handle, published = run(qtbot, jobs, batch)
@@ -134,7 +126,6 @@ def test_a_batch_of_three_into_one_bundle(qtbot, jobs, tmp_path):
     assert list(work.iterdir()) == []
 
 
-@needs_anonymizer
 def test_one_failing_recording_does_not_stop_the_batch(qtbot, jobs, tmp_path):
     from test_anonymizer_ui import damage_signal
 
@@ -153,7 +144,6 @@ def test_one_failing_recording_does_not_stop_the_batch(qtbot, jobs, tmp_path):
 # Stop
 
 
-@needs_anonymizer
 @pytest.mark.parametrize("output", [pipeline.FOLDERS, pipeline.ARCHIVES, pipeline.BUNDLE])
 def test_stop_while_anonymizing_leaves_nothing_half_made(qtbot, jobs, tmp_path, output):
     big = write_large(tmp_path / "big.mefd", channels=2, parts=2, seconds=900)
@@ -200,7 +190,6 @@ def test_stop_while_adding_to_the_bundle_cuts_it_back(tmp_path):
     assert not os.path.exists(writer.temporary)
 
 
-@needs_anonymizer
 def test_stop_in_a_bundle_batch_keeps_it_unfinished_then_finishes_on_request(qtbot, jobs, tmp_path):
     """Review round 2 (8): Stop never publishes an incomplete batch archive
     under its final name. The unfinished archive and the journal stay, so
@@ -246,7 +235,6 @@ def test_stop_in_a_bundle_batch_keeps_it_unfinished_then_finishes_on_request(qtb
 # Crash and resume
 
 
-@needs_anonymizer
 def test_resume_after_a_crash(qtbot, window, tmp_path, monkeypatch):
     """A real process death: the batch runs in its own process, which is
     killed while the second recording is being made. The journal stays; the
@@ -360,7 +348,6 @@ def test_free_space_is_refused_before_starting(tmp_path):
     assert len(pipeline.space_problems(folders, free_work=0, free_destination=10**12)) == 0
 
 
-@needs_anonymizer
 def test_free_space_refusal_stops_the_wizard_before_anything_runs(
     window, qtbot, tmp_path, monkeypatch
 ):
@@ -428,7 +415,6 @@ def test_keep_awake_holds_off_sleep_and_lets_go(monkeypatch):
         assert keep.active == ""
 
 
-@needs_anonymizer
 def test_the_batch_notifies_when_done_and_logs_nothing_identifying(
     qtbot, window, tmp_path, monkeypatch
 ):
@@ -477,7 +463,6 @@ def _flip_member_byte(path: str, start: int = 0, end: int | None = None) -> None
         handle.write(bytes([byte[0] ^ 0xFF]))
 
 
-@needs_anonymizer
 @pytest.mark.parametrize("output", [pipeline.ARCHIVES, pipeline.BUNDLE])
 def test_a_damaged_archive_keeps_the_work_copy_and_fails_the_item(
     qtbot, jobs, tmp_path, monkeypatch, output
@@ -529,7 +514,6 @@ def test_resume_asks_each_originals_password_and_new_ones_twice(qtbot):
     assert dialog.values() == ({0: "pw-a", 2: "pw-c"}, ("b1", "f1"))
 
 
-@needs_anonymizer
 def test_up_front_checks_open_each_original_with_its_own_password(qtbot, jobs, tmp_path):
     from explorer_sessions import PASSWORD_FULL, write_encrypted
 
@@ -563,7 +547,6 @@ def preflight(qtbot, jobs, batch, *args):
     return got[0]
 
 
-@needs_anonymizer
 def test_resume_tests_the_copies_password_on_a_finished_copy(qtbot, jobs, tmp_path):
     from dataclasses import replace
 
@@ -589,7 +572,6 @@ def test_resume_tests_the_copies_password_on_a_finished_copy(qtbot, jobs, tmp_pa
     j.delete()
 
 
-@needs_anonymizer
 def test_temporary_archives_are_journaled_and_swept(qtbot, window, tmp_path, monkeypatch):
     """Review round 2 (4, 14): a temporary archive at the destination is in
     the journal and the app's sealed list before it is made; Discard removes
@@ -636,7 +618,6 @@ def test_temporary_archives_are_journaled_and_swept(qtbot, window, tmp_path, mon
     assert not temporary.exists()
 
 
-@needs_anonymizer
 @pytest.mark.parametrize("choice", ["keep", "redo"])
 def test_a_result_made_just_before_a_crash_is_kept_or_made_again(
     qtbot, window, tmp_path, monkeypatch, choice
@@ -664,7 +645,6 @@ def test_a_result_made_just_before_a_crash_is_kept_or_made_again(
         assert mef3io.inspect(str(dest / "S001.mefd")).start_time == T0 + SHIFT
 
 
-@needs_anonymizer
 def test_unreachable_recordings_pause_the_batch_and_can_be_retried(qtbot, window, tmp_path):
     """Review round 2 (6): failures to reach the files are not final; after
     three in a row the batch pauses; "Retry the failed ones" finishes it."""
@@ -695,7 +675,6 @@ def test_unreachable_recordings_pause_the_batch_and_can_be_retried(qtbot, window
     assert page._retry_batch is None  # the passwords are no longer kept
 
 
-@needs_anonymizer
 def test_bundle_rows_say_added_until_the_archive_exists(qtbot, window, tmp_path, monkeypatch):
     """Review round 2 (7): "Saved and checked" only once the batch archive
     is finished; if finishing fails, "Not delivered" and no date key rows."""

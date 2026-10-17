@@ -17,7 +17,7 @@ Shipped **only as installers** (Windows `.exe`, macOS, Linux) on GitHub Releases
 | 4 | studio | **Explorer** (metadata), plus **ordering and safe renaming** of sessions ([#12](https://github.com/bnelair/mef3io-studio/issues/12); needs [mef3io#72](https://github.com/bnelair/mef3io/issues/72)) | Explore page done; ordering and renaming planned |
 | 5 | studio | **Metadata view and edit** ([#14](https://github.com/bnelair/mef3io-studio/issues/14)); timestamps never editable | Planned |
 | 6 | studio | **Passwords** ([#15](https://github.com/bnelair/mef3io-studio/issues/15)) and **channel presets + batch conversion** ([#16](https://github.com/bnelair/mef3io-studio/issues/16)) | Planned |
-| 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) | Wizard and Privacy check built; waits for the mef3io release with [mef3io#104](https://github.com/bnelair/mef3io/pull/104) (test version 0.1.0.dev2) |
+| 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) | Wizard, unattended batch to archives and Privacy check built, on mef3io 1.4.0 (test version 0.1.0.dev2) |
 | 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release | Started (user guide for the Explore page) |
 
 ## Next directions (each needs a specification first)

@@ -78,7 +78,6 @@ from ..model.anonymize import (
     destination_for,
     estimate_bytes,
     inside_any_recording,
-    library_supports_anonymize,
     name_problem,
     password_may_not_work_elsewhere,
     review_destination,
@@ -159,11 +158,6 @@ BUNDLE_EXPLANATION = (
     "recordings into one recording: they stay separate."
 )
 
-NOT_AVAILABLE = (
-    "This version of the app cannot make anonymized copies yet: the mef3io library it "
-    "uses does not have the anonymizer. Nothing is written. Install a newer test version "
-    "of the app."
-)
 
 KEEP_TEXT_WARNING = (
     "Keeping the text of notes and events: the patient's names, ID and location, the "
@@ -1362,13 +1356,14 @@ class RunStep(QWidget):
                 if settings is not None
                 else shift_words(shift)
             )
+            start, end = page.original_times(item)
             cells = [
                 item.original_name,
                 item.request.name,
-                format_time(item.original_start, site),
-                format_time(item.original_start + shift, UTC),
-                format_time(item.original_end, site),
-                format_time(item.original_end + shift, UTC),
+                format_time(start, site),
+                format_time(start + shift, UTC),
+                format_time(end, site),
+                format_time(end + shift, UTC),
                 words,
                 status,
             ]
@@ -1560,7 +1555,6 @@ class AnonymizerPage(QWidget):
         self.bundle_outcome = None
         self._journal = None
         self.zone: tzinfo = UTC
-        self.available = library_supports_anonymize()
         self.choices: list[Choice] = []
         self.selection = ChannelSelection({})
         self._selection_keys: tuple[str, ...] = ()
@@ -1571,6 +1565,7 @@ class AnonymizerPage(QWidget):
         self._passwords_dropped = False
         self._retry_batch = None
         self.batch_state = None
+        self._original_times: dict[str, tuple] = {}
         self._zone_name = ""
         self._recordings_dirty = True
         self._built = False
@@ -1618,9 +1613,6 @@ class AnonymizerPage(QWidget):
             label = QLabel(f"{i + 1}. {name}")
             self.step_labels.append(label)
             steps_row.addWidget(label)
-        self.unavailable = _label(NOT_AVAILABLE)
-        self.unavailable.setObjectName("Bad")
-        self.unavailable.setVisible(not self.available)
 
         self.recordings = RecordingsStep(self)
         self.picker = ChannelPicker(self)
@@ -1671,7 +1663,6 @@ class AnonymizerPage(QWidget):
         layout.setContentsMargins(int(em), int(em * 0.8), int(em), int(em * 0.6))
         layout.addWidget(title)
         layout.addLayout(steps_row)
-        layout.addWidget(self.unavailable)
         layout.addWidget(self.stack, 1)
         layout.addLayout(nav)
         self.scroll = _scroll(inner)
@@ -1828,8 +1819,6 @@ class AnonymizerPage(QWidget):
     def _blocker_text(self) -> str:
         """Why Next is not possible on this step ("" when it is)."""
         step = self.step
-        if not self.available and step < STEP_RUN:
-            return "This version of the app cannot make anonymized copies."
         if step == STEP_RECORDINGS:
             return "" if self.recordings.ticked else "Tick at least one recording."
         if step == STEP_CHANNELS:
@@ -2136,6 +2125,10 @@ class AnonymizerPage(QWidget):
                     self._retry_batch = None  # nothing to retry: drop the passwords
             else:
                 self.run.results[item.key] = item
+                if item.source_start_us is not None:
+                    # mef3io's own record of the original's dates (in
+                    # memory only): the summary and the date key use it.
+                    self._original_times[item.key] = (item.source_start_us, item.source_end_us)
         self.run_step.fill_table()
 
     def _on_stopped(self) -> None:
@@ -2241,7 +2234,17 @@ class AnonymizerPage(QWidget):
             self._passwords_dropped = True
         super().hideEvent(event)
 
+    def original_times(self, item) -> tuple[int, int]:
+        """The original's start and end: as mef3io reported them when it made
+        the copy, else as read before the batch."""
+        start, end = self._original_times.get(item.request.key, (None, None))
+        return (
+            item.original_start if start is None else start,
+            item.original_end if end is None else end,
+        )
+
     def restart(self) -> None:
+        self._original_times = {}
         self._retry_batch = None
         self.batch_state = None
         self.batch = None
@@ -2284,14 +2287,9 @@ class AnonymizerPage(QWidget):
             result = self.run.results.get(item.request.key)
             if result is None or not self.delivered(result):
                 continue
+            start, end = self.original_times(item)
             rows.append(
-                DateKeyRow(
-                    item.original_name,
-                    item.request.name,
-                    item.original_start,
-                    item.original_end,
-                    item.request.shift_us,
-                )
+                DateKeyRow(item.original_name, item.request.name, start, end, item.request.shift_us)
             )
         return rows
 

@@ -7,20 +7,12 @@ from __future__ import annotations
 import os
 import stat
 import sys
-import tempfile
-from pathlib import Path
 
 import mef3io
 import pytest
-from explorer_sessions import DAY, LAST, write_plain
+from explorer_sessions import DAY, LAST, PATIENT_ID, write_plain
 
 from mef3io_studio.model import anonymize as a
-
-HAS_ANONYMIZER = callable(getattr(mef3io, "anonymize_session", None))
-needs_anonymizer = pytest.mark.skipif(
-    not HAS_ANONYMIZER,
-    reason="this mef3io has no anonymize_session (needs the release with bnelair/mef3io#104)",
-)
 
 
 def request(tmp_path, source="JaneDoe.mefd", name="S001", **kw) -> a.CopyRequest:
@@ -71,22 +63,36 @@ def test_a_short_name_is_only_replaced_as_a_word(tmp_path):
 # Plain words: by refusal key, then by kind of error
 
 
-def test_a_refusal_code_wins_over_the_wording(tmp_path):
-    exc = ValueError("something new mef3io says")
-    exc.code = a.SHIFT_TOO_SMALL
-    assert a.refusal_code(exc) == a.SHIFT_TOO_SMALL
-    assert a.describe_copy_error(exc, request(tmp_path)).title == (
-        "The new date is too close to the real one"
-    )
+def test_every_refusal_code_has_plain_words():
+    """Every code mef3io can refuse with (REFUSAL_CODES) has its own words,
+    in everyday language."""
+    from test_ui_language import BANNED_RE
+
+    from mef3io_studio.model.refusals import WORDS, words_for
+
+    codes = set(mef3io.anonymize.REFUSAL_CODES)
+    assert codes <= set(WORDS), sorted(codes - set(WORDS))
+    for code in codes:
+        title, text = words_for(code, {"channel": "x1", "field": "dst", "inspect_code": None})
+        assert title and text
+        assert not BANNED_RE.search(title) and not BANNED_RE.search(text), (code, title, text)
+        assert "was not changed" in text or "were not changed" in text, code
+
+
+def test_refusals_are_translated_by_code_never_by_message(tmp_path):
+    exc = ValueError("whatever mef3io says today")
+    exc.code = "shift-below-floor"
+    exc.details = {"channel": None, "field": "shift_us", "inspect_code": None}
+    message = a.describe_copy_error(exc, request(tmp_path))
+    assert message.title == "The new date is too close to the real one"
+    # The same words without a code fall back by the kind of error only.
+    plain = a.describe_copy_error(ValueError("must be at least the time span"), request(tmp_path))
+    assert plain.title == "The copy could not be made"
 
 
 @pytest.mark.parametrize(
     ("exc", "title"),
     [
-        (
-            mef3io.IoError("cannot create the destination: x.mefd.partial"),
-            "The copy could not be written to the chosen folder",
-        ),
         (OSError(5, "input/output error"), "The copy could not be written to the chosen folder"),
         (mef3io.FormatError("bad section 2"), "Part of the recording is damaged"),
         (mef3io.CrcError("block CRC mismatch"), "Part of the recording is damaged"),
@@ -101,7 +107,7 @@ def test_a_refusal_code_wins_over_the_wording(tmp_path):
     ],
     ids=lambda v: type(v).__name__ if isinstance(v, BaseException) else "",
 )
-def test_fallbacks_by_kind_are_worded_for_a_copy(tmp_path, exc, title):
+def test_fallbacks_without_a_code_are_worded_for_a_copy(tmp_path, exc, title):
     message = a.describe_copy_error(exc, request(tmp_path))
     assert message.title == title
     if "damaged" in title:
@@ -110,87 +116,63 @@ def test_fallbacks_by_kind_are_worded_for_a_copy(tmp_path, exc, title):
         assert "wrong date" in message.text
 
 
-def test_known_refusals_by_wording(tmp_path):
-    cases = {
-        "the new session name (the destination folder's name) contains the patient's ID; "
-        "choose another": "Choose another name for the copy",
-        "the pseudonym contains the recording location; choose another": (
-            "Choose another pseudonym"
-        ),
-        "a partial copy is in the way (...)": "An unfinished copy is in the way",
-        "the destination already exists: x": "That name is already taken",
-        "the copy failed verification, so it was not published (1 problem(s)):": (
-            "The copy did not pass its check"
-        ),
-    }
-    for raw, title in cases.items():
-        assert a.describe_copy_error(ValueError(raw), request(tmp_path)).title == title, raw
+def test_unreachable_files_are_retryable_by_code():
+    for code, retry in (
+        ("source-missing", True),
+        ("io-error", True),
+        ("dst-exists", False),
+        ("name-contains-identity", False),
+    ):
+        exc = ValueError("x")
+        exc.code = code
+        assert a.is_unreachable(exc) is retry, code
+    assert a.is_unreachable(OSError(5, "gone"))
 
 
-# --------------------------------------------------------------------------
-# The early name check
+def test_the_name_check_writes_nothing_and_drops_new_passwords(tmp_path, monkeypatch):
+    """mef3io.anonymize.check() decides; nothing is written anywhere; the
+    copy's new passwords are never handed over."""
+    seen = {}
+    real = mef3io.anonymize.check
 
-
-def test_name_check_folder_is_private_opaque_and_removed(tmp_path, monkeypatch):
-    """Without the real library: a stand-in reports progress at once, as
-    mef3io does after its checks; the folder is removed and the copy's new
-    passwords are never handed over."""
-    made, seen = [], {}
-    real_mkdtemp = tempfile.mkdtemp
-
-    def mkdtemp(*args, **kwargs):
-        path = real_mkdtemp(*args, **kwargs)
-        made.append(path)
-        return path
-
-    def fake(src, dst, shift, *, progress, cancel, **kwargs):
+    def spy(src, dst, shift, **kwargs):
         seen.update(kwargs, dst=dst)
-        assert Path(dst).parent.is_dir()
-        progress(0, 1)
-        raise AssertionError("not reached")
+        return real(src, dst, shift, **kwargs)
 
-    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
-    monkeypatch.setattr(mef3io, "anonymize_session", fake, raising=False)
-    r = request(tmp_path, output_password=("basic-1", "full-2"), password="orig-pw")
-    assert a.check_names(r) is None
-    (folder,) = made
-    assert not os.path.exists(folder)
-    root = a.scratch_root()
-    assert os.path.dirname(folder) == root
-    assert os.path.basename(folder).startswith("namecheck-")
-    assert "S001" not in os.path.basename(folder)  # opaque; only the probe inside is named
-    assert seen["output_password"] is None
-    assert seen["password"] == "orig-pw"  # opening an encrypted original needs it
-
-
-def test_leftover_name_check_folders_are_swept(tmp_path):
-    root = Path(a.scratch_root())
-    (root / "namecheck-dead1").mkdir()
-    (root / "namecheck-dead1" / "S1.mefd").mkdir()
-    (root / "something-else").mkdir(exist_ok=True)
-    assert a.sweep_scratch() >= 1
-    assert not (root / "namecheck-dead1").exists()
-    assert (root / "something-else").exists()
-
-
-@needs_anonymizer
-def test_mef3io_refuses_names_before_its_first_progress_report(tmp_path):
-    """Pins what check_names relies on (until mef3io#111's check()): the
-    name refusal comes before any progress, and a probe that passes the
-    checks writes nothing anywhere."""
+    monkeypatch.setattr(mef3io.anonymize, "check", spy)
     src = write_plain(tmp_path / "orig.mefd", notes=False)
     before = sorted(p.name for p in tmp_path.rglob("*"))
+    good = a.CopyRequest(
+        "k", str(src), str(tmp_path / "S1.mefd"), 4000 * DAY, output_password=("b-1", "f-2")
+    )
+    assert a.check_names(good) is None
+    assert seen["output_password"] is None
+    assert not os.path.exists(os.path.dirname(seen["dst"]))  # a folder that is not there
     bad = a.CopyRequest("k", str(src), str(tmp_path / f"{LAST}1.mefd"), 4000 * DAY)
     message = a.check_names(bad)
     assert message is not None and message.title == "Choose another name for the copy"
-    good = a.CopyRequest("k", str(src), str(tmp_path / "S1.mefd"), 4000 * DAY)
-    assert a.check_names(good) is None
+    pseudonym = a.CopyRequest(
+        "k", str(src), str(tmp_path / "S1.mefd"), 4000 * DAY, pseudonym=PATIENT_ID
+    )
+    assert a.check_names(pseudonym).title == "Choose another pseudonym"
     assert sorted(p.name for p in tmp_path.rglob("*")) == before
-    assert not [p for p in Path(a.scratch_root()).iterdir() if p.name.startswith("namecheck-")]
 
 
-# --------------------------------------------------------------------------
-# Rules
+def test_the_batch_check_sees_where_the_copy_really_goes(tmp_path):
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    (tmp_path / "S1.mefd").mkdir()
+    r = a.CopyRequest("k", str(src), str(tmp_path / "S1.mefd"), 4000 * DAY)
+    assert a.check_copies([r])["k"].title == "That name is already taken"
+    assert a.check_names(r) is None  # the name step does not judge the folder
+
+
+def test_old_name_check_folders_are_swept_once(tmp_path, monkeypatch):
+    root = tmp_path / "old-scratch"
+    (root / "namecheck-dead1" / "S1.mefd").mkdir(parents=True)
+    monkeypatch.setenv(a.OLD_SCRATCH_DIR_ENV, str(root))
+    assert a.sweep_old_name_check_folders() == 1
+    assert not root.exists()
+    assert a.sweep_old_name_check_folders() == 0
 
 
 @pytest.mark.parametrize(

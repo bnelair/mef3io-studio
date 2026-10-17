@@ -323,8 +323,8 @@ The library side of the plan is tracked in
 mef3io-studio is in **early development**. The app, its installers and the
 Explore page are ready to try. The **Anonymize** wizard (anonymized copies
 with a choice of channels, moved dates, new names and optional passwords,
-plus a Privacy check for any recording) is built and waits for the mef3io
-release that contains its anonymizer. Still to come for the first full
+plus a Privacy check for any recording, and unattended batches into
+shareable archives) is built on mef3io 1.4.0. Still to come for the first full
 release: ordering and renaming recordings, viewing and editing details,
 adding or removing passwords, and saving channel choices and converting in
 batches. Test versions are published on the

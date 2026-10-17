@@ -122,11 +122,11 @@ In short:
 ## As built (wizard for 0.1.0.dev2)
 
 The wizard (`src/mef3io_studio/anonymizer/`) implements the steps above as
-**Recordings → Channels → Dates → Identity → Passwords → Review → Make the
-copies**, then a result page, plus a **Privacy check** card in Explore. It
-needs mef3io's `anonymize_session` (bnelair/mef3io#104); on a mef3io without
-it the page says so and nothing can start. Nothing is written before "Make
-the copies".
+**Recordings → Channels → Dates → Identity → Passwords → Output → Review →
+Make the copies**, then a result page, plus a **Privacy check** card in Explore. It
+runs on mef3io 1.4.0 (pinned): `anonymize_session`, `anonymize.check`,
+refusal codes and the report's original times. Nothing is written before
+"Make the copies".
 
 - **Recordings** come from the Explore list (no second open). A recording is
   untickable, with the reason in plain words, when `inspect()` marks it as
@@ -174,24 +174,20 @@ the copies".
   locally (empty, characters a folder name cannot hold, duplicates) and then
   **by mef3io itself** before leaving the step, so a refusal ("the name of
   the copy contains the patient's name…") appears where the name is typed.
-  mef3io (up to #104) has no separate name check, so
-  `model.anonymize.check_names` starts the copy into a throw-away folder
-  with an opaque name under the app's own per-user cache folder and stops it
-  at mef3io's first progress report. In #104 that report comes only after
-  every refusal mef3io makes before writing (options, paths, the recording,
-  the channels, the shift, the names). That is observed behaviour, not a
-  documented promise: `tests/test_anonymizer_model.py` pins it on the real
-  library. The folder is removed either way, and leftovers of a killed
-  helper are swept when the app starts. The copy's new passwords are never
-  passed to it (the original's full-access password is, to open it). The
-  name table is locked while mef3io checks, and a verdict is used only for
-  the names it was asked about. To be replaced by mef3io#111's `check()`,
-  which writes nothing.
+  `model.anonymize.check_names` calls `mef3io.anonymize.check()`, which
+  runs every check `anonymize_session` makes before writing, and writes
+  nothing. The destination is not chosen yet, so the name sits in a folder
+  that does not exist and refusals about the folder are ignored there; the
+  batch's up-front check (`check_copies`) uses the real destination. The
+  copy's new passwords are never passed (the original's full-access password
+  is, to open it). The name table is locked while mef3io checks, and a
+  verdict is used only for the names it was asked about. (Development builds
+  before 1.4 probed with a throw-away copy; their leftover folders are swept
+  once at start.)
 - **Passwords:** none (default) or a basic + full-access pair, typed twice,
   which must differ. A plain warning when other programs may not accept a
-  password (longer than 15 characters or 15 UTF-8 bytes, or a character
-  above U+00FF: mef3io's `PasswordInteropWarning` rule, mirrored until
-  mef3io#111 exposes it). The form is cleared when the copies start, when
+  password (`mef3io.password_interop_issue`: longer than 15 characters or 15
+  UTF-8 bytes, or a character above U+00FF). The form is cleared when the copies start, when
   the wizard restarts and whenever the page is hidden; if that happens after
   the passwords step, the wizard goes back to it and says why. During and
   after the run only the copies' full-access password is kept, for "Open the
@@ -206,9 +202,10 @@ the copies".
 - **Run:** one task, copies in sequence, each in a helper process with
   mef3io's byte progress and Stop (`ctx.run_isolated(...,
   stop_grace=STOP_GRACE_SECONDS)`). A refusal or failure ends that copy
-  only. mef3io's refusals are translated by a stable key
-  (`refusal_code`: an exception's `.code` once mef3io#111 has them, its
-  wording until then), then by kind of error (a folder that cannot be
+  only. mef3io's refusals are translated by their stable `.code`
+  (`model/refusals.py` has words for every code in
+  `mef3io.anonymize.REFUSAL_CODES`; a test checks none is missing), never by
+  their message; without a code, by kind of error (a folder that cannot be
   written, damaged data, a risk of a wrong date). Its text is kept under
   "Technical details" without paths, without the recording's name (also
   inside file names and a single file's inner folder) and passed through the
@@ -220,6 +217,9 @@ the copies".
 - **Result:** original → new start and end per recording and the shift in
   words; "Open the copy" opens it in Explore on its Privacy check (with the
   new full-access password, memory only). **Date key:** shown on screen;
+  The original start and end shown and saved are mef3io's own record
+  (`AnonymizeReport.source_start_us` / `source_end_us`, kept in memory only),
+  else what was read before the batch.
   "Save the date key…" asks first, then writes a CSV with the columns
   original recording, anonymized copy (its name; the pseudonym is not a
   column), original start and end, new start and end (UTC, ISO 8601) and the

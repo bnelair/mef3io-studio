@@ -34,13 +34,14 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from .cancel import CancelToken, JobCancelled, is_stop, stopped_by_library
 from .errors import UserMessage, describe_error
 from .progress import ByteProgress, byte_progress
 from .quiet import library_warnings_caught
+from .refusals import CHECK, NOTHING, UNREACHABLE, message_for
 from .text import technical
 
 DAY_US = 86_400_000_000
@@ -68,15 +69,6 @@ _RESERVED_NAMES = frozenset(
 )
 #: Longest name accepted (mef3io's limit is 255 bytes; folders add a suffix).
 MAX_NAME_CHARS = 200
-
-
-def library_supports_anonymize() -> bool:
-    """True when the installed mef3io can make anonymized copies (#70)."""
-    try:
-        import mef3io
-    except Exception:  # pragma: no cover - the app always bundles mef3io
-        return False
-    return callable(getattr(mef3io, "anonymize_session", None))
 
 
 # --------------------------------------------------------------------------
@@ -130,6 +122,19 @@ class CopyResult:
     #: The source or the destination could not be reached (a drive or share
     #: that went away): worth trying again later.
     retryable: bool = False
+    #: mef3io's report, marked so that its ORIGINAL times (the
+    #: re-identification key: ``source_start_us``, ``source_end_us``,
+    #: ``source_channel_times``) survive the trip from the helper process.
+    #: In memory only: never persisted, logged or put in the journal.
+    report: object = field(default=None, repr=False, compare=False)
+
+    @property
+    def source_start_us(self) -> int | None:
+        return getattr(self.report, "source_start_us", None)
+
+    @property
+    def source_end_us(self) -> int | None:
+        return getattr(self.report, "source_end_us", None)
 
 
 @dataclass(frozen=True)
@@ -214,107 +219,123 @@ def make_copy(
         notes=_notes_of(report),
         bytes_written=int(report.bytes_written),
         text_fields_changed=int(report.record_text_fields_changed),
+        # Explicitly, and only here: the report crosses back to the app's
+        # process WITH the original times (mef3io drops them from a pickle
+        # otherwise). The app keeps them in memory for the summary and the
+        # date key, never anywhere else.
+        report=report.with_original_times_in_pickle(),
     )
 
 
-class _NamesPassed(Exception):
-    """Raised from the progress callback: mef3io reports progress for the
-    first time only after every check that writes nothing has passed."""
-
-
-#: The app's names for its per-user folders (the same as
-#: common.logging_setup's; model/ imports nothing outside model/).
+#: The app's names for its per-user folders (as in common.logging_setup;
+#: model/ imports nothing outside model/).
 APP_NAME = "mef3io-studio"
 APP_AUTHOR = "BNEL"
-#: Override the folder name checks use (tests).
-SCRATCH_DIR_ENV = "MEF3IO_STUDIO_SCRATCH_DIR"
-#: Names of the name checks' folders: opaque, nothing from a recording.
-_SCRATCH_PREFIX = "namecheck-"
+
+#: Where development builds before mef3io 1.4 made their name-check
+#: folders (``namecheck-*``); swept once at start, then never used again.
+OLD_SCRATCH_DIR_ENV = "MEF3IO_STUDIO_SCRATCH_DIR"
 
 
-def scratch_root() -> str:
-    """Where a name check may make its throw-away folder: the app's own
-    per-user cache folder (never next to the recordings, never in a shared
-    temporary folder), created on first use."""
-    override = os.environ.get(SCRATCH_DIR_ENV)
-    if override:
-        root = override
-    else:
-        from platformdirs import user_cache_dir
-
+def sweep_old_name_check_folders() -> int:
+    """Remove the throw-away folders older development builds used to check
+    names (before mef3io 1.4's ``check()``). Returns how many."""
+    root = os.environ.get(OLD_SCRATCH_DIR_ENV)
+    if not root:
+        try:
+            from platformdirs import user_cache_dir
+        except Exception:  # pragma: no cover - bundled
+            return 0
         root = os.path.join(user_cache_dir(APP_NAME, APP_AUTHOR), "scratch")
-    os.makedirs(root, mode=0o700, exist_ok=True)
-    return root
-
-
-def sweep_scratch() -> int:
-    """Remove name-check folders left by a run that was ended (a killed
-    helper cannot tidy up). Called when the app starts. Returns how many."""
     try:
-        root = scratch_root()
         names = os.listdir(root)
     except OSError:
         return 0
     removed = 0
     for name in names:
-        if name.startswith(_SCRATCH_PREFIX):
+        if name.startswith("namecheck-"):
             shutil.rmtree(os.path.join(root, name), ignore_errors=True)
             removed += 1
+    try:
+        os.rmdir(root)
+    except OSError:
+        pass
     return removed
 
 
-def check_names(request: CopyRequest, cancel: CancelToken | None = None) -> UserMessage | None:
-    """mef3io's own refusal of the copy's name or pseudonym, before anything
-    is written (None: accepted).
+#: Path refusals that only concern the placeholder the name step checks
+#: with (the destination is chosen later, on the review step).
+_PLACEHOLDER_CODES = frozenset({"dst-not-mefd", "dst-exists", "partial-exists", "dst-inside-src"})
 
-    mef3io (up to #104) has no separate name check, so the copy is started
-    into a throw-away folder under :func:`scratch_root` (opaque name) and
-    stopped at its first progress report. In #104 that first report comes
-    after every refusal mef3io makes before writing: options, paths, the
-    recording itself, the channels, the shift, then the names. This is
-    observed behaviour, not a documented promise, so
-    tests/test_anonymizer_model.py pins it. The folder is removed either way,
-    and :func:`sweep_scratch` removes one a killed helper left behind. The
-    copy's new passwords are never passed (they play no part in the names).
-    Runs in a helper process: mef3io reads the recording's details (no
-    signal) to know what the names must not contain.
 
-    TODO(mef3io#111): replace with ``mef3io.anonymize.check()``, which
-    writes nothing."""
+def check_copy(
+    request: CopyRequest, cancel: CancelToken | None = None, placeholder: bool = False
+) -> UserMessage | None:
+    """mef3io's verdict on a copy, before anything is written
+    (``mef3io.anonymize.check``, which writes nothing): None when it would
+    start copying, else the first refusal in plain words. ``placeholder``:
+    the destination folder is not chosen yet, so refusals about it are left
+    out (only the copy's name matters there). The copy's new passwords are
+    never passed: they play no part in what is checked here."""
     import mef3io
 
     cancel = cancel or CancelToken()
     cancel.raise_if_cancelled()
-    scratch = tempfile.mkdtemp(prefix=_SCRATCH_PREFIX, dir=scratch_root())
-    try:
-        probe = os.path.join(scratch, f"{request.name}.mefd")
+    kwargs = _kwargs(request)
+    kwargs["output_password"] = None
+    with stopped_by_library(), library_warnings_caught():
+        report = mef3io.anonymize.check(
+            request.source,
+            request.destination,
+            int(request.shift_us),
+            cancel=cancel.for_library(),
+            **kwargs,
+        )
+    for refusal in report.refusals:
+        if placeholder and refusal.code in _PLACEHOLDER_CODES:
+            continue
+        details = {
+            "channel": refusal.channel,
+            "field": refusal.field,
+            "inspect_code": refusal.inspect_code,
+        }
+        detail = technical_text(_RefusalText(refusal), request)
+        message = message_for(refusal.code, details, detail)
+        if message is None:
+            message = UserMessage(
+                "The copy could not be made",
+                f"{NOTHING} Check the choices in the earlier steps and try again; if it keeps "
+                "happening, report it and include the technical details.",
+                detail,
+            )
+        return message
+    return None
 
-        def stop_here(_done: int, _total: int) -> None:
-            raise _NamesPassed()
 
-        kwargs = _kwargs(request)
-        kwargs["output_password"] = None
-        try:
-            with stopped_by_library(), library_warnings_caught():
-                mef3io.anonymize_session(
-                    request.source,
-                    probe,
-                    int(request.shift_us),
-                    progress=stop_here,
-                    cancel=cancel.for_library(),
-                    **kwargs,
-                )
-        except _NamesPassed:
-            return None
-        except JobCancelled:
-            raise
-        except Exception as exc:
-            if is_stop(exc):
-                raise JobCancelled() from None
-            return describe_copy_error(exc, request)
-        return None  # pragma: no cover - the first progress report always stops it
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+class _RefusalText(Exception):
+    """A ``Refusal`` shaped like the exception it stands for (for the
+    technical details)."""
+
+    def __init__(self, refusal):
+        super().__init__(refusal.message)
+        self.code = refusal.code
+        self.kind = refusal.error
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.args[0]}"
+
+
+def check_names(request: CopyRequest, cancel: CancelToken | None = None) -> UserMessage | None:
+    """The name step's check: everything mef3io would refuse, except where
+    the copy goes (not chosen yet). The copy's name in ``request`` sits in a
+    folder that does not exist; nothing is written."""
+    probe = replace(
+        request,
+        destination=os.path.join(
+            tempfile.gettempdir(), ".mef3io-studio-not-a-folder", f"{request.name}.mefd"
+        ),
+    )
+    return check_copy(probe, cancel, placeholder=True)
 
 
 def check_names_many(
@@ -325,19 +346,21 @@ def check_names_many(
     return {r.key: check_names(r, cancel) for r in requests}
 
 
+def check_copies(
+    requests: list[CopyRequest], cancel: CancelToken | None = None
+) -> dict[str, UserMessage | None]:
+    """:func:`check_copy` for every request (where they really go), in one
+    helper process: the batch's up-front check."""
+    cancel = cancel or CancelToken()
+    return {r.key: check_copy(r, cancel) for r in requests}
+
+
 def password_may_not_work_elsewhere(password: str) -> bool:
     """True when other MEF programs may not open a recording protected with
-    ``password``: longer than 15 characters or 15 UTF-8 bytes (meflib and
-    pymef copy it into a 16-byte buffer), or a character above U+00FF (MEF
-    keeps only the low byte of each character, so such characters collide).
-    The same rule as mef3io's ``PasswordInteropWarning``.
+    ``password`` (mef3io's own rule: ``mef3io.password_interop_issue``)."""
+    import mef3io
 
-    TODO(mef3io#111): use mef3io's public helper once it has one."""
-    return (
-        len(password) > 15
-        or len(password.encode("utf-8")) > 15
-        or any(ord(c) > 0xFF for c in password)
-    )
+    return mef3io.password_interop_issue(password) is not None
 
 
 # --------------------------------------------------------------------------
@@ -459,25 +482,8 @@ def date_key_too_close(path: str, places: list[str]) -> bool:
 # Plain words
 
 
-def _what(found: str) -> str:
-    """What a name refusal found, in everyday words (mef3io's wording in)."""
-    found = found.lower()
-    if found == "the patient's id":
-        return "the patient's ID"
-    if found == "the recording location":
-        return "the place where it was recorded"
-    if found == "the original session name":
-        return "the original recording's name"
-    return "the patient's name"
-
-
-_NAME_REFUSAL = re.compile(
-    r"(the new session name|the pseudonym) \(?.*?contains (the patient's name|the patient's id|"
-    r"the recording location|the original session name)",
-    re.IGNORECASE,
-)
-
-#: Plain words for what mef3io's inspect marks as stopping a copy.
+#: Plain words for what mef3io's inspect marks as stopping a copy (its
+#: warning codes, for the Recordings step).
 BLOCKER_WORDS = {
     technical("video-channels"): "It has video channels, which the app cannot copy.",
     technical("unreadable-segments"): "Some parts of it could not be read.",
@@ -546,140 +552,11 @@ def collapse_placeholders(text: str) -> str:
     return _PLACEHOLDERS.sub("<path>", text)
 
 
-# Refusals by a stable key. mef3io 1.3 / #104 has no refusal codes, so the
-# key comes from its wording; a ``.code`` on the exception wins once mef3io
-# has them. TODO(mef3io#111): switch to the codes and drop the text matching.
-REFUSED_NAME = "name-refused"
-NAME_TOO_LONG = "name-too-long"
-SHIFT_TOO_SMALL = "shift-below-floor"
-SHIFT_TOO_EARLY = "shift-too-early"
-UNKNOWN_CHANNEL = "unknown-channel"
-NO_CHANNEL = "no-channel"
-PARTIAL_IN_THE_WAY = "partial-in-the-way"
-DESTINATION_EXISTS = "destination-exists"
-INSIDE_SOURCE = "destination-inside-source"
-UNSAFE_SOURCE = "source-blocked"
-VERIFICATION_FAILED = "verification-failed"
-
-
 def refusal_code(exc: BaseException) -> str | None:
-    """The stable key of a mef3io refusal, or None for anything else."""
+    """mef3io's stable refusal code of an exception (mef3io 1.4: ``.code``),
+    or None for anything that is not a refusal."""
     code = getattr(exc, "code", None)
-    if isinstance(code, str) and code:
-        return code
-    raw = str(exc)
-    low = raw.lower()
-    if _NAME_REFUSAL.search(raw):
-        return REFUSED_NAME
-    for needle, key in (
-        ("must fit 255 bytes", NAME_TOO_LONG),
-        ("time span plus one day", SHIFT_TOO_SMALL),
-        ("to 0 or below", SHIFT_TOO_EARLY),
-        ("must not be 0", SHIFT_TOO_EARLY),
-        ("unknown channel", UNKNOWN_CHANNEL),
-        ("leaves no channel", NO_CHANNEL),
-        ("partial copy is in the way", PARTIAL_IN_THE_WAY),
-        ("destination already exists", DESTINATION_EXISTS),
-        ("appeared while copying", DESTINATION_EXISTS),
-        ("inside the source", INSIDE_SOURCE),
-        ("cannot be anonymized safely", UNSAFE_SOURCE),
-        ("failed verification", VERIFICATION_FAILED),
-    ):
-        if needle in low:
-            return key
-    return None
-
-
-NOTHING = "Nothing was written, and the original was not changed."
-
-
-def _by_code(code: str, exc: BaseException, detail: str) -> UserMessage | None:
-    raw = str(exc)
-    nothing = NOTHING
-    if code == REFUSED_NAME:
-        match = _NAME_REFUSAL.search(raw)
-        is_name = match is None or "new session name" in match.group(1).lower()
-        which = "name of the copy" if is_name else "pseudonym"
-        what = _what(match.group(2)) if match else "something that identifies the patient"
-        return UserMessage(
-            "Choose another name for the copy" if is_name else "Choose another pseudonym",
-            f"The {which} contains {what}, so the copy would still identify the patient. "
-            f"{nothing} Choose one that says nothing about the patient, such as a study code.",
-            detail,
-        )
-    if code == NAME_TOO_LONG:
-        return UserMessage(
-            "The name is too long",
-            "The name of the copy or the pseudonym is too long to store. "
-            f"{nothing} Choose a shorter one.",
-            detail,
-        )
-    if code == SHIFT_TOO_SMALL:
-        return UserMessage(
-            "The new date is too close to the real one",
-            "The dates must move by at least the length of the recording plus one day, so "
-            f"that no moved date can be mistaken for a real one. {nothing} Choose a new date "
-            "further away.",
-            detail,
-        )
-    if code == SHIFT_TOO_EARLY:
-        return UserMessage(
-            "The new date is too early",
-            f"The moved dates must stay after 1 January 1970. {nothing} Choose a later date.",
-            detail,
-        )
-    if code == UNKNOWN_CHANNEL:
-        return UserMessage(
-            "A channel to leave out is not in this recording",
-            f"{nothing} Go back to the channel step and check the selection.",
-            detail,
-        )
-    if code == NO_CHANNEL:
-        return UserMessage(
-            "No channel would be kept",
-            f"{nothing} Go back to the channel step and keep at least one channel.",
-            detail,
-        )
-    if code == PARTIAL_IN_THE_WAY:
-        return UserMessage(
-            "An unfinished copy is in the way",
-            "A folder ending in .partial, left by an earlier copy that did not finish, is "
-            f"next to where this copy goes. {nothing} If no copy is running, delete that "
-            "folder and try again, or choose another folder.",
-            detail,
-        )
-    if code == DESTINATION_EXISTS:
-        return UserMessage(
-            "That name is already taken",
-            "A file or folder with the new name is already in the chosen folder. "
-            f"{nothing} Choose another name or folder.",
-            detail,
-        )
-    if code == INSIDE_SOURCE:
-        return UserMessage(
-            "Choose a folder outside the recording",
-            f"The copy would be inside the original recording. {nothing} Choose a folder that "
-            "is not part of any recording.",
-            detail,
-        )
-    if code == UNSAFE_SOURCE:
-        codes = re.findall(r"^\s*-\s*([a-z0-9-]+):", raw, re.MULTILINE)
-        reasons = " ".join(dict.fromkeys(blocker_words(c) for c in codes)) or blocker_words("")
-        return UserMessage(
-            "This recording cannot be anonymized safely",
-            f"{reasons} {nothing} Use Check for problems in Explore to see more, and keep a "
-            "copy of the original.",
-            detail,
-        )
-    if code == VERIFICATION_FAILED:
-        return UserMessage(
-            "The copy did not pass its check",
-            "The copy was compared with the original and something was not right, so the "
-            "copy was removed. The original was not changed. Try again; if it keeps "
-            "happening, report it and include the technical details.",
-            detail,
-        )
-    return None
+    return code if isinstance(code, str) and code else None
 
 
 def _library_classes() -> dict:
@@ -711,9 +588,11 @@ def is_library_io_error(exc: BaseException) -> bool:
 
 def is_unreachable(exc: BaseException) -> bool:
     """The source or the destination could not be read or written (not a
-    refusal): a drive or share that went away may work again later."""
-    if refusal_code(exc) is not None:
-        return False
+    refusal about the recording or the choices): a drive or share that went
+    away may work again later."""
+    code = refusal_code(exc)
+    if code is not None:
+        return code in UNREACHABLE
     if isinstance(exc, (FileExistsError, PermissionError, IsADirectoryError)):
         return False
     return isinstance(exc, OSError) or is_library_io_error(exc)
@@ -722,14 +601,14 @@ def is_unreachable(exc: BaseException) -> bool:
 def describe_copy_error(exc: BaseException, request: CopyRequest | None = None) -> UserMessage:
     """mef3io's refusal or failure in plain words: what happened, what it
     means for the data (nothing was written; the original is untouched), and
-    what to do next. mef3io's own text goes into ``detail``, scrubbed
-    (:func:`technical_text`). A known refusal (:func:`refusal_code`) gets its
-    own words; anything else falls back by the kind of error, worded for a
-    copy."""
+    what to do next. By the refusal's stable code (every code of
+    ``mef3io.anonymize.REFUSAL_CODES`` has words in ``model.refusals``);
+    without one, by the kind of error. mef3io's own text goes into
+    ``detail``, without paths or names (:func:`technical_text`)."""
     detail = technical_text(exc, request)
     code = refusal_code(exc)
     if code is not None:
-        message = _by_code(code, exc, detail)
+        message = message_for(code, getattr(exc, "details", None) or {}, detail)
         if message is not None:
             return message
     if _is(exc, "PasswordError"):
@@ -743,33 +622,26 @@ def describe_copy_error(exc: BaseException, request: CopyRequest | None = None) 
         return UserMessage(
             "Part of the recording is damaged",
             "Part of the recording is damaged, so it cannot be copied safely; nothing was "
-            "written and the original was not changed. Use Check for problems in Explore to "
-            "see which part, and keep a copy of the original.",
+            f"written and the original was not changed. {CHECK}",
             detail,
         )
     if _is(exc, "WriteConflictError"):
         return UserMessage(
             "This recording cannot be copied safely",
-            "It cannot be copied without risking a wrong date in the copy. "
-            f"{NOTHING} Use Check for problems in Explore to see more, and keep a copy of "
-            "the original.",
+            f"It cannot be copied without risking a wrong date in the copy. {NOTHING} {CHECK}",
             detail,
         )
-    low = str(exc).lower()
-    about_output = any(w in low for w in ("destination", ".partial", "partial copy", "the copy"))
     plain_os = isinstance(exc, OSError) and not isinstance(
         exc, (PermissionError, FileNotFoundError)
     )
-    if (_is(exc, "IoError") and about_output) or (plain_os and not _is(exc, "IoError")):
-        if getattr(exc, "errno", None) != errno.ENOSPC:
-            return UserMessage(
-                "The copy could not be written to the chosen folder",
-                "The app could not write to the chosen folder. Anything it had started was "
-                "removed, and the original was not changed. Check that the folder still "
-                "exists, that you may write there and that the drive is connected, then try "
-                "again.",
-                detail,
-            )
+    if (_is(exc, "IoError") or plain_os) and getattr(exc, "errno", None) != errno.ENOSPC:
+        return UserMessage(
+            "The copy could not be written to the chosen folder",
+            "The app could not write to the chosen folder. Anything it had started was "
+            "removed, and the original was not changed. Check that the folder still exists, "
+            "that you may write there and that the drive is connected, then try again.",
+            detail,
+        )
     if isinstance(exc, (ValueError, TypeError)):
         return UserMessage(
             "The copy could not be made",

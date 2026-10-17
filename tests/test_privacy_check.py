@@ -39,11 +39,6 @@ from mef3io_studio.model.recording import (
     RecordingDetails,
 )
 
-HAS_ANONYMIZER = callable(getattr(mef3io, "anonymize_session", None))
-needs_anonymizer = pytest.mark.skipif(
-    not HAS_ANONYMIZER,
-    reason="this mef3io has no anonymize_session (needs the release with bnelair/mef3io#104)",
-)
 SHIFT = 4000 * DAY
 
 
@@ -215,7 +210,6 @@ def test_card_on_a_foreign_recording(explorer, qtbot, tmp_path):
     )
 
 
-@needs_anonymizer
 def test_card_on_an_anonymized_copy(explorer, qtbot, tmp_path):
     src = write_plain(tmp_path / "orig.mefd")
     mef3io.anonymize_session(str(src), str(tmp_path / "S1.mefd"), SHIFT, pseudonym="P-7")
@@ -230,7 +224,6 @@ def test_card_on_an_anonymized_copy(explorer, qtbot, tmp_path):
     assert card.rows["Other programs' private areas"][1] == "Cleared by the anonymizer."
 
 
-@needs_anonymizer
 def test_card_on_a_copy_that_kept_its_note_text(explorer, qtbot, tmp_path):
     src = write_plain(tmp_path / "orig.mefd")
     mef3io.anonymize_session(str(src), str(tmp_path / "K1.mefd"), SHIFT, text="keep")
@@ -334,7 +327,6 @@ def test_appending_after_anonymizing_is_not_made_by_the_anonymizer():
     assert "changed afterwards" in CHANGED_AFTER
 
 
-@needs_anonymizer
 def test_card_on_a_copy_with_data_added_afterwards(explorer, qtbot, tmp_path):
     import numpy as np
 

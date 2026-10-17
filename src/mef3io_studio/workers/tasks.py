@@ -449,8 +449,11 @@ def preflight_batch(
             "The full-access password typed for the copies does not open the copies already "
             "made. Type the same passwords as when the batch started."
         )
+    # mef3io's own pre-flight (it writes nothing): the copy where it really
+    # goes on a new batch; on a resume, everything but the destination
+    # (results already there are the user's choice, asked separately).
     names = ctx.run_isolated(
-        anonymize.check_names_many,
+        anonymize.check_names_many if journal is not None else anonymize.check_copies,
         [replace(r, output_password=None) for r in requests],
         stop_grace=STOP_GRACE_SECONDS,
     )

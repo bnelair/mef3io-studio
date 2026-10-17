@@ -353,6 +353,8 @@ originals are never changed. A wizard takes you through it step by step, with
 
 ### Anonymize a batch into archives
 
+![The Output step: a folder per recording, an archive per recording, or one archive for the whole batch.](img/screenshots/anonymize-output-light.png)
+
 Anonymizing many recordings can take hours. You can start a batch and walk
 away: the app does every recording, one after another, without asking
 anything.

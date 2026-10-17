@@ -965,10 +965,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .common.settings import clear_qt_dialog_history
 
         clear_qt_dialog_history()
-        from .model.anonymize import sweep_scratch
+        from .model.anonymize import sweep_old_name_check_folders
 
-        if sweep_scratch():  # name-check folders a killed helper left behind
-            log.info("removed leftover name-check folders")
+        if sweep_old_name_check_folders():  # left by development builds before mef3io 1.4
+            log.info("removed leftover name-check folders of an older version")
         app = create_application()
         window = build_main_window(app)
         window.show()

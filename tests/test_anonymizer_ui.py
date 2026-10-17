@@ -2,9 +2,8 @@
 256-channel picker, the early name check, a batch with one failing copy,
 Stop, the result page and the date key.
 
-The tests that make copies need mef3io's ``anonymize_session`` (mef3io#70,
-bnelair/mef3io#104); on a mef3io without it they are skipped, saying so. The
-rest (the picker, the steps that write nothing) run on any mef3io.
+The app is pinned to mef3io 1.4.0, whose ``anonymize_session`` and
+``anonymize.check`` every test can rely on.
 """
 
 from __future__ import annotations
@@ -40,12 +39,6 @@ from mef3io_studio.anonymizer.page import (
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "mef3io_studio"
 
-HAS_ANONYMIZER = callable(getattr(mef3io, "anonymize_session", None))
-needs_anonymizer = pytest.mark.skipif(
-    not HAS_ANONYMIZER,
-    reason="this mef3io has no anonymize_session (needs the release with bnelair/mef3io#104)",
-)
-
 
 def wait_loaded(qtbot, explorer, n, timeout=60_000):
     qtbot.waitUntil(
@@ -78,13 +71,7 @@ def write_many_channels(path: Path, channels: int = 256, start: int = T0) -> Pat
 def window_page(window):
     window._closing = True
     window.show()
-    page = window.anonymizer
-    # The steps that write nothing are tested on any mef3io: on one without
-    # anonymize_session the page refuses to move on (tested separately in
-    # test_without_the_library_anonymizer_nothing_can_start), so let it here.
-    page.available = True
-    page.unavailable.hide()
-    return window, page
+    return window, window.anonymizer
 
 
 def open_in_explorer(qtbot, window, paths):
@@ -432,7 +419,6 @@ def start_and_wait(qtbot, page, timeout=120_000):
     qtbot.waitUntil(lambda: page.run.finished, timeout=timeout)
 
 
-@needs_anonymizer
 def test_a_name_refusal_is_shown_on_the_identity_step(window_page, qtbot, tmp_path):
     window, page = window_page
     src = write_plain(tmp_path / "orig.mefd", notes=False)
@@ -447,7 +433,7 @@ def test_a_name_refusal_is_shown_on_the_identity_step(window_page, qtbot, tmp_pa
     qtbot.waitUntil(lambda: page.names_handle.is_finished, timeout=60_000)
     assert page.step == STEP_IDENTITY  # held back, nothing written
     text = page.identity.problems.text()
-    assert "Choose another name for the copy" in text and "patient's name" in text
+    assert "Choose another name for the copy" in text and "identifies the patient" in text
     assert not list(tmp_path.glob(f"{LAST}*"))
     # A pseudonym with the patient's ID is refused the same way.
     page.identity.table.item(0, 1).setText("S-001")
@@ -462,7 +448,6 @@ def test_a_name_refusal_is_shown_on_the_identity_step(window_page, qtbot, tmp_pa
     assert not page.next_button.isEnabled()
 
 
-@needs_anonymizer
 def test_end_to_end_copy_result_and_privacy_check(window_page, qtbot, tmp_path, monkeypatch):
     window, page = window_page
     src = write_plain(tmp_path / "orig.mefd")
@@ -511,7 +496,6 @@ def test_end_to_end_copy_result_and_privacy_check(window_page, qtbot, tmp_path, 
     assert all(symbol != "✗" for symbol, _ in privacy.rows.values()), privacy.rows
 
 
-@needs_anonymizer
 def test_a_batch_goes_on_after_one_copy_fails(window_page, qtbot, tmp_path):
     window, page = window_page
     a = write_plain(tmp_path / "a.mefd", notes=False)
@@ -533,7 +517,6 @@ def test_a_batch_goes_on_after_one_copy_fails(window_page, qtbot, tmp_path):
     assert not any(p.name.endswith(".partial") for p in out.iterdir())
 
 
-@needs_anonymizer
 def test_stop_leaves_nothing_behind(window_page, qtbot, tmp_path):
     from explorer_sessions import write_large
 
@@ -560,7 +543,6 @@ def test_stop_leaves_nothing_behind(window_page, qtbot, tmp_path):
     assert "Stopped" in page.run_step.heading.text()
 
 
-@needs_anonymizer
 def test_date_key_is_written_only_on_request(window_page, qtbot, tmp_path, monkeypatch):
     window, page = window_page
     src = write_plain(tmp_path / "orig.mefd", notes=False)
@@ -592,6 +574,10 @@ def test_date_key_is_written_only_on_request(window_page, qtbot, tmp_path, monke
     assert page.save_date_key() is True
     text = key.read_text(encoding="utf-8")
     assert "orig" in text and "K1" in text
+    # The original dates came from mef3io's report (source_start_us), which
+    # crossed from the helper process with them on purpose.
+    (times,) = page._original_times.values()
+    assert times[0] == 946_684_800_000_000
     assert "2000-01-01T00:00:00" in text and "2010-03-01T00:00:00" in text
     assert list(key.parent.iterdir()) == [key]  # no temporary file left
     # Nothing of it anywhere else: not in the copies, not in the settings.
@@ -604,7 +590,6 @@ def test_date_key_is_written_only_on_request(window_page, qtbot, tmp_path, monke
     assert str(key) not in settings_text and "orig" not in settings_text
 
 
-@needs_anonymizer
 def test_password_protected_copy_opens_with_the_new_password(window_page, qtbot, tmp_path):
     window, page = window_page
     src = write_plain(tmp_path / "orig.mefd", notes=False)
@@ -645,19 +630,6 @@ def test_passwords_step_rules(window_page):
     step.full.setText("c")
     step.full_again.setText("c")
     assert step.problem_text() == "" and step.passwords() == ("a", "c")
-
-
-def test_without_the_library_anonymizer_nothing_can_start(qtbot, jobs, monkeypatch):
-    import mef3io_studio.anonymizer.page as page_module
-    from mef3io_studio.explorer import ExplorerPage
-
-    monkeypatch.setattr(page_module, "library_supports_anonymize", lambda: False)
-    explorer = ExplorerPage(jobs)
-    qtbot.addWidget(explorer)
-    page = page_module.AnonymizerPage(jobs, explorer)
-    qtbot.addWidget(page)
-    assert page.unavailable.isVisibleTo(page)
-    assert not page.next_button.isEnabled()
 
 
 def test_identity_and_review_wording_is_plain():

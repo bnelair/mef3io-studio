@@ -372,10 +372,6 @@ def test_dotless_i_is_matched_both_ways():
         assert registry.redact(f"saw {logged} today") == "saw [redacted] today"
 
 
-@pytest.mark.skipif(
-    not callable(getattr(mef3io, "anonymize_session", None)),
-    reason="this mef3io has no anonymize_session (needs the release with bnelair/mef3io#104)",
-)
 def test_anonymizing_never_logs_names_dates_or_the_date_key(qtbot, window, tmp_path, monkeypatch):
     """The anonymizer end to end, with the log at DEBUG: the original's
     name, path and dates, the new names, the passwords and the date key

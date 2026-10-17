@@ -15,6 +15,13 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# A demo data folder (the work folder shown on the Output step), no
+# questions at start, and no sleep inhibitor for a screenshot run.
+os.environ.setdefault(
+    "MEF3IO_STUDIO_DATA_DIR", os.path.join(tempfile.gettempdir(), "mef3io-studio-demo")
+)
+os.environ.setdefault("MEF3IO_STUDIO_NO_STARTUP_OFFERS", "1")
+os.environ.setdefault("MEF3IO_STUDIO_NO_KEEP_AWAKE", "1")
 
 from mef3io_studio.app import build_main_window, create_application  # noqa: E402
 from mef3io_studio.common.settings import Settings  # noqa: E402
@@ -256,8 +263,14 @@ def anonymizer_shots(app, out: Path, tmp: Path) -> None:
     while time.monotonic() < deadline and page.step != 4:
         app.processEvents()
         time.sleep(0.02)
-    page.next()
-    page.next()  # output: folders
+    page.next()  # -> output
+    page.output.archives.setChecked(True)  # one archive per recording
+    window.activity_dock.hide()
+    for mode in ("light", "dark"):
+        window.set_theme_mode(mode)
+        _settle(app)
+        window.grab().save(str(out / f"anonymize-output-{mode}.png"))
+    page.next()  # -> review
     copies = tmp / "copies"
     copies.mkdir()
     page.review.set_folder(str(copies))

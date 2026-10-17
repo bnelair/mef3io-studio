@@ -357,7 +357,18 @@ def opened_with_legacy_password(location: str, password: str) -> bool:
                 pass
         except Exception:
             return False
-    return any(issubclass(w.category, legacy_warning) for w in caught)
+    # mef3io 1.4 warnings carry the session as data (MefWarning.path); the
+    # text holds "<session>" instead. Only a warning about THIS recording
+    # counts.
+    target = os.path.normcase(os.path.abspath(location))
+
+    def about_this(w) -> bool:
+        path = getattr(w.message, "path", None)
+        if not path:
+            return True  # an older mef3io: no path to compare
+        return os.path.normcase(os.path.abspath(path)) == target
+
+    return any(issubclass(w.category, legacy_warning) and about_this(w) for w in caught)
 
 
 def inspect_recording(

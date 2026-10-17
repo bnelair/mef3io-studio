@@ -20,7 +20,7 @@ classifiers = ["Private :: Do Not Upload"]
 dependencies = [
     # Exact pins: an installer must bundle exactly these, so behaviour never
     # changes silently underneath a release. Bump deliberately, in a PR.
-    "mef3io==1.3.0",
+    "mef3io==1.4.0",
     "PySide6-Essentials==6.12.0",
     "platformdirs==4.13.0",
     # The IANA time-zone database for zoneinfo: Windows has none of its own.
