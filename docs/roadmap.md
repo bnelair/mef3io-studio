@@ -17,7 +17,7 @@ Shipped **only as installers** (Windows `.exe`, macOS, Linux) on GitHub Releases
 | 4 | studio | **Explorer** (metadata), plus **ordering and safe renaming** of sessions ([#12](https://github.com/bnelair/mef3io-studio/issues/12); needs [mef3io#72](https://github.com/bnelair/mef3io/issues/72)) | Explore page done ([#4](https://github.com/bnelair/mef3io-studio/issues/4)), with the combined timeline, CSV export of times, real progress and Stop (on mef3io 1.3) and the Privacy check; ordering and renaming planned |
 | 5 | studio | **Metadata view and edit** ([#14](https://github.com/bnelair/mef3io-studio/issues/14)); timestamps never editable | Planned |
 | 6 | studio | **Passwords** ([#15](https://github.com/bnelair/mef3io-studio/issues/15)) and **channel presets + batch conversion** ([#16](https://github.com/bnelair/mef3io-studio/issues/16)) | Planned |
-| 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) | Wizard, unattended batch (folders, per-recording archives, one batch archive; resume after a crash) and Privacy check built, on mef3io 1.4.0 (test version 0.1.0.dev2); the deferred items are listed in [design/anonymizer.md](design/anonymizer.md#as-built-wizard-for-010dev2) |
+| 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) | Wizard, unattended batch (folders, per-recording archives, one batch archive; resume after a crash) and Privacy check built, on mef3io 1.4.0 (test versions 0.1.0.dev2 and dev3); the deferred items are listed in [design/anonymizer.md](design/anonymizer.md#as-built-wizard-for-010dev2) |
 | 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release | Started (user guide for Explore and Anonymize) |
 
 ## Test versions
@@ -29,6 +29,7 @@ Published as GitHub pre-releases; what changed in each is in
 |---|---|---|
 | 0.1.0.dev1 | 1.2.0 | The app shell, the installers and the Explore page |
 | 0.1.0.dev2 | 1.4.0 | Explore with the combined timeline, CSV export of times and a working Stop; the Anonymize wizard with unattended batches; the Privacy check ([notes](release-notes/0.1.0.dev2.md)) |
+| 0.1.0.dev3 | 1.4.0 | Clearly outlined buttons, tick boxes and fields in both themes ([#35](https://github.com/bnelair/mef3io-studio/issues/35)); a stricter check before continuing a batch removes an earlier result ([#36](https://github.com/bnelair/mef3io-studio/issues/36)) ([notes](release-notes/0.1.0.dev3.md)) |
 
 ## Next directions (each needs a specification first)
 

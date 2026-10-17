@@ -1,6 +1,6 @@
 # User guide
 
-This guide describes test version **0.1.0.dev2**, which has two pages:
+This guide describes test version **0.1.0.dev3**, which has two pages:
 **Explore** (see what is in your recordings) and **Anonymize** (make
 anonymized copies of them). What is new in each test version is in the
 [release notes](release-notes/).

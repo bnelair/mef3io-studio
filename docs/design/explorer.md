@@ -1,6 +1,6 @@
 # Design: explorer (v0.1)
 
-**Status (test version 0.1.0.dev2):** built: opening and scanning, how times
+**Status (test version 0.1.0.dev3):** built: opening and scanning, how times
 are shown, the recordings list and the detail tabs (plus the Privacy check
 card, see [anonymizer](anonymizer.md#as-built-wizard-for-010dev2)), the
 combined timeline, Copy summary, Save times as a table, and pack / unpack.

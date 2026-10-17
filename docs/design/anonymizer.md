@@ -9,7 +9,7 @@ report the batch.
 
 ![The anonymization workflow in six steps.](../img/anonymize-workflow.svg)
 
-**Status:** built for test version 0.1.0.dev2 on mef3io 1.4.0. Steps 1-6
+**Status:** built for test version 0.1.0.dev2 on mef3io 1.4.0; 0.1.0.dev3 made the resume check stricter ([#36](https://github.com/bnelair/mef3io-studio/issues/36), fixed). Steps 1-6
 below are the original specification; what was actually built, where it
 differs, and what is deferred are in
 [As built](#as-built-wizard-for-010dev2) at the end.
@@ -376,7 +376,9 @@ archives" (2026-10-16) is built as follows.
   of an identity value or a left-out channel name, however short (the "o"
   of "O'Brien", the "a" of "A-12345", a left-out channel "E"), because
   such a word counts as a name even when mef3io keeps it (tightening:
-  #39); with a channel left out, a copy that
+  [#39](https://github.com/bnelair/mef3io-studio/issues/39); a public
+  redaction helper in mef3io, [mef3io#114](https://github.com/bnelair/mef3io/issues/114),
+  would remove the mirror); with a channel left out, a copy that
   cleared the patient details or location, or the recording or reference
   descriptions. Read with
   `inspect` for a folder or an archive; anything else,
@@ -403,8 +405,15 @@ archives" (2026-10-16) is built as follows.
   they slowed other pages' task starts enough to fail the Explorer's 0.25 s
   responsiveness test under load.
 
-**Deferred** (not in dev2): the per-item free-text review screen (one
+**Deferred** (not in dev2 or dev3): the per-item free-text review screen (one
 drop/keep choice for all text today); pseudonym generation per subject and a
 naming pattern; running copies in parallel; a PDF/CSV report export (the
 date key is the only file written about a batch); the "set the time too"
 weekday uses the site zone when one is chosen.
+
+**Known library limit** ([mef3io#115](https://github.com/bnelair/mef3io/issues/115)):
+with note text kept, mef3io's leftover-identity check is stricter than its
+removal (an unaccented spelling of a name, e.g. "Muller" for "Müller"; a
+left-out channel name repeated inside one word, "a3a3"), so such a copy
+fails mef3io's own verification and is removed. Nothing leaks; the app
+reports "The copy did not pass its check" for that recording.
