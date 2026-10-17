@@ -92,6 +92,97 @@ def remove_work_copy(path: str) -> bool:
     return not os.path.lexists(path)
 
 
+def remove_temporary_file(path: str) -> None:
+    """Remove a temporary file of the app's own (opaque ``.mef3io-studio-``
+    name) and anything next to it starting with that name."""
+    base = os.path.basename(path)
+    if not base.startswith(".mef3io-studio-"):
+        return
+    folder = os.path.dirname(path) or "."
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    stem = base.split(".mefd")[0]
+    for name in names:
+        if name.startswith(stem):
+            target = os.path.join(folder, name)
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                try:
+                    os.unlink(target)
+                except OSError:
+                    pass
+
+
+def remove_own_result(path: str) -> None:
+    """Remove a result the batch journal says this batch was making (to make
+    it again after an interruption): a ``.mefd`` folder or a ``.mefd.tar``
+    file. Nothing else is ever removed."""
+    lowered = path.lower()
+    if lowered.endswith(".mefd") and os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+    elif lowered.endswith(".mefd.tar") and os.path.isfile(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def same_volume(a: str, b: str) -> bool:
+    """Both folders are on the same drive (the work copy and the result
+    then share its free space)."""
+    try:
+        return bool(a and b) and os.stat(a).st_dev == os.stat(b).st_dev
+    except OSError:
+        return False
+
+
+def probe(sources: list[tuple[str, str]], outputs: list[tuple[str, str]], cancel=None) -> dict:
+    """In a helper process: open every original with its own password (it
+    must give full access) and read its start and end; open each finished
+    copy with the copies' full-access password. Details only, no signal."""
+    from .inspect import inspect_recording
+    from .recording import ACCESS_BASIC, recording_name
+
+    found = []
+    for source, password in sources:
+        if cancel is not None:
+            cancel.raise_if_cancelled()
+        outcome = inspect_recording(source, password, cancel=cancel, detect_legacy=False)
+        details = outcome.details
+        if outcome.needs_password:
+            problem = (
+                "its password did not open it. Type its full-access password again."
+                if password
+                else "it needs its full-access password."
+            )
+            found.append({"problem": problem})
+        elif details is None:
+            found.append({"problem": "it could not be opened. Check that the drive is connected."})
+        elif details.access == ACCESS_BASIC:
+            found.append(
+                {
+                    "problem": "the password only gives basic access; anonymizing needs the "
+                    "full-access password."
+                }
+            )
+        else:
+            found.append(
+                {"name": recording_name(source), "start": details.start, "end": details.end}
+            )
+    opened = []
+    for path, password in outputs:
+        outcome = inspect_recording(path, password, detect_legacy=False)
+        opened.append(
+            outcome.details is not None
+            and not outcome.needs_password
+            and outcome.details.access != ACCESS_BASIC
+        )
+    return {"sources": found, "outputs": opened}
+
+
 def free_bytes(folder: str) -> int | None:
     try:
         return shutil.disk_usage(folder).free
@@ -174,12 +265,21 @@ def plan_batch(
     )
 
 
-def space_problems(batch: Batch, free_work: int | None, free_destination: int | None) -> list[str]:
-    """Free space, checked before starting (plain words)."""
+def space_problems(
+    batch: Batch,
+    free_work: int | None,
+    free_destination: int | None,
+    same_volume: bool = False,
+) -> list[str]:
+    """Free space, checked before starting (plain words). When the work
+    folder and the destination are on one drive, the work copy and the
+    results share it: the total plus the largest copy must fit."""
     out = []
     from .timefmt import format_size
 
     total = int(sum(i.estimate for i in batch.items) * MARGIN) + EXTRA_BYTES
+    if same_volume and batch.output != FOLDERS and batch.items:
+        total += int(max(i.estimate for i in batch.items) * MARGIN)
     if free_destination is not None and free_destination < total:
         out.append(
             f"The destination has {format_size(free_destination)} free; the copies need about "
@@ -230,7 +330,6 @@ def to_payload(batch: Batch, bundle_temporary: str = "", bundle_offset: int = 0)
                 "final": i.final,
                 "work": i.work,
                 "estimate": i.estimate,
-                "original": [i.original_name, i.original_start, i.original_end],
             }
         )
     return {
@@ -245,10 +344,15 @@ def to_payload(batch: Batch, bundle_temporary: str = "", bundle_offset: int = 0)
     }
 
 
-def from_payload(payload: dict, password_for, output_password) -> Batch:
+def from_payload(
+    payload: dict, password_for, output_password, originals: dict | None = None
+) -> Batch:
     """The batch again. ``password_for(source)`` gives the original's
     password when it needs one; ``output_password`` is the copies' pair
-    (both typed again by the user: never journaled)."""
+    (both typed again by the user: never journaled). ``originals`` (key ->
+    (name, start, end), read again from the originals) fills in what the
+    date key needs: the journal never holds original names or dates."""
+    originals = originals or {}
     items = []
     for raw in payload["items"]:
         r = dict(raw["request"])
@@ -266,7 +370,7 @@ def from_payload(payload: dict, password_for, output_password) -> Batch:
             output_password=output_password if protected else None,
             exclude_channels=tuple(r.get("exclude_channels", ())),
         )
-        name, start, end = raw["original"]
+        name, start, end = originals.get(request.key, ("", 0, 0))
         items.append(
             BatchItem(
                 request=request,
@@ -288,10 +392,33 @@ def from_payload(payload: dict, password_for, output_password) -> Batch:
     )
 
 
-def needs_passwords(payload: dict) -> tuple[bool, bool]:
-    """(some original needs its password, the copies are protected)."""
+def needs_passwords(payload: dict) -> tuple[list[int], bool]:
+    """(the positions of the originals that need their password, whether
+    the copies are protected)."""
     items = payload.get("items", [])
     return (
-        any(i["request"].get("needs_password") for i in items),
+        [n for n, i in enumerate(items) if i["request"].get("needs_password")],
         any(i["request"].get("protected") for i in items),
     )
+
+
+def without_passwords(batch: Batch) -> Batch:
+    """The batch with every password removed (what the page may keep)."""
+    return replace(
+        batch,
+        items=tuple(
+            replace(i, request=replace(i.request, password="", output_password=None))
+            for i in batch.items
+        ),
+    )
+
+
+def with_originals(batch: Batch, originals: dict) -> Batch:
+    """The batch with each recording's name and dates read again."""
+    items = []
+    for i in batch.items:
+        name, start, end = originals.get(
+            i.request.key, (i.original_name, i.original_start, i.original_end)
+        )
+        items.append(replace(i, original_name=name, original_start=start, original_end=end))
+    return replace(batch, items=tuple(items))

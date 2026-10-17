@@ -37,8 +37,29 @@ def work_folder(settings: Settings) -> str:
 
 
 def set_work_folder(settings: Settings, folder: str | None) -> None:
-    """Remember ``folder`` (None or "" = the default)."""
+    """Remember ``folder`` (None or "" = the default), and add it to the
+    folders ever used (looked through for leftovers at start)."""
     settings.set("anonymizer/work_folder", seal({"path": folder}) if folder else "")
+    remember_work_folder(settings, folder or default_work_folder())
+
+
+def work_folders_used(settings: Settings) -> list[str]:
+    sealed = settings.get("anonymizer/work_folders_used")
+    value = unseal(sealed) if sealed else None
+    folders = list(value.get("paths", [])) if value else []
+    for folder in (default_work_folder(), work_folder(settings)):
+        if folder not in folders:
+            folders.append(folder)
+    return folders
+
+
+def remember_work_folder(settings: Settings, folder: str) -> None:
+    sealed = settings.get("anonymizer/work_folders_used")
+    value = unseal(sealed) if sealed else None
+    folders = list(value.get("paths", [])) if value else []
+    if folder not in folders:
+        folders.append(folder)
+        settings.set("anonymizer/work_folders_used", seal({"paths": folders}))
 
 
 class SettingsDialog(QDialog):

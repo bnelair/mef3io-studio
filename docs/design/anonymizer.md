@@ -251,54 +251,87 @@ the copies".
 ### The unattended batch (pipeline)
 
 The issue #5 comment "one unattended pipeline from selection to shareable
-archives" (2026-10-16) is built as follows.
+archives" (2026-10-16) is built as follows (review rounds 1 and 2 included).
 
 - **Output step** (before Review): folders (as before), one archive per
   recording, or one archive for the whole batch (`model/pipeline.py`).
 - **Per recording, in sequence** (`workers.tasks.run_batch` → `_one`):
-  anonymize (helper process) into `<work>/work-<batch>-<n>/<name>.mefd`;
-  archives: `model.archive.plan` + `run_in_helper` (mef3io
-  `archive_session` to a temporary `.mefd.tar` next to the target, then
-  `inspect` of the archive vs the work copy: channels, rates, every part's
-  start, end, samples and blocks) + `finish` (rename, never replacing);
-  bundle: `model.bundle.BundleWriter.add` (Python `tarfile`, deterministic:
-  sorted members, mtime 0, uid/gid 0, no user names, 0755/0644, ustar with a
-  pax header only where a name does not fit; 1 MB chunks, never a whole
-  `.tdat`; the added members' names, types and sizes are read back from the
-  headers before the work copy goes). The work copy is deleted only after
-  that check. Folders mode is unchanged (mef3io writes `<dest>.partial` and
-  publishes).
-- **Up-front checks** (`preflight_batch`, before anything is written): the
-  originals still exist, the work folder is writable and outside any
+  anonymize (helper process) into `<work>/work-<batch>-<n>/<name>.mefd`.
+  - **Archives:** the SHA-256 of every file of the checked work copy is
+    computed first; `model.archive.plan` + `run_in_helper` (mef3io
+    `archive_session` to a temporary `.mefd.tar` next to the target, then
+    `inspect` of the archive vs the work copy: channels, rates, every part's
+    start, end, samples and blocks); then every member of the written,
+    fsynced archive is re-read and its SHA-256 compared with the copy's;
+    only then `finish` (rename, never replacing).
+  - **Bundle:** `model.bundle.BundleWriter.add` (Python `tarfile`,
+    deterministic: sorted members, mtime 0, uid/gid 0, no user names,
+    0755/0644, pax header only where a name does not fit ustar; 1 MB chunks,
+    never a whole signal file). Each file is hashed while it is read into the
+    bundle; after the fsync the added members are re-read from the bundle and
+    their names, sizes and SHA-256 compared.
+  - Only after that byte check is the work copy deleted. A mismatch keeps the
+    work copy (the user is told; the start-up offer removes it later) and
+    reports the recording failed ("The archive did not match the checked
+    copy"). Folders mode is unchanged (mef3io writes `<dest>.partial`,
+    verifies and publishes).
+- **Up-front checks** (`preflight_batch`, before anything is written): every
+  original exists and opens with ITS OWN password with full access (each
+  recording keeps the password it was opened with in Explore; originals may
+  have different ones), the work folder is writable and outside any
   recording, nothing is in the way at the destination, free space (the
-  destination for all estimated copies, the work folder for the largest),
-  and mef3io's name refusal for every recording. Problems are listed on the
-  Review step and nothing starts. mef3io#111/#112's `check()` and refusal
-  codes replace the name probe when the app moves to mef3io 1.4.
+  destination for all estimated copies; the work folder for the largest; on
+  one drive, the total plus the largest), and mef3io's name refusal. Problems
+  are listed on the Review step and nothing starts.
+- **Failures:** a refusal or a failure ends one recording. A failure to
+  reach the source or the destination (an `OSError` / `IoError` that is not a
+  refusal) is RETRYABLE: the recording stays waiting in the journal; after 3
+  such failures in a row the batch pauses, saying plainly that the network
+  drive may be unavailable, and offers "Retry the failed ones" (the batch's
+  passwords stay in memory only while something can be retried).
 - **Stop:** each step cleans up (mef3io removes `.partial`; a temporary
-  archive is removed; a half-added bundle recording is cut back by
-  truncating to the last checked offset). A bundle is then finished with
-  the recordings already in it, so finished work is delivered and nothing
-  half-made stays. Failures end one recording only.
+  archive is removed; a half-added bundle recording is cut back to the last
+  checked offset). With one archive for the batch, Stop (or a pause) keeps
+  the unfinished archive and the journal, so Continue can complete it; "Finish
+  the archive with what is done" names it and reports it as partial ("3 of
+  the 7 recordings; 4 are not in it"), in the summary and the notification.
+  Rows say "Added to the batch archive" until the archive is finished, and
+  "Not delivered" (left out of the date key) if finishing fails.
 - **Keep awake** (`model/awake.py`, on by default, a preference): Windows
-  `SetThreadExecutionState`, macOS `caffeinate -i -w <pid>`, Linux
-  `systemd-inhibit --what=sleep:idle … sleep infinity`; a quiet no-op when
-  none is available. **Notification** when the batch ends: the system tray
-  message where available, plus a taskbar/dock alert.
+  `SetThreadExecutionState`; macOS `caffeinate -i -w <pid>`; Linux
+  `systemd-inhibit --what=sleep:idle … tail --pid=<pid> -f /dev/null`, so the
+  inhibitor ends with the app even if it crashes; a quiet no-op elsewhere.
+  **Notification** when the batch ends: the system tray message (the tray
+  icon is hidden again after it) plus a taskbar/dock alert.
 - **Journal** (`model/journal.py`): in the app-data folder, one JSON per
-  batch with ONLY opaque ids in clear (batch id, item ids, states); the
-  rest (sources, destinations, names, shifts, channels, original dates for
-  the date key, the bundle's temporary file and its last checked offset) is
-  a sealed blob: a SHA-256 keystream under a random per-user key in
-  `journal.key` (0600) plus HMAC-SHA-256. Passwords are never journaled
-  (only "needs a password" flags). On start the app offers "Continue the
-  batch: 4 of 7 done"; continuing re-runs the up-front checks for the
-  recordings still to do, asks the passwords again, redoes the interrupted
-  recording (its stale work copy is removed first) and skips finished ones.
-  Leftover work copies not claimed by a journal are offered for removal.
+  batch with ONLY opaque ids in clear (batch id, item ids, states); the rest
+  (sources, destinations, names of the copies, shifts, channels, temporary
+  files, the bundle's temporary file and its last checked offset) is a sealed
+  blob: a SHA-256 keystream and HMAC-SHA-256 under separate keys derived as
+  `HMAC(key, "enc")` and `HMAC(key, "mac")` from a random key in
+  `journal.key` (DPAPI-protected on Windows, 0600 elsewhere). It holds NO
+  original names or dates: on Continue they are read again with `inspect()`
+  for the date key. Passwords are never journaled. Every temporary file at the
+  destination is journaled (and kept in a sealed list, `temporaries.json`)
+  BEFORE it is made. On start the app offers "Continue the batch: 4 of 7
+  done": Continue asks each original's password and the copies' new pair
+  (typed twice) again, opens every original with its own password and one
+  finished copy with the new one, removes its own unfinished files of the
+  recordings still to do, asks whether results already at the destination for
+  unfinished recordings (made just before a crash) are kept ("not confirmed")
+  or made again, then continues. Refusals on Continue name positions
+  ("Recording 3 of 7"), never recordings. Discard removes the batch's
+  unfinished files. Leftover work copies in every work folder ever used (a
+  sealed preference) and known temporaries not claimed by a journal are
+  offered for removal ("They should hold no patient details, but they were
+  never checked: do not use or share them").
 - **Settings** (`common/settings_dialog.py`): the work folder (default
-  `<app data>/work`; stored SEALED with the same key, never a path in
-  clear) and keep-awake.
+  `<app data>/work`; stored SEALED with the same key, never a path in clear),
+  and keep-awake.
+- **The page is built on first use:** the wizard's few hundred widgets are
+  made the first time the Anonymize page is shown or used. Built up front,
+  they slowed other pages' task starts enough to fail the Explorer's 0.25 s
+  responsiveness test under load.
 
 **Deferred** (not in dev2): the per-item free-text review screen (one
 drop/keep choice for all text today); pseudonym generation per subject and a

@@ -21,6 +21,7 @@ Plain Python, no Qt. Never logs anything (member names are recording names).
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 import secrets
 import sys
@@ -33,6 +34,11 @@ from .cancel import CancelToken
 CHUNK = 1 << 20
 #: Temporary bundles start with this (opaque: no name of a recording).
 TEMP_PREFIX = ".mef3io-studio-bundle-"
+
+
+#: Called with (path, start, end) just before a recording's bytes are
+#: checked in any bundle (tests use it to damage what was written).
+before_check = None
 
 
 class BundleMismatch(RuntimeError):
@@ -89,13 +95,94 @@ class _Chunked:
         self.handle = handle
         self.cancel = cancel
         self.on_bytes = on_bytes
+        #: SHA-256 of exactly the bytes handed to the bundle.
+        self.digest = hashlib.sha256()
 
     def read(self, n: int = -1) -> bytes:
         self.cancel.raise_if_cancelled()
         data = self.handle.read(min(n, CHUNK) if n and n > 0 else CHUNK)
+        self.digest.update(data)
         if self.on_bytes is not None and data:
             self.on_bytes(len(data))
         return data
+
+
+def hash_folder(
+    folder: str,
+    cancel: CancelToken | None = None,
+    on_bytes: Callable[[int], None] | None = None,
+) -> dict[str, str]:
+    """SHA-256 of every file of a recording folder, by its path inside the
+    folder ("/" separated), read in 1 MB chunks."""
+    cancel = cancel or CancelToken()
+    out = {}
+    root = os.path.basename(os.path.normpath(folder))
+    parent = os.path.dirname(os.path.normpath(folder))
+    for m in members_of(folder):
+        if m.is_dir:
+            continue
+        digest = hashlib.sha256()
+        with open(os.path.join(parent, *m.name.split("/")), "rb") as handle:
+            while True:
+                cancel.raise_if_cancelled()
+                data = handle.read(CHUNK)
+                if not data:
+                    break
+                digest.update(data)
+                if on_bytes is not None:
+                    on_bytes(len(data))
+        out[m.name[len(root) + 1 :]] = digest.hexdigest()
+    return out
+
+
+def tar_member_hashes(
+    path: str,
+    start: int = 0,
+    end: int | None = None,
+    cancel: CancelToken | None = None,
+    on_bytes: Callable[[int], None] | None = None,
+) -> dict[str, str]:
+    """SHA-256 of every file member of a tar (or of the members between two
+    offsets), by member name, re-read from the file in 1 MB chunks."""
+    cancel = cancel or CancelToken()
+    out = {}
+    with open(path, "rb") as raw:
+        raw.seek(start)
+        view = _Limited(raw, end if end is not None else os.path.getsize(path))
+        with tarfile.open(fileobj=view, mode="r:") as tar:
+            for info in tar:
+                if not info.isfile():
+                    continue
+                digest = hashlib.sha256()
+                member = tar.extractfile(info)
+                while True:
+                    cancel.raise_if_cancelled()
+                    data = member.read(CHUNK)
+                    if not data:
+                        break
+                    digest.update(data)
+                    if on_bytes is not None:
+                        on_bytes(len(data))
+                out[info.name] = digest.hexdigest()
+    return out
+
+
+def without_root(hashes: dict[str, str]) -> dict[str, str]:
+    """Member names without their first folder ("S1.mefd/a/b" -> "a/b")."""
+    return {n.split("/", 1)[1]: h for n, h in hashes.items() if "/" in n}
+
+
+def hide_file(path: str) -> None:
+    """Mark a temporary file hidden on Windows (elsewhere its name starts
+    with a dot, which does the same)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), 0x2)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - a convenience
+        pass
 
 
 @dataclass
@@ -109,6 +196,9 @@ class BundleWriter:
     offset: int = 0
     #: Every member written so far, for the final check.
     written: list[Member] = field(default_factory=list)
+    #: Called with (path, start, end) just before the byte check (tests
+    #: use it to damage what was written).
+    before_check: Callable | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.temporary:
@@ -116,8 +206,10 @@ class BundleWriter:
             self.temporary = os.path.join(folder, f"{TEMP_PREFIX}{secrets.token_hex(16)}.tar")
 
     def _open(self):
-        mode = "r+b" if os.path.exists(self.temporary) else "w+b"
-        handle = open(self.temporary, mode)  # noqa: SIM115 - closed in add()
+        new = not os.path.exists(self.temporary)
+        handle = open(self.temporary, "w+b" if new else "r+b")  # noqa: SIM115 - closed in add()
+        if new:
+            hide_file(self.temporary)
         handle.truncate(self.offset)
         handle.seek(self.offset)
         tar = tarfile.open(fileobj=handle, mode="w", format=tarfile.PAX_FORMAT)
@@ -137,6 +229,7 @@ class BundleWriter:
         members = members_of(folder)
         parent = os.path.dirname(os.path.normpath(folder))
         handle, tar = self._open()
+        hashes: dict[str, str] = {}
         try:
             for m in members:
                 cancel.raise_if_cancelled()
@@ -145,7 +238,9 @@ class BundleWriter:
                     tar.addfile(info)
                     continue
                 with open(os.path.join(parent, *m.name.split("/")), "rb") as f:
-                    tar.addfile(info, _Chunked(f, cancel, on_bytes))
+                    chunked = _Chunked(f, cancel, on_bytes)
+                    tar.addfile(info, chunked)
+                hashes[m.name] = chunked.digest.hexdigest()
             # Members only: the end-of-archive blocks come at finish().
             tar.fileobj = None  # keep tarfile from writing them on close
             handle.flush()
@@ -162,6 +257,14 @@ class BundleWriter:
         ]:
             self._cut_back()
             raise BundleMismatch("the bundle does not hold the recording's files as written")
+        # Every byte, read back from the bundle on disk, against what was
+        # read from the checked copy: only then may the copy be deleted.
+        hook = self.before_check or before_check
+        if hook is not None:
+            hook(self.temporary, self.offset, end)
+        if tar_member_hashes(self.temporary, self.offset, end, cancel) != hashes:
+            self._cut_back()
+            raise BundleMismatch("the bundle's bytes do not match the checked copy")
         self.offset = end
         self.written += members
         return members

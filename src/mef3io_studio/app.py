@@ -19,6 +19,9 @@ from ._version import app_version, mef3io_version
 
 log = logging.getLogger("mef3io_studio")
 
+#: How long the notification's tray icon stays before it is hidden again.
+NOTIFY_SECONDS = 15
+
 MODULES = (
     # (settings key, label, icon, page title, page text)
     (
@@ -320,22 +323,32 @@ def _build_main_window_class():
                 self._tray = QSystemTrayIcon(icons.app_icon(), self)
             self._tray.show()
             self._tray.showMessage("mef3io-studio", text, QSystemTrayIcon.MessageIcon.Information)
+            # Only for the message: no lasting icon in the system tray.
+            QTimer.singleShot(NOTIFY_SECONDS * 1000, self._tray.hide)
 
         # -- interrupted work, offered at start ---------------------------------
         def offer_pending_work(self) -> None:
-            """An interrupted batch can be continued; work copies an
-            interrupted run left behind are never kept silently."""
+            """An interrupted batch can be continued; unfinished work an
+            interrupted run left behind (work copies in every work folder
+            ever used, temporary archives) is never kept silently."""
+            from .common.settings_dialog import work_folders_used
             from .model import journal as journal_
             from .model import pipeline
 
             pending = journal_.unfinished()
             claimed: set[str] = set()
             for journal in pending:
-                claimed |= {i.get("work", "") for i in journal.payload.get("items", [])}
+                for item in journal.payload.get("items", []):
+                    claimed.add(item.get("work", ""))
+                    claimed |= set(item.get("temporaries", []))
+                claimed.add(journal.payload.get("bundle_temporary", ""))
             if pending:
                 self.offer_resume(pending[0])
-            folder = self.anonymizer.work_folder()
-            leftovers = [p for p in pipeline.leftover_work_copies(folder) if p not in claimed]
+            leftovers = []
+            for folder in work_folders_used(self.settings):
+                leftovers += pipeline.leftover_work_copies(folder)
+            leftovers += [p for p in journal_.known_temporaries() if os.path.lexists(p)]
+            leftovers = [p for p in dict.fromkeys(leftovers) if p not in claimed]
             if leftovers:
                 self.offer_leftover_removal(leftovers)
 
@@ -353,15 +366,16 @@ def _build_main_window_class():
             return made.get(box.clickedButton(), buttons[-1][0])
 
         def offer_leftover_removal(self, leftovers: list[str]) -> bool:
+            from .model import journal as journal_
             from .model import pipeline
 
+            n = len(leftovers)
             choice = self.ask(
-                "Unfinished work copies",
-                f"{len(leftovers)} unfinished anonymized "
-                f"{'copy was' if len(leftovers) == 1 else 'copies were'} left in the work "
-                "folder by an interrupted run.",
-                "They have no patient details, but they were never checked, so they should "
-                "not be used. Remove them now?",
+                "Unfinished copies",
+                f"{n} unfinished anonymized {'copy was' if n == 1 else 'copies or archives were'} "
+                "left behind by an interrupted run.",
+                "They should hold no patient details, but they were never checked: do not use "
+                "or share them. Remove them now?",
                 [
                     ("remove", "Remove them", QMessageBox.ButtonRole.AcceptRole),
                     ("keep", "Not now", QMessageBox.ButtonRole.RejectRole),
@@ -370,7 +384,11 @@ def _build_main_window_class():
             if choice != "remove":
                 return False
             for path in leftovers:
-                pipeline.remove_work_copy(path)
+                if os.path.basename(path).startswith(pipeline.JOB_PREFIX):
+                    pipeline.remove_work_copy(path)
+                else:
+                    pipeline.remove_temporary_file(path)
+                    journal_.forget_temporary(path)
             return True
 
         def offer_resume(self, journal) -> str:
@@ -379,7 +397,8 @@ def _build_main_window_class():
                 f"Continue the batch: {journal.done} of {journal.total} done.",
                 "A batch of anonymized copies was interrupted. Continuing checks everything "
                 "again first, then makes the rest. Discarding removes its unfinished work; "
-                "copies already saved stay.",
+                "copies already saved stay. Until you choose, a sealed note about the batch "
+                "stays in the app's own data folder (no names or dates in clear).",
                 [
                     ("continue", "Continue the batch", QMessageBox.ButtonRole.AcceptRole),
                     ("discard", "Discard the batch", QMessageBox.ButtonRole.DestructiveRole),
@@ -393,41 +412,56 @@ def _build_main_window_class():
             return choice
 
         def discard_batch(self, journal) -> None:
-            from .model import pipeline
+            from .workers.tasks import discard_batch_files
 
-            temporary = journal.payload.get("bundle_temporary", "")
-            if temporary and os.path.basename(temporary).startswith(".mef3io-studio-bundle-"):
-                try:
-                    os.unlink(temporary)
-                except OSError:
-                    pass
-            for item in journal.payload.get("items", []):
-                if item.get("work"):
-                    pipeline.remove_work_copy(item["work"])
+            discard_batch_files(journal)
             journal.delete()
 
-        def ask_resume_passwords(self, needs_source: bool, protected: bool):
-            """(password of the originals, (basic, full) for the copies) or
-            None when the user gives up."""
+        def ask_resume_passwords(self, sources: list[int], total: int, protected: bool):
+            """({position: password of that original}, (basic, full) for the
+            copies) or None when the user gives up."""
             from .anonymizer.resume import ResumePasswordsDialog
 
-            dialog = ResumePasswordsDialog(needs_source, protected, self)
+            dialog = ResumePasswordsDialog(sources, total, protected, self)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return None
             return dialog.values()
 
+        def ask_existing(self, positions: list[int], total: int) -> str:
+            """Results already at the destination for recordings the journal
+            does not call finished (the app stopped right after making them)."""
+            which = ", ".join(f"{n + 1}" for n in positions)
+            return self.ask(
+                "Results already there",
+                f"Results for recording(s) {which} of {total} are already at the destination.",
+                "They were made just before the interruption, but the app could not confirm "
+                "them. Keep them as they are (marked as not confirmed), or make them again "
+                "(they are replaced by new, checked ones)?",
+                [
+                    ("keep", "Keep them", QMessageBox.ButtonRole.AcceptRole),
+                    ("redo", "Make them again", QMessageBox.ButtonRole.DestructiveRole),
+                ],
+            )
+
         def continue_batch(self, journal):
             from .model import pipeline
 
-            needs_source, protected = pipeline.needs_passwords(journal.payload)
-            source_password, output = "", None
-            if needs_source or protected:
-                answer = self.ask_resume_passwords(needs_source, protected)
+            sources, protected = pipeline.needs_passwords(journal.payload)
+            passwords: dict[int, str] = {}
+            output = None
+            if sources or protected:
+                answer = self.ask_resume_passwords(sources, journal.total, protected)
                 if answer is None:
                     return None
-                source_password, output = answer
+                passwords, output = answer
+            items = journal.payload.get("items", [])
+            by_source = {
+                items[n]["request"]["source"]: password for n, password in passwords.items()
+            }
             self.module_list.setCurrentRow(self.module_keys.index("anonymizer"))
-            return self.anonymizer.resume(journal, lambda _s: source_password, output)
+            return self.anonymizer.resume(
+                journal, lambda source: by_source.get(source, ""), output, self.ask_existing
+            )
 
         def _resume_refused(self, text: str) -> None:
             self.show_error(

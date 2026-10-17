@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTableView,
     QTableWidget,
@@ -106,7 +107,20 @@ from ..model.timefmt import (
     zone_names,
 )
 from ..workers.jobs import JobManager
-from ..workers.tasks import BundleOutcome, check_copy_names, preflight_batch, run_batch
+from ..workers.tasks import (
+    EARLIER as EARLIER_NOTE,
+)
+from ..workers.tasks import (
+    UNCONFIRMED as UNCONFIRMED_NOTE,
+)
+from ..workers.tasks import (
+    BatchState,
+    BundleOutcome,
+    check_copy_names,
+    finish_bundle_now,
+    preflight_batch,
+    run_batch,
+)
 from .picker import ChannelPicker
 
 #: Wait this long after the last change of the Explore list before listing
@@ -139,7 +153,7 @@ DEFAULT_BUNDLE = "anonymized-recordings.tar"
 
 BUNDLE_EXPLANATION = (
     "One file for the whole batch, for sharing. Inside it, each anonymized recording is "
-    "its own folder. This app and the mef3io library cannot open this file directly: "
+    "its own folder. This app cannot open this file directly: "
     "extract it first with any archive tool (7-Zip, the one built into Windows or macOS, "
     "or tar), which gives back the recordings, ready to use. This does NOT join the "
     "recordings into one recording: they stay separate."
@@ -951,8 +965,7 @@ class OutputStep(QWidget):
         self.page = page
         self.folders = QRadioButton("A folder per recording (.mefd), as the originals")
         self.archives = QRadioButton(
-            "An archive per recording (.mefd.tar): one file each, which this app and the "
-            "mef3io library open directly"
+            "An archive per recording (.mefd.tar): one file each, which this app opens directly"
         )
         self.bundle = QRadioButton("One archive for the whole batch (.tar), for sharing")
         self.folders.setChecked(True)
@@ -978,7 +991,9 @@ class OutputStep(QWidget):
         layout.addWidget(
             _label(
                 "Choose how the copies are saved. Once you start, the whole batch runs by "
-                "itself: you do not need to come back after each recording.",
+                "itself: you do not need to come back after each recording. If it is "
+                "interrupted, a small sealed note about it (no names or dates in clear) stays "
+                "in the app's own data folder until you continue or discard the batch.",
                 muted=True,
             )
         )
@@ -1015,7 +1030,33 @@ class OutputStep(QWidget):
                 "The batch archive's name must not end in .mefd.tar: that is the name of a "
                 "single recording."
             )
+        if self.names_identity(name):
+            return (
+                "The batch archive's name contains a patient detail or the name of one of "
+                "the original recordings. Choose a name that says nothing about the patients."
+            )
         return ""
+
+    def names_identity(self, name: str) -> bool:
+        """The batch archive's name holds an identifying value of the batch
+        (patient details, stored names, the originals' names)."""
+        import unicodedata
+
+        def fold(text: str) -> str:
+            text = unicodedata.normalize("NFKD", text)
+            return "".join(c for c in text if not unicodedata.combining(c)).casefold()
+
+        folded = fold(name)
+        for c in self.page.choices:
+            values = [c.entry.name]
+            if c.entry.details is not None:
+                values += c.entry.details.identity_values()
+            for value in values:
+                for part in [value, *str(value).replace(",", " ").split()]:
+                    part = part.strip()
+                    if len(part) >= 3 and fold(part) in folded:
+                        return True
+        return False
 
     def _update(self, *_args) -> None:
         bundle = self.output() == pipeline.BUNDLE
@@ -1278,6 +1319,8 @@ class RunStep(QWidget):
         layout.addWidget(_scroll(inner))
         #: Result text per recording (for tests).
         self.result_texts: dict[str, str] = {}
+        self.retry_button = None
+        self.finish_bundle_button = None
 
     def start(self, handle, requests: list[CopyRequest]) -> None:
         _clear(self.progress_slot)
@@ -1309,11 +1352,7 @@ class RunStep(QWidget):
             if result is None:
                 status = "Stopped" if page.run.finished else "Waiting…"
             elif result.ok:
-                status = (
-                    "Saved and checked (earlier)"
-                    if "made earlier" in result.notes
-                    else "Saved and checked"
-                )
+                status = page.status_of(result)
             else:
                 status = result.message.title if result.message else "Not saved"
             self.result_texts[key] = status
@@ -1339,6 +1378,8 @@ class RunStep(QWidget):
 
     def finish(self) -> None:
         page = self.page
+        _clear(self.open_buttons)
+        _clear(self.messages)
         results = page.run.results
         items = self._items()
         saved = [i for i in items if results.get(i.request.key) and results[i.request.key].ok]
@@ -1370,15 +1411,69 @@ class RunStep(QWidget):
         batch = page.batch
         bundle_mode = batch is not None and batch.output == pipeline.BUNDLE
         outcome = page.bundle_outcome
+        state = page.batch_state
+        if state is not None and state.journal is not None and (state.paused or state.retry):
+            frame = QFrame()
+            frame.setObjectName("Warning")
+            inner = QVBoxLayout(frame)
+            n = len(state.retry)
+            inner.addWidget(
+                _label(
+                    (
+                        "The batch paused: the recordings or the destination could not be "
+                        "reached several times in a row. The network drive may be unavailable. "
+                        if state.paused
+                        else ""
+                    )
+                    + f"{format_count(n, 'recording')} could not be reached and can be tried "
+                    "again. Nothing of them was written. Check the drive, then retry; or "
+                    "close the app and choose Continue the batch later.",
+                    bold=True,
+                )
+            )
+            retry = QPushButton("Retry the failed ones")
+            retry.setProperty("primary", True)
+            retry.clicked.connect(page.retry_failed)
+            retry.setEnabled(page._retry_batch is not None)
+            self.retry_button = retry
+            inner.addWidget(retry, 0, Qt.AlignmentFlag.AlignLeft)
+            self.messages.addWidget(frame)
+        if bundle_mode and state is not None and state.bundle_pending and outcome is None:
+            frame = QFrame()
+            frame.setObjectName("Warning")
+            inner = QVBoxLayout(frame)
+            done = sum(1 for i in items if results.get(i.request.key) and results[i.request.key].ok)
+            inner.addWidget(
+                _label(
+                    f"The batch archive is not finished: {done} of {len(items)} recordings are "
+                    "in it so far. It is kept, unfinished, so the batch can be continued (the "
+                    "app offers that at its next start). Or finish it now with what is done: "
+                    "it then holds only those recordings.",
+                    bold=True,
+                )
+            )
+            finish = QPushButton("Finish the archive with what is done")
+            finish.clicked.connect(page.finish_bundle_now)
+            self.finish_bundle_button = finish
+            inner.addWidget(finish, 0, Qt.AlignmentFlag.AlignLeft)
+            self.messages.addWidget(frame)
         if bundle_mode and outcome is not None:
             frame = QFrame()
-            frame.setObjectName("Notice" if outcome.ok else "Warning")
+            frame.setObjectName("Notice" if outcome.ok and not outcome.partial else "Warning")
             inner = QVBoxLayout(frame)
             if outcome.ok:
+                missing = outcome.total - outcome.recordings
+                partial = (
+                    f" It is PARTIAL: {outcome.recordings} of the {outcome.total} recordings; "
+                    f"{missing} {'is' if missing == 1 else 'are'} not in it."
+                    if outcome.partial and missing
+                    else ""
+                )
                 inner.addWidget(
                     _label(
                         f"The batch archive holds {format_count(outcome.recordings, 'recording')}"
-                        f": {outcome.path}. Extract it with any archive tool to use them.",
+                        f": {outcome.path}. Extract it with any archive tool to use them."
+                        + partial,
                         bold=True,
                     )
                 )
@@ -1474,6 +1569,45 @@ class AnonymizerPage(QWidget):
         self.names_handle = None
         self._open_password = ""
         self._passwords_dropped = False
+        self._retry_batch = None
+        self.batch_state = None
+        self._zone_name = ""
+        self._recordings_dirty = True
+        self._built = False
+        # The page fills whatever room it gets (it scrolls), so its size hint
+        # is never needed.
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        model = explorer.model
+        for signal in (
+            model.rowsInserted,
+            model.rowsRemoved,
+            model.modelReset,
+            model.dataChanged,
+            model.layoutChanged,
+        ):
+            signal.connect(self._explorer_changed)
+
+    # The wizard's widgets are made the first time the page is shown (or
+    # used): a few hundred widgets with wrapped texts, built while the user
+    # is on another page, measurably slowed that page's tasks (the window
+    # stalled longer when a task started; tests/test_combined_timeline_ui.py
+    # pins 0.25 s). Any wizard attribute that is not there yet builds them.
+    def __getattr__(self, name: str):
+        if name.startswith("_") or self.__dict__.get("_built", True):
+            raise AttributeError(name)
+        self._build()
+        return object.__getattribute__(self, name)
+
+    @property
+    def built(self) -> bool:
+        return self._built
+
+    def _build(self) -> None:
+        if self._built:
+            return
+        self._built = True
         em = self.fontMetrics().height()
 
         title = _label("Anonymize recordings", wrap=False)
@@ -1541,24 +1675,15 @@ class AnonymizerPage(QWidget):
         layout.addWidget(self.stack, 1)
         layout.addLayout(nav)
         self.scroll = _scroll(inner)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self.scroll)
+        self._outer.addWidget(self.scroll)
 
-        self._recordings_dirty = False
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(REFRESH_DELAY_MS)
         self._refresh_timer.timeout.connect(self._refresh_recordings)
-        model = explorer.model
-        for signal in (
-            model.rowsInserted,
-            model.rowsRemoved,
-            model.modelReset,
-            model.dataChanged,
-            model.layoutChanged,
-        ):
-            signal.connect(self._explorer_changed)
+        if self._zone_name:
+            self.dates.set_zone_name(self._zone_name)
+        self._recordings_dirty = False
         self.recordings.refresh()
         self.go(STEP_RECORDINGS)
 
@@ -1568,7 +1693,9 @@ class AnonymizerPage(QWidget):
 
     def set_zone_name(self, name: str) -> None:
         self.zone = resolve_zone(name)
-        self.dates.set_zone_name(name)
+        self._zone_name = name
+        if self._built:
+            self.dates.set_zone_name(name)
 
     @property
     def step(self) -> int:
@@ -1579,7 +1706,7 @@ class AnonymizerPage(QWidget):
         marked out of date and rebuilt once, a moment later, and only while
         the step is on screen (else when it is shown again)."""
         self._recordings_dirty = True
-        if self.isVisible() and self.step == STEP_RECORDINGS:
+        if self._built and self.isVisible() and self.step == STEP_RECORDINGS:
             self._refresh_timer.start()
 
     def _refresh_recordings(self) -> None:
@@ -1590,6 +1717,7 @@ class AnonymizerPage(QWidget):
         self._update_buttons()
 
     def showEvent(self, event) -> None:  # noqa: N802
+        self._build()
         super().showEvent(event)
         if self._passwords_dropped:
             self._passwords_dropped = False
@@ -1890,39 +2018,51 @@ class AnonymizerPage(QWidget):
         self._update_buttons()
         return handle
 
-    def resume(self, journal, password_for, output_password=None):
-        """Continue an interrupted batch from its journal: the up-front
-        checks run again (for the recordings still to do), then the batch
-        goes on where it stopped. Passwords were never journaled; the caller
-        asked for them again."""
+    def resume(self, journal, password_for, output_password=None, ask_existing=None):
+        """Continue an interrupted batch from its journal. The up-front checks
+        run again for the recordings still to do: every original opened with
+        ITS password, a finished copy opened with the copies' new password,
+        names, space; the app's own unfinished files are removed. Results
+        already at the destination for unfinished recordings are kept or
+        made again, as the user chooses (``ask_existing``). Passwords were
+        never journaled; the caller asked for them again."""
         from ..model import journal as journal_
 
         batch = pipeline.from_payload(journal.payload, password_for, output_password)
         batch = replace(batch, keep_awake=self.keep_awake())
         self.restart()
         self.batch = batch
-        waiting = tuple(
-            item
-            for item, state in zip(batch.items, journal.states, strict=True)
-            if state == journal_.WAITING
-        )
+        self._journal = journal
         handle = self.jobs.submit(
             "Checking everything before continuing",
             preflight_batch,
-            replace(batch, items=waiting),
+            batch,
+            list(journal.states),
+            output_password[1] if output_password else "",
+            journal,
         )
         self.preflight_handle = handle
 
         def done(verdict: dict) -> None:
             problems = list(verdict.get("problems", []))
-            problems += [
-                f"{m.title}. {m.text}" for m in verdict.get("names", {}).values() if m is not None
-            ]
             if problems:
                 self.preflight_problems = problems
                 self.resume_problems.emit("\n".join(problems))
                 return
-            self.run_batch(batch, journal)
+            run = pipeline.with_originals(batch, verdict.get("originals", {}))
+            # Finished ones: their dates are read again for the date key too.
+            run = pipeline.with_originals(run, verdict.get("finished_originals", {}))
+            existing = verdict.get("existing", [])
+            if existing and ask_existing is not None:
+                if ask_existing(existing, len(batch.items)) == "keep":
+                    for n in existing:
+                        journal.payload["items"][n]["unconfirmed"] = True
+                        journal.mark(n, journal_.DONE)
+                else:
+                    for n in existing:
+                        pipeline.remove_own_result(run.items[n].final)
+            self.batch = run
+            self.run_batch(run, journal)
 
         handle.succeeded.connect(done)
         handle.failed.connect(lambda m: self.resume_problems.emit(f"{m.title}. {m.text}"))
@@ -1947,7 +2087,12 @@ class AnonymizerPage(QWidget):
         self.run_batch(batch)
 
     def run_batch(self, batch: pipeline.Batch, journal=None):
-        self.batch = batch
+        # The task gets the batch with its passwords; the page keeps a copy
+        # without any (for the summary and the date key), plus the full one
+        # only while some recordings may need to be retried.
+        self._retry_batch = batch
+        self.batch = pipeline.without_passwords(batch)
+        self.batch_state = None
         self.bundle_outcome = None
         self.run = RunState(requests=[i.request for i in batch.items])
         n = len(batch.items)
@@ -1985,6 +2130,10 @@ class AnonymizerPage(QWidget):
                 self.run.leftovers.append(item)
             elif isinstance(item, BundleOutcome):
                 self.bundle_outcome = item
+            elif isinstance(item, BatchState):
+                self.batch_state = item
+                if item.journal is None or not (item.retry or item.bundle_pending):
+                    self._retry_batch = None  # nothing to retry: drop the passwords
             else:
                 self.run.results[item.key] = item
         self.run_step.fill_table()
@@ -1997,20 +2146,93 @@ class AnonymizerPage(QWidget):
 
     def _on_finished(self) -> None:
         self.run.finished = True
+        if self.batch_state is None or self.batch_state.journal is None:
+            self._retry_batch = None
         self.run_step.finish()
         self._update_buttons()
-        saved = sum(1 for r in self.run.results.values() if r.ok)
-        total = len(self.batch.items) if self.batch is not None else saved
+        delivered = [r for r in self.run.results.values() if self.delivered(r)]
+        total = len(self.batch.items) if self.batch is not None else len(delivered)
+        state = self.batch_state
         text = (
-            f"Anonymizing finished: {saved} of {total} "
+            f"Anonymizing finished: {len(delivered)} of {total} "
             f"{'copy' if total == 1 else 'copies'} saved and checked."
         )
-        if self.run.stopped:
-            text = f"Anonymizing stopped: {saved} of {total} saved and checked."
+        if state is not None and state.paused:
+            text = (
+                f"Anonymizing paused: {len(delivered)} of {total} done. The files could not be "
+                "reached; check the drive, then retry."
+            )
+        elif self.run.stopped:
+            text = f"Anonymizing stopped: {len(delivered)} of {total} saved and checked."
+        if state is not None and state.bundle_pending:
+            text += " The batch archive is not finished yet."
         self.status.emit(text)
         self.batch_finished.emit(text)
 
+    # -- what a result means, with one archive for the batch ---------------------------------
+    def delivered(self, result) -> bool:
+        """The result is where the user can use it: saved and checked, and,
+        with one archive for the batch, the archive was finished."""
+        if not result.ok:
+            return False
+        if self.batch is not None and self.batch.output == pipeline.BUNDLE:
+            outcome = self.bundle_outcome
+            return outcome is not None and outcome.ok
+        return True
+
+    def status_of(self, result) -> str:
+        notes = result.notes or ()
+        if self.batch is not None and self.batch.output == pipeline.BUNDLE:
+            outcome = self.bundle_outcome
+            if outcome is None:
+                return "Added to the batch archive"
+            if not outcome.ok:
+                return "Not delivered"
+            return "Saved and checked (in the batch archive)"
+        if UNCONFIRMED_NOTE in notes:
+            return "Made before the interruption (not confirmed)"
+        if EARLIER_NOTE in notes:
+            return "Saved and checked (earlier)"
+        return "Saved and checked"
+
+    def retry_failed(self):
+        """Run the recordings that could not be reached again (the batch's
+        journal knows which; the passwords are still in memory)."""
+        state = self.batch_state
+        if self._retry_batch is None or state is None or state.journal is None:
+            return None
+        return self.run_batch(self._retry_batch, state.journal)
+
+    def finish_bundle_now(self):
+        """Give the unfinished batch archive its final name with the
+        recordings already in it, and end the batch."""
+        state = self.batch_state
+        journal = state.journal if state is not None else self._journal
+        if journal is None:
+            return None
+        handle = self.jobs.submit("Finishing the batch archive", finish_bundle_now, journal)
+
+        def done(outcome) -> None:
+            self.bundle_outcome = outcome
+            self.batch_state = None
+            self._retry_batch = None
+            self.run_step.finish()
+            text = (
+                f"The batch archive was finished with {outcome.recordings} of the "
+                f"{outcome.total} recordings; {outcome.total - outcome.recordings} are not in it."
+                if outcome.ok
+                else "The batch archive could not be finished."
+            )
+            self.status.emit(text)
+            self.batch_finished.emit(text)
+
+        handle.succeeded.connect(done)
+        return handle
+
     def hideEvent(self, event) -> None:  # noqa: N802
+        if not self._built:
+            super().hideEvent(event)
+            return
         # Passwords typed but not used yet are not kept while the page is away.
         had = self.passwords.both.isChecked()
         self.passwords.forget()
@@ -2020,6 +2242,8 @@ class AnonymizerPage(QWidget):
         super().hideEvent(event)
 
     def restart(self) -> None:
+        self._retry_batch = None
+        self.batch_state = None
         self.batch = None
         self.bundle_outcome = None
         self.preflight_problems = []
@@ -2058,7 +2282,7 @@ class AnonymizerPage(QWidget):
         rows = []
         for item in self.batch.items if self.batch is not None else ():
             result = self.run.results.get(item.request.key)
-            if result is None or not result.ok:
+            if result is None or not self.delivered(result):
                 continue
             rows.append(
                 DateKeyRow(

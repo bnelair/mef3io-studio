@@ -151,13 +151,21 @@ Code (app shell, #2/#3):
   Unattended batch (`model/pipeline.py`, `workers.tasks.run_batch` /
   `preflight_batch`): Output step = folders | archives (per-recording
   `.mefd.tar` via model.archive) | bundle (`model/bundle.py`, deterministic
-  `tarfile`, a CONTAINER that mef3io cannot open, never a merge). Work copies
-  in `<work folder>/work-<batch>-<n>/` (one at a time), deleted only after
-  the archive check. All checks run BEFORE starting. Journal
-  (`model/journal.py`): opaque ids in clear, everything else SEALED
-  (SHA-256 keystream + HMAC, key in `<app data>/journal.key`); passwords
-  never journaled; resume offered at start (env
-  MEF3IO_STUDIO_NO_STARTUP_OFFERS disables, tests set it). The work-folder
-  preference is stored sealed with the same key. Keep-awake
-  (`model/awake.py`) starts systemd-inhibit/caffeinate (tests set
-  MEF3IO_STUDIO_NO_KEEP_AWAKE: only this Python may be started).
+  `tarfile`, a CONTAINER the app cannot open, never a merge). Work copies
+  in `<work folder>/work-<batch>-<n>/` (one at a time), deleted ONLY after a
+  SHA-256 byte check of every member of the written archive against the
+  checked copy (mismatch = copy kept, item failed). All checks run BEFORE
+  starting, incl. opening every original with ITS password. I/O failures on
+  source/destination are retryable; 3 in a row pause the batch. Bundle Stop
+  keeps the temp archive + journal ("Finish the archive with what is done" =
+  partial). Journal (`model/journal.py`): opaque ids in clear, everything else
+  SEALED (SHA-256 keystream + HMAC, separate enc/mac keys from
+  `<app data>/journal.key`, DPAPI on Windows); NO original names/dates (read
+  again with inspect on Continue); passwords never journaled; temporaries
+  journaled before they exist (+ sealed `temporaries.json`); resume offered at
+  start (env MEF3IO_STUDIO_NO_STARTUP_OFFERS disables, tests set it).
+  Work-folder preferences stored sealed. Keep-awake (`model/awake.py`; Linux
+  `systemd-inhibit … tail --pid`) — tests set MEF3IO_STUDIO_NO_KEEP_AWAKE
+  (only this Python may be started). The Anonymize page builds its widgets on
+  first use (`AnonymizerPage._build`): built eagerly they made Explore's
+  0.25 s responsiveness test flaky.

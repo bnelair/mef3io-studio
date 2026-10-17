@@ -363,8 +363,8 @@ For each recording, when you chose archives:
 2. it packs that copy into an archive in the chosen folder, under a
    temporary name;
 3. it opens the archive and checks that it matches the checked copy (the
-   same channels, parts, times and number of samples), then gives it its
-   final name;
+   same channels, parts, times and number of samples, and every byte of
+   every file), then gives it its final name;
 4. only then does it delete the copy from the work folder.
 
 The work folder only ever holds the recording being worked on.
@@ -379,10 +379,16 @@ recordings into one recording; they stay separate.
 While a batch runs:
 
 - **one problem does not stop the batch:** a recording that cannot be copied
-  is reported, and the others go ahead;
+  is reported, and the others go ahead. If the recordings or the destination
+  cannot be reached (a network drive that went away), the recording is kept
+  for a retry; after three in a row the batch pauses and offers **Retry the
+  failed ones**;
 - **Stop** ends the step that is running and removes anything half-made. With
-  one archive for the batch, the archive is finished with the recordings
-  already done;
+  one archive for the batch, the unfinished archive is kept so the batch can
+  be continued, or you choose **Finish the archive with what is done**: it is
+  then named and reported as partial ("3 of the 7 recordings; 4 are not in
+  it"). Until the archive is finished, its recordings say **Added to the
+  batch archive**;
 - **the computer is kept awake** until the batch ends (you can turn this off
   in Settings);
 - the progress shows how many recordings are done ("Recording 3 of 7"), the
@@ -392,9 +398,16 @@ While a batch runs:
 
 **If the batch is interrupted** (the app was closed, the computer crashed or
 lost power), the next start asks: "Continue the batch: 4 of 7 done".
-Continuing checks everything again, then makes the rest. Passwords are
-never stored, so you type them again. Unfinished copies left in the work
-folder are never kept silently: the app offers to remove them.
+Until you continue or discard it, a small sealed note about the batch (no
+names or dates in clear) stays in the app's own data folder. Continuing
+checks everything again, then makes the rest. Passwords are never stored,
+so you type them again: each original's, and the copies' two new passwords
+twice; each is tried before anything is made. If a result is already there
+for a recording that was being made when the batch stopped, you choose to
+keep it (marked as not confirmed) or make it again. Unfinished copies and
+archives left behind are never kept silently: the app offers to remove them
+("They should hold no patient details, but they were never checked: do not
+use or share them").
 
 ### Settings
 

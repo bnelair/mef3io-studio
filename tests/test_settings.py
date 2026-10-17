@@ -43,6 +43,7 @@ def test_preferences_are_exactly_the_reviewed_list():
         # The anonymizer's work folder: SEALED with the app's per-user key,
         # never a path in clear (test_work_folder_is_stored_sealed).
         "anonymizer/work_folder",
+        "anonymizer/work_folders_used",
         "anonymizer/keep_awake",
     }
 

@@ -913,3 +913,56 @@ def test_the_output_step_and_its_plain_words(window_page, qtbot, tmp_path):
     page.review.set_folder(str(tmp_path / "dest"))
     assert page.review.texts[page.choices[0].key].count(".mefd.tar") == 1
     assert "work folder" in page.review.mode_text
+
+
+def test_the_page_is_built_only_when_first_used(window):
+    """Review round 2 (11): the wizard's widgets cost the other pages
+    nothing until the Anonymize page is opened."""
+    page = window.anonymizer
+    assert not page.built
+    window.explorer.model.add([])  # Explore list signals do not build it
+    assert not page.built
+    window.module_list.setCurrentRow(window.module_keys.index("anonymizer"))
+    window.show()
+    assert page.built
+
+
+def test_the_batch_archive_name_must_not_name_anyone(window_page, qtbot, tmp_path):
+    window, page = window_page
+    src = write_plain(tmp_path / "ward_study.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    page.go(STEP_OUTPUT)
+    page.output.bundle.setChecked(True)
+    page.output.bundle_name.setText(f"{LAST} batch")
+    assert "patient detail" in page.output.problem_text()
+    page.output.bundle_name.setText("my ward_study export")
+    assert "original recordings" in page.output.problem_text()
+    page.output.bundle_name.setText("batch-2026")
+    assert page.output.problem_text() == ""
+    from mef3io_studio.anonymizer.page import BUNDLE_EXPLANATION
+
+    assert "mef3io" not in BUNDLE_EXPLANATION
+    assert "mef3io" not in page.output.archives.text()
+
+
+def test_resume_refusals_name_positions_not_recordings(qtbot, jobs, tmp_path):
+    from test_batch_pipeline import make_batch
+
+    from mef3io_studio.model import journal, pipeline
+    from mef3io_studio.workers import tasks
+
+    src = write_plain(tmp_path / f"{LAST}_rec.mefd", notes=False)
+    other = write_plain(tmp_path / "other.mefd", notes=False)
+    batch, _dest, _work = make_batch(tmp_path, pipeline.FOLDERS, [other, src], exclude=())
+    j = journal.Journal.new(2, pipeline.to_payload(batch))
+    src.rename(tmp_path / "moved.mefd")  # gone
+    handle = jobs.submit("checks", tasks.preflight_batch, batch, list(j.states), "", j)
+    got = []
+    handle.succeeded.connect(got.append)
+    with qtbot.waitSignal(handle.finished, timeout=120_000):
+        pass
+    j.delete()
+    problems = got[0]["problems"]
+    assert any(p.startswith("Recording 2 of 2") for p in problems)
+    assert not any(LAST in p for p in problems)

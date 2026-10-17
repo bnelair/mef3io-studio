@@ -127,6 +127,9 @@ class CopyResult:
     bytes_written: int = 0
     #: Note texts the "keep" choice changed (names taken out).
     text_fields_changed: int = 0
+    #: The source or the destination could not be reached (a drive or share
+    #: that went away): worth trying again later.
+    retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,6 +203,7 @@ def make_copy(
             request.destination,
             ok=False,
             message=describe_copy_error(exc, request),
+            retryable=is_unreachable(exc),
         )
     return CopyResult(
         request.key,
@@ -530,7 +534,16 @@ def technical_text(exc: BaseException, request: CopyRequest | None = None) -> st
         )
         stems = (recording_name(request.source), request.name)
     text = _strip(f"{type(exc).__name__}: {exc}", *paths, stems=stems)
-    return technical(text)
+    return technical(collapse_placeholders(text))
+
+
+_PLACEHOLDERS = re.compile(r"<(?:path|recording|name)>(?:[/\\]?<(?:path|recording|name)>)+")
+
+
+def collapse_placeholders(text: str) -> str:
+    """One ``<path>`` for a run of removed path pieces next to each other
+    ("<path><recording>/<name>" becomes "<path>")."""
+    return _PLACEHOLDERS.sub("<path>", text)
 
 
 # Refusals by a stable key. mef3io 1.3 / #104 has no refusal codes, so the
@@ -690,6 +703,20 @@ def _library_classes() -> dict:
 def _is(exc: BaseException, *names: str) -> bool:
     classes = _library_classes()
     return any(n in classes and isinstance(exc, classes[n]) for n in names)
+
+
+def is_library_io_error(exc: BaseException) -> bool:
+    return _is(exc, "IoError")
+
+
+def is_unreachable(exc: BaseException) -> bool:
+    """The source or the destination could not be read or written (not a
+    refusal): a drive or share that went away may work again later."""
+    if refusal_code(exc) is not None:
+        return False
+    if isinstance(exc, (FileExistsError, PermissionError, IsADirectoryError)):
+        return False
+    return isinstance(exc, OSError) or is_library_io_error(exc)
 
 
 def describe_copy_error(exc: BaseException, request: CopyRequest | None = None) -> UserMessage:

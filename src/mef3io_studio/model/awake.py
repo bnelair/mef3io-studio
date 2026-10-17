@@ -4,8 +4,8 @@
   on the thread that runs the batch, cleared at the end.
 * **macOS:** ``caffeinate -i -w <app pid>``: it also ends by itself if the
   app is gone.
-* **Linux:** ``systemd-inhibit --what=sleep:idle … sleep infinity``, stopped
-  at the end.
+* **Linux:** ``systemd-inhibit --what=sleep:idle … tail --pid=<app pid> -f
+  /dev/null``, stopped at the end, and ended with the app if it crashes.
 
 Wherever none of these is available, it does nothing (and says so through
 :attr:`KeepAwake.active`). The display may still turn off; only sleep is
@@ -60,8 +60,10 @@ class KeepAwake:
                     self.active = "caffeinate"
             else:
                 tool = shutil.which("systemd-inhibit")
-                sleeper = shutil.which("sleep")
-                if tool and sleeper:
+                tail = shutil.which("tail")
+                if tool and tail:
+                    # The inhibitor's child ends with the app, even if the app
+                    # crashes: tail --pid exits when that process is gone.
                     self._process = subprocess.Popen(
                         [
                             tool,
@@ -69,8 +71,10 @@ class KeepAwake:
                             "--who=mef3io-studio",
                             f"--why={self.reason}",
                             "--mode=block",
-                            sleeper,
-                            "infinity",
+                            tail,
+                            f"--pid={os.getpid()}",
+                            "-f",
+                            "/dev/null",
                         ],
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,

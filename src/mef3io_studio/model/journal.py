@@ -10,11 +10,15 @@ per recording, how many there are and each one's state (``waiting``,
 ``done`` or ``failed``), plus a version number. No names, no paths, no dates.
 
 **Everything else** (where each recording is, the new names, the shifts,
-the channels to leave out, where the copies go, the original dates for the
-date key) is in one sealed blob: encrypted with a random 256-bit key kept in
-a separate file in the same app-data folder (``journal.key``, readable by
-its owner only on POSIX), as a SHA-256 keystream, and sealed with an
-HMAC-SHA-256, so the app can read it back and notices any change. This keeps
+the channels to leave out, where the copies and the temporary files go) is
+in one sealed blob. Original dates and names are NOT in it: on Continue they
+are read again from the originals (``inspect``), for the date key. The blob
+is encrypted with a SHA-256 keystream and authenticated with HMAC-SHA-256,
+under two keys derived from one random 256-bit key (``HMAC(key, "enc")`` and
+``HMAC(key, "mac")``). That key is in a separate file in the same app-data
+folder (``journal.key``): on Windows protected with DPAPI
+(``CryptProtectData``, this user only), elsewhere readable by its owner only
+(0600). This keeps
 names, paths and dates out of anything someone might copy, attach or back up
 by accident; it is not protection against someone who has both files (the
 same account on the same computer). **Passwords are never in the journal**:
@@ -33,13 +37,14 @@ import hmac
 import json
 import os
 import secrets
+import sys
 from dataclasses import dataclass, field
 
 #: Override the app-data folder (tests).
 DATA_DIR_ENV = "MEF3IO_STUDIO_DATA_DIR"
 APP_NAME = "mef3io-studio"
 APP_AUTHOR = "BNEL"
-VERSION = 1
+VERSION = 2
 
 WAITING = "waiting"
 DONE = "done"
@@ -64,21 +69,54 @@ def journal_dir() -> str:
     return path
 
 
+def _dpapi(data: bytes, protect: bool) -> bytes:
+    """Windows DPAPI: protect (or unprotect) bytes for this user."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Blob(ctypes.Structure):
+        _fields_ = [("size", wintypes.DWORD), ("data", ctypes.POINTER(ctypes.c_char))]
+
+    buffer = ctypes.create_string_buffer(data, len(data))
+    source = Blob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    out = Blob()
+    crypt32 = ctypes.windll.crypt32  # type: ignore[attr-defined]
+    call = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    if not call(ctypes.byref(source), None, None, None, None, 0, ctypes.byref(out)):
+        raise OSError("the key could not be protected")
+    try:
+        return ctypes.string_at(out.data, out.size)
+    finally:
+        ctypes.windll.kernel32.LocalFree(out.data)  # type: ignore[attr-defined]
+
+
 def _key() -> bytes:
     path = os.path.join(data_dir(), "journal.key")
+    windows = sys.platform == "win32"
     try:
         with open(path, "rb") as handle:
-            key = handle.read()
+            stored = handle.read()
+        key = _dpapi(stored, False) if windows else stored
         if len(key) == 32:
             return key
     except OSError:
         pass
     key = secrets.token_bytes(32)
+    stored = _dpapi(key, True) if windows else key
     fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with open(fd, "wb") as handle:
-        handle.write(key)
+        handle.write(stored)
     os.replace(path + ".tmp", path)
     return key
+
+
+def _keys() -> tuple[bytes, bytes]:
+    """Separate keys for encrypting and for authenticating."""
+    key = _key()
+    return (
+        hmac.new(key, b"enc", hashlib.sha256).digest(),
+        hmac.new(key, b"mac", hashlib.sha256).digest(),
+    )
 
 
 def _stream(key: bytes, nonce: bytes, n: int) -> bytes:
@@ -92,11 +130,11 @@ def _stream(key: bytes, nonce: bytes, n: int) -> bytes:
 
 def seal(payload: dict) -> str:
     """Encrypt and authenticate ``payload`` (JSON) with the per-user key."""
-    key = _key()
+    enc, mac = _keys()
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     nonce = secrets.token_bytes(16)
-    body = bytes(a ^ b for a, b in zip(raw, _stream(key, nonce, len(raw)), strict=True))
-    tag = hmac.new(key, nonce + body, hashlib.sha256).digest()
+    body = bytes(a ^ b for a, b in zip(raw, _stream(enc, nonce, len(raw)), strict=True))
+    tag = hmac.new(mac, nonce + body, hashlib.sha256).digest()
     return base64.b64encode(nonce + tag + body).decode("ascii")
 
 
@@ -106,10 +144,10 @@ def unseal(blob: str) -> dict | None:
     try:
         data = base64.b64decode(blob.encode("ascii"), validate=True)
         nonce, tag, body = data[:16], data[16:48], data[48:]
-        key = _key()
-        if not hmac.compare_digest(tag, hmac.new(key, nonce + body, hashlib.sha256).digest()):
+        enc, mac = _keys()
+        if not hmac.compare_digest(tag, hmac.new(mac, nonce + body, hashlib.sha256).digest()):
             return None
-        raw = bytes(a ^ b for a, b in zip(body, _stream(key, nonce, len(body)), strict=True))
+        raw = bytes(a ^ b for a, b in zip(body, _stream(enc, nonce, len(body)), strict=True))
         return json.loads(raw.decode("utf-8"))
     except (ValueError, OSError, UnicodeDecodeError):
         return None
@@ -214,3 +252,47 @@ def unfinished() -> list[Journal]:
         if not journal.finished:
             out.append(journal)
     return out
+
+
+# --------------------------------------------------------------------------
+# Temporary files at the destination, in one sealed list, so the app can
+# always find and remove its own leftovers (even without a journal).
+
+
+def _temporaries_path() -> str:
+    return os.path.join(data_dir(), "temporaries.json")
+
+
+def known_temporaries() -> list[str]:
+    try:
+        with open(_temporaries_path(), encoding="utf-8") as handle:
+            value = unseal(json.load(handle)["sealed"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    return list(value.get("paths", [])) if value else []
+
+
+def _save_temporaries(paths: list[str]) -> None:
+    path = _temporaries_path()
+    if not paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with open(fd, "w", encoding="utf-8") as handle:
+        json.dump({"sealed": seal({"paths": paths})}, handle)
+    os.replace(path + ".tmp", path)
+
+
+def note_temporary(path: str) -> None:
+    paths = known_temporaries()
+    if path not in paths:
+        _save_temporaries([*paths, path])
+
+
+def forget_temporary(path: str) -> None:
+    paths = known_temporaries()
+    if path in paths:
+        _save_temporaries([p for p in paths if p != path])
