@@ -29,7 +29,7 @@ Published as GitHub pre-releases; what changed in each is in
 |---|---|---|
 | 0.1.0.dev1 | 1.2.0 | The app shell, the installers and the Explore page |
 | 0.1.0.dev2 | 1.4.0 | Explore with the combined timeline, CSV export of times and a working Stop; the Anonymize wizard with unattended batches; the Privacy check ([notes](release-notes/0.1.0.dev2.md)) |
-| 0.1.0.dev3 | 1.4.0 | Clearly outlined buttons, tick boxes and fields in both themes ([#35](https://github.com/bnelair/mef3io-studio/issues/35)); a stricter check before continuing a batch removes an earlier result ([#36](https://github.com/bnelair/mef3io-studio/issues/36)) ([notes](release-notes/0.1.0.dev3.md)) |
+| 0.1.0.dev3 | 1.4.0 | Clearly outlined option buttons, tick boxes and fields in both themes ([#35](https://github.com/bnelair/mef3io-studio/issues/35)); a stricter check before continuing a batch removes an earlier result ([#36](https://github.com/bnelair/mef3io-studio/issues/36)) ([notes](release-notes/0.1.0.dev3.md)) |
 
 ## Next directions (each needs a specification first)
 
