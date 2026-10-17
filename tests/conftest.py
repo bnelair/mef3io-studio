@@ -25,6 +25,13 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _LOG_DIR = tempfile.mkdtemp(prefix="mef3io-studio-test-logs-")
 os.environ["MEF3IO_STUDIO_LOG_DIR"] = _LOG_DIR
+os.environ["MEF3IO_STUDIO_SCRATCH_DIR"] = os.path.join(_LOG_DIR, "scratch")
+# The app's data folder (batch journals, the default work folder), never the
+# real one; no startup questions (tests call them directly); no sleep
+# inhibitor programs (only this Python may be started).
+os.environ["MEF3IO_STUDIO_DATA_DIR"] = os.path.join(_LOG_DIR, "data")
+os.environ["MEF3IO_STUDIO_NO_STARTUP_OFFERS"] = "1"
+os.environ["MEF3IO_STUDIO_NO_KEEP_AWAKE"] = "1"
 os.environ["MEF3IO_STUDIO_CRASH_DIR"] = os.path.join(
     _LOG_DIR, "..", "crash-" + os.path.basename(_LOG_DIR)
 )

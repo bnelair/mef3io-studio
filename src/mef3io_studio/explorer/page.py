@@ -93,6 +93,7 @@ from .panels import (
     PatientPanel,
     TimelinePanel,
 )
+from .privacy import PrivacyPanel
 from .state import RecordingEntry
 from .table import COL_START, EntryRole, RecordingSortProxy, RecordingTableModel
 
@@ -102,6 +103,7 @@ TABS = (
     "Timeline",
     "Notes and events",
     "Patient details",
+    "Privacy check",
     "History",
     "Check for problems",
 )
@@ -478,6 +480,8 @@ class ExplorerPage(QWidget):
         self.notes = NotesPanel(self)
         self.patient = PatientPanel(self)
         self.patient.reveal_changed.connect(self._on_reveal_changed)
+        self.privacy = PrivacyPanel(self)
+        self.privacy.reveal_changed.connect(self._on_reveal_changed)
         self.history = HistoryPanel(self)
         self.check_panel = CheckPanel(self)
         self.check_panel.check_requested.connect(lambda: self.check(self.current_entry()))
@@ -490,6 +494,7 @@ class ExplorerPage(QWidget):
             self.timeline,
             self.notes,
             self.patient,
+            self.privacy,
             self.history,
             self.check_panel,
         )
@@ -931,6 +936,18 @@ class ExplorerPage(QWidget):
         if self.current_entry() is None or len(new) == 1:
             self.select_entry(new[0])
         return self._submit_open(new, prompt=interactive and len(new) == 1)
+
+    def open_for_privacy_check(self, path: str, password: str = ""):
+        """Open a recording (normally a copy the anonymizer just made) and
+        show its Privacy check, so the first sight of the copy is the proof.
+        Returns the opening task's handle (None when it was already listed)."""
+        self.show_combined(False)
+        handle = self.open_paths([path], interactive=False, password=password)
+        entry = self.model.entry_for(location_key(path))
+        if entry is not None:
+            self.select_entry(entry)
+        self.tabs.setCurrentWidget(self.privacy)
+        return handle
 
     def _submit_open(self, entries: list[RecordingEntry], prompt: bool):
         requests = [(e.location, e.password) for e in entries]

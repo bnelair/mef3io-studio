@@ -40,7 +40,46 @@ def test_preferences_are_exactly_the_reviewed_list():
         # The site's IANA time zone: a place, chosen once per app profile
         # (docs/design/explorer.md); never a path or a recording's details.
         "time/site_zone",
+        # The anonymizer's work folder: SEALED with the app's per-user key,
+        # never a path in clear (test_work_folder_is_stored_sealed).
+        "anonymizer/work_folder",
+        "anonymizer/work_folders_used",
+        "anonymizer/keep_awake",
     }
+
+
+def test_work_folder_is_stored_sealed_and_persists(tmp_path):
+    from mef3io_studio.common.settings import Settings
+    from mef3io_studio.common.settings_dialog import set_work_folder, work_folder
+
+    folder = tmp_path / "Jane Doe work"
+    folder.mkdir()
+    store = tmp_path / "s.ini"
+    settings = Settings(store)
+    set_work_folder(settings, str(folder))
+    settings.sync()
+    assert work_folder(Settings(store)) == str(folder)  # a new session reads it back
+    raw = store.read_text(encoding="utf-8", errors="replace")
+    assert "Jane" not in raw and str(tmp_path) not in raw
+    set_work_folder(settings, None)
+    from mef3io_studio.model.pipeline import default_work_folder
+
+    assert work_folder(settings) == default_work_folder()
+
+
+def test_the_settings_dialog_refuses_a_work_folder_inside_a_recording(qtbot, settings, tmp_path):
+    from mef3io_studio.common.settings_dialog import SettingsDialog, work_folder
+
+    dialog = SettingsDialog(settings)
+    qtbot.addWidget(dialog)
+    inside = tmp_path / "rec.mefd" / "w"
+    assert dialog.set_folder(str(inside)) is False
+    assert "inside a recording" in dialog.problem.text()
+    good = tmp_path / "work"
+    assert dialog.set_folder(str(good)) is True
+    assert work_folder(settings) == str(good)
+    dialog.awake.setChecked(False)
+    assert settings.get("anonymizer/keep_awake") is False
 
 
 def test_qt_file_dialog_history_is_cleared(tmp_path):

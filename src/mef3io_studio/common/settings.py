@@ -41,6 +41,14 @@ PREFERENCES: dict[str, Preference] = {
         # The recording site's IANA time zone ("" = show UTC). One per app
         # profile; the explorer validates it against the tz database.
         Preference("time/site_zone", "", str),
+        # The anonymizer's work folder, SEALED with the app's per-user key
+        # (model.journal.seal): never a path in clear. "" = the default
+        # folder in the app's data area.
+        Preference("anonymizer/work_folder", "", str),
+        # Every work folder ever used, SEALED: leftovers are looked for in all.
+        Preference("anonymizer/work_folders_used", "", str),
+        # Keep the computer from sleeping while a batch runs.
+        Preference("anonymizer/keep_awake", True, bool),
     )
 }
 

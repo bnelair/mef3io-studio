@@ -1,7 +1,9 @@
 """Catch mef3io's warnings instead of letting them reach the log.
 
-mef3io's warning texts start with the full path of the recording, which
-identifies people and must never be logged. Every call into mef3io that may
+mef3io's warnings are about a recording that identifies people. Since
+mef3io 1.4 their text says ``<session>`` and the path travels as data
+(``MefWarning.path``), but the app still never lets them reach the log.
+Every call into mef3io that may
 warn runs inside :func:`library_warnings_caught`: ``inspect`` (Explorer and
 summary), the legacy-password ``Reader`` open, ``Validator`` (check for
 problems) and ``archive_session`` / ``extract_session`` (pack / unpack).

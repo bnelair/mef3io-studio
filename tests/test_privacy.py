@@ -370,3 +370,68 @@ def test_dotless_i_is_matched_both_ways():
         registry = IdentityRegistry()
         registry.register(registered)
         assert registry.redact(f"saw {logged} today") == "saw [redacted] today"
+
+
+def test_anonymizing_never_logs_names_dates_or_the_date_key(qtbot, window, tmp_path, monkeypatch):
+    """The anonymizer end to end, with the log at DEBUG: the original's
+    name, path and dates, the new names, the passwords and the date key
+    never reach the log; the key file is written only on request."""
+    from PySide6.QtCore import QDate
+
+    log_dir = tmp_path / "logs"
+    log_file = setup_logging(log_dir, level=logging.DEBUG)
+    privacy.identities.clear()
+    window._closing = True
+    try:
+        path = tmp_path / f"{NAME_2}_{NAME_1}.mefd"
+        meta = mef3io.Metadata(subject=mef3io.Subject(name_1=NAME_1, name_2=NAME_2, id=SUBJECT_ID))
+        with mef3io.Writer(str(path), metadata=meta) as w:
+            w.write("c1", np.sin(np.arange(1024) / 5.0), START_UUTC, 256.0)
+        explorer, page = window.explorer, window.anonymizer
+        explorer.open_paths([str(path)], interactive=False)
+        qtbot.waitUntil(
+            lambda: explorer.entries() and explorer.entries()[0].details is not None,
+            timeout=60_000,
+        )
+        page.recordings.set_ticked([explorer.entries()[0].key])
+        page.next()  # channels
+        page.next()  # dates
+        page.dates.keep_utc.setChecked(True)
+        page.dates.new_date.setDate(QDate(2004, 2, 3))
+        page.next()  # identity
+        page.identity.table.item(0, 1).setText("STUDY-9")
+        page.next()
+        qtbot.waitUntil(lambda: page.step == 4, timeout=60_000)  # passwords
+        page.passwords.both.setChecked(True)
+        for field, value in (
+            (page.passwords.basic, "copy-basic-77"),
+            (page.passwords.basic_again, "copy-basic-77"),
+            (page.passwords.full, "copy-full-88"),
+            (page.passwords.full_again, "copy-full-88"),
+        ):
+            field.setText(value)
+        page.next()  # output
+        page.next()  # review
+        out = tmp_path / "out"
+        out.mkdir()
+        page.review.set_folder(str(out))
+        checks = page.start()
+        qtbot.waitUntil(lambda: checks.is_finished, timeout=60_000)
+        qtbot.waitUntil(lambda: page.run.finished, timeout=120_000)
+        assert page.run_step.result_texts[page.choices[0].key] == "Saved and checked"
+        # The key is never written unless asked for.
+        assert sorted(p.name for p in out.iterdir()) == ["STUDY-9.mefd"]
+        key = tmp_path / "key.csv"
+        monkeypatch.setattr(page, "confirm_date_key", lambda: True)
+        monkeypatch.setattr(page, "choose_date_key_path", lambda: str(key))
+        assert page.save_date_key()
+        assert "2019-03-14" in key.read_text(encoding="utf-8")
+    finally:
+        teardown_logging()
+        privacy.identities.clear()
+    text = log_file.read_text(encoding="utf-8")
+    assert "batch of 1 finished" in text  # the task did log, by count
+    for secret in (NAME_1, NAME_2, SUBJECT_ID, "STUDY-9", "copy-basic-77", "copy-full-88"):
+        assert secret not in text, secret
+    for form in ("2019", "2004-02-03", str(START_UUTC), str(key), str(tmp_path)):
+        assert form not in text, form

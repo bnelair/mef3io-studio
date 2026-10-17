@@ -24,6 +24,8 @@ PASSWORD_BASIC, PASSWORD_FULL = "basic-pw-1", "full-pw-2"
 UH_BYTES = 1024
 METADATA_FILE_BYTES = 16384
 S3_RTO_OFFSET = 13312  # universal header 1024 + section 1 1536 + section 2 10752
+S2_CHANNEL_DESCRIPTION = 2560  # section 2 starts with two 2048-byte texts
+S2_SESSION_DESCRIPTION = 4608
 
 
 def _koopman_table():
@@ -170,4 +172,36 @@ def write_encrypted_with_notes(path: Path) -> Path:
     ) as w:
         w.write("c", np.zeros(2560), T0, 256.0)
         w.write_annotations([{"time": T0 + SECOND, "text": f"{LAST} moved"}])
+    return path
+
+
+def write_foreign_like(path: Path) -> Path:
+    """No patient details, no notes, and no history in its files, as another
+    program (meflib, pymef) writes them: the region mef3io stamps its
+    history into (bytes 960..1024 of every file's first 1024 bytes) is
+    zeroed and that block's CRC resealed."""
+    with mef3io.Writer(str(path), overwrite=True) as w:
+        w.write("c1", np.zeros(2560), T0, 256.0)
+        w.write("c2", np.zeros(2560), T0, 256.0)
+    for f in Path(path).rglob("*"):
+        if f.is_file() and f.suffix in (".tmet", ".tidx", ".tdat"):
+            raw = bytearray(f.read_bytes())
+            raw[960:UH_BYTES] = bytes(UH_BYTES - 960)
+            if f.suffix == ".tmet":
+                # mef3io's Writer fills the channel and recording descriptions
+                # with the names; other programs leave them empty.
+                for offset in (S2_CHANNEL_DESCRIPTION, S2_SESSION_DESCRIPTION):
+                    raw[offset : offset + 2048] = bytes(2048)
+                body = bytes(raw[UH_BYTES:METADATA_FILE_BYTES])
+                struct.pack_into("<I", raw, 4, crc32(body))
+            struct.pack_into("<I", raw, 0, crc32(bytes(raw[4:UH_BYTES])))
+            f.write_bytes(bytes(raw))
+    return path
+
+
+def write_with_time_zone(path: Path) -> Path:
+    """A recording that stores the site's offset from UTC (a location hint)."""
+    meta = mef3io.Metadata(subject=mef3io.Subject(gmt_offset=-21600))
+    with mef3io.Writer(str(path), overwrite=True, metadata=meta) as w:
+        w.write("c", np.zeros(2560), T0, 256.0)
     return path

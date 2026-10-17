@@ -50,10 +50,15 @@ def measure_inspect(warm_up, location):
     # Exact, independent of the byte count: these calls are never made.
     for name in ("read", "read_raw", "toc"):
         setattr(mef3io.Reader, name, forbidden)
+    from mef3io_studio.model.privacycheck import build_check
+
     before = _rchar()
     (outcome,) = source.inspect_many([(location, "")])
-    read = _rchar() - before
     assert outcome.details is not None, outcome.error
+    # The Privacy check card is built from the same details: counted too.
+    check = build_check(outcome.details)
+    read = _rchar() - before
+    assert check.items
     return read, len(outcome.details.channels), outcome.details.part_count
 
 
@@ -109,3 +114,57 @@ def stop_cleanly(marker, cancel):
 def ignore_stop(cancel):
     """Never looks at the token: must be ended after the grace period."""
     time.sleep(60)
+
+
+def gated_make_copy(request, send=None, cancel=None, *, gate_dir="", when="during"):
+    """mef3io's anonymize_session, held at a known point until Stop arrives
+    (the stop token is set), so a Stop test never races the copy:
+
+    * ``when="during"``: at the first progress report (mef3io is copying),
+      then the copy goes on and notices the stop at its next check;
+    * ``when="after"``: after mef3io checked and published the copy, then the
+      finished result is returned (Stop arrived too late to stop anything).
+
+    ``gate_dir/entered`` is created when the hold starts."""
+    import os
+    import time
+
+    from mef3io_studio.model import anonymize
+
+    def hold() -> None:
+        open(os.path.join(gate_dir, "entered"), "w").close()
+        deadline = time.monotonic() + 60
+        while not (cancel is not None and cancel.cancelled) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    held = [False]
+
+    def gated_send(message) -> None:
+        if when == "during" and not held[0]:
+            held[0] = True
+            hold()
+        if send is not None:
+            send(message)
+
+    result = anonymize.make_copy(request, gated_send, cancel)
+    if when == "after":
+        hold()
+    return result
+
+
+def make_foreign_folder(request, send=None, cancel=None, *, gate_dir=""):
+    """Stands in for the copy: a folder with the copy's name appears (not a
+    copy at all), then it waits for Stop."""
+    import os
+    import time
+
+    os.makedirs(request.destination)
+    with open(os.path.join(request.destination, "someone-elses.txt"), "w") as handle:
+        handle.write("not a recording")
+    open(os.path.join(gate_dir, "entered"), "w").close()
+    deadline = time.monotonic() + 60
+    while not (cancel is not None and cancel.cancelled) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    from mef3io_studio.model.cancel import JobCancelled
+
+    raise JobCancelled()

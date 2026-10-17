@@ -260,3 +260,218 @@ opposite. You choose where the new copy goes:
   name, and it is added to the list.
 
 If you stop the task, the unfinished copy is removed.
+
+## Anonymize recordings
+
+The **Anonymize** page makes **anonymized copies** of recordings: the patient
+details are removed and every date and time is moved by the same amount. The
+originals are never changed. A wizard takes you through it step by step, with
+**Back** and **Next**; **nothing is written until the last step**.
+
+![The channel step: 256 channels grouped by electrode, with a filter and the count of channels kept.](img/screenshots/anonymize-channels-light.png)
+
+1. **Recordings.** Tick the recordings to anonymize. They come from the list
+   in Explore (open or scan for more here). A recording that cannot be
+   anonymized says why, and cannot be ticked: for example, a
+   password-protected recording opened only with its basic password (open it
+   again with the full-access password), or one whose parts disagree about
+   its dates.
+2. **Channels.** Every channel is kept unless you leave it out.
+   - Click a box to leave a channel out. **Shift+click** another box to do
+     the same for every channel in between that is on screen (channels in a
+     folded group or hidden by the filter are never touched). After every
+     change the step says how many channels changed. **Ctrl+click** (Cmd+click on a
+     Mac) highlights channels; **Space** then ticks or unticks them all.
+   - Channels are **grouped by electrode** (`LA1 … LA16`; labels such as
+     `EEG LA1-Ref` and pairs such as `LAH1-LAH2` are grouped by their
+     electrode too); a group's box ticks or unticks the whole electrode, and
+     shows a dash when only some of it is kept. Long lists start folded.
+   - Type in the **filter** to narrow the list; **Exclude N shown** and
+     **Keep N shown** act on exactly what the filter shows, and so does a
+     group's box while the filter is on.
+   - **Keep all**, **Exclude all** and **Swap kept and left out** act on
+     every channel;
+     **Undo** and **Redo** (Ctrl+Z, Ctrl+Shift+Z) take back any change.
+   - **"Keeping N of M channels"** is always shown; you cannot continue with
+     no channel kept.
+   - With several recordings, the choice is made **by channel name** and
+     applies to all of them. A name that is not in every recording is marked
+     ⚠ and listed below the list. If you go back and change which recordings
+     are chosen, the channels you left out stay left out by name, and the
+     step says so (Undo starts again from there).
+3. **Dates.** Choose how the dates move:
+   - **one shift for all** (keeps the order and spacing of the recordings),
+     or **every copy starts at the same moment**;
+   - keep the **local** time of day (needs the time zone where the
+     recordings were made), keep the **UTC** time of day, or change the time
+     of day too;
+   - the **new date** of the **reference recording** (by default the
+     earliest one): the reference gets exactly that date, and the others
+     follow it (by the same shift, or starting at the same moment), and
+     optionally **keep the day of the week**.
+
+   The preview shows each recording's original start and its new start and
+   end, and warns about daylight-saving changes and recordings made in the
+   other season. The dates must move by at least the time the recordings
+   span plus one day; otherwise a moved date could be mistaken for a real one.
+4. **Identity.** Give each copy a **name** (it becomes the folder name and is
+   stored in every file) and a **pseudonym** (stored as the patient's code).
+   Neither may contain the patient's name, ID or location, or the original
+   recording's name: when you press Next, the app asks the mef3io library to
+   check them, and a refused name is shown on this step. Choose which
+   details to clear (all, by default) and what happens to the **text of notes
+   and events**: **remove** it (the default; the notes and their moved times
+   stay) or **keep** it. Kept text has the patient's known details taken out,
+   but dates and other people's names in free text are **not** found: read it
+   yourself before sharing.
+5. **Passwords.** No password (the usual choice for sharing), or two new
+   passwords: a **basic** one and a **full-access** one. Passwords lock the
+   patient details and the text of notes; they do not hide the signal, the
+   recording's name or its timing. The original's passwords are never carried
+   over, and the app never stores passwords. The app warns when other
+   programs may not accept a password (more than 15 characters, or
+   characters beyond the Latin alphabets). The typed passwords are cleared
+   if you leave the page before the copies are made; you then type them
+   again.
+6. **Output.** Choose how the copies are saved: a **folder per recording**
+   (`.mefd`, like the originals), an **archive per recording** (one
+   `.mefd.tar` file each, which this app opens directly), or **one archive
+   for the whole batch** (see below).
+7. **Review.** Choose where to save the copies, then check, for every
+   recording: the channels kept and the ones left out (by name), the original
+   and new start and end, how far the dates move, where the copy goes, its
+   estimated size and the free space. The app refuses to start if a name is
+   taken or the folder is inside any recording.
+8. **Make the copies.** First the app checks everything it can before
+   starting (the names, that the originals are still there, that nothing
+   is in the way, and that there is enough free space), so a long batch
+   does not fail after hours. Then each copy is made and **checked** in the background,
+   with a progress bar and **Stop**. A stopped or failed copy leaves nothing
+   behind, and the others still go ahead; if an unfinished copy could not be
+   removed, the result says so and names the folder to delete. Each recording
+   then says **Saved and checked**, or why it was not saved.
+
+### Anonymize a batch into archives
+
+![The Output step: a folder per recording, an archive per recording, or one archive for the whole batch.](img/screenshots/anonymize-output-light.png)
+
+Anonymizing many recordings can take hours. You can start a batch and walk
+away: the app does every recording, one after another, without asking
+anything.
+
+For each recording, when you chose archives:
+
+1. it makes the anonymized copy in the **work folder** and checks it;
+2. it packs that copy into an archive in the chosen folder, under a
+   temporary name;
+3. it opens the archive and checks that it matches the checked copy (the
+   same channels, parts, times and number of samples, and every byte of
+   every file), then gives it its final name;
+4. only then does it delete the copy from the work folder.
+
+The work folder only ever holds the recording being worked on.
+
+**One archive for the whole batch** is a single `.tar` file for sharing.
+Inside it, each anonymized recording is its own folder. This app and the
+mef3io library cannot open that file directly: extract it first with any
+archive tool (7-Zip, the one built into Windows or macOS, or `tar`), which
+gives back the recordings, ready to use. It does **not** join the
+recordings into one recording; they stay separate.
+
+While a batch runs:
+
+- **one problem does not stop the batch:** a recording that cannot be copied
+  is reported, and the others go ahead. If the recordings or the destination
+  cannot be reached (a network drive that went away), the recording is kept
+  for a retry; after three in a row the batch pauses and offers **Retry the
+  failed ones**;
+- **Stop** ends the step that is running and removes anything half-made. With
+  one archive for the batch, the unfinished archive is kept so the batch can
+  be continued, or you choose **Finish the archive with what is done**: it is
+  then named and reported as partial ("3 of the 7 recordings; 4 are not in
+  it"). Until the archive is finished, its recordings say **Added to the
+  batch archive**;
+- **the computer is kept awake** until the batch ends (you can turn this off
+  in Settings);
+- the progress shows how many recordings are done ("Recording 3 of 7"), the
+  current step ("Anonymizing", "Making the archive", "Checking the archive",
+  "Adding to the bundle") and the time left, and a notification tells you
+  when the batch is done.
+
+**If the batch is interrupted** (the app was closed, the computer crashed or
+lost power), the next start asks: "Continue the batch: 4 of 7 done".
+Until you continue or discard it, a small sealed note about the batch (no
+names or dates in clear) stays in the app's own data folder. Continuing
+checks everything again, then makes the rest. Passwords are never stored,
+so you type them again: each original's (shown with its folder name; if
+they share one, tick "They all use the same full-access password"), and the
+copies' two new passwords twice; each is tried before anything is made. If a result is already there
+for a recording that was being made when the batch stopped, you choose to
+keep it (marked as not confirmed) or make it again. It is made again only
+if the app can tell it made it itself; anything else with that name is left
+alone, and the app says so. Unfinished copies and
+archives left behind are never kept silently: the app offers to remove them
+("They should hold no patient details, but they were never checked: do not
+use or share them").
+
+### Settings
+
+**File → Settings** (on a Mac: mef3io-studio → Settings):
+
+- **Work folder:** where each copy is made and checked before it is
+  archived. By default it is a folder in the app's own data area. A fast
+  local disk is a good choice when your recordings are on a network drive.
+  The app checks that it can write there and that it is not inside a
+  recording, and before every batch that it has room for the largest
+  recording.
+- **Keep the computer awake while a batch runs:** on by default.
+
+The app remembers these between sessions. The work folder is stored in a
+sealed form, never as plain text in the app's settings.
+
+### The result and the date key
+
+![The result: each recording's original and new dates, and the copies saved and checked.](img/screenshots/anonymize-result-light.png)
+
+The result lists, for every recording, its **original and new start and
+end** and how far the dates moved ("Moved 3,712 days later; time of day
+(UTC) kept"). **Open the copy** shows it in Explore, straight on its
+**Privacy check**.
+
+This list is the **date key**: with it, anyone can undo the anonymization.
+The app shows it here only. **Save the date key…** writes it to a separate
+file, only if you ask, after a warning: store that file like the original
+recordings, never next to the copies (the app refuses a place inside the
+copies' folder or a recording, and on macOS and Linux only your account can
+read the file). The key is never written into the
+copies, the app's log or its settings.
+
+### Privacy check
+
+![The Privacy check of an anonymized copy: nothing found, made by the anonymizer, and its moved dates.](img/screenshots/explorer-privacy-light.png)
+
+The **Privacy check** tab in Explore works on any recording, original or
+copy. The first line says, in green, **No patient details found in this
+recording**, or in red, **Found N details that may identify the patient**,
+with each one listed (values stay hidden until **Show**). When some details
+could not be read (for example a password-protected recording opened with
+the basic password), it never says green: it says **Some details could not
+be checked: open it with the full-access password**. Below it, one line
+per kind of detail, each marked ✓ (empty) or ✗ (holds something): patient
+names and ID, the recording location, the descriptions, the recording's name
+(for a copy, its pseudonym), the text of notes and events, folder and file
+names, the time-zone details, the date-hiding offset some older tools use,
+and other programs' private areas in the files. A dash (–) means the app
+cannot tell from here: it needs the full-access password, or it can only be
+confirmed for copies the anonymizer made. On original recordings the
+descriptions are often marked ✗: files written by some programs (mef3io
+among them) store the recording's and channels' names in their
+descriptions.
+
+When every part of the recording was **made by the anonymizer**, and
+nothing was done to it afterwards, the card says so, and its start and end
+are labelled as the **moved dates**. A copy that was changed afterwards (for
+example, data was added) says that its dates can no longer be confirmed. For any
+other recording it says: "This recording wasn't made by the anonymizer, so we
+can't confirm its dates were moved." The check reads nothing but the
+recording's details, so it is instant even on very large recordings.

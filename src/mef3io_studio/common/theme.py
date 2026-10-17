@@ -78,6 +78,13 @@ QListWidget#ModuleList::item:focus { border: 2px solid $accent; }
 QLabel#AppTitle { color: $text; padding: 0.9em 0.9em 0.25em 0.9em; }
 QLabel#Muted, QLabel#Caption { color: $muted; }
 QLabel#Danger { color: $danger; }
+QLabel#Good, QLabel#PrivacyGood { color: $success; }
+QLabel#Bad, QLabel#PrivacyBad { color: $danger; }
+QLabel#Caution, QLabel#PrivacyUnknown { color: $accent; }
+QFrame#StepBar { background: transparent; }
+QLabel#StepDone { color: $muted; }
+QLabel#StepCurrent { color: $text; border-bottom: 2px solid $accent; }
+QLabel#StepTodo { color: $muted; }
 QFrame#Notice { background: $accent_soft; border-radius: 8px; }
 QFrame#Warning { background: $surface; border: 1px solid $danger; border-radius: 8px; }
 QFrame#DropZone { background: $surface; border: 2px dashed $border; border-radius: 12px; }

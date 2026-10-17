@@ -15,6 +15,13 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# A demo data folder (the work folder shown on the Output step), no
+# questions at start, and no sleep inhibitor for a screenshot run.
+os.environ.setdefault(
+    "MEF3IO_STUDIO_DATA_DIR", os.path.join(tempfile.gettempdir(), "mef3io-studio-demo")
+)
+os.environ.setdefault("MEF3IO_STUDIO_NO_STARTUP_OFFERS", "1")
+os.environ.setdefault("MEF3IO_STUDIO_NO_KEEP_AWAKE", "1")
 
 from mef3io_studio.app import build_main_window, create_application  # noqa: E402
 from mef3io_studio.common.settings import Settings  # noqa: E402
@@ -61,6 +68,7 @@ def main(out_dir: str) -> None:
             window.grab().save(str(out / f"main-window-{mode}.png"))
         window.jobs.shutdown()
         explorer_shots(app, out, Path(tmp))
+        anonymizer_shots(app, out, Path(tmp))
     print("saved to", out)
 
 
@@ -195,6 +203,102 @@ def explorer_shots(app, out: Path, tmp: Path) -> None:
         _settle(app)
         window.grab().save(str(out / f"explorer-combined-{mode}.png"))
     page.show_combined(False)
+    window.jobs.shutdown()
+
+
+def _write_electrodes(folder: Path) -> str:
+    """A made-up 256-channel recording (16 electrodes of 16 contacts) with a
+    made-up patient, so the privacy check has something to remove."""
+    import mef3io
+    import numpy as np
+
+    start = 946_684_800_000_000 + 30 * 86_400_000_000 + 8 * 3_600_000_000  # 2000-01-31 08:00
+    meta = mef3io.Metadata(subject=mef3io.Subject(name_1="Demo", name_2="Person", id="X-0001"))
+    path = folder / "b71e04c9.mefd"
+    names = [f"{s}{x}{i}" for s in "LR" for x in "ABCDEFGH" for i in range(1, 17)]
+    with mef3io.Writer(str(path), overwrite=True, metadata=meta) as w:
+        for name in names:
+            w.write(name, np.sin(np.arange(2048) / 7.0), start, 256.0)
+        w.write_annotations([{"time": start + 1_000_000, "text": "lights off"}])
+    return str(path)
+
+
+def anonymizer_shots(app, out: Path, tmp: Path) -> None:
+    """The channel step, the result and the copy's Privacy check."""
+    from PySide6.QtCore import QDate
+
+    window = build_main_window(app, Settings(tmp / "a.ini"))
+    window.resize(1180, 820)
+    window.show()
+    window.activity_dock.hide()
+    explorer, page = window.explorer, window.anonymizer
+    explorer.open_paths([_write_electrodes(tmp)], interactive=False)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and not (
+        explorer.entries() and explorer.entries()[0].details is not None
+    ):
+        app.processEvents()
+        time.sleep(0.02)
+    window.module_list.setCurrentRow(window.module_keys.index("anonymizer"))
+    page.recordings.set_ticked([explorer.entries()[0].key])
+    page.next()
+    picker = page.picker
+    picker.set_group(1, False)  # leave out one electrode
+    picker.click("RH16", keep=False)
+    picker.tree.expand(picker.model.index(0, 0))
+    picker.tree.expand(picker.model.index(1, 0))
+    window.activity_dock.hide()
+    _settle(app)
+    for mode in ("light", "dark"):
+        window.set_theme_mode(mode)
+        _settle(app)
+        window.grab().save(str(out / f"anonymize-channels-{mode}.png"))
+    page.next()
+    page.dates.keep_utc.setChecked(True)
+    page.dates.new_date.setDate(QDate(2010, 3, 1))
+    page.next()
+    page.identity.table.item(0, 1).setText("STUDY-001")
+    page.next()
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and page.step != 4:
+        app.processEvents()
+        time.sleep(0.02)
+    page.next()  # -> output
+    page.output.archives.setChecked(True)  # one archive per recording
+    window.activity_dock.hide()
+    for mode in ("light", "dark"):
+        window.set_theme_mode(mode)
+        _settle(app)
+        window.grab().save(str(out / f"anonymize-output-{mode}.png"))
+    page.next()  # -> review
+    copies = tmp / "copies"
+    copies.mkdir()
+    page.review.set_folder(str(copies))
+    page.start()
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and page.handle is None:
+        app.processEvents()
+        time.sleep(0.02)
+    while time.monotonic() < deadline and not page.run.finished:
+        app.processEvents()
+        time.sleep(0.02)
+    window.activity_dock.hide()
+    for mode in ("light", "dark"):
+        window.set_theme_mode(mode)
+        _settle(app)
+        window.grab().save(str(out / f"anonymize-result-{mode}.png"))
+    page.open_copy_of(page.choices[0])
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and not (
+        explorer.current_entry() is not None and explorer.current_entry().details is not None
+    ):
+        app.processEvents()
+        time.sleep(0.02)
+    window.activity_dock.hide()
+    for mode in ("light", "dark"):
+        window.set_theme_mode(mode)
+        _settle(app)
+        window.grab().save(str(out / f"explorer-privacy-{mode}.png"))
     window.jobs.shutdown()
 
 

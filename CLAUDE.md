@@ -25,7 +25,8 @@ Hard rules:
   the only optional part, and it never lives beside the recordings.
 - Recovery artifacts live in the per-user app-data dir under opaque names;
   paths and session names count as identifying (log filter, no recent-files
-  list by default, no paths in preferences).
+  list by default, no paths in clear in preferences: the work folder is
+  stored sealed).
 - Local time comes ONLY from a user-chosen site time zone via zoneinfo (one
   per app profile, plus a per-window override that is never saved); UTC,
   labelled, until one is chosen. Never from GMT_offset: one fixed number, in
@@ -104,7 +105,7 @@ Code (app shell, #2/#3):
   without channel names until mef3io's ChannelSummary carries them (#96). Never read/read_raw/toc;
   tests/test_explorer_bytes.py pins < 1% of bytes read via /proc/self/io in
   the helper. Widgets (`explorer/`,
-  `common/`) never import mef3io (test). Pack/unpack (`model/archive.py`)
+  `common/`, `anonymizer/`) never import mef3io (tests). Pack/unpack (`model/archive.py`)
   writes to an opaque `.mef3io-studio-<hex>` temp name, checks the copy, then
   finishes without replacing anything. Patient details, descriptions and
   note text are masked until "Show" per recording; Copy summary also hides
@@ -122,5 +123,60 @@ Code (app shell, #2/#3):
   ShiftPlan` with per-recording `shift_us`, warnings/blockers/refusals as
   enum CODES (words belong to the UI). It never imports mef3io or logging;
   original times and shifts are `repr=False` (the shift re-identifies).
-  Recordings with unverified times (rto != 0 or unknown) or no full-access
-  password are BLOCKED, not planned. Running the copy is mef3io#70's job.
+  `TIMES_UNVERIFIED` = exactly what mef3io#70 refuses (disputed or unreadable
+  offset, a time at/before a non-zero offset); a resolving rto != 0 IS
+  planned. No full-access password = LOCKED. The floor's span covers notes
+  too (`span_start_us`/`span_end_us` from inspect's first/last_time).
+  The wizard (`anonymizer/page.py` + `picker.py`) runs on mef3io 1.4.0
+  (pinned): `anonymize_session`, `anonymize.check` (writes nothing), refusal
+  `.code`s and the report's original times. Model in `model/anonymize.py`
+  (CopyRequest/CopyResult, `make_copy` in a helper; the report crosses back
+  via `with_original_times_in_pickle()` THERE ONLY, in memory, never
+  persisted; `check_names` (name step: `check()` with a placeholder
+  destination, path codes ignored) / `check_copies` (batch up-front: the real
+  destination); no output passwords ever passed to `check()`;
+  `describe_copy_error` = `model/refusals.py` words for EVERY code of
+  `REFUSAL_CODES` (test) + class fallbacks; details via `technical_text`: no
+  paths, no recording name, `scrub()`ed; `password_may_not_work_elsewhere` =
+  `mef3io.password_interop_issue`; `write_date_key` (0600, never next to
+  the copies)). The old name-check scratch folders of pre-1.4 dev builds are
+  swept once at start. Caught mef3io warnings are matched by
+  `MefWarning.path` (data), never by text.
+  Picker rules in `model/channels.py` (electrode grouping strips EEG/POL,
+  -Ref/-AVG, bipolar pairs, case; ranges only over rows on screen; group box
+  = shown members while filtering; batch change carries exclusions by name).
+  Tasks: `workers.tasks.anonymize_recordings` (publishes `Leftover` when a
+  `.partial` survives) / `check_copy_names`. The date key is shown on screen
+  and saved only on opt-in; never logged, never in settings. Passwords: the
+  form clears on start/restart/hide; only the copies' full-access password is
+  kept for "Open the copy". Privacy check card: `model/privacycheck.py` +
+  `explorer/privacy.py`, from inspect() only; NEVER green while an identity
+  row is unknown (amber); "made by the anonymizer" = every part's LAST
+  operation is `anonymize` (the ops set is inherited and survives appends).
+  Unattended batch (`model/pipeline.py`, `workers.tasks.run_batch` /
+  `preflight_batch`): Output step = folders | archives (per-recording
+  `.mefd.tar` via model.archive) | bundle (`model/bundle.py`, deterministic
+  `tarfile`, a CONTAINER the app cannot open, never a merge). Work copies
+  in `<work folder>/work-<batch>-<n>/` (one at a time), deleted ONLY after a
+  SHA-256 byte check of every member of the written archive against the
+  checked copy (mismatch = copy kept, item failed). All checks run BEFORE
+  starting, incl. opening every original with ITS password. I/O failures on
+  source/destination are retryable; 3 in a row pause the batch. Bundle Stop
+  keeps the temp archive + journal ("Finish the archive with what is done" =
+  partial). "Make them again" on Continue removes a result only if
+  `pipeline.made_by_this_batch` (last op anonymize + stored name + start ==
+  original + shift + exact kept channels + the asked password state). A late
+  Stop credits a folder that appeared only through the same check
+  (`_appeared` + `_is_this_copy`). The batch-archive name refusal names the
+  matched text on screen (never logged). Journal (`model/journal.py`): opaque ids in clear, everything else
+  SEALED (SHA-256 keystream + HMAC, separate enc/mac keys from
+  `<app data>/journal.key`, DPAPI on Windows; created ONLY when missing,
+  otherwise fails closed with `KeyUnavailable`, never replaced); NO original names/dates (read
+  again with inspect on Continue); passwords never journaled; temporaries
+  journaled before they exist (+ sealed `temporaries.json`); resume offered at
+  start (env MEF3IO_STUDIO_NO_STARTUP_OFFERS disables, tests set it).
+  Work-folder preferences stored sealed. Keep-awake (`model/awake.py`; Linux
+  `systemd-inhibit … tail --pid`) — tests set MEF3IO_STUDIO_NO_KEEP_AWAKE
+  (only this Python may be started). The Anonymize page builds its widgets on
+  first use (`AnonymizerPage._build`): built eagerly they made Explore's
+  0.25 s responsiveness test flaky.
