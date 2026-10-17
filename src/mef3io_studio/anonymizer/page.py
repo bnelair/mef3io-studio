@@ -153,6 +153,10 @@ FOREIGN_RESULT = (
     "Move or rename it, then continue the batch, or choose Keep them."
 )
 
+#: What the batch archive's name was found to contain.
+NAME_MATCH = "name"
+DETAIL_MATCH = "detail"
+
 #: The batch archive's name until the user changes it (says nothing about anyone).
 DEFAULT_BUNDLE = "anonymized-recordings.tar"
 
@@ -1030,16 +1034,25 @@ class OutputStep(QWidget):
                 "The batch archive's name must not end in .mefd.tar: that is the name of a "
                 "single recording."
             )
-        if self.names_identity(name):
+        found = self.names_identity(name)
+        if found is not None:
+            # Shown on the user's own screen (the user typed the name and
+            # knows these recordings); never logged.
+            text, kind = found
+            what = (
+                "the name of one of the original recordings"
+                if kind == NAME_MATCH
+                else "a patient detail of one of the recordings"
+            )
             return (
-                "The batch archive's name contains a patient detail or the name of one of "
-                "the original recordings. Choose a name that says nothing about the patients."
+                f'The batch archive\'s name contains "{text}", {what}. Choose a name that '
+                "says nothing about the patients."
             )
         return ""
 
-    def names_identity(self, name: str) -> bool:
-        """The batch archive's name holds an identifying value of the batch
-        (patient details, stored names, the originals' names)."""
+    def names_identity(self, name: str) -> tuple[str, str] | None:
+        """What in the batch archive's name is an identifying value of the
+        batch: ``(the matched text, NAME_MATCH or DETAIL_MATCH)``, or None."""
         import unicodedata
 
         def fold(text: str) -> str:
@@ -1052,8 +1065,7 @@ class OutputStep(QWidget):
             # patient's names, ID and location also word by word. Free-text
             # descriptions are NOT used: their ordinary words ("recordings")
             # would refuse harmless names such as the default one.
-            whole = [c.entry.name]
-            words: list[str] = []
+            candidates: list[tuple[str, str]] = [(c.entry.name, NAME_MATCH)]
             details = c.entry.details
             if details is not None:
                 patient = details.patient
@@ -1064,17 +1076,19 @@ class OutputStep(QWidget):
                     patient.location,
                 ):
                     if value:
-                        whole.append(value)
-                        words += str(value).replace(",", " ").split()
+                        candidates.append((value, DETAIL_MATCH))
+                        candidates += [
+                            (w, DETAIL_MATCH) for w in str(value).replace(",", " ").split()
+                        ]
                 for field_name in ("session_name", "anonymized_name"):
                     fact = details.identity_fact(field_name)
                     if fact is not None:
-                        whole += list(fact.values)
-            for part in [*whole, *words]:
+                        candidates += [(v, NAME_MATCH) for v in fact.values]
+            for part, kind in candidates:
                 part = str(part).strip()
                 if len(part) >= 3 and fold(part) in folded:
-                    return True
-        return False
+                    return part, kind
+        return None
 
     def _update(self, *_args) -> None:
         bundle = self.output() == pipeline.BUNDLE

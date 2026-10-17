@@ -184,27 +184,73 @@ def probe(sources: list[tuple[str, str]], outputs: list[tuple[str, str]], cancel
     return {"sources": found, "outputs": opened}
 
 
-def made_by_this_batch(results: list[tuple[str, str, str, int | None]], cancel=None) -> list[bool]:
-    """In a helper process: for each ``(path, full-access password, copy
-    name, expected start)``, whether the result at ``path`` is the one this
-    batch was making: written last by the anonymizer, stored under the
-    copy's name, and starting at the original's start plus the shift.
-    Anything else (a folder or archive someone put there) is never ours to
-    remove. Details only, folders and single files alike."""
+def result_check(item: BatchItem, path: str | None = None) -> dict:
+    """What :func:`made_by_this_batch` needs to recognise this item's result
+    (passwords included: in memory and in the helper only)."""
+    r = item.request
+    return {
+        "path": path or item.final,
+        "source": r.source,
+        "source_password": r.password,
+        "name": r.name,
+        "shift": int(r.shift_us),
+        "exclude": list(r.exclude_channels),
+        "output_password": list(r.output_password) if r.output_password else None,
+    }
+
+
+def made_by_this_batch(checks: list[dict], cancel=None) -> list[bool]:
+    """For each check (:func:`result_check`), whether the result at its
+    ``path`` is exactly the one this batch was making:
+
+    * written last by the anonymizer (its history), and fully readable;
+    * the copy's name stored inside it;
+    * starting at the original's start plus the shift;
+    * holding exactly the original's channels minus those left out;
+    * protected exactly as asked: it opens with the copies' full-access
+      password and not without one when passwords were set, and it is not
+      protected when none were.
+
+    Anything else (a folder or archive someone put there, even another
+    anonymized copy of the same original) is never ours to remove or to call
+    made. Details only, folders and single files alike."""
     from .inspect import inspect_recording
+    from .recording import ACCESS_FULL, ACCESS_OPEN
 
     out = []
-    for path, password, name, start in results:
+    for c in checks:
         if cancel is not None:
             cancel.raise_if_cancelled()
-        outcome = inspect_recording(path, password, cancel=cancel, detect_legacy=False)
-        details = outcome.details
-        if details is None or start is None:
+        source = inspect_recording(
+            c["source"], c.get("source_password", ""), cancel=cancel, detect_legacy=False
+        ).details
+        if source is None or source.start is None:
             out.append(False)
             continue
-        stored = details.identity_fact("session_name")
+        expected_channels = sorted(
+            ch.name for ch in source.channels if ch.name not in set(c.get("exclude", ()))
+        )
+        output = c.get("output_password")
+        if output:
+            plain = inspect_recording(c["path"], "", cancel=cancel, detect_legacy=False)
+            copy = inspect_recording(
+                c["path"], output[1], cancel=cancel, detect_legacy=False
+            ).details
+            protection_ok = plain.needs_password and copy is not None and copy.access == ACCESS_FULL
+        else:
+            copy = inspect_recording(c["path"], "", cancel=cancel, detect_legacy=False).details
+            protection_ok = copy is not None and copy.access == ACCESS_OPEN
+        if copy is None or not protection_ok:
+            out.append(False)
+            continue
+        stored = copy.identity_fact("session_name")
         names = set(stored.values) if stored is not None else set()
-        out.append(details.made_by_anonymizer and name in names and details.start == start)
+        out.append(
+            copy.made_by_anonymizer
+            and c["name"] in names
+            and copy.start == source.start + c["shift"]
+            and sorted(ch.name for ch in copy.channels) == expected_channels
+        )
     return out
 
 

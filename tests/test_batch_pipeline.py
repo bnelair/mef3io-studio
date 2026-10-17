@@ -813,21 +813,73 @@ def test_make_again_removes_only_a_result_this_batch_made(qtbot, window, tmp_pat
     assert sorted(p.name for p in dest.iterdir()) == ["S001.mefd", "S002.mefd"]
 
 
-def test_made_by_this_batch_checks_stamp_name_and_start(tmp_path):
+def _check(path, src, name="S9", shift=SHIFT, exclude=("a3",), output=None):
+    return {
+        "path": str(path),
+        "source": str(src),
+        "source_password": "",
+        "name": name,
+        "shift": shift,
+        "exclude": list(exclude),
+        "output_password": list(output) if output else None,
+    }
+
+
+def test_made_by_this_batch_checks_stamp_name_start_channels_and_passwords(tmp_path):
     src = write_plain(tmp_path / "orig.mefd", notes=False)
     copy = tmp_path / "S9.mefd"
-    mef3io.anonymize_session(str(src), str(copy), SHIFT)
+    mef3io.anonymize_session(str(src), str(copy), SHIFT, exclude_channels=["a3"])
     verdicts = pipeline.made_by_this_batch(
         [
-            (str(copy), "", "S9", T0 + SHIFT),  # ours
-            (str(copy), "", "S8", T0 + SHIFT),  # another name
-            (str(copy), "", "S9", T0 + SHIFT + 1),  # another start
-            (str(src), "", "orig", T0),  # not made by the anonymizer
+            _check(copy, src),  # ours
+            _check(copy, src, name="S8"),  # another name
+            _check(copy, src, shift=SHIFT + 1),  # another shift
+            _check(src, src, name="orig", shift=0, exclude=()),  # not made by the anonymizer
         ]
     )
     assert verdicts == [True, False, False, False]
     tar = mef3io.archive_session(str(copy), str(tmp_path / "S9.mefd.tar"))
-    assert pipeline.made_by_this_batch([(tar, "", "S9", T0 + SHIFT)]) == [True]
+    assert pipeline.made_by_this_batch([_check(tar, src)]) == [True]
+
+
+def test_another_copy_of_the_same_original_is_not_ours(tmp_path):
+    """Round 4 (1): the reviewer's case. A plain anonymized copy of the same
+    original, with the same name and shift but other channels, is not this
+    batch's result (and so is never removed); nor is one whose passwords
+    differ from the ones asked for."""
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    other = tmp_path / "other" / "S9.mefd"
+    other.parent.mkdir()
+    mef3io.anonymize_session(str(src), str(other), SHIFT)  # all three channels
+    assert pipeline.made_by_this_batch([_check(other, src, exclude=("a3",))]) == [False]
+    assert pipeline.made_by_this_batch([_check(other, src, exclude=())]) == [True]
+    # This batch asked for passwords: an unprotected copy is not it ...
+    asked = ("bas-1", "full-2")
+    assert pipeline.made_by_this_batch([_check(other, src, exclude=(), output=asked)]) == [False]
+    # ... and a protected one only with exactly those passwords.
+    locked = tmp_path / "locked" / "S9.mefd"
+    locked.parent.mkdir()
+    mef3io.anonymize_session(str(src), str(locked), SHIFT, output_password=asked)
+    assert pipeline.made_by_this_batch([_check(locked, src, exclude=(), output=asked)]) == [True]
+    wrong = ("bas-1", "other-9")
+    assert pipeline.made_by_this_batch([_check(locked, src, exclude=(), output=wrong)]) == [False]
+    assert pipeline.made_by_this_batch([_check(locked, src, exclude=())]) == [False]
+
+
+def test_make_again_keeps_another_copy_of_the_same_original(qtbot, window, tmp_path):
+    """Round 4 (1): end to end, "Make them again" leaves such a copy alone."""
+    window._closing = True
+    page = window.anonymizer
+    batch, dest, _work = make_batch(tmp_path, pipeline.FOLDERS, three(tmp_path)[:1])
+    mef3io.anonymize_session(str(batch.items[0].request.source), str(dest / "S001.mefd"), SHIFT)
+    j = journal.Journal.new(1, pipeline.to_payload(batch))
+    refused = []
+    page.resume_problems.connect(refused.append)
+    page.resume(j, lambda s: "", None, lambda n, total: "redo")
+    qtbot.waitUntil(lambda: bool(refused), timeout=120_000)
+    assert "not made by this batch" in refused[0]
+    names = [c.name for c in mef3io.inspect(str(dest / "S001.mefd")).channels]
+    assert names == ["a1", "a2", "a3"]  # still there, untouched
 
 
 def test_resume_dialog_names_each_original_and_can_share_a_password(qtbot):

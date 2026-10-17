@@ -465,12 +465,7 @@ def preflight_batch(
     if existing:
         # A result with the copy's name is there: is it the one this batch
         # was making (then it may be made again), or someone else's?
-        checks = []
-        for n in existing:
-            item = batch.items[n]
-            original = originals.get(item.request.key)
-            start = original[1] + item.request.shift_us if original and original[1] else None
-            checks.append((item.final, output_full_password, item.request.name, start))
+        checks = [pipeline.result_check(batch.items[n]) for n in existing]
         verdicts = ctx.run_isolated(
             pipeline.made_by_this_batch, checks, stop_grace=STOP_GRACE_SECONDS
         )
@@ -787,14 +782,20 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
         )
     except Exception as exc:
         stop = isinstance(exc, JobCancelled) or is_stop(exc)
-        if stop and not item.work and _published(request.destination, there_before):
-            # Stop came after mef3io had checked the copy and given it its
-            # final name: the copy IS saved and checked. Say so (and record
-            # it), then stop the batch.
-            journal.mark(n, journal_.DONE)
-            ctx.publish(
-                anonymize.CopyResult(request.key, item.final, ok=True, notes=(SAVED_BEFORE_STOP,))
-            )
+        if stop and not item.work and _appeared(request.destination, there_before):
+            # A folder with the copy's name appeared while the copy ran.
+            if _is_this_copy(item):
+                # Stop came after mef3io had checked the copy and given it
+                # its final name: the copy IS saved and checked. Say so (and
+                # record it), then stop the batch.
+                journal.mark(n, journal_.DONE)
+                ctx.publish(
+                    anonymize.CopyResult(
+                        request.key, item.final, ok=True, notes=(SAVED_BEFORE_STOP,)
+                    )
+                )
+            else:
+                ctx.publish(_fail(ctx, item, APPEARED))
             raise
         if not anonymize.remove_unfinished(request.destination):
             ctx.publish(anonymize.Leftover(request.key, request.destination + ".partial"))
@@ -902,17 +903,32 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
 
 IN_BUNDLE = "in the batch archive"
 SAVED_BEFORE_STOP = "saved and checked just before Stop"
+APPEARED = UserMessage(
+    "A folder with the copy's name appeared",
+    "While the copy was being made, a folder with its name appeared in the chosen folder. It "
+    "is not this batch's copy, so it was left exactly as it is, and this recording was not "
+    "made. The original was not changed. Move or rename that folder, then make this copy "
+    "again.",
+)
 
 
-def _published(destination: str, there_before: bool) -> bool:
-    """mef3io gave the copy its final name (it does so only after checking
-    it): the folder is there now, was not before, and no unfinished copy is
-    next to it."""
+def _appeared(destination: str, there_before: bool) -> bool:
+    """A folder with the copy's name is there now, was not before, and no
+    unfinished copy is next to it."""
     return (
         not there_before
         and os.path.isdir(destination)
         and not os.path.lexists(destination + ".partial")
     )
+
+
+def _is_this_copy(item) -> bool:
+    """The folder that appeared is exactly this copy (checked in this thread:
+    the task is stopping, so no helper is started for it)."""
+    try:
+        return pipeline.made_by_this_batch([pipeline.result_check(item)])[0]
+    except Exception:  # noqa: BLE001 - not provably ours
+        return False
 
 
 MISMATCH = UserMessage(

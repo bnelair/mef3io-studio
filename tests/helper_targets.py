@@ -150,3 +150,21 @@ def gated_make_copy(request, send=None, cancel=None, *, gate_dir="", when="durin
     if when == "after":
         hold()
     return result
+
+
+def make_foreign_folder(request, send=None, cancel=None, *, gate_dir=""):
+    """Stands in for the copy: a folder with the copy's name appears (not a
+    copy at all), then it waits for Stop."""
+    import os
+    import time
+
+    os.makedirs(request.destination)
+    with open(os.path.join(request.destination, "someone-elses.txt"), "w") as handle:
+        handle.write("not a recording")
+    open(os.path.join(gate_dir, "entered"), "w").close()
+    deadline = time.monotonic() + 60
+    while not (cancel is not None and cancel.cancelled) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    from mef3io_studio.model.cancel import JobCancelled
+
+    raise JobCancelled()

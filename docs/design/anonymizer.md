@@ -331,10 +331,15 @@ archives" (2026-10-16) is built as follows (review rounds 1 and 2 included).
   unfinished recordings (made just before a crash) are kept ("not confirmed")
   or made again (only when the result is provably this batch's: the
   anonymizer stamp as its last operation, the copy's name stored inside, and
-  a start equal to the original's plus the shift, read with `inspect` for a
-  folder or an archive; anything else is left as it is, with a plain
-  message), then continues. A Stop that arrives after mef3io already checked
-  and published a folder copy reports it as saved (the true outcome).
+  a start equal to the original's plus the shift, exactly the original's
+  channels minus those left out, and protected exactly as asked (opens with
+  the copies' full-access password and not without, or unprotected when none
+  were set), read with `inspect` for a folder or an archive; anything else,
+  even another anonymized copy of the same original, is left as it is, with
+  a plain message), then continues. A Stop that arrives after a folder with
+  the copy's name appeared credits it only if the same check says it is this
+  copy; otherwise the recording is reported as "A folder with the copy's name
+  appeared" and the folder is left alone.
   Refusals on Continue name positions
   ("Recording 3 of 7"), never recordings. Discard removes the batch's
   unfinished files. Leftover work copies in every work folder ever used (a

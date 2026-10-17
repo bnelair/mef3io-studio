@@ -559,6 +559,43 @@ def test_stop_leaves_nothing_behind(window_page, qtbot, tmp_path, monkeypatch):
     assert page.run_step.result_texts[page.choices[0].key] == "Stopped"
 
 
+def test_a_folder_that_appeared_during_the_copy_is_not_credited(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    """Round 4 (2): a late Stop credits a folder with the copy's name only
+    when it is exactly this copy; anything else is said and left alone."""
+    import functools
+
+    import helper_targets
+
+    from mef3io_studio.model import anonymize
+
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    out = tmp_path / "out"
+    out.mkdir()
+    _through_to_review(page, qtbot, out, names=["ODD1"])
+    gate = tmp_path / "gate-odd"
+    gate.mkdir()
+    monkeypatch.setattr(
+        anonymize,
+        "make_copy",
+        functools.partial(helper_targets.make_foreign_folder, gate_dir=str(gate)),
+    )
+    checks = page.start()
+    qtbot.waitUntil(lambda: checks.is_finished and page.handle is not None, timeout=60_000)
+    qtbot.waitUntil((gate / "entered").exists, timeout=60_000)
+    page.stop()
+    qtbot.waitUntil(lambda: page.run.finished, timeout=60_000)
+    assert (
+        page.run_step.result_texts[page.choices[0].key] == "A folder with the copy's name appeared"
+    )
+    assert (out / "ODD1.mefd" / "someone-elses.txt").exists()  # left as it is
+    assert page.date_key_rows() == []
+
+
 def test_stop_after_the_copy_was_saved_reports_it_saved(window_page, qtbot, tmp_path, monkeypatch):
     """Stop arriving after mef3io checked and published the copy: the UI
     reports the true outcome (saved and checked), never "removed"."""
@@ -949,9 +986,14 @@ def test_the_batch_archive_name_must_not_name_anyone(window_page, qtbot, tmp_pat
     page.go(STEP_OUTPUT)
     page.output.bundle.setChecked(True)
     page.output.bundle_name.setText(f"{LAST} batch")
-    assert "patient detail" in page.output.problem_text()
+    assert page.output.problem_text().startswith(
+        f'The batch archive\'s name contains "{LAST}", a patient detail of one of the recordings.'
+    )
     page.output.bundle_name.setText("my ward_study export")
-    assert "original recordings" in page.output.problem_text()
+    assert page.output.problem_text().startswith(
+        'The batch archive\'s name contains "ward_study", the name of one of the original '
+        "recordings."
+    )
     page.output.bundle_name.setText("batch-2026")
     assert page.output.problem_text() == ""
     from mef3io_studio.anonymizer.page import BUNDLE_EXPLANATION

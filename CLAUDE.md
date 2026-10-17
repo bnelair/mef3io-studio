@@ -165,8 +165,10 @@ Code (app shell, #2/#3):
   keeps the temp archive + journal ("Finish the archive with what is done" =
   partial). "Make them again" on Continue removes a result only if
   `pipeline.made_by_this_batch` (last op anonymize + stored name + start ==
-  original + shift). Stop that lands after mef3io published a folder copy
-  reports it saved (`_published`). Journal (`model/journal.py`): opaque ids in clear, everything else
+  original + shift + exact kept channels + the asked password state). A late
+  Stop credits a folder that appeared only through the same check
+  (`_appeared` + `_is_this_copy`). The batch-archive name refusal names the
+  matched text on screen (never logged). Journal (`model/journal.py`): opaque ids in clear, everything else
   SEALED (SHA-256 keystream + HMAC, separate enc/mac keys from
   `<app data>/journal.key`, DPAPI on Windows; created ONLY when missing,
   otherwise fails closed with `KeyUnavailable`, never replaced); NO original names/dates (read
