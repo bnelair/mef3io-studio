@@ -9,10 +9,13 @@ Three ways to deliver the copies:
   the WORK FOLDER, ``mef3io.archive_session`` packs that copy under a
   temporary name next to its final one (``model.archive``), the archive is
   opened and compared with the checked work copy (channels, parts, start and
-  end, sample counts), renamed, and only then is the work copy deleted;
+  end, sample counts), then every member is re-read and its SHA-256 compared
+  with the work copy's file; only then is it renamed and the work copy
+  deleted (a mismatch keeps the work copy and fails the recording);
 * ``bundle``: one ``.tar`` holding every anonymized recording as its own
   folder (``model.bundle``): each checked work copy is added, the added
-  member names and sizes are read back, then the work copy is deleted; the
+  members are read back and their names, sizes and SHA-256 compared with the
+  work copy's files, then the work copy is deleted; the
   bundle is renamed into place when every recording is in it.
 
 The work folder only ever holds the recording being worked on, in a folder

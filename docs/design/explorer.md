@@ -1,5 +1,14 @@
 # Design: explorer (v0.1)
 
+**Status (test version 0.1.0.dev2):** built: opening and scanning, how times
+are shown, the recordings list and the detail tabs (plus the Privacy check
+card, see [anonymizer](anonymizer.md#as-built-wizard-for-010dev2)), the
+combined timeline, Copy summary, Save times as a table, and pack / unpack.
+Not built yet: ordering and renaming, the drift fix, archive renames, undo
+and the recovery-artifacts window, and metadata editing; they need
+[mef3io#72](https://github.com/bnelair/mef3io/issues/72) and
+[mef3io#73](https://github.com/bnelair/mef3io/issues/73).
+
 Open recordings and see what's in them. No signal data is loaded. Everything
 here is **read-only**, except two explicit **in-place** operations:
 - **renaming sessions**, which always updates the name stored inside the
@@ -24,8 +33,8 @@ silently write an offset of 0.
 
 - **File → Open** a `.mefd` folder or a `.mefd.tar` file, drag and drop, or **File → Scan folder** to find every recording under a directory.
 - **Each recording loads in the background** with a progress indicator; the window never freezes. A recording that fails to open shows the reason in plain language, never a traceback.
-- **What is read:** `mef3io.inspect()` ([mef3io#67](https://github.com/bnelair/mef3io/issues/67)) reads each segment's metadata file and the annotation files. **It does not read the signal**, and reads the block index (about 2% of the data) **only on demand**, e.g. for the detailed gap view.
-- **Encrypted recordings** ask for a password. Without one, only what MEF leaves unencrypted is shown, with an explanation of what is hidden and why: "In files written by common tools, MEF passwords lock the patient details, settings and annotations. They don't hide the signal, the recording's name, or its timing. Some files keep the true date hidden until the level-2 password is given."
+- **What is read:** `mef3io.inspect()` ([mef3io#67](https://github.com/bnelair/mef3io/issues/67)) reads each segment's metadata file and the annotation files. **It does not read the signal or the block index** (about 2% of the data). A part with gaps inside it is shown striped, without saying where; the block-level view is the coverage view (next directions). The app reads it with `strict=False`: unreadable parts are listed and the rest is shown.
+- **Encrypted recordings** ask for a password. Without one, only what MEF leaves unencrypted is shown, with an explanation of what is hidden and why: "In files written by common tools, MEF passwords lock the patient details, settings and annotations. They don't hide the signal, the recording's name, or its timing. Some files keep the true date hidden until the full-access password is given." (The app says "basic password" for level 1 and "full-access password" for level 2.)
 
 ## How times are shown
 
@@ -47,8 +56,9 @@ So:
 
 **Times you can't trust are labelled *unverified*,** never shown as if
 absolute, and kept out of the absolute order:
-- **Encrypted, no level-2 password:** the recording-time offset is stored in the encrypted section, so it is **unknown**.
-- **Legacy files with a non-zero recording-time offset:** older tools stored such times with the opposite sign convention to meflib, and the two can't be told apart from the bytes. mef3io reports these as not absolute (`offset_known=False`, [mef3io#72](https://github.com/bnelair/mef3io/issues/72)).
+- **Encrypted, no level-2 password:** the recording-time offset is stored in the encrypted section, so it is **unknown**; `inspect()` reads the times assuming the common case (no offset) and says so (`offset_assumed_zero`).
+- **Parts that disagree about the offset** (`inspect()`'s `time_offset` status `disputed`): there is no single value.
+- **Files with a non-zero recording-time offset** (the deprecated way older tools hid the date): older tools stored such times with two sign conventions that can't be told apart from the bytes. The app shows the times as mef3io works them out, labelled unverified, and warns that the recording is **not** anonymized (the real date is recoverable).
 
 ## What's shown
 
@@ -70,6 +80,7 @@ It's virtualized, so hundreds of recordings stay fast.
 | Annotations | Every record at every level (session, channel, segment): time, type, text. Text is hidden while patient details are hidden |
 | Patient details | Subject name, ID, location and descriptions, **masked by default**; "Show" per recording |
 | Provenance | Which mef3io version created and last modified the files, and which operations were applied. Blank for files from other writers |
+| Privacy check | Every kind of identifying detail, ✓ empty / ✗ found / – unknown, and whether the anonymizer made the recording (see [anonymizer](anonymizer.md#as-built-wizard-for-010dev2)) |
 | Integrity | "Check now" runs `mef3io.Validator`; findings in plain language, with the technical detail expandable |
 
 **Combined timeline** (instead of the tabs, chosen next to them): the

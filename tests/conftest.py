@@ -170,7 +170,7 @@ def synthetic_session(tmp_path):
 @pytest.fixture(scope="session")
 def multisegment_session(tmp_path_factory):
     """64 channels x 60 parts: large enough that opening it takes a while
-    (the case bnelair/mef3io#79 is about). Synthetic zeros."""
+    (long enough to show a stalled window, bnelair/mef3io#79). Synthetic zeros."""
     import mef3io
     import numpy as np
 

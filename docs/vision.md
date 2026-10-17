@@ -30,11 +30,16 @@ counts, CRCs) is available, but never in the way.
 2. **Metadata view and edit:** subject, location and descriptions, single or batch, in place with undo or into a copy ([#14](https://github.com/bnelair/mef3io-studio/issues/14)). **Timestamps are never editable.**
 3. **Passwords:** save copies with new passwords or without any ([#15](https://github.com/bnelair/mef3io-studio/issues/15)).
 4. **Channel selection and batch conversion:** reusable channel presets applied to many sessions, combined with the other copy options in one pass ([#16](https://github.com/bnelair/mef3io-studio/issues/16)).
-5. **Anonymizer:** batch de-identification into verified copies, with the time shift chosen by the user. See [design/anonymizer.md](design/anonymizer.md).
+5. **Anonymizer:** batch de-identification into verified copies, with the time shift and the channels chosen by the user, and unattended batches into shareable archives. See [design/anonymizer.md](design/anonymizer.md).
 6. **Installers** for Windows (`.exe`), macOS (Apple silicon and Intel) and Linux, on GitHub Releases. The app is **not** published to PyPI.
+
+**Where it stands:** test version 0.1.0.dev2 has the installers, the
+Explorer without ordering and renaming, and the Anonymizer. Items 2-4 and
+ordering and renaming are still to come; see the [roadmap](roadmap.md).
 
 ## Next directions (need their own specifications)
 
+- Saving a part of a recording, cutting it into pieces, and merging recordings, always into new checked copies ([#31](https://github.com/bnelair/mef3io-studio/issues/31)).
 - A signal viewer, built on mef3io-server.
 - A data coverage view: when data exists and at what rate, per channel.
 - Annotation viewing, then editing.
@@ -66,5 +71,5 @@ See [design/next-directions.md](design/next-directions.md).
    - There is no network access.
 5. **Plain language first.** Technical detail is there, but never the first thing a user sees.
 6. **Modern and never frozen.**
-   - Every long task runs in the background, with a progress bar and cancel. The window never freezes, even while converting a multi-GB recording.
+   - Every long task runs in the background, with a progress bar and Stop. The window never freezes, even while converting a multi-GB recording.
    - The interface looks current (light and dark themes, crisp on high-DPI screens) and scales from a laptop to a large monitor.

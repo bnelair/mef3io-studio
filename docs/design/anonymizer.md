@@ -9,6 +9,11 @@ report the batch.
 
 ![The anonymization workflow in six steps.](../img/anonymize-workflow.svg)
 
+**Status:** built for test version 0.1.0.dev2 on mef3io 1.4.0. Steps 1-6
+below are the original specification; what was actually built, where it
+differs, and what is deferred are in
+[As built](#as-built-wizard-for-010dev2) at the end.
+
 ## Step 1: select recordings
 
 The same list as the explorer: open, drag and drop, or scan a folder. Each
@@ -251,7 +256,7 @@ refusal codes and the report's original times. Nothing is written before
 ### The unattended batch (pipeline)
 
 The issue #5 comment "one unattended pipeline from selection to shareable
-archives" (2026-10-16) is built as follows (review rounds 1 and 2 included).
+archives" (2026-10-16) is built as follows.
 
 - **Output step** (before Review): folders (as before), one archive per
   recording, or one archive for the whole batch (`model/pipeline.py`).
@@ -360,5 +365,9 @@ archives" (2026-10-16) is built as follows (review rounds 1 and 2 included).
 
 **Deferred** (not in dev2): the per-item free-text review screen (one
 drop/keep choice for all text today); pseudonym generation per subject and a
-naming pattern; running copies in parallel; a PDF/CSV report export; the
-"set the time too" weekday uses the site zone when one is chosen.
+naming pattern; running copies in parallel; a PDF/CSV report export (the
+date key is the only file written about a batch); the "set the time too"
+weekday uses the site zone when one is chosen. "Make them again" on
+Continue does not yet compare the identity choices (patient details
+cleared, note text dropped) with the existing result
+([#36](https://github.com/bnelair/mef3io-studio/issues/36)).

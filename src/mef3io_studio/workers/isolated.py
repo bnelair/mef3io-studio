@@ -1,15 +1,19 @@
 """Run a call in a separate helper process.
 
-Why: a worker *thread* only keeps the window responsive if the call releases
-Python's GIL. mef3io currently holds it for the whole of a recording open
-(bnelair/mef3io#79) — half a second or more on a large recording, during which
-the window cannot redraw. A helper process has its own GIL, so the window
-stays live whatever the library does. It also makes Cancel immediate: the
-helper is simply stopped.
+Why it stays, now that mef3io 1.4 releases the GIL during an open and in
+``inspect`` (bnelair/mef3io#79, closed): a helper process
+
+* **contains native crashes.** A damaged or hostile file that crashes the
+  C++ library takes down the helper, not the app; the user gets a plain
+  error and every other task goes on;
+* **gives a hard Stop.** Calls that cannot stop by themselves are ended at
+  once, and calls that can are ended anyway after ``stop_grace``;
+* keeps the window live whatever a call does with the GIL (a helper has its
+  own).
 
 Cost: starting a helper takes a fraction of a second, so this is for calls
-that take longer than that (opening a recording), not for tiny ones. Once
-mef3io#79 ships, sources can switch ``isolate`` off.
+that take longer than that (opening a recording, an anonymized copy), not
+for tiny ones.
 
 Stopping: by default Stop ends the helper at once. A call that can stop
 cleanly by itself (mef3io 1.3 takes a ``cancel=`` token in its long

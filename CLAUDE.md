@@ -2,7 +2,9 @@
 
 Desktop app (PySide6) for exploring, organizing, protecting and anonymizing
 MEF 3.0 recordings, built
-on the mef3io library (github.com/bnelair/mef3io). Status: early development. Design in
+on the mef3io library (github.com/bnelair/mef3io). Status: early development;
+test version 0.1.0.dev2 = Explore + Anonymize on mef3io 1.4.0 (ordering/
+renaming, metadata edit, passwords, channel presets still to come). Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
 Hard rules:
@@ -39,8 +41,9 @@ Hard rules:
 - v0.1 scope = explore (incl. order/rename, pack/unpack), metadata view/edit,
   passwords, channel presets + batch conversion, anonymize; installers only
   (no PyPI).
-  Viewer (on mef3io-server), coverage view, annotations, export, remote
-  access are NEXT DIRECTIONS needing their own specs.
+  Save a part / cut / merge (#31, first after dev2), viewer (on
+  mef3io-server), coverage view, annotations, export, remote access are
+  NEXT DIRECTIONS needing their own specs.
 
 Code (app shell, #2/#3):
 - Dev: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`
@@ -48,7 +51,12 @@ Code (app shell, #2/#3):
   `ruff check . && ruff format --check .`. CI installs from the hashed
   `requirements/*.lock` (regenerate with uv, see requirements/README.md). Installers:
   `packaging/mef3io-studio.spec` + `.github/workflows/build.yml`; every build
-  must pass `mef3io-studio --self-test`. Not on PyPI, ever. Version = `VERSION`.
+  must pass `mef3io-studio --self-test`. Not on PyPI, ever. Version = `VERSION`
+  (read by `_version.py`, pyproject, the spec, the installers; a test pins
+  `app_version()` to it). Releases: README "Make a release" (docs revision
+  PR first); `docs/release-notes/<VERSION>.md` (plain words, for testers) is
+  the GitHub release description (build.yml release job, generic text when
+  missing; always `--prerelease`).
 - Long work goes through `workers.JobManager.submit(title, fn, ...)` — never on
   the UI thread; `fn(ctx, ...)` reports via `ctx.report(done, total, phase)`
   (throttled) and polls `ctx.check_cancelled()`. Titles shown to users carry
@@ -60,13 +68,14 @@ Code (app shell, #2/#3):
   `cancel=`, and is ended only after the grace. mef3io byte progress travels
   from helpers as `model.progress.ByteProgress` via `send`.
 - Data access goes through `model.source.RecordingSource` (server source later).
-  `LocalRecordingSource.isolate = True` runs opens in a spawn helper process:
-  `mef3io.Reader` still holds the GIL for a whole open (mef3io#79), while
-  `mef3io.inspect()` lets other threads run (measured: ~60 ms longest stall
-  vs ~1.7 s for the Reader; test_jobs pins the inspect-based summary on a
-  thread; it skips, saying so, when the call takes <= 1.5x the stall bound,
-  too short to show a held GIL). The helper also contains native crashes, so it stays for now;
-  `freeze_support()` is the first thing the launcher does.
+  `LocalRecordingSource.isolate = True` runs opens in a spawn helper process
+  because it CONTAINS NATIVE CRASHES and gives a HARD STOP, not for the GIL:
+  mef3io 1.4 releases the GIL in `inspect()` and during a `Reader` open
+  (mef3io#79 closed; measured on 1.4.0, 64 ch x 60 parts: Reader open 0.78 s
+  with an 8 ms longest stall, inspect 1.1 s with 33 ms). test_jobs pins the
+  inspect-based summary on a thread; it skips, saying so, when the call takes
+  <= 1.5x the stall bound. `freeze_support()` is the first thing the launcher
+  does.
 - UI text: everyday words only (docs/ui-language.md, enforced by
   tests/test_ui_language.py); jargon only behind "Technical details".
 - Packaging: the spec DROPS network/kiosk Qt plugins, QtNetwork, GTK theme,

@@ -10,7 +10,8 @@ name: Build installers
 # The bundle is also checked for files that must not ship (network plugins,
 # GPL readline, ...) and for the licence folder; on Linux the app runs under
 # strace and must not open an internet socket. On a `v*` tag the installers
-# and a SHA256SUMS file are attached to a GitHub Release.
+# and a SHA256SUMS file are attached to a GitHub Release, described by
+# docs/release-notes/<VERSION>.md when that file exists.
 # The app is NOT published to PyPI.
 #
 # Reproducible inputs: Python packages from requirements/build.lock (hashed),
@@ -281,12 +282,25 @@ jobs:
       - name: Create the release and attach the installers
         env:
           GH_TOKEN: ${{ github.token }}
+        # The release description is docs/release-notes/<VERSION>.md when that
+        # file exists (written for testers in the pre-release docs revision),
+        # otherwise the short generic text below.
         run: |
-          notes="Installers for Windows, macOS (14 or later) and Linux. Verify downloads against SHA256SUMS.
-          These builds are NOT code-signed yet: Windows SmartScreen and macOS Gatekeeper will ask you to confirm the first launch."
+          version="$(tr -d '[:space:]' < VERSION)"
+          notes_file="docs/release-notes/${version}.md"
+          if [ -f "$notes_file" ]; then
+            echo "release notes: $notes_file"
+          else
+            notes_file="$RUNNER_TEMP/release-notes.md"
+            printf '%s\n' \
+              "Installers for Windows, macOS (14 or later) and Linux. Verify downloads against SHA256SUMS." \
+              "These builds are NOT code-signed yet: Windows SmartScreen and macOS Gatekeeper will ask you to confirm the first launch." \
+              > "$notes_file"
+            echo "no docs/release-notes/${version}.md; using the generic text"
+          fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
           else
             gh release create "$GITHUB_REF_NAME" artifacts/* --title "mef3io-studio $GITHUB_REF_NAME" \
-              --notes "$notes" --prerelease
+              --notes-file "$notes_file" --prerelease
           fi
