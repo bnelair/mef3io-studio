@@ -7,7 +7,10 @@ toggle (`common/dialogs.py: TechnicalDetails`), in the log file, and in the
 docs for developers.
 
 `tests/test_ui_language.py` scans the user-facing strings for the banned
-terms below and fails the build when one slips in. Wrap a string in
+terms below and fails the build when one slips in. The user guide, the
+release notes and the README's sections above "For developers" are read by
+the same people and use the same words (they are not scanned yet,
+[#26](https://github.com/bnelair/mef3io-studio/issues/26)). Wrap a string in
 `technical("...")` (from `mef3io_studio.common.text`) only when it is
 shown inside a technical-details panel.
 
@@ -34,6 +37,12 @@ shown inside a technical-details panel.
 | exception, traceback, error code | never in the main UI; the message says what happened |
 | cancel (a job) | **stop** |
 | job, worker, thread | **task** |
+| `.mefd.tar`, tar archive | **single-file recording** (when opening one); **archive** (when packing, or as a batch output: "an archive per recording") |
+| bundle (a `.tar` of several recordings) | **one archive for the whole batch**, "the batch archive" |
+| time shift, `shift_us` | **move the dates** ("Moved 3,712 days later; time of day (UTC) kept"); "shift" only as an everyday word ("one shift for all") |
+| key file, shift mapping | **date key** (the original and new dates of every recording) |
+| verify, verification | **check** ("Saved and checked") |
+| journal, sealed state | never in the main UI; the offer says "Continue the batch: 4 of 7 done" |
 
 ## How to write a message
 

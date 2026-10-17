@@ -1,5 +1,14 @@
 # User guide
 
+This guide describes test version **0.1.0.dev2**, which has two pages:
+**Explore** (see what is in your recordings) and **Anonymize** (make
+anonymized copies of them). What is new in each test version is in the
+[release notes](release-notes/).
+
+Times are shown in **UTC** until you choose a time zone (see *Times and time
+zones*). The app never changes your original recordings: anonymizing makes a
+new copy and checks it.
+
 ## Explore recordings
 
 The **Explore** page shows what is in your recordings: channels, when they
@@ -99,6 +108,7 @@ Select a recording to see its details in the tabs below the list:
 | **Timeline** | Each channel as a bar over time. Filled: recorded. Empty: a gap. Striped: a part that has gaps inside it. Point at a part to see its times |
 | **Notes and events** | Notes stored for the whole recording, with each channel, and with each part. Their text is hidden until you choose Show under Patient details. With only the basic password, their text reads *Locked: needs the full-access password* |
 | **Patient details** | Name, patient ID, location and descriptions, **hidden until you choose Show** |
+| **Privacy check** | Every kind of detail that could identify the patient, each marked empty or found, and whether the anonymizer made the recording (see [Privacy check](#privacy-check)) |
 | **History** | Which version of the mef3io library created the files and last changed them, and what was done (for example "added to"). No dates are recorded. Files written by other programs have no history |
 | **Check for problems** | Compares what the recording says about itself with its data. Choose **Check now**; the results are explained in plain words, with the technical details one click away. Checking never changes the recording |
 
@@ -395,7 +405,7 @@ While a batch runs:
   in Settings);
 - the progress shows how many recordings are done ("Recording 3 of 7"), the
   current step ("Anonymizing", "Making the archive", "Checking the archive",
-  "Adding to the bundle") and the time left, and a notification tells you
+  "Adding to the batch archive") and the time left, and a notification tells you
   when the batch is done.
 
 **If the batch is interrupted** (the app was closed, the computer crashed or
@@ -475,3 +485,19 @@ example, data was added) says that its dates can no longer be confirmed. For any
 other recording it says: "This recording wasn't made by the anonymizer, so we
 can't confirm its dates were moved." The check reads nothing but the
 recording's details, so it is instant even on very large recordings.
+
+## Help and reporting problems
+
+- **Help → Check this installation** tests the app with a small made-up
+  recording. If something seems wrong with the app itself, start there.
+- **View → Appearance** switches between the light and the dark look, or
+  follows your computer's setting.
+- **Help → Open the log folder** shows the app's log. It leaves out patient
+  details, recording names, folder paths and dates; still, read it before
+  you share it.
+- Report problems as an [issue on GitHub](https://github.com/bnelair/mef3io-studio/issues/new/choose).
+  Issues are public: **never attach a recording**, or a screenshot showing
+  patient details, real names, dates or folder names. Describe what you did
+  and what you saw instead. If an anonymized copy still contains patient
+  details or a real date, report it privately:
+  [report a privacy problem](https://github.com/bnelair/mef3io-studio/security/advisories/new).

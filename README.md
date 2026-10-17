@@ -6,8 +6,10 @@
 [![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
 
-The app is in early development: test versions are available, and some
-features below are still being built. See [Project status](#project-status).
+The app is in early development. The current test version, **0.1.0.dev2**,
+can explore recordings and make anonymized copies of them; the other
+features below are still being built. See [Project status](#project-status)
+and the [release notes](docs/release-notes/0.1.0.dev2.md).
 
 ## Getting the app
 
@@ -76,100 +78,125 @@ each segment has three files:
 A session can also be packed into a single **`.mefd.tar`** file, which is
 easier to copy and share. It is read directly; there's no need to unpack it.
 
-## What the app will do
+## What the app does
 
-### First release
+The current test version, **0.1.0.dev2**, has two pages: **Explore** and
+**Anonymize**. The rest of the first release is still being built (see
+[Still to come](#still-to-come-for-the-first-release)).
 
-**1. Explore.** Open one or many recordings and see what's in them, without
-loading any signal:
+<p align="center">
+  <img src="docs/img/screenshots/explorer-overview-light.png" alt="The Explore page: a list of recordings sorted by start time, and the details of the selected one." width="760">
+</p>
+
+### Explore (in the test version)
+
+Open one or many recordings and see what's in them, without loading any
+signal:
 - channels, sampling rates and units;
 - start and end time, duration, gaps;
-- segments and annotations;
-- whether the session is encrypted;
-- which mef3io version wrote it (its provenance);
-- an integrity check.
+- the parts each channel is stored in, and the notes and events;
+- whether the recording is password-protected;
+- its history: which version of the mef3io library made or changed it;
+- a check for problems, explained in plain words.
 
-Patient details are **hidden by default**. Times are shown in UTC until you
-**choose the site's time zone** (the files can't tell the app reliably).
+You can also:
+- see **several recordings on one timeline**, with overlaps flagged and the
+  time with data added up;
+- **save their times as a table** (CSV) that opens in a spreadsheet and is
+  exact for scripts;
+- **pack** a recording into one file, or **unpack** it again;
+- see a **Privacy check** for any recording: every kind of detail that could
+  identify the patient, and whether the anonymizer made it.
+
+Patient details are **hidden by default**. Times are shown in **UTC** until
+you **choose the site's time zone** (the files can't tell the app reliably).
 After that, local times are correct across daylight-saving changes.
 
-You can also **pack** a recording into one file, or **unpack** it again.
+Reading big recordings shows real progress, and **Stop** stops the work
+straight away. See the [user guide](docs/user-guide.md#explore-recordings).
 
-The Explore page is in the test versions on the
-[Releases page](https://github.com/bnelair/mef3io-studio/releases); see the
-[user guide](docs/user-guide.md#explore-recordings).
+### Anonymize (in the test version)
 
-**2. Order and rename.** Got a folder of sessions whose names are long random
-codes? See them sorted by when they were recorded, then rename them safely:
-- **preview** every change first;
-- name clashes are caught before anything happens;
-- **undo** whole renames.
-
-A session's name is stored in several places, including inside its files.
-mef3io changes all of them together, so other MEF software still finds
-everything, annotations included. For a password-protected recording the app
-asks for the password first, because part of the name is stored in the locked
-details; without it, the rename is not done.
-
-**3. View and edit details.** See, and correct, the descriptive information
-stored with a recording: subject, recording location, descriptions. Edit one
-recording or many at once, with a preview and undo. **Recording times can
-never be edited**; they only change through anonymization (below).
-
-**4. Protect with passwords, or remove them.** Save a copy with new
-passwords, or without any.
-- In files written by common tools, MEF passwords lock the **patient
-  details, settings and annotations**.
-- **They don't hide the signal, the recording's name, or its timing.** Some
-  files keep the true date hidden until the second, full-access password is given.
-- The app explains this before you rely on it.
-
-**5. Pick channels, and convert in batches.** Choose the channels you need,
-save that choice, and apply it to many recordings at once. Combine it with
-passwords and anonymization, in one pass per recording.
-
-**6. Anonymize.** Make a **copy** of one or many recordings with the patient
-details removed and every time shifted. The originals are not touched.
+Make **anonymized copies** of one or many recordings: the patient details
+are removed and every date and time is moved by the same amount. **The
+originals are never changed**: the app makes a new copy and checks it.
 
 <p align="center">
   <img src="docs/img/anonymize-workflow.svg" alt="Anonymization workflow: select recordings, pick a reference recording and its new date, choose relative or aligned mode, choose what identity to remove, then write verified copies." width="760">
 </p>
 
-- **Pick a reference** recording (by default the earliest) and give it a new
-  date, and optionally a new time of day.
-- **Relative mode:** every other recording moves by the same amount, so they
-  still follow each other exactly as before.
-- **Aligned mode:** every recording starts at the same chosen moment.
-- **Verified:** every copy is checked before it is kept. The samples must be
-  exactly the same, every time must be shifted by exactly the chosen amount,
-  and a check confirms that none of the recording's original time values
-  remain in the copy. (The copy's time-zone and daylight-saving settings are
-  not shifted: they are cleared, so the copy doesn't hint at where it was
-  recorded.)
-- **Your review:** the text of notes is removed by default. If you choose to
-  keep it, the app warns that dates and other people's names written in free
-  text are not found, and it stays your responsibility.
 - **Choose the channels** that go into the copies, quickly even with hundreds
   of channels: grouped by electrode, with ranges, a filter and undo.
-- **Privacy check:** a card in Explore shows, for any recording, every kind of
-  detail that could identify the patient (✓ empty / ✗ found), whether the
-  anonymizer made it, and its moved dates. The original-to-new dates (the key
-  that undoes the anonymization) are shown at the end and saved only if you
-  ask.
+- **Move the dates.** Give the reference recording (by default the earliest)
+  a new date. Either every recording moves by the same amount, so they still
+  follow each other exactly as before, or every copy starts at the same
+  moment. Keep the local or the UTC time of day, or change it too.
+- **Name the copies** and give each a pseudonym. The mef3io library checks
+  that no name contains the patient's details before anything is written.
+- **Notes:** their text is removed by default. If you choose to keep it, the
+  app warns that dates and other people's names written in free text are not
+  found, and it stays your responsibility.
+- **Passwords:** no password (the usual choice for sharing), or two new ones.
+- **Checked:** every copy is checked before it is kept. The samples must be
+  exactly the same, every time must be moved by exactly the chosen amount,
+  and none of the recording's original time values may remain in the copy.
+  (The copy's time-zone and daylight-saving settings are not moved: they are
+  cleared, so the copy doesn't hint at where it was recorded.)
+- **Unattended batches:** save the copies as folders, as one archive file per
+  recording, or as **one archive for the whole batch**, and walk away. Every
+  archive is checked byte for byte against the checked copy. The computer is
+  kept awake, a notification says when the batch is done, and a batch
+  interrupted by a crash or a power cut can be continued at the next start.
+- **The date key:** the original and new dates of every recording are shown
+  at the end. With them, anyone can undo the anonymization, so they are saved
+  to a file only if you ask.
 
-See the [anonymizer design](docs/design/anonymizer.md) for the details.
+See the [user guide](docs/user-guide.md#anonymize-recordings) and the
+[anonymizer design](docs/design/anonymizer.md).
 
-Everything that takes time (converting, anonymizing, checking big recordings)
-runs in the background with a **progress bar** and a **Stop** button. The
-app never freezes.
+Everything that takes time (reading, packing, anonymizing, checking big
+recordings) runs in the background with a **progress bar** and a **Stop**
+button. The window stays usable.
+
+### Still to come for the first release
+
+**Order and rename.** Got a folder of recordings whose names are long random
+codes? See them sorted by when they were recorded, then rename them safely:
+- **preview** every change first;
+- name clashes are caught before anything happens;
+- **undo** whole renames.
+
+A recording's name is stored in several places, including inside its files.
+mef3io will change all of them together, so other MEF software still finds
+everything, notes included. For a password-protected recording the app will
+ask for the password first, because part of the name is stored in the locked
+details; without it, the rename is not done.
+
+**View and edit details.** See, and correct, the descriptive information
+stored with a recording: patient details, recording location, descriptions.
+Edit one recording or many at once, with a preview and undo. **Recording
+times can never be edited**; they only change through anonymization.
+
+**Add or remove passwords.** Save a copy with new passwords, or without any.
+- In files written by common tools, MEF passwords lock the **patient
+  details, settings and notes**.
+- **They don't hide the signal, the recording's name, or its timing.** Some
+  files keep the true date hidden until the second, full-access password is
+  given.
+- The app explains this before you rely on it.
+
+**Save channel choices and convert in batches.** Save a choice of channels,
+and apply it to many recordings at once, combined with passwords and
+anonymization, in one pass per recording.
 
 ### Next directions (to be specified later)
 
 - **Signal viewer:** scroll and zoom through the traces, with gaps and
-  annotations shown, fast even on multi-TB recordings.
+  notes shown, fast even on multi-TB recordings.
 - **Data coverage:** see when data exists and at what rate, per channel. The
   fastest way to spot dropouts and gaps.
-- **Annotations:** view, and later create and edit, events and notes.
+- **Notes and events:** view them on the timeline, and later create and edit
+  them.
 - **Export** to other formats (e.g. EDF, NWB).
 - **Remote recordings** kept on a secure server.
 
@@ -198,16 +225,18 @@ recordings kept elsewhere.
 - **Nothing leaves your computer.** The app makes no network connections.
 - **Logs never contain** patient details, recording names or folder paths, or
   original recording dates.
-- **Anonymizing, password changes and channel selections always write verified
-  copies;** the originals are not touched. Renaming and editing details change
-  a recording in place, only after you confirm, and can be undone unless you
-  turn undo off.
-- **Undo information** (old names, details before an edit, recording dates) is kept in the
-  app's own data folder, never next to your recordings. You can review and
-  delete it at any time.
-- **Key file:** if you choose to save one (it maps the original recordings to
-  their pseudonyms and time shifts), the app warns you that it re-identifies
-  the data and must be stored separately.
+- **Anonymizing always writes a new, checked copy;** the original is not
+  touched. (Password changes and channel selections, still to come, will
+  work the same way. Renaming and editing details, also still to come, will
+  change a recording in place, only after you confirm, with undo.)
+- **Notes about an unfinished batch** (so it can be continued after a crash)
+  are kept in the app's own data folder, sealed, with no names or dates in
+  clear, and removed when the batch is finished or discarded. Passwords are
+  never stored.
+- **The date key:** if you choose to save it (it lists each original
+  recording with its copy and their original and new dates), the app warns
+  you that it undoes the anonymization and must be stored separately, never
+  next to the copies.
 
 ## For developers
 
@@ -244,23 +273,30 @@ or in any child process), if `model/` imports Qt, if a patient name, a path or
 a recording date reaches the log file, or if technical jargon appears in the
 user interface (see [docs/ui-language.md](docs/ui-language.md)).
 
-Opening a recording runs in a short-lived helper process for now, because the
-mef3io library holds Python's GIL during an open
-([mef3io#79](https://github.com/bnelair/mef3io/issues/79)), which would freeze
-the window on a worker thread.
+Opening a recording, and making each anonymized copy, runs in a short-lived
+helper process. It keeps the window responsive whatever the library does (a
+mef3io `Reader` open still holds Python's GIL,
+[mef3io#79](https://github.com/bnelair/mef3io/issues/79)), and a crash inside
+the library cannot take the app down.
 
 ### Layout
 
 ```
 src/mef3io_studio/
   app.py        entry point, main window, --self-test
-  model/        plain Python, no Qt: progress, cancellation, plain-language errors,
-                the RecordingSource interface (local files today, a server later)
-  workers/      background jobs on QThreadPool: throttled progress, cancel, errors
-  common/       privacy log filter, settings (preferences only), theme, icons,
-                activity panel
-  explorer/     the Explore page (list, details, timeline, pack/unpack)
-  anonymizer/   the Anonymize wizard (channels, dates, identity, passwords, review, run)
+  model/        plain Python, no Qt: reading a recording for display (inspect),
+                coverage and CSV export, the time-shift planner, anonymize,
+                the batch pipeline, archives and the batch bundle, the sealed
+                batch journal, the privacy check, plain-language errors and
+                refusals, progress and Stop, the RecordingSource interface
+  workers/      background tasks on QThreadPool, helper processes, the tasks
+                the pages start (open, scan, pack, anonymize, batch)
+  common/       privacy log filter, settings and the Settings dialog, theme,
+                icons, activity panel
+  explorer/     the Explore page (list, details, timeline, combined timeline,
+                privacy check, pack/unpack)
+  anonymizer/   the Anonymize wizard (recordings, channels, dates, identity,
+                passwords, output, review, run) and the resume dialog
 packaging/      PyInstaller spec, Inno Setup script, dmg and AppImage scripts
 ```
 
@@ -282,7 +318,8 @@ requests that touch `src/`, `packaging/`, `requirements/`, the pins or
 and on `v*` tags. Each build is smoke-tested (`--self-test`, `--self-test-gui`,
 Windows install → upgrade → uninstall, the Linux tarball on five
 distributions, an strace check that no internet socket is opened). On tags the
-installers and `SHA256SUMS` are attached to a GitHub pre-release.
+installers and `SHA256SUMS` are attached to a GitHub pre-release, described by
+`docs/release-notes/<version>.md` when that file exists.
 
 Every bundle carries a `THIRD_PARTY_LICENSES` folder. Qt is used under the
 LGPL v3; Help → About says so and links to the licence texts and sources.
@@ -305,12 +342,16 @@ The library side of the plan is tracked in
    checks everything people read against the app that is about to ship: this
    README, [docs/user-guide.md](docs/user-guide.md) and its screenshots
    (`docs/img/screenshots/`), the texts the installers show
-   (`packaging/windows/mef3io-studio.iss`, `packaging/linux/mef3io-studio.desktop`,
-   the release notes text in `.github/workflows/build.yml`), the app's own
-   description (`--help`, in `src/mef3io_studio/app.py`), and
-   [docs/roadmap.md](docs/roadmap.md) including its Status column. Have it
-   reviewed and merge it before tagging.
-2. Set the new version in `VERSION` in its own pull request and merge it.
+   (`packaging/windows/mef3io-studio.iss`, `packaging/linux/mef3io-studio.desktop`),
+   the app's own description (`--help`, in `src/mef3io_studio/app.py`), and
+   [docs/roadmap.md](docs/roadmap.md) including its Status column. Write the
+   release notes for testers in `docs/release-notes/<version>.md` (plain
+   words: what is new, what to try, known limitations, how to report a
+   problem without sharing patient data); the release uses that file as its
+   description, and falls back to a short generic text when there is none.
+   Have it reviewed and merge it before tagging.
+2. Set the new version in `VERSION` (in the same pull request or its own) and
+   merge it.
 3. Tag the resulting commit on `main` and push the tag:
    `git switch main && git pull && git tag v$(cat VERSION) && git push origin v$(cat VERSION)`.
    `build.yml` builds and tests every installer and, only if the tag matches
@@ -320,16 +361,18 @@ The library side of the plan is tracked in
 
 ## Project status
 
-mef3io-studio is in **early development**. The app, its installers and the
-Explore page are ready to try. The **Anonymize** wizard (anonymized copies
-with a choice of channels, moved dates, new names and optional passwords,
-plus a Privacy check for any recording, and unattended batches into
-shareable archives) is built on mef3io 1.4.0. Still to come for the first full
-release: ordering and renaming recordings, viewing and editing details,
-adding or removing passwords, and saving channel choices and converting in
-batches. Test versions are published on the
-[Releases page](https://github.com/bnelair/mef3io-studio/releases) as
-pre-releases. Progress is tracked in the [roadmap](docs/roadmap.md) and the
+mef3io-studio is in **early development**. The app, its installers, the
+**Explore** page and the **Anonymize** wizard (anonymized copies with a
+choice of channels, moved dates, new names and optional passwords, plus a
+Privacy check for any recording, and unattended batches into shareable
+archives) are ready to try in test version **0.1.0.dev2**, built on mef3io
+1.4.0. Still to come for the first full release: ordering and renaming
+recordings, viewing and editing details, adding or removing passwords, and
+saving channel choices and converting in batches. Test versions are
+published on the [Releases page](https://github.com/bnelair/mef3io-studio/releases)
+as pre-releases; what changed in each is in
+[docs/release-notes/](docs/release-notes/). Progress is tracked in the
+[roadmap](docs/roadmap.md) and the
 [tracking issue](https://github.com/bnelair/mef3io-studio/issues/1).
 
 ## License

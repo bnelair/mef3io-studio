@@ -4,6 +4,20 @@ These come **after** v0.1. Each needs its own specification before work
 starts. This page records what is known so the v0.1 design does not close
 any of them off.
 
+## Save a part, cut into pieces, merge recordings
+
+**Goal:** save a time range of a recording, cut a recording into pieces
+(for example one per day), or merge several recordings into one, one after
+another in time or side by side (different channels of the same period).
+Every result is a **new, checked copy**; the original is never changed.
+Planned as the first feature after the anonymizer test version, with the
+user-side agenda in [#31](https://github.com/bnelair/mef3io-studio/issues/31)
+and the library side in [mef3io#103](https://github.com/bnelair/mef3io/issues/103).
+
+**Known constraints:** the channel picker is the anonymizer's; overlaps in a
+merge are refused, never guessed at; a channel's sampling rate must be the
+same in every recording that is merged.
+
 ## Signal viewer
 
 **Goal:** scroll and zoom through the traces of a recording of any length,
@@ -26,7 +40,7 @@ progressively from the index of the visible span, and caches what it has
 read. Zooming in
 switches to a min/max envelope computed in C++, and finally to the samples
 themselves. Planned in [mef3io#68](https://github.com/bnelair/mef3io/issues/68);
-cancellable reads for fast scrolling in [mef3io#69](https://github.com/bnelair/mef3io/issues/69).
+cancellation for fast scrolling came with [mef3io#69](https://github.com/bnelair/mef3io/issues/69) (mef3io 1.3, already used by the app).
 
 **Open questions for the spec:**
 - **What mef3io-server must provide** for local use without gRPC: a password parameter, a plain-Python API next to the protobuf one, logging hooks, and PyInstaller-safe worker processes.
@@ -92,8 +106,9 @@ viewer code. That's useful when data must not leave a secure environment.
 
 **Decided:** the explorer and viewer talk to a common "recording source"
 interface, backed by a local source (mef3io, or mef3io-server's `FileManager`
-driven without gRPC) or by a remote server. v0.1's background-job layer will
-sit behind such an interface ([#2](https://github.com/bnelair/mef3io-studio/issues/2)).
+driven without gRPC) or by a remote server. The app already reads through
+such an interface (`model.source.RecordingSource`, with one local
+implementation; [#2](https://github.com/bnelair/mef3io-studio/issues/2)).
 
 **Open for the spec:** authentication, which operations make sense remotely,
 and behaviour on slow networks. v0.1 makes no network connections; remote

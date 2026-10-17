@@ -2,7 +2,9 @@
 
 Desktop app (PySide6) for exploring, organizing, protecting and anonymizing
 MEF 3.0 recordings, built
-on the mef3io library (github.com/bnelair/mef3io). Status: early development. Design in
+on the mef3io library (github.com/bnelair/mef3io). Status: early development;
+test version 0.1.0.dev2 = Explore + Anonymize on mef3io 1.4.0 (ordering/
+renaming, metadata edit, passwords, channel presets still to come). Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
 Hard rules:
@@ -39,8 +41,9 @@ Hard rules:
 - v0.1 scope = explore (incl. order/rename, pack/unpack), metadata view/edit,
   passwords, channel presets + batch conversion, anonymize; installers only
   (no PyPI).
-  Viewer (on mef3io-server), coverage view, annotations, export, remote
-  access are NEXT DIRECTIONS needing their own specs.
+  Save a part / cut / merge (#31, first after dev2), viewer (on
+  mef3io-server), coverage view, annotations, export, remote access are
+  NEXT DIRECTIONS needing their own specs.
 
 Code (app shell, #2/#3):
 - Dev: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`
@@ -48,7 +51,12 @@ Code (app shell, #2/#3):
   `ruff check . && ruff format --check .`. CI installs from the hashed
   `requirements/*.lock` (regenerate with uv, see requirements/README.md). Installers:
   `packaging/mef3io-studio.spec` + `.github/workflows/build.yml`; every build
-  must pass `mef3io-studio --self-test`. Not on PyPI, ever. Version = `VERSION`.
+  must pass `mef3io-studio --self-test`. Not on PyPI, ever. Version = `VERSION`
+  (read by `_version.py`, pyproject, the spec, the installers; a test pins
+  `app_version()` to it). Releases: README "Make a release" (docs revision
+  PR first); `docs/release-notes/<VERSION>.md` (plain words, for testers) is
+  the GitHub release description (build.yml release job, generic text when
+  missing; always `--prerelease`).
 - Long work goes through `workers.JobManager.submit(title, fn, ...)` — never on
   the UI thread; `fn(ctx, ...)` reports via `ctx.report(done, total, phase)`
   (throttled) and polls `ctx.check_cancelled()`. Titles shown to users carry

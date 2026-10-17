@@ -47,17 +47,22 @@ that will.
 
 ## Library APIs the first release depends on
 
-All planned in mef3io and tracked in [mef3io#71](https://github.com/bnelair/mef3io/issues/71):
+Tracked in [mef3io#71](https://github.com/bnelair/mef3io/issues/71). The app
+pins one exact mef3io version (today **1.4.0**, in `pyproject.toml` and the
+hashed lock files).
 
-| API | Used by | mef3io issue |
-|---|---|---|
-| `mef3io.inspect(path)`: everything about a session without reading samples | Explorer, anonymizer step 1 | [#67](https://github.com/bnelair/mef3io/issues/67) |
-| `anonymize_session(src, dst, shift_us, ...)` and `verify(...)` | Anonymizer | [#70](https://github.com/bnelair/mef3io/issues/70) |
-| `transform_session(...)`: channel subsets, (de/re)encryption, metadata edits and the time shift in one streaming copy; `edit_metadata` in place (never times) | Passwords, channel presets and batch, metadata edit, anonymizer | [#73](https://github.com/bnelair/mef3io/issues/73) |
-| `time_range(...)`, `rename_session(...)` (folder, session-level annotation files and stored names, as one journaled operation) and `fix_name_drift(...)` | Ordering, renaming, drift fix, undo | [#72](https://github.com/bnelair/mef3io/issues/72) |
-| Cancellation tokens and progress callbacks | Every long operation | [#69](https://github.com/bnelair/mef3io/issues/69) |
-| Complete record parsing at every level | Explorer annotations; anonymizer time shift | [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62) |
-| Provenance region (versions and operations, no times) | Explorer | [#58](https://github.com/bnelair/mef3io/pull/58) |
+| API | Used by | mef3io issue | Status |
+|---|---|---|---|
+| `mef3io.inspect(path)`: everything about a session without reading samples | Explorer, Privacy check, anonymizer step 1, archive and batch checks | [#67](https://github.com/bnelair/mef3io/issues/67) | In use (mef3io 1.3) |
+| Cancellation tokens (`mef3io.CancelToken`, `mef3io.Cancelled`) and byte progress | Opening, packing, anonymizing | [#69](https://github.com/bnelair/mef3io/issues/69) | In use (mef3io 1.3) |
+| `anonymize_session(src, dst, shift_us, ...)` and `anonymize.verify(...)` | Anonymizer | [#70](https://github.com/bnelair/mef3io/issues/70) | In use (mef3io 1.4) |
+| `anonymize.check(...)` (every refusal, nothing written), refusal `.code`s and `REFUSAL_CODES`, the report's original times; `password_interop_issue` | Anonymizer (name step, batch up-front check, plain-language refusals, password warning) | [#111](https://github.com/bnelair/mef3io/issues/111) | In use (mef3io 1.4) |
+| `archive_session` / `extract_session` | Pack / unpack, per-recording archives in a batch | (existing) | In use |
+| `Validator` | Check for problems | (existing) | In use |
+| `transform_session(...)`: channel subsets, (de/re)encryption, metadata edits and the time shift in one streaming copy; `edit_metadata` in place (never times) | Passwords, channel presets and batch, metadata edit | [#73](https://github.com/bnelair/mef3io/issues/73) | Planned |
+| `time_range(...)`, `rename_session(...)` (folder, session-level annotation files and stored names, as one journaled operation) and `fix_name_drift(...)` | Ordering, renaming, drift fix, undo | [#72](https://github.com/bnelair/mef3io/issues/72) | Planned |
+| Complete record parsing at every level | Explorer notes and events; anonymizer time shift | [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62) | Done |
+| Provenance region (versions and operations, no times) | Explorer History, Privacy check ("made by the anonymizer") | [#58](https://github.com/bnelair/mef3io/pull/58) | Done |
 
 The future viewer will add [#68](https://github.com/bnelair/mef3io/issues/68)
 (an index-only overview and a min/max envelope read).
@@ -65,35 +70,41 @@ The future viewer will add [#68](https://github.com/bnelair/mef3io/issues/68)
 ## Technology
 
 - **Python 3.11+ with PySide6 (Qt 6).** mef3io already ships wheels for every platform the app targets, so the whole stack is one language with no bridge.
-- **Background work** runs on a worker thread pool (`QThreadPool`). Opening, inspecting and anonymizing never block the UI, and every long operation shows progress and can be cancelled. Library calls that hold Python's GIL (a mef3io open today, [mef3io#79](https://github.com/bnelair/mef3io/issues/79)) run in a short-lived helper process instead, so the window keeps redrawing.
-- **Packaging:** PyInstaller (or Briefcase), built in a CI matrix for Windows x64, macOS arm64 + x86_64 and Linux x64. Code signing and notarization are needed on Windows and macOS, or clinical IT will block the app. Certificates: to be decided.
-- **Settings and preferences:** stored per user (`QSettings`). Never anything about a recording's contents, and **no paths**: there is **one site time zone per app profile**, plus a per-window override that is never saved.
-- **Recovery artifacts** live in the per-user app-data folder, under opaque names; mef3io is told where to write them (`backup_dir`). The crash journal is mandatory and deleted when the operation completes (after the in-session marker); byte-level backups serve crash rollback only and are always deleted on completion; keeping undo information (old and new values, touched files' post-operation times and sizes, segment end times) afterwards is optional. Nothing of this is ever stored beside the recordings. Undo is a logical inverse (`rename_session` back, `edit_metadata` with the old values), never a byte restore. The only thing written inside a session is mef3io's non-identifying "operation in progress" marker, while an operation runs.
+- **Background work** runs on a worker thread pool (`QThreadPool`, `workers.JobManager`). Opening, inspecting and anonymizing never block the UI, and every long operation shows progress and can be stopped (mef3io 1.3's cancellation tokens and byte progress). Opening a recording and making each anonymized copy run in a short-lived helper process: a mef3io `Reader` open still holds Python's GIL ([mef3io#79](https://github.com/bnelair/mef3io/issues/79)), and a helper also contains a native crash. Pure-Python layout work that would stall the window through the GIL (the combined timeline) runs in short slices on the GUI thread instead of a thread.
+- **Packaging:** PyInstaller, built in a CI matrix for Windows x64 (Inno Setup installer and a portable zip), macOS arm64 + x86_64 (`.dmg`) and Linux x64 (AppImage and tarball, built in AlmaLinux 9). Code signing and notarization are needed on Windows and macOS, or clinical IT will block the app; nothing is signed yet (certificates to be decided, [#3](https://github.com/bnelair/mef3io-studio/issues/3)).
+- **Settings and preferences:** stored per user (`QSettings`), declared in `common/settings.PREFERENCES`. Never anything about a recording's contents, and **no paths in clear**: there is **one site time zone per app profile**, plus a per-window override that is never saved; the anonymizer's work folder is stored sealed.
+- **Unattended batches** (anonymizer): a crash journal per batch in the app-data folder, holding only opaque ids in clear and everything else sealed with a per-user key (`journal.key`, DPAPI on Windows); no original names or dates, no passwords. Details in [design/anonymizer.md](design/anonymizer.md#the-unattended-batch-pipeline).
+- **Recovery artifacts** (for the planned in-place operations: rename, metadata edit) live in the per-user app-data folder, under opaque names; mef3io is told where to write them (`backup_dir`). The crash journal is mandatory and deleted when the operation completes (after the in-session marker); byte-level backups serve crash rollback only and are always deleted on completion; keeping undo information (old and new values, touched files' post-operation times and sizes, segment end times) afterwards is optional. Nothing of this is ever stored beside the recordings. Undo is a logical inverse (`rename_session` back, `edit_metadata` with the old values), never a byte restore. The only thing written inside a session is mef3io's non-identifying "operation in progress" marker, while an operation runs.
 - **Logging:** a rotating local log file. Recording names and folder paths count as identifying, alongside identity fields and absolute timestamps. A logging filter redacts all of them (registered identity strings in any case, with or without accents or separators; paths in any script; dates and times in any common form), including messages from mef3io and mef3io-server, uncaught exceptions, Qt's messages and crash reports, and a test feeds it ID-bearing and date-bearing folder names.
-- **Recent files:** off by default, because paths are identifying.
+- **Recent files:** none, because paths are identifying (if a list is ever added, it is off by default).
 - **Crashes:** a crash handler writes a local, path-redacted report and sends nothing anywhere.
-- **On screen:** a "mask session names" option, for screen sharing and screenshots.
+- **On screen:** a "mask session names" option, for screen sharing and screenshots (planned; patient details, descriptions and note text are already hidden until "Show").
 - **Time zones:** local times come from the operating system's time-zone database (`zoneinfo`) and a site time zone the user chooses, never from the file's fixed `GMT_offset`. Until a zone is chosen, times are shown in UTC, labelled as such. That offset ignores daylight saving (meflib.c:4649-4650), and it sits in level-2 encrypted section 3, so it is unavailable without the level-2 password.
 
-## Packages (planned layout)
+## Packages
 
 ```
 src/mef3io_studio/
-  app.py            # entry point, main window
-  model/            # session summaries and batch plans: plain data, no Qt
-  workers/          # background jobs wrapping mef3io calls (progress, cancel)
-  explorer/         # metadata explorer views
-  anonymizer/       # the anonymization wizard
-  common/           # widgets, privacy filter, settings
+  app.py            # entry point, main window, menus, start-up offers, --self-test
+  model/            # plain data and logic, no Qt: inspect adapter, coverage,
+                    # CSV export, time-shift planner, anonymize, batch pipeline,
+                    # archive, bundle, journal, privacy check, errors, progress
+  workers/          # background tasks (QThreadPool), helper processes, GUI slices
+  explorer/         # the Explore page: list, details, timelines, privacy check
+  anonymizer/       # the anonymization wizard, channel picker, resume dialog
+  common/           # widgets, privacy log filter, settings, theme, activity panel
 tests/              # pytest + pytest-qt; headless in CI
 ```
 
-The **`model/`** package has no Qt dependency, so the batch-planning logic
-(relative and aligned modes, the overlap checks) is unit-tested without a GUI.
+The **`model/`** package has no Qt dependency (a test enforces it), so the
+batch-planning logic (relative and aligned modes, the leak-scan floor) is
+unit-tested without a GUI. The widgets in `explorer/`, `anonymizer/` and
+`common/` never import mef3io (also tested).
 
 ## Testing
 
 - **Unit tests** for `model/`: shift calculation in every mode, DST and time-zone cases, overlap detection.
 - **UI tests** (`pytest-qt`, offscreen): each wizard step.
-- **End to end:** generate sessions with mef3io, anonymize them through the app's job layer, then verify with `mef3io.anonymize.verify`, on all three platforms in CI.
+- **End to end:** generate sessions with mef3io, anonymize them through the app's job layer (single copies and whole batches into folders, archives and one batch archive, with Stop, retry and resume), and check the copies with mef3io, on all three platforms in CI.
+- **Byte budget:** opening a large generated recording for the Explorer reads under 1% of its bytes (`/proc/self/io`, in the helper).
 - **Privacy test:** run every workflow with known identity strings and dates, then assert none of them appear in the log file.
