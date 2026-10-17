@@ -882,6 +882,85 @@ def test_make_again_keeps_another_copy_of_the_same_original(qtbot, window, tmp_p
     assert names == ["a1", "a2", "a3"]  # still there, untouched
 
 
+# Issue #36: the identity choices are compared too
+
+
+def _copy_of(src, path, **options):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mef3io.anonymize_session(str(src), str(path), SHIFT, exclude_channels=["a3"], **options)
+    return path
+
+
+def test_made_by_this_batch_compares_the_identity_choices(tmp_path):
+    """Same original, name, shift, channels and passwords: a copy whose
+    patient details, location, descriptions, note text or pseudonym were
+    handled differently from this batch's choices is not this batch's."""
+    src = write_plain(tmp_path / "orig.mefd")  # with notes, one on a3's neighbour a1
+    ours = _copy_of(src, tmp_path / "ours" / "S9.mefd")
+    others = [
+        _copy_of(src, tmp_path / "patient" / "S9.mefd", clear=("location", "descriptions")),
+        _copy_of(src, tmp_path / "location" / "S9.mefd", clear=("subject", "descriptions")),
+        _copy_of(src, tmp_path / "descriptions" / "S9.mefd", clear=("subject", "location")),
+        _copy_of(src, tmp_path / "text" / "S9.mefd", text="keep"),
+        _copy_of(src, tmp_path / "pseudonym" / "S9.mefd", pseudonym="P-17"),
+    ]
+    verdicts = pipeline.made_by_this_batch([_check(p, src) for p in [ours, *others]])
+    assert verdicts == [True, False, False, False, False, False]
+    tar = mef3io.archive_session(str(ours), str(tmp_path / "S9.mefd.tar"))
+    assert pipeline.made_by_this_batch([_check(tar, src)]) == [True]
+
+
+def test_a_batch_that_kept_identity_recognises_its_own_copy(tmp_path):
+    """The other way round: a batch that kept the patient's names, the
+    descriptions and the note text (names taken out of it) and left a1 out
+    recognises exactly that copy, and not one with everything cleared."""
+    src = write_plain(tmp_path / "orig.mefd")
+    options = dict(clear=("location",), text="keep", pseudonym="P-17")
+    kept = tmp_path / "kept" / "S9.mefd"
+    kept.parent.mkdir()
+    mef3io.anonymize_session(str(src), str(kept), SHIFT, exclude_channels=["a1"], **options)
+    check = dict(_check(kept, src, exclude=("a1",)), clear=["location"], text="keep")
+    check["pseudonym"] = "P-17"
+    assert pipeline.made_by_this_batch([check]) == [True]
+    cleared = tmp_path / "cleared" / "S9.mefd"
+    cleared.parent.mkdir()
+    mef3io.anonymize_session(
+        str(src), str(cleared), SHIFT, exclude_channels=["a1"], pseudonym="P-17", text="keep"
+    )
+    assert pipeline.made_by_this_batch([dict(check, path=str(cleared))]) == [False]
+
+
+def test_result_check_carries_the_identity_choices(tmp_path):
+    batch, _dest, _work = make_batch(tmp_path, pipeline.FOLDERS, [tmp_path / "x.mefd"])
+    item = batch.items[0]
+    item = replace_request(item, pseudonym="P-1", clear=("subject",), text="keep")
+    check = pipeline.result_check(item)
+    assert (check["pseudonym"], check["clear"], check["text"]) == ("P-1", ["subject"], "keep")
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{"clear": ("location", "descriptions")}, {"text": "keep"}],
+    ids=["patient details kept", "note text kept"],
+)
+def test_make_again_keeps_a_copy_with_other_identity_choices(qtbot, window, tmp_path, options):
+    """End to end: "Make them again" leaves such a copy exactly as it is,
+    and says so in the same plain words as for any other copy."""
+    window._closing = True
+    page = window.anonymizer
+    batch, dest, _work = make_batch(tmp_path, pipeline.FOLDERS, three(tmp_path)[:1])
+    _copy_of(batch.items[0].request.source, dest / "S001.mefd", **options)
+    before = sorted(p.relative_to(dest) for p in dest.rglob("*"))
+    j = journal.Journal.new(1, pipeline.to_payload(batch))
+    refused = []
+    page.resume_problems.connect(refused.append)
+    page.resume(j, lambda s: "", None, lambda n, total: "redo")
+    qtbot.waitUntil(lambda: bool(refused), timeout=120_000)
+    assert "not made by this batch" in refused[0]
+    assert sorted(p.relative_to(dest) for p in dest.rglob("*")) == before  # untouched
+    assert page.handle is None  # nothing started
+
+
 def test_resume_dialog_names_each_original_and_can_share_a_password(qtbot):
     from mef3io_studio.anonymizer.resume import ResumePasswordsDialog
 

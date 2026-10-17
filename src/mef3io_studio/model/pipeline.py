@@ -36,7 +36,15 @@ import secrets
 import shutil
 from dataclasses import asdict, dataclass, field, replace
 
-from .anonymize import CopyRequest, inside_any_recording
+from .anonymize import (
+    CLEAR_ALL,
+    CLEAR_DESCRIPTIONS,
+    CLEAR_LOCATION,
+    CLEAR_PATIENT,
+    TEXT_DROP,
+    CopyRequest,
+    inside_any_recording,
+)
 
 FOLDERS = "folders"
 ARCHIVES = "archives"
@@ -199,7 +207,80 @@ def result_check(item: BatchItem, path: str | None = None) -> dict:
         "shift": int(r.shift_us),
         "exclude": list(r.exclude_channels),
         "output_password": list(r.output_password) if r.output_password else None,
+        "pseudonym": r.pseudonym,
+        "clear": list(r.clear),
+        "text": r.text,
     }
+
+
+#: The identity facts (mef3io's inspect) each "clear" choice empties.
+_CLEARED_FACTS = {
+    CLEAR_PATIENT: ("subject_name_1", "subject_name_2", "subject_id"),
+    CLEAR_LOCATION: ("recording_location",),
+    CLEAR_DESCRIPTIONS: ("session_description", "channel_description", "reference_description"),
+}
+
+
+def _note_key(note, shift: int = 0) -> tuple:
+    return (note.time + shift, note.kind, note.channel or "")
+
+
+def _identity_as_asked(source, copy, c: dict) -> bool:
+    """The copy's identity matches this batch's choices (metadata only):
+
+    * the pseudonym (or, without one, the copy's name) is stored;
+    * what the batch cleared is empty; patient details and location it kept
+      are the original's, unchanged (mef3io never edits them); descriptions
+      it kept are no more than the original had (they are rewritten: the old
+      name is replaced, removed names are taken out);
+    * the notes are the original's, minus those of channels left out, at
+      the original's times plus the shift;
+    * note text: none at all when the batch removed it; when it kept it,
+      text only on notes whose original had text, and never more of it.
+    A fact that could not be read (``present`` None) proves nothing."""
+    facts = {f.name: f for f in copy.identity}
+    originals = {f.name: f for f in source.identity}
+
+    def known(name):
+        fact = facts.get(name)
+        return fact if fact is not None and fact.present is not None else None
+
+    stored = known("anonymized_name")
+    if stored is None or set(stored.values) != {c.get("pseudonym") or c["name"]}:
+        return False
+    cleared = set(c.get("clear", CLEAR_ALL))
+    for choice, names in _CLEARED_FACTS.items():
+        for name in names:
+            fact = known(name)
+            if fact is None:
+                return False
+            original = originals.get(name)
+            if choice in cleared:
+                if fact.present:
+                    return False
+            elif choice != CLEAR_DESCRIPTIONS:
+                if original is None or set(fact.values) != set(original.values):
+                    return False
+            elif original is not None and fact.occurrences > original.occurrences:
+                return False
+
+    excluded = set(c.get("exclude", ()))
+    shift = int(c["shift"])
+    expected = sorted(_note_key(n, shift) for n in source.notes if n.channel not in excluded)
+    if copy.notes_problem is not None or sorted(map(_note_key, copy.notes)) != expected:
+        return False
+    text = known("record_text")
+    if text is None or any(n.locked for n in copy.notes):
+        return False
+    if c.get("text", TEXT_DROP) == TEXT_DROP:
+        return not text.present and not any(n.text for n in copy.notes)
+    original_text = originals.get("record_text")
+    with_text = {_note_key(n, shift) for n in source.notes if n.text}
+    return (
+        original_text is not None
+        and text.occurrences <= original_text.occurrences
+        and all(_note_key(n) in with_text for n in copy.notes if n.text)
+    )
 
 
 def made_by_this_batch(checks: list[dict], cancel=None) -> list[bool]:
@@ -212,7 +293,10 @@ def made_by_this_batch(checks: list[dict], cancel=None) -> list[bool]:
     * holding exactly the original's channels minus those left out;
     * protected exactly as asked: it opens with the copies' full-access
       password and not without one when passwords were set, and it is not
-      protected when none were.
+      protected when none were;
+    * its identity as asked (:func:`_identity_as_asked`): the pseudonym,
+      the patient details, location and descriptions cleared or kept, the
+      notes and their text removed or kept.
 
     Anything else (a folder or archive someone put there, even another
     anonymized copy of the same original) is never ours to remove or to call
@@ -253,6 +337,7 @@ def made_by_this_batch(checks: list[dict], cancel=None) -> list[bool]:
             and c["name"] in names
             and copy.start == source.start + c["shift"]
             and sorted(ch.name for ch in copy.channels) == expected_channels
+            and _identity_as_asked(source, copy, c)
         )
     return out
 

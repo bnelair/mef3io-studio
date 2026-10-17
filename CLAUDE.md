@@ -89,7 +89,13 @@ Code (app shell, #2/#3):
   Never log paths or recording contents.
 - New preferences must be declared in `common/settings.PREFERENCES` (UI only).
 - Look: Fusion + palette + QSS in `common/theme.py`; icons are bundled SVGs
-  with `currentColor`; no pixel font sizes.
+  with `currentColor`; no pixel font sizes. Radio buttons and checkboxes
+  (also in item views, also disabled) are painted by `theme.StudioStyle`
+  (a QProxyStyle over Fusion) in `Theme.indicator`: Fusion's own outline is
+  window.darker() = invisible in dark (1.1:1). tests/test_theme.py pins
+  >= 3:1 against every `indicator_backgrounds()` colour AND on rendered
+  pixels, both themes. QTreeView selection = accent_soft (like QTableView),
+  so a box on a selected row keeps its outline.
 - Explorer (#4): `model/inspect.py` is the ONLY place that reads a recording
   for display: a thin adapter over `mef3io.inspect(strict=False,
   include_values=True)` (mef3io 1.3). Unreadable parts -> `part_problems`,
@@ -174,7 +180,11 @@ Code (app shell, #2/#3):
   keeps the temp archive + journal ("Finish the archive with what is done" =
   partial). "Make them again" on Continue removes a result only if
   `pipeline.made_by_this_batch` (last op anonymize + stored name + start ==
-  original + shift + exact kept channels + the asked password state). A late
+  original + shift + exact kept channels + the asked password state + the
+  identity as asked, #36: pseudonym stored, cleared patient/location/
+  descriptions EMPTY, kept patient/location == the original's, notes ==
+  original's minus left-out channels at +shift, no note text when dropped,
+  text only where the original had it when kept; inspect facts only). A late
   Stop credits a folder that appeared only through the same check
   (`_appeared` + `_is_this_copy`). The batch-archive name refusal names the
   matched text on screen (never logged). Journal (`model/journal.py`): opaque ids in clear, everything else

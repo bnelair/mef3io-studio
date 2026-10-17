@@ -339,7 +339,19 @@ archives" (2026-10-16) is built as follows.
   a start equal to the original's plus the shift, exactly the original's
   channels minus those left out, and protected exactly as asked (opens with
   the copies' full-access password and not without, or unprotected when none
-  were set), read with `inspect` for a folder or an archive; anything else,
+  were set), and its identity handled as this batch asked
+  ([#36](https://github.com/bnelair/mef3io-studio/issues/36)): the
+  pseudonym (or the copy's name) stored as `anonymized_name`; patient
+  names/ID, location and descriptions EMPTY where the batch cleared them,
+  the original's unchanged patient details and location where it kept them,
+  kept descriptions no more than the original's; the notes exactly the
+  original's minus those of left-out channels, at original + shift; NO note
+  text where the batch removed it, and where it kept it text only on notes
+  whose original had text and never more of it. Identity facts and notes
+  from `inspect` only, no signal read; a fact that cannot be read proves
+  nothing. Known limit: a kept-text batch cannot tell its copy from one
+  that removed the text when no note text survived either way (only names
+  in it). Read with `inspect` for a folder or an archive; anything else,
   even another anonymized copy of the same original, is left as it is, with
   a plain message), then continues. A Stop that arrives after a folder with
   the copy's name appeared credits it only if the same check says it is this
@@ -367,7 +379,4 @@ archives" (2026-10-16) is built as follows.
 drop/keep choice for all text today); pseudonym generation per subject and a
 naming pattern; running copies in parallel; a PDF/CSV report export (the
 date key is the only file written about a batch); the "set the time too"
-weekday uses the site zone when one is chosen. "Make them again" on
-Continue does not yet compare the identity choices (patient details
-cleared, note text dropped) with the existing result
-([#36](https://github.com/bnelair/mef3io-studio/issues/36)).
+weekday uses the site zone when one is chosen.
