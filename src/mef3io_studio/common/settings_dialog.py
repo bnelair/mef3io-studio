@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..model.journal import seal, unseal
+from ..model.journal import KeyUnavailable, seal, unseal
 from ..model.pipeline import default_work_folder, work_folder_problem
 from .pages import scaled_font
 from .settings import Settings
@@ -30,7 +30,10 @@ from .settings import Settings
 def work_folder(settings: Settings) -> str:
     sealed = settings.get("anonymizer/work_folder")
     if sealed:
-        value = unseal(sealed)
+        try:
+            value = unseal(sealed)
+        except KeyUnavailable:
+            return default_work_folder()  # the setting itself is kept as it is
         if value and value.get("path"):
             return str(value["path"])
     return default_work_folder()
@@ -45,7 +48,10 @@ def set_work_folder(settings: Settings, folder: str | None) -> None:
 
 def work_folders_used(settings: Settings) -> list[str]:
     sealed = settings.get("anonymizer/work_folders_used")
-    value = unseal(sealed) if sealed else None
+    try:
+        value = unseal(sealed) if sealed else None
+    except KeyUnavailable:
+        value = None
     folders = list(value.get("paths", [])) if value else []
     for folder in (default_work_folder(), work_folder(settings)):
         if folder not in folders:
@@ -131,7 +137,14 @@ class SettingsDialog(QDialog):
         self.problem.setVisible(bool(problem))
         if problem:
             return False
-        set_work_folder(self.settings, folder or None)
+        try:
+            set_work_folder(self.settings, folder or None)
+        except KeyUnavailable:
+            from ..model.journal import KEY_PROBLEM
+
+            self.problem.setText(KEY_PROBLEM)
+            self.problem.setVisible(True)
+            return False
         self.folder = target
         self._show()
         return True

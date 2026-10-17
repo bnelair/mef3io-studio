@@ -34,9 +34,11 @@ def _no_journals_from_other_tests():
 
     shutil.rmtree(journal.journal_dir(), ignore_errors=True)
     journal._save_temporaries([])
+    journal._save_kept([])
     yield
     shutil.rmtree(journal.journal_dir(), ignore_errors=True)
     journal._save_temporaries([])
+    journal._save_kept([])
 
 
 def make_batch(tmp_path, output, sources, names=None, exclude=("a3",), bundle_name="batch.tar"):
@@ -618,12 +620,11 @@ def test_temporary_archives_are_journaled_and_swept(qtbot, window, tmp_path, mon
     assert not temporary.exists()
 
 
-@pytest.mark.parametrize("choice", ["keep", "redo"])
-def test_a_result_made_just_before_a_crash_is_kept_or_made_again(
-    qtbot, window, tmp_path, monkeypatch, choice
-):
+def test_a_result_made_just_before_a_crash_can_be_kept(qtbot, window, tmp_path):
     """Review round 2 (5): the result is there but the journal never heard:
-    the user decides; resume is never blocked by it."""
+    the user decides; resume is never blocked by it. ("Make them again" of a
+    result this batch made, and the refusal for anyone else's, are in
+    test_make_again_removes_only_a_result_this_batch_made.)"""
     window._closing = True
     batch, dest, _work = make_batch(tmp_path, pipeline.FOLDERS, three(tmp_path)[:1])
     j = journal.Journal.new(1, pipeline.to_payload(batch))
@@ -632,17 +633,11 @@ def test_a_result_made_just_before_a_crash_is_kept_or_made_again(
     (dest / "S001.mefd" / "marker").write_text("made before", encoding="utf-8")
     page = window.anonymizer
     asked = []
-    page.resume(j, lambda s: "", None, lambda n, total: asked.append(n) or choice)
+    page.resume(j, lambda s: "", None, lambda n, total: asked.append(n) or "keep")
     qtbot.waitUntil(lambda: page.run.finished, timeout=180_000)
     assert asked == [[0]]
-    status = page.run_step.result_texts["k0"]
-    if choice == "keep":
-        assert status == "Made before the interruption (not confirmed)"
-        assert (dest / "S001.mefd" / "marker").exists()
-    else:
-        assert status == "Saved and checked"
-        assert not (dest / "S001.mefd" / "marker").exists()
-        assert mef3io.inspect(str(dest / "S001.mefd")).start_time == T0 + SHIFT
+    assert page.run_step.result_texts["k0"] == "Made before the interruption (not confirmed)"
+    assert (dest / "S001.mefd" / "marker").exists()
 
 
 def test_unreachable_recordings_pause_the_batch_and_can_be_retried(qtbot, window, tmp_path):
@@ -779,3 +774,144 @@ def test_the_tray_icon_goes_after_the_notification(window, monkeypatch):
 
 def test_placeholders_collapse_in_technical_details():
     assert a.collapse_placeholders("x <path><recording>/<name>.dat") == "x <path>.dat"
+
+
+# --------------------------------------------------------------------------
+# Review round 3
+
+
+def test_make_again_removes_only_a_result_this_batch_made(qtbot, window, tmp_path):
+    """Round 3 (A): "Make them again" removes a result only when it is
+    provably this batch's (anonymizer stamp, the copy's name, the original's
+    start plus the shift); a foreign folder with the same name is kept."""
+    window._closing = True
+    page = window.anonymizer
+    batch, dest, _work = make_batch(tmp_path, pipeline.FOLDERS, three(tmp_path)[:2])
+    # Recording 1: really made by this batch (then interrupted before the
+    # journal heard). Recording 2: a foreign folder that happens to have the name.
+    from dataclasses import replace
+
+    first = replace(batch, items=batch.items[:1])
+    run(qtbot, window.jobs, first)
+    (dest / "S002.mefd").mkdir()
+    (dest / "S002.mefd" / "someone-elses.txt").write_text("keep me", encoding="utf-8")
+    j = journal.Journal.new(2, pipeline.to_payload(batch))
+    refused = []
+    page.resume_problems.connect(refused.append)
+    page.resume(j, lambda s: "", None, lambda n, total: "redo")
+    qtbot.waitUntil(lambda: bool(refused), timeout=120_000)
+    assert "Recording 2 of 2" in refused[0] and "not made by this batch" in refused[0]
+    assert (dest / "S002.mefd" / "someone-elses.txt").exists()  # left exactly as it is
+    assert (dest / "S001.mefd").is_dir() and page.handle is None  # nothing started
+    # Without the foreign one, "make them again" removes ours and remakes it.
+    import shutil
+
+    shutil.rmtree(dest / "S002.mefd")
+    page.resume(j, lambda s: "", None, lambda n, total: "redo")
+    qtbot.waitUntil(lambda: page.run.finished, timeout=180_000)
+    assert page.run_step.result_texts["k0"] == "Saved and checked"
+    assert sorted(p.name for p in dest.iterdir()) == ["S001.mefd", "S002.mefd"]
+
+
+def test_made_by_this_batch_checks_stamp_name_and_start(tmp_path):
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    copy = tmp_path / "S9.mefd"
+    mef3io.anonymize_session(str(src), str(copy), SHIFT)
+    verdicts = pipeline.made_by_this_batch(
+        [
+            (str(copy), "", "S9", T0 + SHIFT),  # ours
+            (str(copy), "", "S8", T0 + SHIFT),  # another name
+            (str(copy), "", "S9", T0 + SHIFT + 1),  # another start
+            (str(src), "", "orig", T0),  # not made by the anonymizer
+        ]
+    )
+    assert verdicts == [True, False, False, False]
+    tar = mef3io.archive_session(str(copy), str(tmp_path / "S9.mefd.tar"))
+    assert pipeline.made_by_this_batch([(tar, "", "S9", T0 + SHIFT)]) == [True]
+
+
+def test_resume_dialog_names_each_original_and_can_share_a_password(qtbot):
+    from mef3io_studio.anonymizer.resume import ResumePasswordsDialog
+
+    dialog = ResumePasswordsDialog([0, 2], 3, False, names={0: "Ward-A", 2: "Ward-C"})
+    qtbot.addWidget(dialog)
+    labels = [label.text() for label in dialog._labels.values()]
+    assert labels == [
+        "Full-access password of Ward-A (recording 1 of 3):",
+        "Full-access password of Ward-C (recording 3 of 3):",
+    ]
+    dialog.same.setChecked(True)
+    dialog.sources[0].setText("shared")
+    assert dialog.problem_text() == ""
+    assert dialog.values() == ({0: "shared", 2: "shared"}, None)
+
+
+def test_an_unreadable_key_fails_closed_and_is_never_replaced(tmp_path, monkeypatch):
+    """Round 3 (C): only a MISSING key is created; an unreadable or damaged
+    one stops sealing and unsealing, keeps the file and every journal."""
+    j = journal.Journal.new(1, {"items": []})
+    key_path = Path(journal.data_dir()) / "journal.key"
+    good = key_path.read_bytes()
+    key_path.write_bytes(b"short")  # damaged
+    with pytest.raises(journal.KeyUnavailable):
+        journal.unfinished()
+    assert key_path.read_bytes() == b"short"  # not replaced
+    assert Path(j.path).exists()  # the journal was not judged unreadable
+    with pytest.raises(journal.KeyUnavailable):
+        journal.seal({"x": 1})
+    from mef3io_studio.model.errors import describe_error
+
+    assert describe_error(journal.KeyUnavailable()).title == "The app's notes could not be opened"
+    key_path.write_bytes(good)
+    assert [x.batch_id for x in journal.unfinished()] == [j.batch_id]
+    j.delete()
+
+
+def test_an_unreadable_key_is_reported_plainly_at_start(window, monkeypatch):
+    window._closing = True
+    shown = []
+    monkeypatch.delenv("MEF3IO_STUDIO_NO_STARTUP_OFFERS", raising=False)
+    monkeypatch.setattr(
+        journal, "unfinished", lambda: (_ for _ in ()).throw(journal.KeyUnavailable())
+    )
+    monkeypatch.setattr(window, "show_error", shown.append)
+    window._closing = False  # the offers are skipped while the window closes
+    try:
+        window._startup_offers()
+    finally:
+        window._closing = True
+    assert shown and shown[0].title == "The app's notes could not be opened"
+    assert "Nothing was removed" in shown[0].text
+
+
+def test_a_kept_checked_copy_gets_its_own_question(window, tmp_path, monkeypatch):
+    """Round 3 (D): a copy kept because its archive did not match is not a
+    never-checked leftover."""
+    from mef3io_studio.common.settings_dialog import set_work_folder
+
+    window._closing = True
+    work = tmp_path / "work"
+    kept = work / "work-abc-0"
+    (kept / "S1.mefd").mkdir(parents=True)
+    set_work_folder(window.settings, str(work))
+    journal.note_kept_copy(str(kept))
+    asked = []
+    monkeypatch.setattr(
+        window, "ask", lambda title, text, detail, buttons: asked.append((title, detail)) or "keep"
+    )
+    window.offer_pending_work()
+    assert [t for t, _d in asked] == ["Copies kept after a failed archive"]
+    assert "checked and are complete" in asked[0][1]
+    assert kept.exists()
+    journal.forget_kept_copy(str(kept))
+
+
+def test_a_full_drive_is_not_a_network_blip():
+    import errno as errno_
+
+    full = OSError(errno_.ENOSPC, "No space left on device")
+    assert not a.is_unreachable(full) and not tasks._retryable(full)
+    message = a.describe_copy_error(full)
+    assert message.title == "The destination or the work folder is full"
+    if hasattr(errno_, "EDQUOT"):
+        assert not a.is_unreachable(OSError(errno_.EDQUOT, "Disk quota exceeded"))

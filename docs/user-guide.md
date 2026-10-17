@@ -403,10 +403,13 @@ lost power), the next start asks: "Continue the batch: 4 of 7 done".
 Until you continue or discard it, a small sealed note about the batch (no
 names or dates in clear) stays in the app's own data folder. Continuing
 checks everything again, then makes the rest. Passwords are never stored,
-so you type them again: each original's, and the copies' two new passwords
-twice; each is tried before anything is made. If a result is already there
+so you type them again: each original's (shown with its folder name; if
+they share one, tick "They all use the same full-access password"), and the
+copies' two new passwords twice; each is tried before anything is made. If a result is already there
 for a recording that was being made when the batch stopped, you choose to
-keep it (marked as not confirmed) or make it again. Unfinished copies and
+keep it (marked as not confirmed) or make it again. It is made again only
+if the app can tell it made it itself; anything else with that name is left
+alone, and the app says so. Unfinished copies and
 archives left behind are never kept silently: the app offers to remove them
 ("They should hold no patient details, but they were never checked: do not
 use or share them").

@@ -72,6 +72,11 @@ def _describe(exc: BaseException) -> UserMessage:
             detail,
         )
 
+    from .journal import KEY_PROBLEM, KeyUnavailable
+
+    if isinstance(exc, KeyUnavailable):
+        return UserMessage("The app's notes could not be opened", KEY_PROBLEM, detail)
+
     from .archive import CopyMismatch, InsideRecording, NotEnoughSpace, TargetExists
     from .scan import NotAFolder
 

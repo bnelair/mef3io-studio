@@ -586,10 +586,26 @@ def is_library_io_error(exc: BaseException) -> bool:
     return _is(exc, "IoError")
 
 
+#: "No space left" and "over the disk quota": a full drive, not a share that
+#: went away. Never retried as if it were; the user is told space is needed.
+FULL_ERRNOS = frozenset(
+    e for e in (getattr(errno, "ENOSPC", None), getattr(errno, "EDQUOT", None)) if e
+)
+
+
+def is_disk_full(exc: BaseException) -> bool:
+    if getattr(exc, "errno", None) in FULL_ERRNOS:
+        return True
+    text = str(exc).lower()
+    return "no space left" in text or "disk quota" in text or "disk is full" in text
+
+
 def is_unreachable(exc: BaseException) -> bool:
     """The source or the destination could not be read or written (not a
     refusal about the recording or the choices): a drive or share that went
-    away may work again later."""
+    away may work again later. A full drive is not: see :func:`is_disk_full`."""
+    if is_disk_full(exc):
+        return False
     code = refusal_code(exc)
     if code is not None:
         return code in UNREACHABLE
@@ -606,6 +622,14 @@ def describe_copy_error(exc: BaseException, request: CopyRequest | None = None) 
     without one, by the kind of error. mef3io's own text goes into
     ``detail``, without paths or names (:func:`technical_text`)."""
     detail = technical_text(exc, request)
+    if is_disk_full(exc):
+        return UserMessage(
+            "The destination or the work folder is full",
+            "There was not enough free space to finish the copy. The unfinished copy was "
+            "removed and the original was not changed. Free some space (or choose another "
+            "folder, or another work folder in Settings), then try again.",
+            detail,
+        )
     code = refusal_code(exc)
     if code is not None:
         message = message_for(code, getattr(exc, "details", None) or {}, detail)

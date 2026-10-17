@@ -517,30 +517,72 @@ def test_a_batch_goes_on_after_one_copy_fails(window_page, qtbot, tmp_path):
     assert not any(p.name.endswith(".partial") for p in out.iterdir())
 
 
-def test_stop_leaves_nothing_behind(window_page, qtbot, tmp_path):
-    from explorer_sessions import write_large
+def _gate(monkeypatch, tmp_path, when):
+    """Hold the copy in its helper process at a known point until Stop is
+    pressed (helper_targets.gated_make_copy): no race with a fast runner."""
+    import functools
 
+    import helper_targets
+
+    from mef3io_studio.model import anonymize
+
+    gate = tmp_path / f"gate-{when}"
+    gate.mkdir()
+    monkeypatch.setattr(
+        anonymize,
+        "make_copy",
+        functools.partial(helper_targets.gated_make_copy, gate_dir=str(gate), when=when),
+    )
+    return gate / "entered"
+
+
+def test_stop_leaves_nothing_behind(window_page, qtbot, tmp_path, monkeypatch):
+    """Stop while mef3io is copying: the copy is stopped and nothing of it is
+    left. (Held at the first progress report until Stop, so it never races
+    the copy, however fast the computer is.)"""
     window, page = window_page
-    src = write_large(tmp_path / "large.mefd", channels=2, parts=2, seconds=600)
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
     open_in_explorer(qtbot, window, [src])
     go_to_channels(page)
     out = tmp_path / "out"
     out.mkdir()
     _through_to_review(page, qtbot, out, names=["BIG1"])
+    entered = _gate(monkeypatch, tmp_path, "during")
     checks = page.start()
     qtbot.waitUntil(lambda: checks.is_finished and page.handle is not None, timeout=60_000)
-    qtbot.waitUntil(
-        lambda: (
-            page.handle.record.progress is not None
-            and (page.handle.record.progress.fraction or 0) > 0
-        ),
-        timeout=60_000,
-    )
+    qtbot.waitUntil(entered.exists, timeout=60_000)
     page.stop()
     qtbot.waitUntil(lambda: page.run.finished, timeout=60_000)
     assert page.run.stopped
     assert list(out.iterdir()) == []
     assert "Stopped" in page.run_step.heading.text()
+    assert page.run_step.result_texts[page.choices[0].key] == "Stopped"
+
+
+def test_stop_after_the_copy_was_saved_reports_it_saved(window_page, qtbot, tmp_path, monkeypatch):
+    """Stop arriving after mef3io checked and published the copy: the UI
+    reports the true outcome (saved and checked), never "removed"."""
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    out = tmp_path / "out"
+    out.mkdir()
+    _through_to_review(page, qtbot, out, names=["LATE1"])
+    entered = _gate(monkeypatch, tmp_path, "after")
+    checks = page.start()
+    qtbot.waitUntil(lambda: checks.is_finished and page.handle is not None, timeout=60_000)
+    qtbot.waitUntil(entered.exists, timeout=60_000)
+    assert (out / "LATE1.mefd").is_dir()  # published before Stop
+    page.stop()
+    qtbot.waitUntil(lambda: page.run.finished, timeout=60_000)
+    assert page.run.stopped
+    assert (out / "LATE1.mefd").is_dir()  # the saved copy stays
+    assert page.run_step.result_texts[page.choices[0].key] == "Saved and checked"
+    heading = page.run_step.heading.text()
+    assert heading.startswith("Stopped. 1 copy saved and checked")
+    assert "removed" not in heading
+    assert page.date_key_rows()  # it is in the date key too
 
 
 def test_date_key_is_written_only_on_request(window_page, qtbot, tmp_path, monkeypatch):
@@ -938,3 +980,21 @@ def test_resume_refusals_name_positions_not_recordings(qtbot, jobs, tmp_path):
     problems = got[0]["problems"]
     assert any(p.startswith("Recording 2 of 2") for p in problems)
     assert not any(LAST in p for p in problems)
+
+
+def test_the_default_batch_archive_name_is_never_refused(window_page, qtbot, tmp_path):
+    """Round 3 (nit 13): descriptions' ordinary words do not count; the
+    default name passes even when a description says "recordings"."""
+    window, page = window_page
+    meta = mef3io.Metadata(
+        acquisition=mef3io.Acquisition(session_description="overnight recordings of ward")
+    )
+    path = tmp_path / "m7q2.mefd"
+    with mef3io.Writer(str(path), metadata=meta) as w:
+        w.write("c", np.zeros(256), T0, 256.0)
+    open_in_explorer(qtbot, window, [path])
+    go_to_channels(page)
+    page.go(STEP_OUTPUT)
+    page.output.bundle.setChecked(True)
+    assert page.output.bundle_name.text() == "anonymized-recordings.tar"
+    assert page.output.problem_text() == ""

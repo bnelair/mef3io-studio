@@ -90,24 +90,48 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
         ctypes.windll.kernel32.LocalFree(out.data)  # type: ignore[attr-defined]
 
 
+class KeyUnavailable(Exception):
+    """The app's sealing key exists but cannot be read (permissions, a
+    damaged file, Windows could not unprotect it). Nothing sealed can be read
+    or written until it can: the key is never replaced, because that would
+    make every journal, the work-folder setting and the list of temporary
+    files unreadable for good. Deliberately not an OSError."""
+
+
 def _key() -> bytes:
+    """The sealing key: created only when there is none yet. Any other
+    problem fails closed (:class:`KeyUnavailable`), leaving the file as it
+    is."""
     path = os.path.join(data_dir(), "journal.key")
     windows = sys.platform == "win32"
     try:
         with open(path, "rb") as handle:
             stored = handle.read()
+    except FileNotFoundError:
+        key = secrets.token_bytes(32)
+        stored = _dpapi(key, True) if windows else key
+        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with open(fd, "wb") as handle:
+            handle.write(stored)
+        os.replace(path + ".tmp", path)
+        return key
+    except OSError as exc:
+        raise KeyUnavailable("the key file cannot be read") from exc
+    try:
         key = _dpapi(stored, False) if windows else stored
-        if len(key) == 32:
-            return key
-    except OSError:
-        pass
-    key = secrets.token_bytes(32)
-    stored = _dpapi(key, True) if windows else key
-    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with open(fd, "wb") as handle:
-        handle.write(stored)
-    os.replace(path + ".tmp", path)
+    except OSError as exc:
+        raise KeyUnavailable("the key could not be unprotected") from exc
+    if len(key) != 32:
+        raise KeyUnavailable("the key file is damaged")
     return key
+
+
+KEY_PROBLEM = (
+    "The app could not open its own sealed notes (the key file in its data folder could not "
+    "be read). Nothing was removed or changed: interrupted batches, the chosen work folder "
+    "and the list of unfinished files are kept as they are. Check that your account can "
+    "read the app's data folder, then start the app again."
+)
 
 
 def _keys() -> tuple[bytes, bytes]:
@@ -220,7 +244,9 @@ class Journal:
 
 def unfinished() -> list[Journal]:
     """Journals of batches that did not end, readable with this user's key.
-    A journal that cannot be read back is removed (it can never be used)."""
+    A journal that cannot be read back with a working key is removed (it can
+    never be used). If the key itself cannot be read, :class:`KeyUnavailable`
+    is raised and nothing is removed."""
     out = []
     try:
         names = sorted(os.listdir(journal_dir()))
@@ -233,6 +259,7 @@ def unfinished() -> list[Journal]:
         try:
             with open(path, encoding="utf-8") as handle:
                 record = json.load(handle)
+            _key()  # fails closed (KeyUnavailable) before anything is judged unreadable
             payload = unseal(record["sealed"])
             items = record["items"]
             journal = Journal(
@@ -269,6 +296,7 @@ def known_temporaries() -> list[str]:
             value = unseal(json.load(handle)["sealed"])
     except (OSError, ValueError, KeyError, TypeError):
         return []
+    # (KeyUnavailable propagates: the list is never rewritten without its key.)
     return list(value.get("paths", [])) if value else []
 
 
@@ -296,3 +324,46 @@ def forget_temporary(path: str) -> None:
     paths = known_temporaries()
     if path in paths:
         _save_temporaries([p for p in paths if p != path])
+
+
+# Work copies KEPT on purpose because their archive did not match them:
+# checked copies, told apart from never-checked leftovers at start.
+
+
+def _kept_path() -> str:
+    return os.path.join(data_dir(), "kept.json")
+
+
+def kept_copies() -> list[str]:
+    try:
+        with open(_kept_path(), encoding="utf-8") as handle:
+            value = unseal(json.load(handle)["sealed"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    return list(value.get("paths", [])) if value else []
+
+
+def _save_kept(paths: list[str]) -> None:
+    path = _kept_path()
+    if not paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with open(fd, "w", encoding="utf-8") as handle:
+        json.dump({"sealed": seal({"paths": paths})}, handle)
+    os.replace(path + ".tmp", path)
+
+
+def note_kept_copy(path: str) -> None:
+    paths = kept_copies()
+    if path not in paths:
+        _save_kept([*paths, path])
+
+
+def forget_kept_copy(path: str) -> None:
+    paths = kept_copies()
+    if path in paths:
+        _save_kept([p for p in paths if p != path])

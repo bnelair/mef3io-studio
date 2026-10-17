@@ -163,9 +163,13 @@ Code (app shell, #2/#3):
   starting, incl. opening every original with ITS password. I/O failures on
   source/destination are retryable; 3 in a row pause the batch. Bundle Stop
   keeps the temp archive + journal ("Finish the archive with what is done" =
-  partial). Journal (`model/journal.py`): opaque ids in clear, everything else
+  partial). "Make them again" on Continue removes a result only if
+  `pipeline.made_by_this_batch` (last op anonymize + stored name + start ==
+  original + shift). Stop that lands after mef3io published a folder copy
+  reports it saved (`_published`). Journal (`model/journal.py`): opaque ids in clear, everything else
   SEALED (SHA-256 keystream + HMAC, separate enc/mac keys from
-  `<app data>/journal.key`, DPAPI on Windows); NO original names/dates (read
+  `<app data>/journal.key`, DPAPI on Windows; created ONLY when missing,
+  otherwise fails closed with `KeyUnavailable`, never replaced); NO original names/dates (read
   again with inspect on Continue); passwords never journaled; temporaries
   journaled before they exist (+ sealed `temporaries.json`); resume offered at
   start (env MEF3IO_STUDIO_NO_STARTUP_OFFERS disables, tests set it).

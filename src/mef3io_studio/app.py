@@ -227,8 +227,13 @@ def _build_main_window_class():
         def _startup_offers(self) -> None:
             if self._closing or os.environ.get("MEF3IO_STUDIO_NO_STARTUP_OFFERS"):
                 return
+            from .model.journal import KEY_PROBLEM, KeyUnavailable
+
             try:
                 self.offer_pending_work()
+            except KeyUnavailable:
+                log.warning("the app's sealing key could not be read; nothing was removed")
+                self.show_error(UserMessage("The app's notes could not be opened", KEY_PROBLEM))
             except Exception as exc:  # noqa: BLE001 - an offer never stops the app
                 log.warning("could not look for interrupted work (%s)", type(exc).__name__)
 
@@ -348,7 +353,13 @@ def _build_main_window_class():
             for folder in work_folders_used(self.settings):
                 leftovers += pipeline.leftover_work_copies(folder)
             leftovers += [p for p in journal_.known_temporaries() if os.path.lexists(p)]
-            leftovers = [p for p in dict.fromkeys(leftovers) if p not in claimed]
+            kept = [p for p in journal_.kept_copies() if os.path.lexists(p)]
+            for path in journal_.kept_copies():
+                if not os.path.lexists(path):
+                    journal_.forget_kept_copy(path)
+            leftovers = [p for p in dict.fromkeys(leftovers) if p not in claimed and p not in kept]
+            if kept:
+                self.offer_kept_removal(kept)
             if leftovers:
                 self.offer_leftover_removal(leftovers)
 
@@ -391,6 +402,33 @@ def _build_main_window_class():
                     journal_.forget_temporary(path)
             return True
 
+        def offer_kept_removal(self, kept: list[str]) -> bool:
+            """Checked copies the app kept because their archive did not
+            match them (not the same as never-checked leftovers)."""
+            from .model import journal as journal_
+            from .model import pipeline
+
+            n = len(kept)
+            choice = self.ask(
+                "Copies kept after a failed archive",
+                f"{n} anonymized {'copy was' if n == 1 else 'copies were'} kept in the work "
+                "folder because the archive made from "
+                f"{'it' if n == 1 else 'them'} did not match.",
+                "These copies were checked and are complete, but they were never delivered: "
+                "the archive was not kept. Make the archives again with a new batch, then "
+                "remove these copies. Remove them now?",
+                [
+                    ("remove", "Remove them", QMessageBox.ButtonRole.DestructiveRole),
+                    ("keep", "Keep them for now", QMessageBox.ButtonRole.RejectRole),
+                ],
+            )
+            if choice != "remove":
+                return False
+            for path in kept:
+                pipeline.remove_work_copy(path)
+                journal_.forget_kept_copy(path)
+            return True
+
         def offer_resume(self, journal) -> str:
             choice = self.ask(
                 "Continue the batch?",
@@ -417,12 +455,12 @@ def _build_main_window_class():
             discard_batch_files(journal)
             journal.delete()
 
-        def ask_resume_passwords(self, sources: list[int], total: int, protected: bool):
+        def ask_resume_passwords(self, sources: list[int], total: int, protected: bool, names=None):
             """({position: password of that original}, (basic, full) for the
             copies) or None when the user gives up."""
             from .anonymizer.resume import ResumePasswordsDialog
 
-            dialog = ResumePasswordsDialog(sources, total, protected, self)
+            dialog = ResumePasswordsDialog(sources, total, protected, self, names=names)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return None
             return dialog.values()
@@ -450,7 +488,11 @@ def _build_main_window_class():
             passwords: dict[int, str] = {}
             output = None
             if sources or protected:
-                answer = self.ask_resume_passwords(sources, journal.total, protected)
+                from .model.recording import recording_name
+
+                items = journal.payload.get("items", [])
+                names = {n: recording_name(items[n]["request"]["source"]) for n in sources}
+                answer = self.ask_resume_passwords(sources, journal.total, protected, names)
                 if answer is None:
                     return None
                 passwords, output = answer

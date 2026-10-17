@@ -270,6 +270,11 @@ archives" (2026-10-16) is built as follows (review rounds 1 and 2 included).
     never a whole signal file). Each file is hashed while it is read into the
     bundle; after the fsync the added members are re-read from the bundle and
     their names, sizes and SHA-256 compared.
+  - What the byte check can and cannot see: the re-read right after the
+    fsync usually comes from the operating system's cache, not from the
+    disk. It catches the app's own mistakes and errors while writing (a
+    short write, a wrong member, a failed write the OS reported), not
+    corruption that happens later, or on the far side of a network drive.
   - Only after that byte check is the work copy deleted. A mismatch keeps the
     work copy (the user is told; the start-up offer removes it later) and
     reports the recording failed ("The archive did not match the checked
@@ -309,22 +314,37 @@ archives" (2026-10-16) is built as follows (review rounds 1 and 2 included).
   files, the bundle's temporary file and its last checked offset) is a sealed
   blob: a SHA-256 keystream and HMAC-SHA-256 under separate keys derived as
   `HMAC(key, "enc")` and `HMAC(key, "mac")` from a random key in
-  `journal.key` (DPAPI-protected on Windows, 0600 elsewhere). It holds NO
+  `journal.key` (DPAPI-protected on Windows, 0600 elsewhere). The key is
+  created only when there is none; a key that cannot be read fails closed
+  (`KeyUnavailable`: nothing is sealed, unsealed or removed, and the user is
+  told) instead of being replaced, which would orphan every journal, the
+  work-folder setting and the list of temporary files. It holds NO
   original names or dates: on Continue they are read again with `inspect()`
   for the date key. Passwords are never journaled. Every temporary file at the
   destination is journaled (and kept in a sealed list, `temporaries.json`)
   BEFORE it is made. On start the app offers "Continue the batch: 4 of 7
-  done": Continue asks each original's password and the copies' new pair
-  (typed twice) again, opens every original with its own password and one
+  done": Continue asks each original's password (shown with its folder name,
+  on the user's screen only; originals sharing a password can be given it
+  once) and the copies' new pair (typed twice) again, opens every original with its own password and one
   finished copy with the new one, removes its own unfinished files of the
   recordings still to do, asks whether results already at the destination for
   unfinished recordings (made just before a crash) are kept ("not confirmed")
-  or made again, then continues. Refusals on Continue name positions
+  or made again (only when the result is provably this batch's: the
+  anonymizer stamp as its last operation, the copy's name stored inside, and
+  a start equal to the original's plus the shift, read with `inspect` for a
+  folder or an archive; anything else is left as it is, with a plain
+  message), then continues. A Stop that arrives after mef3io already checked
+  and published a folder copy reports it as saved (the true outcome).
+  Refusals on Continue name positions
   ("Recording 3 of 7"), never recordings. Discard removes the batch's
   unfinished files. Leftover work copies in every work folder ever used (a
   sealed preference) and known temporaries not claimed by a journal are
   offered for removal ("They should hold no patient details, but they were
-  never checked: do not use or share them").
+  never checked: do not use or share them"). Work copies kept because their
+  archive did not match (sealed list `kept.json`) are checked copies and get
+  their own question. A full drive (`ENOSPC`, `EDQUOT`) is reported as "the
+  destination or the work folder is full", never as a file that could not be
+  reached, and is not retried.
 - **Settings** (`common/settings_dialog.py`): the work folder (default
   `<app data>/work`; stored SEALED with the same key, never a path in clear),
   and keep-awake.

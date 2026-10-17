@@ -114,3 +114,39 @@ def stop_cleanly(marker, cancel):
 def ignore_stop(cancel):
     """Never looks at the token: must be ended after the grace period."""
     time.sleep(60)
+
+
+def gated_make_copy(request, send=None, cancel=None, *, gate_dir="", when="during"):
+    """mef3io's anonymize_session, held at a known point until Stop arrives
+    (the stop token is set), so a Stop test never races the copy:
+
+    * ``when="during"``: at the first progress report (mef3io is copying),
+      then the copy goes on and notices the stop at its next check;
+    * ``when="after"``: after mef3io checked and published the copy, then the
+      finished result is returned (Stop arrived too late to stop anything).
+
+    ``gate_dir/entered`` is created when the hold starts."""
+    import os
+    import time
+
+    from mef3io_studio.model import anonymize
+
+    def hold() -> None:
+        open(os.path.join(gate_dir, "entered"), "w").close()
+        deadline = time.monotonic() + 60
+        while not (cancel is not None and cancel.cancelled) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    held = [False]
+
+    def gated_send(message) -> None:
+        if when == "during" and not held[0]:
+            held[0] = True
+            hold()
+        if send is not None:
+            send(message)
+
+    result = anonymize.make_copy(request, gated_send, cancel)
+    if when == "after":
+        hold()
+    return result

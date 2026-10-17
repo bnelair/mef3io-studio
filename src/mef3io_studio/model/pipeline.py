@@ -117,9 +117,10 @@ def remove_temporary_file(path: str) -> None:
 
 
 def remove_own_result(path: str) -> None:
-    """Remove a result the batch journal says this batch was making (to make
-    it again after an interruption): a ``.mefd`` folder or a ``.mefd.tar``
-    file. Nothing else is ever removed."""
+    """Remove a result this batch was making, to make it again after an
+    interruption: a ``.mefd`` folder or a ``.mefd.tar`` file. Only ever
+    called for a result :func:`made_by_this_batch` confirmed (a name alone
+    proves nothing)."""
     lowered = path.lower()
     if lowered.endswith(".mefd") and os.path.isdir(path) and not os.path.islink(path):
         shutil.rmtree(path, ignore_errors=True)
@@ -181,6 +182,30 @@ def probe(sources: list[tuple[str, str]], outputs: list[tuple[str, str]], cancel
             and outcome.details.access != ACCESS_BASIC
         )
     return {"sources": found, "outputs": opened}
+
+
+def made_by_this_batch(results: list[tuple[str, str, str, int | None]], cancel=None) -> list[bool]:
+    """In a helper process: for each ``(path, full-access password, copy
+    name, expected start)``, whether the result at ``path`` is the one this
+    batch was making: written last by the anonymizer, stored under the
+    copy's name, and starting at the original's start plus the shift.
+    Anything else (a folder or archive someone put there) is never ours to
+    remove. Details only, folders and single files alike."""
+    from .inspect import inspect_recording
+
+    out = []
+    for path, password, name, start in results:
+        if cancel is not None:
+            cancel.raise_if_cancelled()
+        outcome = inspect_recording(path, password, cancel=cancel, detect_legacy=False)
+        details = outcome.details
+        if details is None or start is None:
+            out.append(False)
+            continue
+        stored = details.identity_fact("session_name")
+        names = set(stored.values) if stored is not None else set()
+        out.append(details.made_by_anonymizer and name in names and details.start == start)
+    return out
 
 
 def free_bytes(folder: str) -> int | None:

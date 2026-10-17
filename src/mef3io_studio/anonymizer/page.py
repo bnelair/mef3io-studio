@@ -147,6 +147,12 @@ STEPS = (
     STEP_RUN,
 ) = range(len(STEPS))
 
+FOREIGN_RESULT = (
+    "{which}: something with the copy's name is already at the destination, and it was not "
+    "made by this batch, so it was left exactly as it is. Nothing was removed or written. "
+    "Move or rename it, then continue the batch, or choose Keep them."
+)
+
 #: The batch archive's name until the user changes it (says nothing about anyone).
 DEFAULT_BUNDLE = "anonymized-recordings.tar"
 
@@ -1042,14 +1048,32 @@ class OutputStep(QWidget):
 
         folded = fold(name)
         for c in self.page.choices:
-            values = [c.entry.name]
-            if c.entry.details is not None:
-                values += c.entry.details.identity_values()
-            for value in values:
-                for part in [value, *str(value).replace(",", " ").split()]:
-                    part = part.strip()
-                    if len(part) >= 3 and fold(part) in folded:
-                        return True
+            # The originals' names and the stored names as a whole; the
+            # patient's names, ID and location also word by word. Free-text
+            # descriptions are NOT used: their ordinary words ("recordings")
+            # would refuse harmless names such as the default one.
+            whole = [c.entry.name]
+            words: list[str] = []
+            details = c.entry.details
+            if details is not None:
+                patient = details.patient
+                for value in (
+                    patient.first_name,
+                    patient.last_name,
+                    patient.patient_id,
+                    patient.location,
+                ):
+                    if value:
+                        whole.append(value)
+                        words += str(value).replace(",", " ").split()
+                for field_name in ("session_name", "anonymized_name"):
+                    fact = details.identity_fact(field_name)
+                    if fact is not None:
+                        whole += list(fact.values)
+            for part in [*whole, *words]:
+                part = str(part).strip()
+                if len(part) >= 3 and fold(part) in folded:
+                    return True
         return False
 
     def _update(self, *_args) -> None:
@@ -1391,7 +1415,7 @@ class RunStep(QWidget):
         elif page.run.stopped:
             self.heading.setText(
                 f"Stopped. {format_count(len(saved), 'copy', 'copies')} saved and checked; "
-                "the unfinished one was removed."
+                "nothing half-made was left behind."
             )
         elif failed:
             self.heading.setText(
@@ -2048,6 +2072,17 @@ class AnonymizerPage(QWidget):
                         journal.payload["items"][n]["unconfirmed"] = True
                         journal.mark(n, journal_.DONE)
                 else:
+                    ours = verdict.get("ours", {})
+                    foreign = [n for n in existing if not ours.get(n)]
+                    if foreign:
+                        # A name alone proves nothing: never remove what this
+                        # batch did not make.
+                        which = ", ".join(
+                            f"Recording {n + 1} of {len(batch.items)}" for n in foreign
+                        )
+                        self.preflight_problems = [FOREIGN_RESULT.format(which=which)]
+                        self.resume_problems.emit(self.preflight_problems[0])
+                        return
                     for n in existing:
                         pipeline.remove_own_result(run.items[n].final)
             self.batch = run

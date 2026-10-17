@@ -459,8 +459,22 @@ def preflight_batch(
     )
     names = {k: scrubbed(v) for k, v in names.items()}
     existing = []
+    ours: dict[int, bool] = {}
     if batch.output != pipeline.BUNDLE:
         existing = [n for n, i in todo if os.path.lexists(i.final)]
+    if existing:
+        # A result with the copy's name is there: is it the one this batch
+        # was making (then it may be made again), or someone else's?
+        checks = []
+        for n in existing:
+            item = batch.items[n]
+            original = originals.get(item.request.key)
+            start = original[1] + item.request.shift_us if original and original[1] else None
+            checks.append((item.final, output_full_password, item.request.name, start))
+        verdicts = ctx.run_isolated(
+            pipeline.made_by_this_batch, checks, stop_grace=STOP_GRACE_SECONDS
+        )
+        ours = dict(zip(existing, verdicts, strict=True))
     if journal is not None:
         # A resume: refusals are reported by position, never by name.
         position = {i.request.key: n for n, i in todo}
@@ -482,6 +496,7 @@ def preflight_batch(
         "originals": originals,
         "finished_originals": finished_originals,
         "existing": existing,
+        "ours": ours,
     }
 
 
@@ -735,6 +750,8 @@ def _retryable(exc: BaseException) -> bool:
         return False
     if isinstance(exc, (FileExistsError, PermissionError, IsADirectoryError)):
         return False
+    if anonymize.is_disk_full(exc):
+        return False  # a full drive needs space, not a retry
     return isinstance(exc, OSError) or anonymize.is_library_io_error(exc)
 
 
@@ -763,12 +780,22 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
             report(weights[0] * message.fraction, "Anonymizing")
 
     report(0, "Anonymizing")
+    there_before = os.path.lexists(request.destination)
     try:
         result = ctx.run_isolated(
             anonymize.make_copy, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
         )
     except Exception as exc:
         stop = isinstance(exc, JobCancelled) or is_stop(exc)
+        if stop and not item.work and _published(request.destination, there_before):
+            # Stop came after mef3io had checked the copy and given it its
+            # final name: the copy IS saved and checked. Say so (and record
+            # it), then stop the batch.
+            journal.mark(n, journal_.DONE)
+            ctx.publish(
+                anonymize.CopyResult(request.key, item.final, ok=True, notes=(SAVED_BEFORE_STOP,))
+            )
+            raise
         if not anonymize.remove_unfinished(request.destination):
             ctx.publish(anonymize.Leftover(request.key, request.destination + ".partial"))
         if item.work and not pipeline.remove_work_copy(item.work):
@@ -849,6 +876,7 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
             # The archive does not hold exactly the checked copy: keep the
             # copy (the user is told where), never delete the only good one.
             kept.add(item.work)
+            journal_.note_kept_copy(item.work)
             journal.mark(n, journal_.FAILED)
             log.warning("job %d: an archive did not match its checked copy", ctx.job_id)
             return _fail(ctx, item, MISMATCH)
@@ -873,6 +901,20 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
 
 
 IN_BUNDLE = "in the batch archive"
+SAVED_BEFORE_STOP = "saved and checked just before Stop"
+
+
+def _published(destination: str, there_before: bool) -> bool:
+    """mef3io gave the copy its final name (it does so only after checking
+    it): the folder is there now, was not before, and no unfinished copy is
+    next to it."""
+    return (
+        not there_before
+        and os.path.isdir(destination)
+        and not os.path.lexists(destination + ".partial")
+    )
+
+
 MISMATCH = UserMessage(
     "The archive did not match the checked copy",
     "The archive was read back and its bytes differ from the checked anonymized copy, so "
