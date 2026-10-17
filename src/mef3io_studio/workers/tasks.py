@@ -2,8 +2,8 @@
 :class:`JobManager`. They call into ``model`` / mef3io and never touch widgets.
 
 Every call that opens a recording goes through the recording source, which
-runs it in a helper process while mef3io holds the GIL during opens
-(bnelair/mef3io#79). Log lines carry counts and job ids only: never a
+runs it in a helper process (it contains native crashes and gives a hard
+Stop; see ``workers.isolated``). Log lines carry counts and job ids only: never a
 location, a name or anything read from a recording.
 """
 

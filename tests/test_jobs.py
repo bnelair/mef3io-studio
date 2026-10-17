@@ -170,9 +170,10 @@ def test_real_open_on_a_thread_does_not_freeze_the_ui(qtbot, jobs, multisegment_
     """Pins the requirement against the real library call on a thread.
 
     The summary uses ``mef3io.inspect`` (mef3io 1.3), which lets other
-    threads run while it works. ``mef3io.Reader`` still holds the GIL for a
-    whole open (bnelair/mef3io#79), which is why opens stay in a helper
-    process (``LocalRecordingSource.isolate``).
+    threads run while it works (mef3io 1.4 also releases the GIL during a
+    ``Reader`` open, bnelair/mef3io#79). Opens still run in a helper process
+    in the app (``LocalRecordingSource.isolate``) to contain native crashes
+    and give a hard Stop.
 
     Only meaningful when the call itself takes clearly longer than the
     allowed stall (then an inspect that held the GIL throughout would fail

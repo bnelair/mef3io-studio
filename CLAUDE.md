@@ -68,13 +68,14 @@ Code (app shell, #2/#3):
   `cancel=`, and is ended only after the grace. mef3io byte progress travels
   from helpers as `model.progress.ByteProgress` via `send`.
 - Data access goes through `model.source.RecordingSource` (server source later).
-  `LocalRecordingSource.isolate = True` runs opens in a spawn helper process:
-  `mef3io.Reader` still holds the GIL for a whole open (mef3io#79), while
-  `mef3io.inspect()` lets other threads run (measured: ~60 ms longest stall
-  vs ~1.7 s for the Reader; test_jobs pins the inspect-based summary on a
-  thread; it skips, saying so, when the call takes <= 1.5x the stall bound,
-  too short to show a held GIL). The helper also contains native crashes, so it stays for now;
-  `freeze_support()` is the first thing the launcher does.
+  `LocalRecordingSource.isolate = True` runs opens in a spawn helper process
+  because it CONTAINS NATIVE CRASHES and gives a HARD STOP, not for the GIL:
+  mef3io 1.4 releases the GIL in `inspect()` and during a `Reader` open
+  (mef3io#79 closed; measured on 1.4.0, 64 ch x 60 parts: Reader open 0.78 s
+  with an 8 ms longest stall, inspect 1.1 s with 33 ms). test_jobs pins the
+  inspect-based summary on a thread; it skips, saying so, when the call takes
+  <= 1.5x the stall bound. `freeze_support()` is the first thing the launcher
+  does.
 - UI text: everyday words only (docs/ui-language.md, enforced by
   tests/test_ui_language.py); jargon only behind "Technical details".
 - Packaging: the spec DROPS network/kiosk Qt plugins, QtNetwork, GTK theme,

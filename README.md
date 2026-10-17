@@ -274,10 +274,11 @@ a recording date reaches the log file, or if technical jargon appears in the
 user interface (see [docs/ui-language.md](docs/ui-language.md)).
 
 Opening a recording, and making each anonymized copy, runs in a short-lived
-helper process. It keeps the window responsive whatever the library does (a
-mef3io `Reader` open still holds Python's GIL,
-[mef3io#79](https://github.com/bnelair/mef3io/issues/79)), and a crash inside
-the library cannot take the app down.
+helper process: a crash inside the library cannot take the app down, and
+**Stop** can always end the work at once. (Since mef3io 1.4 the library lets
+the window keep running during an open,
+[mef3io#79](https://github.com/bnelair/mef3io/issues/79), so the helper is no
+longer needed for that.)
 
 ### Layout
 

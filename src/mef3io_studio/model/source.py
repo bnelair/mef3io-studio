@@ -49,9 +49,9 @@ class RecordingSource(abc.ABC):
 
     #: Shown to users, e.g. "This computer".
     display_name: str = ""
-    #: Run calls in a separate helper process. Needed while mef3io holds the
-    #: Python GIL for a whole open (bnelair/mef3io#79): on a thread that would
-    #: freeze the window. The source object must then be picklable.
+    #: Run calls in a separate helper process (``workers.isolated``): it
+    #: contains a native crash in the library and gives a hard Stop. The
+    #: source object must then be picklable.
     isolate: bool = False
 
     @abc.abstractmethod
@@ -83,7 +83,7 @@ class LocalRecordingSource(RecordingSource):
     """Recordings on this computer (``.mefd`` folders or ``.mefd.tar`` files)."""
 
     display_name = "This computer"
-    isolate = True  # until bnelair/mef3io#79 releases the GIL during an open / inspect
+    isolate = True  # contain native crashes, hard Stop (workers.isolated)
 
     def summarize(
         self, location: str | os.PathLike, password: str = "", cancel: CancelToken | None = None
