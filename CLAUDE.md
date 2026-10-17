@@ -92,9 +92,12 @@ Code (app shell, #2/#3):
   with `currentColor`; no pixel font sizes. Radio buttons and checkboxes
   (also in item views, also disabled) are painted by `theme.StudioStyle`
   (a QProxyStyle over Fusion) in `Theme.indicator`: Fusion's own outline is
-  window.darker() = invisible in dark (1.1:1). tests/test_theme.py pins
-  >= 3:1 against every `indicator_backgrounds()` colour AND on rendered
-  pixels, both themes. QTreeView selection = accent_soft (like QTableView),
+  window.darker() = invisible in dark (1.1:1). Same for the FRAMES of input
+  fields: StudioStyle paints PE_FrameLineEdit and overdraws CC_SpinBox/
+  CC_ComboBox (line/spin/date/time/combo, enabled/disabled/read-only) in
+  `indicator`, accent 2 px on focus; QPlainTextEdit/QTextEdit via QSS.
+  tests/test_theme.py pins >= 3:1 against every `indicator_backgrounds()`
+  colour AND on rendered pixels (indicators and frames), both themes. QTreeView selection = accent_soft (like QTableView),
   so a box on a selected row keeps its outline.
 - Explorer (#4): `model/inspect.py` is the ONLY place that reads a recording
   for display: a thin adapter over `mef3io.inspect(strict=False,

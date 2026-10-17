@@ -14,6 +14,9 @@ Fusion: Fusion outlines them in the window colour made darker, which is almost
 invisible on the dark theme (near-black on near-black) and too faint on the
 light one. Ours use the theme's ``indicator`` colour (>= 3:1, a test renders them
 and measures), also when disabled and inside lists such as the channel picker.
+The frames of input fields (text, number, date and time fields, lists to
+choose from, text boxes) had the same fault and get the same colour, with an
+accent frame while focused.
 
 The theme follows the operating system's light/dark setting live, unless the
 user picked one under View > Appearance.
@@ -42,7 +45,8 @@ class Theme:
     #: Outline of interactive controls and progress tracks: >= 3:1 against
     #: window, surface and surface_alt (WCAG 1.4.11; a test checks it).
     border: str
-    #: Outline of unselected radio buttons and checkboxes: >= 3:1 against
+    #: Outline of unselected radio buttons and checkboxes, and the frame of
+    #: input fields: >= 3:1 against
     #: every background they sit on, list rows included (``indicator_
     #: backgrounds``; a test renders them and measures). Stronger than
     #: ``border`` because a small ring reads weaker than a long edge.
@@ -131,7 +135,9 @@ QToolButton#StatusButton { border: 2px solid transparent; padding: 0.1em 0.4em; 
 QToolButton#StatusButton:hover { background: $hover; }
 QToolButton#StatusButton:focus { border: 2px solid $accent; }
 QToolButton#DetailsToggle { border: none; background: transparent; color: $accent; padding: 0.1em 0; }
-QPlainTextEdit { background: $surface_alt; color: $text; border: 1px solid $border; border-radius: 6px; }
+QPlainTextEdit { background: $surface_alt; color: $text; border: 1px solid $indicator; border-radius: 6px; }
+QTextEdit { background: $surface; color: $text; border: 1px solid $indicator; border-radius: 6px; }
+QPlainTextEdit:focus, QTextEdit:focus { border: 2px solid $accent; }
 QProgressBar { border: 1px solid $border; border-radius: 4px; background: $surface; max-height: 0.6em; }
 QProgressBar::chunk { border-radius: 3px; background: $accent; }
 QMenu { background: $surface; border: 1px solid $divider; padding: 0.25em; }
@@ -225,13 +231,17 @@ _INDICATORS = (
 
 
 class StudioStyle(QProxyStyle):
-    """Fusion, with radio buttons and checkboxes drawn in the theme's colours.
+    """Fusion, with radio buttons, checkboxes and the frames of input fields
+    drawn in the theme's colours.
 
-    Only the indicator itself is painted here (sizes, label and focus frame
-    stay Fusion's), so the controls keep their size and layout everywhere.
-    Unselected: the theme's surface inside an ``indicator`` outline, enabled or
-    not. Selected: accent. Disabled and selected: muted. Hover and keyboard
-    focus: accent outline.
+    Only the indicator and the frame are painted here (sizes, labels, arrows
+    and buttons stay Fusion's), so the controls keep their size and layout
+    everywhere. Indicators: unselected = the theme's surface inside an
+    ``indicator`` outline, enabled or not; selected = accent; disabled and
+    selected = muted; hover and keyboard focus = accent outline. Text, number,
+    date and time fields and lists to choose from (enabled, disabled,
+    read-only): an ``indicator`` outline, accent (2 px) while focused. Text
+    boxes get the same through the style sheet.
     """
 
     def __init__(self, theme: Theme):
@@ -242,7 +252,38 @@ class StudioStyle(QProxyStyle):
         if element in _INDICATORS:
             paint_indicator(self.theme, element, option, painter)
             return
+        if element == _PE.PE_FrameLineEdit:
+            paint_field_frame(self.theme, option, painter)
+            return
         super().drawPrimitive(element, option, painter, widget)
+
+    def drawComplexControl(self, control, option, painter, widget=None):  # noqa: N802 (Qt)
+        super().drawComplexControl(control, option, painter, widget)
+        if control in _FRAMED_CONTROLS:
+            # Fusion's own outline (window colour made darker) is painted
+            # over with ours, at the same place.
+            paint_field_frame(self.theme, option, painter)
+
+
+_CC = QStyle.ComplexControl
+_FRAMED_CONTROLS = (_CC.CC_SpinBox, _CC.CC_ComboBox)
+
+
+def paint_field_frame(theme: Theme, option: QStyleOption, painter: QPainter) -> None:
+    """The outline of an input field: ``indicator``, accent while focused."""
+    state = option.state
+    focus = bool(state & QStyle.StateFlag.State_HasFocus) and bool(
+        state & QStyle.StateFlag.State_Enabled
+    )
+    pen_width = 2.0 if focus else 1.0
+    inset = pen_width / 2
+    rect = QRectF(option.rect).adjusted(inset, inset, -inset, -inset)
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(QPen(QColor(theme.accent if focus else theme.indicator), pen_width))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(rect, 3.0, 3.0)
+    painter.restore()
 
 
 def paint_indicator(theme: Theme, element, option: QStyleOption, painter: QPainter) -> None:

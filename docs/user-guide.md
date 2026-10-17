@@ -499,9 +499,9 @@ recording's details, so it is instant even on very large recordings.
 - **Help → Check this installation** tests the app with a small made-up
   recording. If something seems wrong with the app itself, start there.
 - **View → Appearance** switches between the light and the dark look, or
-  follows your computer's setting. In both, every round option button and
-  every tick box has a clear outline, also when it is not chosen or cannot
-  be used at the moment.
+  follows your computer's setting. In both, every round option button,
+  every tick box and every field you type in or choose from has a clear
+  outline, also when it is not chosen or cannot be used at the moment.
 - **Help → Open the log folder** shows the app's log. It leaves out patient
   details, recording names, folder paths and dates; still, read it before
   you share it.
