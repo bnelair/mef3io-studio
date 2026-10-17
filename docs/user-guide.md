@@ -408,8 +408,14 @@ While a batch runs:
   "Adding to the batch archive") and the time left, and a notification tells you
   when the batch is done.
 
-**If the batch is interrupted** (the app was closed, the computer crashed or
-lost power), the next start asks: "Continue the batch: 4 of 7 done".
+**If the batch is interrupted** (the app crashed, or the computer crashed or
+lost power), the next start asks: "Continue the batch: 4 of 7 done". The
+same happens for a batch into one archive that you stopped, or that was
+running when you closed the app (once at least one recording is in the
+archive), and for a batch that paused because the
+recordings or the destination could not be reached. A batch into folders or
+into an archive per recording that you stop (or close the app on) is simply
+stopped: what was saved stays, and nothing is offered at the next start.
 Until you continue or discard it, a small sealed note about the batch (no
 names or dates in clear) stays in the app's own data folder. Continuing
 checks everything again, then makes the rest. Passwords are never stored,

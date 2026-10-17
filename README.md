@@ -131,7 +131,8 @@ originals are never changed**: the app makes a new copy and checks it.
   a new date. Either every recording moves by the same amount, so they still
   follow each other exactly as before, or every copy starts at the same
   moment. Keep the local or the UTC time of day, or change it too.
-- **Name the copies** and give each a pseudonym. The mef3io library checks
+- **Name the copies** and give each a pseudonym (the code stored for the
+  patient). The mef3io library checks
   that no name contains the patient's details before anything is written.
 - **Notes:** their text is removed by default. If you choose to keep it, the
   app warns that dates and other people's names written in free text are not
@@ -146,7 +147,8 @@ originals are never changed**: the app makes a new copy and checks it.
   recording, or as **one archive for the whole batch**, and walk away. Every
   archive is checked byte for byte against the checked copy. The computer is
   kept awake, a notification says when the batch is done, and a batch
-  interrupted by a crash or a power cut can be continued at the next start.
+  interrupted by a crash or a power cut can be continued at the next start
+  (a batch into one archive also after you stop it).
 - **The date key:** the original and new dates of every recording are shown
   at the end. With them, anyone can undo the anonymization, so they are saved
   to a file only if you ask.
