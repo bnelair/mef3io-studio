@@ -257,11 +257,15 @@ def anonymizer_shots(app, out: Path, tmp: Path) -> None:
         app.processEvents()
         time.sleep(0.02)
     page.next()
+    page.next()  # output: folders
     copies = tmp / "copies"
     copies.mkdir()
     page.review.set_folder(str(copies))
     page.start()
     deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and page.handle is None:
+        app.processEvents()
+        time.sleep(0.02)
     while time.monotonic() < deadline and not page.run.finished:
         app.processEvents()
         time.sleep(0.02)

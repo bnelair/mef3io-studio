@@ -12,13 +12,14 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 from ..common.privacy import register_identity, scrub
-from ..model import anonymize, archive
+from ..model import anonymize, archive, awake, bundle, pipeline
+from ..model import journal as journal_
 from ..model.cancel import JobCancelled, is_stop
 from ..model.coverage import Stopped, combine
-from ..model.errors import HelperCrashed, describe_error
+from ..model.errors import HelperCrashed, UserMessage, describe_error
 from ..model.export import LEVEL_PARTS, ExportItem, part_rows, recording_table, write_csv
 from ..model.problems import CheckReport
 from ..model.progress import ByteProgress
@@ -333,6 +334,266 @@ def anonymize_recordings(
     saved = sum(1 for r in results if r.ok)
     log.info("job %d: %d of %d anonymized copies saved and checked", ctx.job_id, saved, total)
     return results
+
+
+@dataclass(frozen=True)
+class BundleOutcome:
+    """How the batch's bundle ended: its final path, or why it is not there."""
+
+    path: str = field(repr=False)
+    ok: bool = False
+    message: object = None
+    recordings: int = 0
+
+
+def preflight_batch(ctx: JobContext, batch: pipeline.Batch) -> dict:
+    """Everything that can be checked before a long batch starts, so it does
+    not fail after hours: the originals are still there, the work folder is
+    usable, nothing at the destination is in the way, there is room at both,
+    and mef3io accepts every name. Returns ``{"problems": [plain words],
+    "names": {key: None or UserMessage}}``."""
+    requests = [i.request for i in batch.items]
+    _register_copy_identity(requests)
+    ctx.report(0, None, "Checking everything before starting")
+    problems: list[str] = []
+    for item in batch.items:
+        if not os.path.exists(item.request.source):
+            problems.append(
+                f"{item.original_name or 'A recording'} is no longer where it was. "
+                "Check that the drive is connected."
+            )
+    if batch.output != pipeline.FOLDERS:
+        problem = pipeline.work_folder_problem(
+            batch.work_folder, [i.request.source for i in batch.items]
+        )
+        if problem:
+            problems.append(problem)
+    problems += pipeline.destination_problems(batch)
+    problems += pipeline.space_problems(
+        batch,
+        pipeline.free_bytes(batch.work_folder) if batch.work_folder else None,
+        pipeline.free_bytes(batch.destination),
+    )
+    ctx.check_cancelled()
+    names = ctx.run_isolated(
+        anonymize.check_names_many,
+        [replace(r, output_password=None) for r in requests],
+        stop_grace=STOP_GRACE_SECONDS,
+    )
+    names = {k: scrubbed(v) for k, v in names.items()}
+    log.info(
+        "job %d: checked a batch of %d before starting: %d problem(s), %d name(s) refused",
+        ctx.job_id,
+        len(requests),
+        len(problems),
+        sum(1 for v in names.values() if v is not None),
+    )
+    return {"problems": problems, "names": names}
+
+
+def _fail(ctx, item, message) -> anonymize.CopyResult:
+    return anonymize.CopyResult(item.request.key, item.final, ok=False, message=scrubbed(message))
+
+
+def run_batch(
+    ctx: JobContext, batch: pipeline.Batch, journal: journal_.Journal | None = None
+) -> list:
+    """Run the whole batch, unattended (see ``model.pipeline``): per
+    recording, anonymize, then archive or add to the bundle, check, delete
+    the work copy. A failure ends that recording only. Stop ends the current
+    step cleanly: an unfinished copy or archive is removed; a bundle is
+    finished with the recordings already in it. The journal records each
+    finished recording, so a crash can be continued; it is deleted when the
+    batch ends or is stopped. The computer is kept awake meanwhile."""
+    requests = [i.request for i in batch.items]
+    _register_copy_identity(requests)
+    total = len(batch.items)
+    if journal is None:
+        journal = journal_.Journal.new(total, pipeline.to_payload(batch))
+    results: list = []
+    writer = None
+    if batch.output == pipeline.BUNDLE:
+        temporary = journal.payload.get("bundle_temporary", "")
+        offset = int(journal.payload.get("bundle_offset", 0))
+        if temporary and os.path.exists(temporary):
+            writer = bundle.BundleWriter(batch.bundle, temporary=temporary, offset=offset)
+            writer.written = bundle_members_so_far(writer)
+        else:
+            writer = bundle.BundleWriter(batch.bundle)
+            journal.payload["bundle_temporary"] = writer.temporary
+            journal.payload["bundle_offset"] = 0
+            journal.save()
+    output_password = next(
+        (i.request.output_password for i in batch.items if i.request.output_password), None
+    )
+    check_password = output_password[1] if output_password else ""
+
+    def publish(result) -> None:
+        results.append(result)
+        ctx.publish(result)
+
+    with awake.KeepAwake(enabled=batch.keep_awake):
+        try:
+            for n, item in enumerate(batch.items):
+                state = journal.states[n]
+                if state == journal_.DONE:
+                    publish(
+                        anonymize.CopyResult(
+                            item.request.key, item.final, ok=True, notes=("made earlier",)
+                        )
+                    )
+                    continue
+                if state == journal_.FAILED:
+                    publish(_fail(ctx, item, EARLIER_FAILURE))
+                    continue
+                ctx.check_cancelled()
+                publish(_one(ctx, batch, item, n, total, writer, journal, check_password))
+            if writer is not None:
+                publish(_finish_bundle(ctx, writer, journal))
+        except BaseException as exc:
+            if writer is not None and (isinstance(exc, JobCancelled) or is_stop(exc)):
+                # Stopped: deliver what is complete, never half a bundle.
+                ctx.publish(_finish_bundle(ctx, writer, journal))
+            if isinstance(exc, JobCancelled) or is_stop(exc):
+                journal.delete()
+            raise
+    journal.delete()
+    saved = sum(1 for r in results if getattr(r, "ok", False))
+    log.info("job %d: batch of %d finished, %d result(s) saved", ctx.job_id, total, saved)
+    return results
+
+
+EARLIER_FAILURE = UserMessage(
+    "Not made in the earlier run",
+    "This recording failed before the batch was interrupted, so it was not made. The "
+    "original was not changed. Start a new batch for it after checking why.",
+)
+
+
+def bundle_members_so_far(writer: bundle.BundleWriter) -> list:
+    """What an interrupted bundle already holds (up to its last checked
+    recording), read back from its headers."""
+    if writer.offset <= 0:
+        return []
+    return writer._read_members(0, writer.offset)
+
+
+def _finish_bundle(ctx, writer: bundle.BundleWriter, journal) -> BundleOutcome:
+    if not writer.written:
+        writer.discard()
+        return BundleOutcome(writer.target, ok=False, recordings=0)
+    try:
+        path = writer.finish()
+    except Exception as exc:
+        writer.discard()
+        log.warning("job %d: the bundle could not be finished (%s)", ctx.job_id, type(exc).__name__)
+        return BundleOutcome(writer.target, ok=False, message=scrubbed(describe_error(exc)))
+    roots = {m.name.split("/")[0] for m in writer.written}
+    return BundleOutcome(path, ok=True, recordings=len(roots))
+
+
+def _one(ctx, batch, item, n, total, writer, journal, check_password):
+    """One recording through every step. Returns its CopyResult."""
+    request = item.request
+    head = f"Recording {n + 1} of {total}"
+    weights = (1.0, 0.0) if batch.output == pipeline.FOLDERS else (0.6, 0.4)
+
+    def report(fraction: float, phase: str) -> None:
+        ctx.report(n + min(1.0, max(0.0, fraction)), total, f"{head}: {phase}")
+
+    if item.work:
+        pipeline.remove_work_copy(item.work)  # a stale one from a crash
+        os.makedirs(item.work, exist_ok=True)
+    else:
+        destination = request.destination
+        if not os.path.lexists(destination + ".partial"):
+            ctx.add_cleanup(lambda d=destination: anonymize.remove_unfinished(d))
+    if item.work:
+        ctx.add_cleanup(lambda w=item.work: pipeline.remove_work_copy(w))
+
+    # 1. Anonymize (into the work folder, or straight to the destination).
+    def got(message) -> None:
+        if isinstance(message, ByteProgress):
+            report(weights[0] * message.fraction, "Anonymizing")
+
+    report(0, "Anonymizing")
+    try:
+        result = ctx.run_isolated(
+            anonymize.make_copy, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
+        )
+    except Exception as exc:
+        stop = isinstance(exc, JobCancelled) or is_stop(exc)
+        if not anonymize.remove_unfinished(request.destination):
+            ctx.publish(anonymize.Leftover(request.key, request.destination + ".partial"))
+        if item.work and not pipeline.remove_work_copy(item.work):
+            ctx.publish(anonymize.Leftover(request.key, item.work))
+        if stop:
+            raise
+        journal.mark(n, journal_.FAILED)
+        return _fail(ctx, item, anonymize.describe_copy_error(exc, request))
+    if not result.ok:
+        if item.work:
+            pipeline.remove_work_copy(item.work)
+        journal.mark(n, journal_.FAILED)
+        return replace(result, destination=item.final, message=scrubbed(result.message))
+    if batch.output == pipeline.FOLDERS:
+        journal.mark(n, journal_.DONE)
+        return result
+
+    # 2 and 3. Archive (or add to the bundle) and check.
+    work_copy = request.destination
+    try:
+        if batch.output == pipeline.ARCHIVES:
+            plan = archive.plan(work_copy, batch.destination)
+            ctx.add_cleanup(lambda p=plan: archive.remove_temporary(p))
+
+            def packed(message) -> None:
+                if isinstance(message, ByteProgress):
+                    report(weights[0] + 0.3 * message.fraction, "Making the archive")
+                else:
+                    report(weights[0] + 0.3, "Checking the archive")
+
+            report(weights[0], "Making the archive")
+            try:
+                ctx.run_isolated(
+                    archive.run_in_helper,
+                    plan,
+                    check_password,
+                    on_message=packed,
+                    stop_grace=STOP_GRACE_SECONDS,
+                )
+                ctx.check_cancelled()
+                archive.finish(plan)
+            except BaseException:
+                archive.remove_temporary(plan)
+                raise
+        else:
+            size = sum(m.size for m in bundle.members_of(work_copy)) or 1
+            done = [0]
+
+            def added(count: int) -> None:
+                done[0] += count
+                report(weights[0] + weights[1] * done[0] / size, "Adding to the bundle")
+
+            report(weights[0], "Adding to the bundle")
+            writer.add(work_copy, ctx.cancel_token, added)
+            journal.payload["bundle_offset"] = writer.offset
+    except Exception as exc:
+        stop = isinstance(exc, JobCancelled) or is_stop(exc)
+        if not pipeline.remove_work_copy(item.work):
+            ctx.publish(anonymize.Leftover(request.key, item.work))
+        if stop:
+            raise
+        journal.mark(n, journal_.FAILED)
+        log.warning("job %d: an archive step failed (%s)", ctx.job_id, type(exc).__name__)
+        return _fail(ctx, item, describe_error(exc))
+
+    # 4. The archive matches the checked copy: the work copy can go.
+    report(1.0, "Tidying up")
+    if not pipeline.remove_work_copy(item.work):
+        ctx.publish(anonymize.Leftover(request.key, item.work))
+    journal.mark(n, journal_.DONE)
+    return replace(result, destination=item.final)
 
 
 def self_check(ctx: JobContext) -> SelfTestResult:

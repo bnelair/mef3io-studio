@@ -333,16 +333,83 @@ originals are never changed. A wizard takes you through it step by step, with
    characters beyond the Latin alphabets). The typed passwords are cleared
    if you leave the page before the copies are made; you then type them
    again.
-6. **Review.** Choose where to save the copies, then check, for every
+6. **Output.** Choose how the copies are saved: a **folder per recording**
+   (`.mefd`, like the originals), an **archive per recording** (one
+   `.mefd.tar` file each, which this app opens directly), or **one archive
+   for the whole batch** (see below).
+7. **Review.** Choose where to save the copies, then check, for every
    recording: the channels kept and the ones left out (by name), the original
    and new start and end, how far the dates move, where the copy goes, its
    estimated size and the free space. The app refuses to start if a name is
    taken or the folder is inside any recording.
-7. **Make the copies.** Each copy is made and **checked** in the background,
+8. **Make the copies.** First the app checks everything it can before
+   starting (the names, that the originals are still there, that nothing
+   is in the way, and that there is enough free space), so a long batch
+   does not fail after hours. Then each copy is made and **checked** in the background,
    with a progress bar and **Stop**. A stopped or failed copy leaves nothing
    behind, and the others still go ahead; if an unfinished copy could not be
    removed, the result says so and names the folder to delete. Each recording
    then says **Saved and checked**, or why it was not saved.
+
+### Anonymize a batch into archives
+
+Anonymizing many recordings can take hours. You can start a batch and walk
+away: the app does every recording, one after another, without asking
+anything.
+
+For each recording, when you chose archives:
+
+1. it makes the anonymized copy in the **work folder** and checks it;
+2. it packs that copy into an archive in the chosen folder, under a
+   temporary name;
+3. it opens the archive and checks that it matches the checked copy (the
+   same channels, parts, times and number of samples), then gives it its
+   final name;
+4. only then does it delete the copy from the work folder.
+
+The work folder only ever holds the recording being worked on.
+
+**One archive for the whole batch** is a single `.tar` file for sharing.
+Inside it, each anonymized recording is its own folder. This app and the
+mef3io library cannot open that file directly: extract it first with any
+archive tool (7-Zip, the one built into Windows or macOS, or `tar`), which
+gives back the recordings, ready to use. It does **not** join the
+recordings into one recording; they stay separate.
+
+While a batch runs:
+
+- **one problem does not stop the batch:** a recording that cannot be copied
+  is reported, and the others go ahead;
+- **Stop** ends the step that is running and removes anything half-made. With
+  one archive for the batch, the archive is finished with the recordings
+  already done;
+- **the computer is kept awake** until the batch ends (you can turn this off
+  in Settings);
+- the progress shows how many recordings are done ("Recording 3 of 7"), the
+  current step ("Anonymizing", "Making the archive", "Checking the archive",
+  "Adding to the bundle") and the time left, and a notification tells you
+  when the batch is done.
+
+**If the batch is interrupted** (the app was closed, the computer crashed or
+lost power), the next start asks: "Continue the batch: 4 of 7 done".
+Continuing checks everything again, then makes the rest. Passwords are
+never stored, so you type them again. Unfinished copies left in the work
+folder are never kept silently: the app offers to remove them.
+
+### Settings
+
+**File → Settings** (on a Mac: mef3io-studio → Settings):
+
+- **Work folder:** where each copy is made and checked before it is
+  archived. By default it is a folder in the app's own data area. A fast
+  local disk is a good choice when your recordings are on a network drive.
+  The app checks that it can write there and that it is not inside a
+  recording, and before every batch that it has room for the largest
+  recording.
+- **Keep the computer awake while a batch runs:** on by default.
+
+The app remembers these between sessions. The work folder is stored in a
+sealed form, never as plain text in the app's settings.
 
 ### The result and the date key
 

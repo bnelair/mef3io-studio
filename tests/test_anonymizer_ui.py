@@ -31,6 +31,7 @@ from mef3io_studio.anonymizer.page import (
     STEP_CHANNELS,
     STEP_DATES,
     STEP_IDENTITY,
+    STEP_OUTPUT,
     STEP_PASSWORDS,
     STEP_RECORDINGS,
     STEP_REVIEW,
@@ -51,6 +52,16 @@ def wait_loaded(qtbot, explorer, n, timeout=60_000):
         lambda: len(explorer.entries()) == n and all(not e.busy for e in explorer.entries()),
         timeout=timeout,
     )
+
+
+def damage_signal(path: Path) -> Path:
+    """Flip a byte inside the first block's compressed data: the details
+    and the index stay intact, so only reading the signal finds it."""
+    tdat = sorted(Path(path).glob("*.timd/*.segd/*.tdat"))[0]
+    raw = bytearray(tdat.read_bytes())
+    raw[1024 + 304 + 10] ^= 0xFF
+    tdat.write_bytes(bytes(raw))
+    return path
 
 
 def write_many_channels(path: Path, channels: int = 256, start: int = T0) -> Path:
@@ -370,7 +381,16 @@ def test_dates_step_plans_and_refuses_in_plain_words(window_page, qtbot, tmp_pat
 # The run
 
 
-def _through_to_review(page, qtbot, folder, names=None, keep_text=False, passwords=None):
+def _through_to_review(
+    page,
+    qtbot,
+    folder,
+    names=None,
+    keep_text=False,
+    passwords=None,
+    output="folders",
+    bundle_name="batch.tar",
+):
     page.next()  # channels -> dates
     page.dates.keep_utc.setChecked(True)
     page.dates.new_date.setDate(QDate(2010, 3, 1))
@@ -390,10 +410,26 @@ def _through_to_review(page, qtbot, folder, names=None, keep_text=False, passwor
         page.passwords.basic_again.setText(passwords[0])
         page.passwords.full.setText(passwords[1])
         page.passwords.full_again.setText(passwords[1])
+    page.next()  # -> output
+    assert page.step == STEP_OUTPUT
+    if output == "archives":
+        page.output.archives.setChecked(True)
+    elif output == "bundle":
+        page.output.bundle.setChecked(True)
+        page.output.bundle_name.setText(bundle_name)
     page.next()  # -> review
     assert page.step == STEP_REVIEW
     page.review.set_folder(str(folder))
     assert page.review.ok, page.review.blocked.text()
+
+
+def start_and_wait(qtbot, page, timeout=120_000):
+    """Make the copies: the up-front checks, then the whole batch."""
+    checks = page.start()
+    assert checks is not None
+    qtbot.waitUntil(lambda: checks.is_finished, timeout=60_000)
+    assert not page.preflight_problems, page.preflight_problems
+    qtbot.waitUntil(lambda: page.run.finished, timeout=timeout)
 
 
 @needs_anonymizer
@@ -439,11 +475,10 @@ def test_end_to_end_copy_result_and_privacy_check(window_page, qtbot, tmp_path, 
     text = page.review.texts[page.choices[0].key]
     assert "Left out: a3" in text and "Channels kept: 2 of 3" in text
     assert "2000-01-01 00:00:00" in text and "2010-03-01 00:00:00" in text
-    handle = page.next()  # Make the copies
+    checks = page.next()  # Make the copies: checks first, then the batch
+    qtbot.waitUntil(lambda: checks.is_finished, timeout=60_000)
     assert page.step == STEP_RUN
-    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
-        pass
-    del handle
+    qtbot.waitUntil(lambda: page.run.finished, timeout=120_000)
     assert page.run_step.result_texts[page.choices[0].key] == "Saved and checked"
     copy = out / "S001.mefd"
     assert copy.is_dir() and not (out / "S001.mefd.partial").exists()
@@ -486,14 +521,13 @@ def test_a_batch_goes_on_after_one_copy_fails(window_page, qtbot, tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     _through_to_review(page, qtbot, out, names=["C1", "C2"])
-    # Something takes the first copy's name after the review.
-    (out / "C1.mefd").mkdir()
-    page.start()
-    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
-        pass
+    # The first one's signal is damaged where only copying reads it (the
+    # up-front checks read the details only): it fails during the batch.
+    damage_signal(a)
+    start_and_wait(qtbot, page)
     results = page.run_step.result_texts
     names = {c.name: c.key for c in page.choices}
-    assert results[names["C1"]] == "That name is already taken"
+    assert results[names["C1"]] == "Part of the recording is damaged"
     assert results[names["C2"]] == "Saved and checked"
     assert (out / "C2.mefd").is_dir()
     assert not any(p.name.endswith(".partial") for p in out.iterdir())
@@ -510,7 +544,8 @@ def test_stop_leaves_nothing_behind(window_page, qtbot, tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     _through_to_review(page, qtbot, out, names=["BIG1"])
-    page.start()
+    checks = page.start()
+    qtbot.waitUntil(lambda: checks.is_finished and page.handle is not None, timeout=60_000)
     qtbot.waitUntil(
         lambda: (
             page.handle.record.progress is not None
@@ -519,8 +554,7 @@ def test_stop_leaves_nothing_behind(window_page, qtbot, tmp_path):
         timeout=60_000,
     )
     page.stop()
-    with qtbot.waitSignal(page.handle.finished, timeout=60_000):
-        pass
+    qtbot.waitUntil(lambda: page.run.finished, timeout=60_000)
     assert page.run.stopped
     assert list(out.iterdir()) == []
     assert "Stopped" in page.run_step.heading.text()
@@ -535,9 +569,7 @@ def test_date_key_is_written_only_on_request(window_page, qtbot, tmp_path, monke
     out = tmp_path / "out"
     out.mkdir()
     _through_to_review(page, qtbot, out, names=["K1"])
-    page.start()
-    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
-        pass
+    start_and_wait(qtbot, page)
     key = tmp_path / "keys" / "key.csv"
     key.parent.mkdir()
     asked = []
@@ -581,9 +613,7 @@ def test_password_protected_copy_opens_with_the_new_password(window_page, qtbot,
     out = tmp_path / "out"
     out.mkdir()
     _through_to_review(page, qtbot, out, names=["P1"], passwords=("bas-1", "full-2"))
-    page.start()
-    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
-        pass
+    start_and_wait(qtbot, page)
     copy = str(out / "P1.mefd")
     summary = mef3io.inspect(copy, "full-2")
     assert summary.encryption["encrypted"] and summary.encryption["access"] == "full"
@@ -763,6 +793,7 @@ def test_passwords_are_cleared_when_the_page_is_left(window_page, qtbot, tmp_pat
     for field_ in (step.full, step.full_again):
         field_.setText("full-2")
     page.next()
+    page.next()  # output
     assert page.step == STEP_REVIEW
     window.module_list.setCurrentRow(window.module_keys.index("explorer"))
     assert step.basic.text() == "" and step.full.text() == "" and step.none.isChecked()
@@ -846,3 +877,39 @@ def test_reserved_names_and_the_swap_button(window_page):
     from mef3io_studio.model.anonymize import name_problem
 
     assert name_problem("CON") and name_problem("nul.mefd")
+
+
+def test_the_output_step_and_its_plain_words(window_page, qtbot, tmp_path):
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    page.next()
+    page.dates.keep_utc.setChecked(True)
+    page.dates.new_date.setDate(QDate(2010, 3, 1))
+    page.next()
+    page.go(STEP_OUTPUT)
+    out = page.output
+    assert out.output() == "folders" and not out.bundle_help.isVisibleTo(out)
+    out.bundle.setChecked(True)
+    assert out.bundle_help.isVisibleTo(out)
+    assert "cannot open this file directly" in out.bundle_help.text()
+    assert "does NOT join the recordings into one" in out.bundle_help.text()
+    assert "Work folder:" in out.work_label.text()
+    out.bundle_name.setText("x.mefd.tar")
+    assert "must not end in .mefd.tar" in out.problem_text()
+    assert not page.next_button.isEnabled()
+    out.bundle_name.setText("study batch")
+    assert out.bundle_file() == "study batch.tar" and out.problem_text() == ""
+    page.next()
+    page.review.set_folder(str(tmp_path / "dest"))
+    text = page.review.texts[page.choices[0].key]
+    assert "Goes into the batch archive:" in text and "study batch.tar" in text
+    assert "extract it first" in page.review.mode_text
+    out_archives = page.output
+    page.go(STEP_OUTPUT)
+    out_archives.archives.setChecked(True)
+    page.next()
+    page.review.set_folder(str(tmp_path / "dest"))
+    assert page.review.texts[page.choices[0].key].count(".mefd.tar") == 1
+    assert "work folder" in page.review.mode_text

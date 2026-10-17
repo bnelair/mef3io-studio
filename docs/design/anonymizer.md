@@ -248,6 +248,58 @@ the copies".
   clears them), "–" otherwise. Built from the details the Explorer already
   read; the 1%-of-bytes test now builds the card in the measured helper.
 
+### The unattended batch (pipeline)
+
+The issue #5 comment "one unattended pipeline from selection to shareable
+archives" (2026-10-16) is built as follows.
+
+- **Output step** (before Review): folders (as before), one archive per
+  recording, or one archive for the whole batch (`model/pipeline.py`).
+- **Per recording, in sequence** (`workers.tasks.run_batch` → `_one`):
+  anonymize (helper process) into `<work>/work-<batch>-<n>/<name>.mefd`;
+  archives: `model.archive.plan` + `run_in_helper` (mef3io
+  `archive_session` to a temporary `.mefd.tar` next to the target, then
+  `inspect` of the archive vs the work copy: channels, rates, every part's
+  start, end, samples and blocks) + `finish` (rename, never replacing);
+  bundle: `model.bundle.BundleWriter.add` (Python `tarfile`, deterministic:
+  sorted members, mtime 0, uid/gid 0, no user names, 0755/0644, ustar with a
+  pax header only where a name does not fit; 1 MB chunks, never a whole
+  `.tdat`; the added members' names, types and sizes are read back from the
+  headers before the work copy goes). The work copy is deleted only after
+  that check. Folders mode is unchanged (mef3io writes `<dest>.partial` and
+  publishes).
+- **Up-front checks** (`preflight_batch`, before anything is written): the
+  originals still exist, the work folder is writable and outside any
+  recording, nothing is in the way at the destination, free space (the
+  destination for all estimated copies, the work folder for the largest),
+  and mef3io's name refusal for every recording. Problems are listed on the
+  Review step and nothing starts. mef3io#111/#112's `check()` and refusal
+  codes replace the name probe when the app moves to mef3io 1.4.
+- **Stop:** each step cleans up (mef3io removes `.partial`; a temporary
+  archive is removed; a half-added bundle recording is cut back by
+  truncating to the last checked offset). A bundle is then finished with
+  the recordings already in it, so finished work is delivered and nothing
+  half-made stays. Failures end one recording only.
+- **Keep awake** (`model/awake.py`, on by default, a preference): Windows
+  `SetThreadExecutionState`, macOS `caffeinate -i -w <pid>`, Linux
+  `systemd-inhibit --what=sleep:idle … sleep infinity`; a quiet no-op when
+  none is available. **Notification** when the batch ends: the system tray
+  message where available, plus a taskbar/dock alert.
+- **Journal** (`model/journal.py`): in the app-data folder, one JSON per
+  batch with ONLY opaque ids in clear (batch id, item ids, states); the
+  rest (sources, destinations, names, shifts, channels, original dates for
+  the date key, the bundle's temporary file and its last checked offset) is
+  a sealed blob: a SHA-256 keystream under a random per-user key in
+  `journal.key` (0600) plus HMAC-SHA-256. Passwords are never journaled
+  (only "needs a password" flags). On start the app offers "Continue the
+  batch: 4 of 7 done"; continuing re-runs the up-front checks for the
+  recordings still to do, asks the passwords again, redoes the interrupted
+  recording (its stale work copy is removed first) and skips finished ones.
+  Leftover work copies not claimed by a journal are offered for removal.
+- **Settings** (`common/settings_dialog.py`): the work folder (default
+  `<app data>/work`; stored SEALED with the same key, never a path in
+  clear) and keep-awake.
+
 **Deferred** (not in dev2): the per-item free-text review screen (one
 drop/keep choice for all text today); pseudonym generation per subject and a
 naming pattern; running copies in parallel; a PDF/CSV report export; the

@@ -25,7 +25,8 @@ Hard rules:
   the only optional part, and it never lives beside the recordings.
 - Recovery artifacts live in the per-user app-data dir under opaque names;
   paths and session names count as identifying (log filter, no recent-files
-  list by default, no paths in preferences).
+  list by default, no paths in clear in preferences: the work folder is
+  stored sealed).
 - Local time comes ONLY from a user-chosen site time zone via zoneinfo (one
   per app profile, plus a per-window override that is never saved); UTC,
   labelled, until one is chosen. Never from GMT_offset: one fixed number, in
@@ -147,3 +148,16 @@ Code (app shell, #2/#3):
   `explorer/privacy.py`, from inspect() only; NEVER green while an identity
   row is unknown (amber); "made by the anonymizer" = every part's LAST
   operation is `anonymize` (the ops set is inherited and survives appends).
+  Unattended batch (`model/pipeline.py`, `workers.tasks.run_batch` /
+  `preflight_batch`): Output step = folders | archives (per-recording
+  `.mefd.tar` via model.archive) | bundle (`model/bundle.py`, deterministic
+  `tarfile`, a CONTAINER that mef3io cannot open, never a merge). Work copies
+  in `<work folder>/work-<batch>-<n>/` (one at a time), deleted only after
+  the archive check. All checks run BEFORE starting. Journal
+  (`model/journal.py`): opaque ids in clear, everything else SEALED
+  (SHA-256 keystream + HMAC, key in `<app data>/journal.key`); passwords
+  never journaled; resume offered at start (env
+  MEF3IO_STUDIO_NO_STARTUP_OFFERS disables, tests set it). The work-folder
+  preference is stored sealed with the same key. Keep-awake
+  (`model/awake.py`) starts systemd-inhibit/caffeinate (tests set
+  MEF3IO_STUDIO_NO_KEEP_AWAKE: only this Python may be started).

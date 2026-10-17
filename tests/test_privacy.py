@@ -414,13 +414,14 @@ def test_anonymizing_never_logs_names_dates_or_the_date_key(qtbot, window, tmp_p
             (page.passwords.full_again, "copy-full-88"),
         ):
             field.setText(value)
+        page.next()  # output
         page.next()  # review
         out = tmp_path / "out"
         out.mkdir()
         page.review.set_folder(str(out))
-        page.start()
-        with qtbot.waitSignal(page.handle.finished, timeout=120_000):
-            pass
+        checks = page.start()
+        qtbot.waitUntil(lambda: checks.is_finished, timeout=60_000)
+        qtbot.waitUntil(lambda: page.run.finished, timeout=120_000)
         assert page.run_step.result_texts[page.choices[0].key] == "Saved and checked"
         # The key is never written unless asked for.
         assert sorted(p.name for p in out.iterdir()) == ["STUDY-9.mefd"]
@@ -433,7 +434,7 @@ def test_anonymizing_never_logs_names_dates_or_the_date_key(qtbot, window, tmp_p
         teardown_logging()
         privacy.identities.clear()
     text = log_file.read_text(encoding="utf-8")
-    assert "anonymized copies saved and checked" in text  # the task did log, by count
+    assert "batch of 1 finished" in text  # the task did log, by count
     for secret in (NAME_1, NAME_2, SUBJECT_ID, "STUDY-9", "copy-basic-77", "copy-full-88"):
         assert secret not in text, secret
     for form in ("2019", "2004-02-03", str(START_UUTC), str(key), str(tmp_path)):

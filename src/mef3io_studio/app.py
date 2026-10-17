@@ -100,6 +100,7 @@ def _build_main_window_class():
     from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QTimer, QUrl
     from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
     from PySide6.QtWidgets import (
+        QDialog,
         QDockWidget,
         QGraphicsOpacityEffect,
         QLabel,
@@ -124,6 +125,7 @@ def _build_main_window_class():
     from .common.theme import Theme, ThemeManager
     from .explorer import ExplorerPage
     from .explorer.dialogs import TimeZoneDialog
+    from .model.errors import UserMessage
     from .model.timefmt import zone_names
     from .workers.jobs import JobManager
     from .workers.tasks import self_check
@@ -162,9 +164,13 @@ def _build_main_window_class():
             self.module_keys: list[str] = []
             self.explorer = ExplorerPage(jobs, parent=self.pages)
             self.explorer.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
-            self.anonymizer = AnonymizerPage(jobs, self.explorer, parent=self.pages)
+            self.anonymizer = AnonymizerPage(jobs, self.explorer, settings, parent=self.pages)
             self.anonymizer.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
             self.anonymizer.open_copy.connect(self.open_copy_in_explorer)
+            self.anonymizer.settings_requested.connect(self.show_settings)
+            self.anonymizer.batch_finished.connect(self.notify)
+            self.anonymizer.resume_problems.connect(self._resume_refused)
+            self._tray = None
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, icon_name)
@@ -213,6 +219,15 @@ def _build_main_window_class():
             themes.changed.connect(self.apply_theme)
             self.apply_theme(themes.theme)
             self.restore_preferences()
+            QTimer.singleShot(0, self._startup_offers)
+
+        def _startup_offers(self) -> None:
+            if self._closing or os.environ.get("MEF3IO_STUDIO_NO_STARTUP_OFFERS"):
+                return
+            try:
+                self.offer_pending_work()
+            except Exception as exc:  # noqa: BLE001 - an offer never stops the app
+                log.warning("could not look for interrupted work (%s)", type(exc).__name__)
 
         # -- menus ----------------------------------------------------------
         def _build_menus(self) -> None:
@@ -234,6 +249,11 @@ def _build_main_window_class():
                 lambda: self._in_explorer(self.explorer.choose_scan_folder)
             )
             file_menu.addAction(self.scan_action)
+            file_menu.addSeparator()
+            self.settings_action = QAction("Settings…", self)
+            self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
+            self.settings_action.triggered.connect(self.show_settings)
+            file_menu.addAction(self.settings_action)
             file_menu.addSeparator()
             self.quit_action = QAction("&Quit", self)
             self.quit_action.setShortcut(QKeySequence.StandardKey.Quit)
@@ -280,6 +300,145 @@ def _build_main_window_class():
         def _in_explorer(self, action) -> None:
             self.module_list.setCurrentRow(self.module_keys.index("explorer"))
             action()
+
+        def show_settings(self) -> None:
+            from .common.settings_dialog import SettingsDialog
+
+            dialog = SettingsDialog(self.settings, self)
+            dialog.finished.connect(lambda _r: self.anonymizer.output._update())
+            dialog.open()
+            self._settings_dialog = dialog
+
+        def notify(self, text: str) -> None:
+            """A system notification (the text names no recording)."""
+            from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+
+            QApplication.alert(self)
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                return
+            if self._tray is None:
+                self._tray = QSystemTrayIcon(icons.app_icon(), self)
+            self._tray.show()
+            self._tray.showMessage("mef3io-studio", text, QSystemTrayIcon.MessageIcon.Information)
+
+        # -- interrupted work, offered at start ---------------------------------
+        def offer_pending_work(self) -> None:
+            """An interrupted batch can be continued; work copies an
+            interrupted run left behind are never kept silently."""
+            from .model import journal as journal_
+            from .model import pipeline
+
+            pending = journal_.unfinished()
+            claimed: set[str] = set()
+            for journal in pending:
+                claimed |= {i.get("work", "") for i in journal.payload.get("items", [])}
+            if pending:
+                self.offer_resume(pending[0])
+            folder = self.anonymizer.work_folder()
+            leftovers = [p for p in pipeline.leftover_work_copies(folder) if p not in claimed]
+            if leftovers:
+                self.offer_leftover_removal(leftovers)
+
+        def ask(self, title: str, text: str, detail: str, buttons) -> str:
+            """A question; returns the key of the chosen button."""
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(title)
+            box.setText(text)
+            box.setInformativeText(detail)
+            made = {}
+            for key, label, role in buttons:
+                made[box.addButton(label, role)] = key
+            box.exec()
+            return made.get(box.clickedButton(), buttons[-1][0])
+
+        def offer_leftover_removal(self, leftovers: list[str]) -> bool:
+            from .model import pipeline
+
+            choice = self.ask(
+                "Unfinished work copies",
+                f"{len(leftovers)} unfinished anonymized "
+                f"{'copy was' if len(leftovers) == 1 else 'copies were'} left in the work "
+                "folder by an interrupted run.",
+                "They have no patient details, but they were never checked, so they should "
+                "not be used. Remove them now?",
+                [
+                    ("remove", "Remove them", QMessageBox.ButtonRole.AcceptRole),
+                    ("keep", "Not now", QMessageBox.ButtonRole.RejectRole),
+                ],
+            )
+            if choice != "remove":
+                return False
+            for path in leftovers:
+                pipeline.remove_work_copy(path)
+            return True
+
+        def offer_resume(self, journal) -> str:
+            choice = self.ask(
+                "Continue the batch?",
+                f"Continue the batch: {journal.done} of {journal.total} done.",
+                "A batch of anonymized copies was interrupted. Continuing checks everything "
+                "again first, then makes the rest. Discarding removes its unfinished work; "
+                "copies already saved stay.",
+                [
+                    ("continue", "Continue the batch", QMessageBox.ButtonRole.AcceptRole),
+                    ("discard", "Discard the batch", QMessageBox.ButtonRole.DestructiveRole),
+                    ("later", "Not now", QMessageBox.ButtonRole.RejectRole),
+                ],
+            )
+            if choice == "discard":
+                self.discard_batch(journal)
+            elif choice == "continue":
+                self.continue_batch(journal)
+            return choice
+
+        def discard_batch(self, journal) -> None:
+            from .model import pipeline
+
+            temporary = journal.payload.get("bundle_temporary", "")
+            if temporary and os.path.basename(temporary).startswith(".mef3io-studio-bundle-"):
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+            for item in journal.payload.get("items", []):
+                if item.get("work"):
+                    pipeline.remove_work_copy(item["work"])
+            journal.delete()
+
+        def ask_resume_passwords(self, needs_source: bool, protected: bool):
+            """(password of the originals, (basic, full) for the copies) or
+            None when the user gives up."""
+            from .anonymizer.resume import ResumePasswordsDialog
+
+            dialog = ResumePasswordsDialog(needs_source, protected, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return None
+            return dialog.values()
+
+        def continue_batch(self, journal):
+            from .model import pipeline
+
+            needs_source, protected = pipeline.needs_passwords(journal.payload)
+            source_password, output = "", None
+            if needs_source or protected:
+                answer = self.ask_resume_passwords(needs_source, protected)
+                if answer is None:
+                    return None
+                source_password, output = answer
+            self.module_list.setCurrentRow(self.module_keys.index("anonymizer"))
+            return self.anonymizer.resume(journal, lambda _s: source_password, output)
+
+        def _resume_refused(self, text: str) -> None:
+            self.show_error(
+                UserMessage(
+                    "The batch cannot continue yet",
+                    "Before continuing, the app checked everything again and found problems. "
+                    "Nothing was written. Fix them, then choose Continue again (restart the "
+                    "app), or discard the batch.",
+                    text,
+                )
+            )
 
         def open_copy_in_explorer(self, path: str, password: str = "") -> None:
             """Show a copy the anonymizer made, straight on its Privacy check."""
