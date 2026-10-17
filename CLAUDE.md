@@ -189,11 +189,15 @@ Code (app shell, #2/#3):
   identity as asked, #36: pseudonym stored, cleared patient/location/
   descriptions EMPTY; kept patient/location values <= the original's (and
   present == original's when nothing left out); kept descriptions/note
-  text PRESENT where they must survive (`_has_content`: something left
-  after removing ALL identity values + left-out channel names + their
-  words; a superset of mef3io's redaction, which has no public API, so the
-  batch's OWN copy always passes; channel descriptions per channel via
-  `ChannelInfo.description`); notes == original's minus left-out channels
+  text PRESENT where they must survive (`_has_content` MIRRORS mef3io
+  1.4.0's `build_redactor`, which has no public API: a word survives if it
+  contains no whole value, letter run >= 3, digit run >= 3 or first/last
+  run of any identity value or left-out channel name; coarser fold. A
+  mef3io redaction change must be mirrored, or the batch rejects its OWN
+  copy and Continue is blocked: test_own_copy_is_recognised_whatever_the_
+  names_look_like catches it. Channel descriptions per channel via
+  `ChannelInfo.description`; recording/reference descriptions only when
+  nothing was left out); notes == original's minus left-out channels
   at +shift; no note text when dropped; inspect facts only; remaining blind
   spots listed in docs/design/anonymizer.md). A late
   Stop credits a folder that appeared only through the same check

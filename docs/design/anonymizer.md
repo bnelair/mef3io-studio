@@ -346,25 +346,35 @@ archives" (2026-10-16) is built as follows.
   Kept patient details and location: no value the original lacks, and,
   with no channel left out, present exactly when the original's are. Kept
   descriptions: no more than the original's, and PRESENT where they must
-  survive: the recording description always, each kept channel's own
-  description channel by channel, the reference descriptions when no
-  channel was left out. The notes exactly the original's minus those of
-  left-out channels, at original + shift; NO note text where the batch
-  removed it; where it kept it, text on every note whose original text
-  must survive, text only on notes whose original had text, never more of
-  it. "Must survive" = some letter or digit is left after taking out every
-  identity value of the original (cleared or not), the left-out channels'
-  names and every word of each, anywhere, ignoring case and accents. mef3io
-  has no public call for its own redaction and takes out no more than
-  that, so the batch's own copy always passes (rejecting it would block
-  Continue). Identity facts, notes and per-channel descriptions from
-  `inspect` only, no signal read; a fact that cannot be read proves
-  nothing. What remains undetected, all copies of the same original with
-  the same name, shift, channels and passwords: a copy that dropped note
-  text, or cleared descriptions, where every such text holds only names (it
-  comes out empty in this batch's copy too); with a channel left out, a
-  copy that cleared the patient details or location, or the reference
-  descriptions (inspect does not say which channel holds which). Read with
+  survive: each kept channel's own description channel by channel; the
+  recording and reference descriptions when no channel was left out (both
+  are stored per channel, and inspect does not say which channel holds
+  which). The notes exactly the original's minus those of left-out
+  channels, at original + shift; NO note text where the batch removed it;
+  where it kept it, text on every note whose original text must survive,
+  text only on notes whose original had text, never more of it. "Must
+  survive" (`pipeline._has_content`) MIRRORS mef3io's redaction
+  (`build_redactor` in mef3io 1.4.0's anonymize.cpp; there is no public
+  call for it): a text survives when one of its words (maximal
+  alphanumeric runs, as mef3io splits them) contains none of the pieces
+  mef3io may search for: each whole value, its letter runs of 3+, its
+  digit runs of 3+, and the whole value's first and last runs. It uses
+  every identity value of the original (cleared or not) and the left-out
+  channels' names, with a coarser case/accent fold than mef3io's, so it
+  asks for no more than mef3io leaves, and the batch's own copy passes
+  (rejecting it would block Continue). A FUTURE mef3io change to its
+  redaction rules must be mirrored here:
+  `test_own_copy_is_recognised_whatever_the_names_look_like` (letter runs
+  inside "Mary_Ann", "Jane2", "Ward9North"; ID digit runs in "AB12345CD",
+  "MRN12345") fails when the app asks for text mef3io removed. Identity
+  facts, notes and per-channel descriptions from `inspect` only, no signal
+  read; a fact that cannot be read proves nothing. What remains
+  undetected, all copies of the same original with the same name, shift,
+  channels and passwords: a copy that dropped note text, or cleared
+  descriptions, where every such text holds only names (it comes out
+  empty in this batch's copy too); with a channel left out, a copy that
+  cleared the patient details or location, or the recording or reference
+  descriptions. Read with
   `inspect` for a folder or an archive; anything else,
   even another anonymized copy of the same original, is left as it is, with
   a plain message), then continues. A Stop that arrives after a folder with

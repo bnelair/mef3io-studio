@@ -228,8 +228,8 @@ def _note_key(note, shift: int = 0) -> tuple:
     return (note.time + shift, note.kind, note.channel or "")
 
 
-#: Identity values whose text mef3io takes out of what it keeps (and more:
-#: see :func:`_has_content`).
+#: Identity values of the original whose text mef3io may take out of what
+#: it keeps (see :func:`_has_content`).
 _REMOVED_FACTS = (
     "subject_name_1",
     "subject_name_2",
@@ -241,38 +241,88 @@ _REMOVED_FACTS = (
 
 
 def _folded(text: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", text)
+    """Case and accents folded: coarser than mef3io's own fold (ASCII and
+    Latin letters, accents kept), so whatever matches there matches here."""
+    # Canonical decomposition only: compatibility forms ("…" -> "...") would
+    # split words mef3io keeps whole.
+    decomposed = unicodedata.normalize("NFD", text)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
 
-def _has_content(text: str, removed: list[str]) -> bool:
-    """Whether ``text`` clearly holds more than the names mef3io takes out
-    when it keeps text, so that SOME of it must survive in a copy.
-
-    mef3io has no public call for its redaction, so this errs towards
-    "no": it takes out every identity value of the original (cleared or
-    not), the left-out channels' names and every word of each, anywhere,
-    ignoring case and accents. That is at least what mef3io takes out, so
-    whatever is left here is left in this batch's own copy too, and the
-    batch never fails to recognise its own copy."""
-    folded = _folded(text)
-    for value in removed:
-        folded = folded.replace(value, " ")
-    return any(ch.isalnum() for ch in folded)
+def _is_alnum(ch: str) -> bool:
+    # mef3io's is_alnum: ASCII letters and digits, and every non-ASCII byte.
+    return ch != "_" and (ch.isalnum() or ord(ch) >= 0x80)
 
 
-def _removed_values(source, excluded: set[str]) -> list[str]:
+def _tokens(text: str) -> list[str]:
+    """Maximal runs of mef3io-alphanumeric characters ('_', '-' and the
+    rest split)."""
+    out, current = [], []
+    for ch in text:
+        if _is_alnum(ch):
+            current.append(ch)
+        elif current:
+            out.append("".join(current))
+            current = []
+    if current:
+        out.append("".join(current))
+    return out
+
+
+def _pieces(value: str) -> set[str]:
+    """What mef3io may search for, for one value (folded), and a little
+    more (``build_redactor``): the whole value (whitespace collapsed); its
+    letter runs of 3+ characters (``name_words``; any non-ASCII character
+    counts as a letter); its digit runs of 3+ (``id_digit_runs``, for every
+    value, not only an ID); and the whole value's first and last
+    alphanumeric run, whatever their length (see :func:`_has_content`)."""
+    whole = " ".join(_folded(value).split())
+    if not whole:
+        return set()
+    pieces = {whole}
+    tokens = _tokens(whole)
+    if tokens:
+        pieces.update((tokens[0], tokens[-1]))
+    letters = re.findall(r"(?:[^\W\d_]|[^\x00-\x7f])+", whole)
+    pieces.update(run for run in letters if len(run) >= 3)
+    pieces.update(run for run in re.findall(r"\d+", whole) if len(run) >= 3)
+    return pieces
+
+
+def _has_content(text: str, removed: set[str]) -> bool:
+    """Whether some of ``text`` certainly survives mef3io's redaction when
+    it keeps text, so that the copy must carry text there.
+
+    mef3io has no public call for its redaction (1.4.0: anonymize.cpp,
+    ``build_redactor``), so this mirrors its rules from the safe side: a
+    word of the text (a maximal alphanumeric run, as mef3io splits) that
+    contains none of the pieces of any value mef3io may remove
+    (:func:`_pieces`) cannot be touched by any of its needles: a needle
+    without separators lies inside one word, so the word would contain it;
+    one reaching into the word from outside is a whole value, and the part
+    inside is that value's first or last run, also a piece. (Not covered:
+    a removal joining two words into a new one that a later, shorter needle
+    matches; this takes a value that starts or ends with punctuation.) Such a word
+    survives in this batch's own copy. Values used: every identity value
+    of the original, cleared or not, and the names of the left-out
+    channels; mef3io uses only some of them, and matches case and accents
+    more narrowly. If mef3io ever removes more than this (a new rule), this
+    batch would no longer recognise its own copy:
+    ``test_own_copy_is_recognised_whatever_the_names_look_like`` in
+    tests/test_batch_pipeline.py exercises the shapes that matter."""
+    return any(not any(piece in word for piece in removed) for word in _tokens(_folded(text)))
+
+
+def _removed_values(source, excluded: set[str]) -> set[str]:
     values = set(excluded)
     for fact in source.identity:
         if fact.name in _REMOVED_FACTS:
             values.update(fact.values)
-    pieces = set()
+    pieces: set[str] = set()
     for value in values:
-        folded = _folded(value)
-        pieces.add(folded)
-        pieces.update(word for word in re.split(r"[^\w]+", folded) if word)
+        pieces |= _pieces(value)
     pieces.discard("")
-    return sorted(pieces, key=len, reverse=True)
+    return pieces
 
 
 def _identity_as_asked(source, copy, c: dict) -> bool:
@@ -285,10 +335,11 @@ def _identity_as_asked(source, copy, c: dict) -> bool:
       as present as in the original (a left-out channel may have held the
       only value: inspect does not say per channel);
     * descriptions it kept: no more of them than the original had, and
-      present where they must survive (:func:`_has_content`): the
-      recording's description always, each kept channel's own description
-      channel by channel, the reference descriptions when no channel was
-      left out (inspect does not say which channel holds which);
+      present where they must survive (:func:`_has_content`): each kept
+      channel's own description channel by channel; the recording's and
+      the reference descriptions when no channel was left out (they are
+      stored per channel and inspect does not say which channel holds
+      which: only a left-out channel may have held the surviving text);
     * the notes are the original's, minus those of channels left out, at
       the original's times plus the shift;
     * note text: none at all when the batch removed it; when it kept it,
@@ -332,7 +383,7 @@ def _identity_as_asked(source, copy, c: dict) -> bool:
                 continue
             if fact.occurrences > original.occurrences:
                 return False
-            if name == "session_description" or (name != "channel_description" and not excluded):
+            if name != "channel_description" and not excluded:
                 if must_survive(name) and not fact.present:
                     return False
         if choice == CLEAR_DESCRIPTIONS and choice not in cleared:

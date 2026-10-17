@@ -1106,6 +1106,79 @@ def test_kept_patient_details_with_a_channel_left_out(tmp_path):
     assert pipeline.made_by_this_batch(asked) == [True, False]
 
 
+# Review round 2: the batch's own copy is recognised whatever the names look
+# like (mef3io removes letter runs and ID digit runs, not only whole words)
+
+SHAPES = [
+    # (patient field, its value, the text that is only that value's part)
+    ("name_1", "Mary_Ann", "Ann"),
+    ("name_1", "Jane2", "Jane"),
+    ("id", "AB12345CD", "12345"),
+    ("recording_location", "Ward9North", "North"),
+    ("name_1", "Mary_Ann", "Mary_Ann"),
+    ("id", "MRN12345", "12345"),
+]
+
+
+def _subject(field, value):
+    base = dict(name_1=FIRST, name_2=LAST, id=PATIENT_ID, recording_location="Ward 9")
+    base[field] = value
+    return mef3io.Subject(**base)
+
+
+@pytest.mark.parametrize("field,value,text", SHAPES, ids=lambda v: str(v))
+def test_own_copy_is_recognised_whatever_the_names_look_like(tmp_path, field, value, text):
+    """Notes and descriptions that hold only a part of a name, ID or
+    location as mef3io finds it: the batch keeps text and descriptions, and
+    mef3io empties them in its copy, which is still this batch's own. A
+    copy that dropped the text and cleared the descriptions is not (the
+    other note and description hold more than names)."""
+    src = _source(
+        tmp_path / "orig.mefd",
+        notes=((1, text, None), (2, f"{text} moved", None), (3, text, "a1")),
+        subject=_subject(field, value),
+        acquisition=mef3io.Acquisition(
+            session_description=text,
+            channel_description=f"{text} grid",
+            reference_description=text,
+        ),
+    )
+    keep = ("subject", "location")
+    ours = _copy(src, tmp_path / "ours" / "S9.mefd", clear=keep, text="keep")
+    other = _copy(src, tmp_path / "other" / "S9.mefd")
+    asked = [_asked(p, src, clear=keep, text="keep") for p in (ours, other)]
+    assert pipeline.made_by_this_batch(asked) == [True, False]
+    # The same with every description holding only the value's part, and
+    # nothing left out: still this batch's own copy.
+    plain = _source(
+        tmp_path / "plain.mefd",
+        notes=((1, text, None),),
+        subject=_subject(field, value),
+        acquisition=mef3io.Acquisition(
+            session_description=text, channel_description=text, reference_description=text
+        ),
+    )
+    mine = _copy(plain, tmp_path / "mine" / "S9.mefd", exclude=(), clear=keep, text="keep")
+    check = _asked(mine, plain, exclude=(), clear=keep, text="keep")
+    assert pipeline.made_by_this_batch([check]) == [True]
+
+
+def test_the_recording_description_of_a_left_out_channel(tmp_path):
+    """The recording description is stored per channel. a1 holds "scalp
+    EEG", a2 only the first name; with a1 left out, this batch's copy has
+    none, and is still its own."""
+    import shutil
+
+    keep_desc = mef3io.Acquisition(session_description=FIRST)
+    main = _source(tmp_path / "a" / "orig.mefd", acquisition=keep_desc, channels=("a2", "a3"))
+    scalp = mef3io.Acquisition(session_description="scalp EEG")
+    extra = _source(tmp_path / "b" / "orig.mefd", acquisition=scalp, channels=("a1",))
+    shutil.copytree(extra / "a1.timd", main / "a1.timd")
+    keep = ("subject", "location")
+    ours = _copy(main, tmp_path / "ours" / "S9.mefd", exclude=("a1",), clear=keep)
+    assert pipeline.made_by_this_batch([_asked(ours, main, exclude=("a1",), clear=keep)]) == [True]
+
+
 def test_resume_dialog_names_each_original_and_can_share_a_password(qtbot):
     from mef3io_studio.anonymizer.resume import ResumePasswordsDialog
 
