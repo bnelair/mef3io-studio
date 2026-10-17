@@ -6,10 +6,10 @@
 [![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
 
-The app is in early development. The current test version, **0.1.0.dev2**,
+The app is in early development. The current test version, **0.1.0.dev3**,
 can explore recordings and make anonymized copies of them; the other
 features below are still being built. See [Project status](#project-status)
-and the [release notes](docs/release-notes/0.1.0.dev2.md).
+and the [release notes](docs/release-notes/0.1.0.dev3.md).
 
 ## Getting the app
 
@@ -80,7 +80,7 @@ easier to copy and share. It is read directly; there's no need to unpack it.
 
 ## What the app does
 
-The current test version, **0.1.0.dev2**, has two pages: **Explore** and
+The current test version, **0.1.0.dev3**, has two pages: **Explore** and
 **Anonymize**. The rest of the first release is still being built (see
 [Still to come](#still-to-come-for-the-first-release)).
 
@@ -368,7 +368,7 @@ mef3io-studio is in **early development**. The app, its installers, the
 **Explore** page and the **Anonymize** wizard (anonymized copies with a
 choice of channels, moved dates, new names and optional passwords, plus a
 Privacy check for any recording, and unattended batches into shareable
-archives) are ready to try in test version **0.1.0.dev2**, built on mef3io
+archives) are ready to try in test version **0.1.0.dev3**, built on mef3io
 1.4.0. Still to come for the first full release: ordering and renaming
 recordings, viewing and editing details, adding or removing passwords, and
 saving channel choices and converting in batches. Test versions are

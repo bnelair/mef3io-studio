@@ -33,7 +33,7 @@ counts, CRCs) is available, but never in the way.
 5. **Anonymizer:** batch de-identification into verified copies, with the time shift and the channels chosen by the user, and unattended batches into shareable archives. See [design/anonymizer.md](design/anonymizer.md).
 6. **Installers** for Windows (`.exe`), macOS (Apple silicon and Intel) and Linux, on GitHub Releases. The app is **not** published to PyPI.
 
-**Where it stands:** test version 0.1.0.dev2 has the installers, the
+**Where it stands:** test version 0.1.0.dev3 has the installers, the
 Explorer without ordering and renaming, and the Anonymizer. Items 2-4 and
 ordering and renaming are still to come; see the [roadmap](roadmap.md).
 

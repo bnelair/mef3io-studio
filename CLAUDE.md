@@ -3,7 +3,7 @@
 Desktop app (PySide6) for exploring, organizing, protecting and anonymizing
 MEF 3.0 recordings, built
 on the mef3io library (github.com/bnelair/mef3io). Status: early development;
-test version 0.1.0.dev2 = Explore + Anonymize on mef3io 1.4.0 (ordering/
+test version 0.1.0.dev3 = Explore + Anonymize on mef3io 1.4.0 (ordering/
 renaming, metadata edit, passwords, channel presets still to come). Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
@@ -41,7 +41,7 @@ Hard rules:
 - v0.1 scope = explore (incl. order/rename, pack/unpack), metadata view/edit,
   passwords, channel presets + batch conversion, anonymize; installers only
   (no PyPI).
-  Save a part / cut / merge (#31, first after dev2), viewer (on
+  Save a part / cut / merge (#31, first after the anonymizer), viewer (on
   mef3io-server), coverage view, annotations, export, remote access are
   NEXT DIRECTIONS needing their own specs.
 
@@ -195,7 +195,10 @@ Code (app shell, #2/#3):
   run of any identity value or left-out channel name; coarser fold. A
   mef3io redaction change must be mirrored, or the batch rejects its OWN
   copy and Continue is blocked: test_own_copy_is_recognised_whatever_the_
-  names_look_like catches it. Channel descriptions per channel via
+  names_look_like catches it. Short pieces still over-match: #39; a public
+  mef3io redaction helper (mef3io#114) would replace the mirror; with text
+  kept, mef3io's own verify can refuse a copy its removal left, e.g. an
+  unaccented name (mef3io#115, a known limitation in the release notes). Channel descriptions per channel via
   `ChannelInfo.description`; recording/reference descriptions only when
   nothing was left out); notes == original's minus left-out channels
   at +shift; no note text when dropped; inspect facts only; remaining blind
