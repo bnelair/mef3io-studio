@@ -44,7 +44,10 @@ jobs:
           old="$(tr -d '[:space:]' < VERSION)"
           new="$(python scripts/bump_version.py "$BUMP")"
           if git ls-remote --exit-code --tags origin "refs/tags/v$new" >/dev/null; then
-            echo "tag v$new already exists"; exit 1
+            echo "v$new is already released"; exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "release/v$new" >/dev/null; then
+            echo "a release branch for v$new already exists (release/v$new): finish or delete it first"; exit 1
           fi
           echo "old=$old" >> "$GITHUB_OUTPUT"
           echo "new=$new" >> "$GITHUB_OUTPUT"

@@ -46,8 +46,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
-  # Never cancel a run on main: it may be the one that publishes a release.
+  # Every push to main gets its own group (its commit), so a run on main is
+  # never cancelled, not even while queued: it may be the one that publishes a
+  # release. Branch and PR runs replace their own older runs.
+  group: build-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
@@ -267,8 +269,11 @@ jobs:
 
   release-decision:
     name: Release decision
-    # A tag push releases (it must match VERSION); a push to main releases
-    # when VERSION has no tag yet, i.e. right after a release PR is merged.
+    # A tag push releases (it must match VERSION and be on main). A push to
+    # main releases only when THAT push changed VERSION (the merged release
+    # PR) and the version has no tag yet, so an ordinary merge never
+    # publishes and the release is always the release PR's own commit. If
+    # that run failed, re-run it: it still publishes exactly its commit.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
@@ -276,19 +281,29 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - id: decide
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             test "$GITHUB_REF_NAME" = "v$version" \
               || { echo "tag $GITHUB_REF_NAME does not match VERSION $version"; exit 1; }
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+              || { echo "tag $GITHUB_REF_NAME is not on main"; exit 1; }
             release=true
+          elif ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+               || git diff --quiet "$BEFORE" "$GITHUB_SHA" -- VERSION; then
+            echo "this push did not change VERSION; nothing to publish"
+            release=false
           elif git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
             echo "v$version is already released; nothing to publish"
             release=false
           else
-            echo "VERSION $version has no tag yet: this push publishes it"
+            echo "this push set VERSION to $version, which has no tag yet: it publishes it"
             release=true
           fi
           if [ "$release" = true ]; then

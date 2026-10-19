@@ -641,6 +641,7 @@ def _build_main_window_class():
         def show_latest_version(self) -> None:
             box = QMessageBox(self)
             box.setWindowTitle("Get the latest version")
+            box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             box.setIconPixmap(icons.app_icon().pixmap(64, 64))
             box.setTextFormat(Qt.TextFormat.RichText)
             box.setText(latest_version_text())

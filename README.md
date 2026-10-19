@@ -364,13 +364,20 @@ and the release tag all read it. Releasing is two steps:
      [docs/roadmap.md](docs/roadmap.md) including its Status column.
    - Have it reviewed.
 
+   The installer build shown on the pull request comes from its first
+   commit; pushes that change only notes or docs run the other checks.
+
    **Merging publishes the release.** `build.yml` builds and tests every
    installer from the merged commit, then tags exactly that commit
-   `v<version>` and publishes the installers with `SHA256SUMS`. Test versions
-   (`0.1.0.dev4`, `0.2.0rc1`) are published as pre-releases, finished
-   versions as the latest release.
+   `v<version>` and publishes the installers with `SHA256SUMS`. Only the
+   merge that changed `VERSION` publishes; other merges never do. Test
+   versions (`0.1.0.dev4`, `0.2.0rc1`) are published as pre-releases,
+   finished versions as the latest release. If that run fails, fix the
+   cause and re-run it from the Actions tab: it still publishes exactly the
+   merged commit.
 
-Pushing a `v<version>` tag by hand still works; it must match `VERSION`.
+Pushing a `v<version>` tag by hand still works; it must match `VERSION` and
+point to a commit on `main`.
 
 ## Project status
 

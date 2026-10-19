@@ -247,3 +247,6 @@ def test_copy_the_releases_link(window, qtbot):
     box = window._latest_box
     next(b for b in box.buttons() if b.text() == "Copy the link").click()
     assert QApplication.clipboard().text() == RELEASES_URL
+    # Any button closes the message box; the status bar confirms the copy.
+    assert not box.isVisible()
+    assert window.statusBar().currentMessage() == "Link copied."

@@ -64,10 +64,13 @@ Code (app shell, #2/#3):
   major/explicit) opens a PR "Release vX" changing VERSION plus a notes stub;
   CI fails while `docs/release-notes/<VERSION>.md` is missing or still the stub
   (`test_release_tools.py`). Merging it releases: build.yml's
-  `release-decision` sees a VERSION with no tag, then `release` tags exactly
-  that built commit (`gh release create --target`). Test versions are
-  pre-releases, finished ones `--latest`. Main runs are never cancelled, and
-  a published release is never overwritten from another commit.
+  `release-decision` publishes only when THAT push changed VERSION (diff
+  `github.event.before`..sha) and v<VERSION> has no tag; `release` then tags
+  exactly that built commit (`gh release create --target`). A failed release
+  run is re-run, not re-merged. A hand-pushed tag must match VERSION and be
+  on main. Test versions are pre-releases, finished ones `--latest`. Each
+  main push has its own concurrency group (never cancelled, even queued).
+  A published release is never overwritten from another commit.
 - Long work goes through `workers.JobManager.submit(title, fn, ...)` — never on
   the UI thread; `fn(ctx, ...)` reports via `ctx.report(done, total, phase)`
   (throttled) and polls `ctx.check_cancelled()`. Titles shown to users carry
