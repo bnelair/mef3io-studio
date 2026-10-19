@@ -93,6 +93,7 @@ QListWidget#ModuleList::item:selected { background: $accent_soft; color: $text; 
 QListWidget#ModuleList:focus { outline: none; }
 QListWidget#ModuleList::item:focus { border: 2px solid $accent; }
 QLabel#AppTitle { color: $text; padding: 0.9em 0.9em 0.25em 0.9em; }
+QLabel#AppVersion { color: $muted; padding: 0.5em 0.9em 0.7em 0.9em; }
 QLabel#Muted, QLabel#Caption { color: $muted; }
 QLabel#Danger { color: $danger; }
 QLabel#Good, QLabel#PrivacyGood { color: $success; }

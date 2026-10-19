@@ -341,26 +341,36 @@ The library side of the plan is tracked in
 
 ### Make a release
 
-1. **Revise the documentation first (required).** Open a pull request that
-   checks everything people read against the app that is about to ship: this
-   README, [docs/user-guide.md](docs/user-guide.md) and its screenshots
-   (`docs/img/screenshots/`), the texts the installers show
-   (`packaging/windows/mef3io-studio.iss`, `packaging/linux/mef3io-studio.desktop`),
-   the app's own description (`--help`, in `src/mef3io_studio/app.py`), and
-   [docs/roadmap.md](docs/roadmap.md) including its Status column. Write the
-   release notes for testers in `docs/release-notes/<version>.md` (plain
-   words: what is new, what to try, known limitations, how to report a
-   problem without sharing patient data); the release uses that file as its
-   description, and falls back to a short generic text when there is none.
-   Have it reviewed and merge it before tagging.
-2. Set the new version in `VERSION` (in the same pull request or its own) and
-   merge it.
-3. Tag the resulting commit on `main` and push the tag:
-   `git switch main && git pull && git tag v$(cat VERSION) && git push origin v$(cat VERSION)`.
-   `build.yml` builds and tests every installer and, only if the tag matches
-   `VERSION` (checked after the builds), publishes them as a GitHub
-   pre-release with `SHA256SUMS`. Every release is published as a
-   pre-release; to mark a final version, edit the release on GitHub afterwards.
+The version lives in one place, the `VERSION` file; the app, the installers
+and the release tag all read it. Releasing is two steps:
+
+1. **Start it:** on GitHub, *Actions → Bump version → Run workflow*, and
+   choose `dev` (the next test version), `release` (turn the current test
+   version into the finished one), `patch` / `minor` / `major`, or type an
+   exact version. The workflow never pushes to `main`: it opens a pull
+   request "Release v…" that changes `VERSION` and adds a release-notes stub.
+2. **Finish it in that pull request, then merge it:**
+   - **Write the release notes** in `docs/release-notes/<version>.md`: plain
+     words for testers and users (what is new, what to try, known
+     limitations, how to report a problem without sharing patient data).
+     They become the release description. CI fails while the file is still
+     the stub.
+   - **Revise the documentation** against the app that is about to ship:
+     this README, [docs/user-guide.md](docs/user-guide.md) and its
+     screenshots (`docs/img/screenshots/`), the texts the installers show
+     (`packaging/windows/mef3io-studio.iss`,
+     `packaging/linux/mef3io-studio.desktop`), the app's own description
+     (`--help`, in `src/mef3io_studio/app.py`), and
+     [docs/roadmap.md](docs/roadmap.md) including its Status column.
+   - Have it reviewed.
+
+   **Merging publishes the release.** `build.yml` builds and tests every
+   installer from the merged commit, then tags exactly that commit
+   `v<version>` and publishes the installers with `SHA256SUMS`. Test versions
+   (`0.1.0.dev4`, `0.2.0rc1`) are published as pre-releases, finished
+   versions as the latest release.
+
+Pushing a `v<version>` tag by hand still works; it must match `VERSION`.
 
 ## Project status
 

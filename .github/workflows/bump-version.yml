@@ -1,0 +1,78 @@
+name: Bump version
+
+# Starts a release. Run it from the Actions tab ("Run workflow"):
+#   dev      next test version   (0.1.0.dev3 -> 0.1.0.dev4; 0.1.0 -> 0.1.1.dev1)
+#   release  the finished version (0.1.0.dev4 -> 0.1.0)
+#   patch / minor / major  from a finished version
+#   or an explicit version such as 0.2.0.dev1
+#
+# It never pushes to main. It opens a pull request that changes VERSION (the
+# single source of truth) and adds a release-notes stub. Write the notes and
+# do the documentation revision in that PR (README "Make a release"); CI
+# refuses the PR while the stub marker is there. Merging it releases:
+# build.yml sees a VERSION on main with no tag yet, builds and tests every
+# installer, then tags that exact commit and publishes the release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "dev | release | patch | minor | major, or an explicit version like 0.2.0.dev1"
+        required: true
+        default: "dev"
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Compute and write the new version
+        id: ver
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          old="$(tr -d '[:space:]' < VERSION)"
+          new="$(python scripts/bump_version.py "$BUMP")"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$new" >/dev/null; then
+            echo "tag v$new already exists"; exit 1
+          fi
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "$old -> $new"
+      - name: Open the release pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD: ${{ steps.ver.outputs.old }}
+          NEW: ${{ steps.ver.outputs.new }}
+        run: |
+          branch="release/v$NEW"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add VERSION docs/release-notes
+          git commit -m "Release v$NEW: set VERSION (was $OLD)"
+          git push origin "$branch"
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          Sets \`VERSION\` from $OLD to **$NEW**. Merging this pull request publishes the release: \`build.yml\` builds and tests every installer from the merged commit, then tags it \`v$NEW\` and publishes the release with \`SHA256SUMS\`.
+
+          Before merging (README, "Make a release"):
+          - [ ] Write \`docs/release-notes/$NEW.md\` (it is the release description) and remove the stub marker. CI fails until then.
+          - [ ] Revise the documentation against the app that ships: README, \`docs/user-guide.md\` and its screenshots, the installer texts, \`--help\`, \`docs/roadmap.md\` with its Status column, \`CLAUDE.md\`.
+          - [ ] Review gate passed and logged on this pull request.
+          EOF
+          gh pr create --base main --head "$branch" --title "Release v$NEW" --body-file "$RUNNER_TEMP/body.md"
+          # Events caused by this workflow's token do not start other workflows,
+          # so start the checks on the new branch explicitly. Pushes to the
+          # branch after that (the notes, the docs) start them as usual.
+          gh workflow run ci.yml --ref "$branch"
+          gh workflow run build.yml --ref "$branch"

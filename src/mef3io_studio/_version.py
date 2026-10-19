@@ -11,8 +11,16 @@ Three ways the app runs, three places that file can be:
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
+
+#: Where every version is published. The app never checks it by itself (it
+#: makes no network connections); it only shows this link.
+RELEASES_URL = "https://github.com/bnelair/mef3io-studio/releases"
+
+# A PEP 440 pre-release or development version: 0.1.0.dev3, 0.2.0rc1, ...
+_TEST_VERSION = re.compile(r"(?:\.dev\d+|(?:a|b|rc)\d+)$")
 
 
 def _read(path: Path) -> str | None:
@@ -48,6 +56,17 @@ def mef3io_version() -> str:
     except Exception:
         return "not available"
     return str(getattr(mef3io, "__version__", "unknown"))
+
+
+def is_test_version(version: str) -> bool:
+    """True for a test version (development or pre-release build)."""
+    return bool(_TEST_VERSION.search(version))
+
+
+def version_label(version: str | None = None) -> str:
+    """The version as people see it: ``0.1.0.dev3 (test version)``."""
+    version = version or app_version()
+    return f"{version} (test version)" if is_test_version(version) else version
 
 
 __version__ = app_version()

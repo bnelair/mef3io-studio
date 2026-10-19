@@ -500,6 +500,15 @@ recording's details, so it is instant even on very large recordings.
 
 ## Help and reporting problems
 
+- **Which version you have** is shown in the window's title and at the
+  bottom of the list of pages on the left. A "test version" is an early
+  build for trying out new features.
+- **Help → Get the latest version** shows where new versions are published
+  ([the Releases page on GitHub](https://github.com/bnelair/mef3io-studio/releases)),
+  with a button that opens it in your web browser. Download the installer
+  for your computer there and install it over the old version; your settings
+  are kept. The app never checks for new versions by itself, because it
+  never connects to the internet.
 - **Help → Check this installation** tests the app with a small made-up
   recording. If something seems wrong with the app itself, start there.
 - **View → Appearance** switches between the light and the dark look, or
