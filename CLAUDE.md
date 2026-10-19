@@ -53,10 +53,25 @@ Code (app shell, #2/#3):
   `packaging/mef3io-studio.spec` + `.github/workflows/build.yml`; every build
   must pass `mef3io-studio --self-test`. Not on PyPI, ever. Version = `VERSION`
   (read by `_version.py`, pyproject, the spec, the installers; a test pins
-  `app_version()` to it). Releases: README "Make a release" (docs revision
-  PR first); `docs/release-notes/<VERSION>.md` (plain words, for testers) is
-  the GitHub release description (build.yml release job, generic text when
-  missing; always `--prerelease`).
+  `app_version()` to it); shown in the window title, the sidebar
+  (`AppVersion`, "(test version)" for .devN/aN/bN/rcN) and About. Help → "Get
+  the latest version…" only SHOWS `RELEASES_URL` (opens the browser, copies
+  the link): the app never checks for updates itself (no network, ever;
+  automatic updates were deferred by the maintainer on 2026-10-19, and if they
+  come back they need a signed manifest with a maintainer-held key, see the
+  Notepad++ 2025 updater hijack). Releases: README "Make a release". The
+  `bump-version` workflow (`scripts/bump_version.py`: dev/release/patch/minor/
+  major/explicit) opens a PR "Release vX" changing VERSION plus a notes stub;
+  CI fails while `docs/release-notes/<VERSION>.md` is missing or still the stub
+  (`test_release_tools.py`). Merging it releases: build.yml's
+  `release-decision` publishes only when THAT push changed VERSION (diff
+  `github.event.before`..sha) and v<VERSION> has no tag; `release` then tags
+  exactly that built commit (`gh release create --target`). A failed release
+  run is re-run, not re-merged (a tag already on THIS commit = finish that
+  release; on another commit = never touched). A hand-pushed tag must match VERSION and be
+  on main. Test versions are pre-releases, finished ones `--latest`. Each
+  main push has its own concurrency group (never cancelled, even queued).
+  A published release is never overwritten from another commit.
 - Long work goes through `workers.JobManager.submit(title, fn, ...)` — never on
   the UI thread; `fn(ctx, ...)` reports via `ctx.report(done, total, phase)`
   (throttled) and polls `ctx.check_cancelled()`. Titles shown to users carry

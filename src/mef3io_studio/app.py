@@ -15,7 +15,7 @@ import platform
 import sys
 from collections.abc import Sequence
 
-from ._version import app_version, mef3io_version
+from ._version import RELEASES_URL, app_version, mef3io_version, version_label
 
 log = logging.getLogger("mef3io_studio")
 
@@ -93,6 +93,18 @@ def about_text() -> str:
     )
 
 
+def latest_version_text() -> str:
+    return (
+        f"<p>You are using mef3io-studio <b>{version_label()}</b>.</p>"
+        "<p>New versions are published on the project's page on GitHub:<br>"
+        f'<a href="{RELEASES_URL}">{RELEASES_URL}</a></p>'
+        "<p>To update, download the installer for your computer from there and "
+        "install it over this one. Your settings are kept.</p>"
+        "<p>The app does not check for new versions by itself: it never connects "
+        "to the internet.</p>"
+    )
+
+
 # --------------------------------------------------------------------------
 # Main window
 # --------------------------------------------------------------------------
@@ -141,7 +153,7 @@ def _build_main_window_class():
             self.jobs = jobs
             self._closing = False
             self._stopping_dialog = None
-            self.setWindowTitle("mef3io-studio")
+            self.setWindowTitle(f"mef3io-studio {app_version()}")
             self.setWindowIcon(icons.app_icon())
             em = self.fontMetrics().height()
             self.setMinimumSize(QSize(em * 40, em * 26))
@@ -159,8 +171,13 @@ def _build_main_window_class():
             side = QVBoxLayout(self.sidebar)
             side.setContentsMargins(0, 0, 0, 0)
             side.setSpacing(0)
+            self.version_label = QLabel(f"Version {version_label()}", self.sidebar)
+            self.version_label.setObjectName("AppVersion")
+            self.version_label.setWordWrap(True)
+            self.version_label.setToolTip("Help → Get the latest version")
             side.addWidget(title)
             side.addWidget(self.module_list, 1)
+            side.addWidget(self.version_label)
 
             self.pages = QStackedWidget(self)
             self.page_widgets: list[QWidget] = []
@@ -299,6 +316,9 @@ def _build_main_window_class():
             self.open_logs_action.triggered.connect(self.open_log_folder)
             help_menu.addAction(self.open_logs_action)
             help_menu.addSeparator()
+            self.latest_action = QAction("Get the latest version…", self)
+            self.latest_action.triggered.connect(self.show_latest_version)
+            help_menu.addAction(self.latest_action)
             self.about_action = QAction("&About mef3io-studio", self)
             self.about_action.setMenuRole(QAction.MenuRole.AboutRole)
             self.about_action.triggered.connect(self.show_about)
@@ -617,6 +637,38 @@ def _build_main_window_class():
             box.addButton(QMessageBox.StandardButton.Close)
             box.open()
             self._about_box = box
+
+        def show_latest_version(self) -> None:
+            box = QMessageBox(self)
+            box.setWindowTitle("Get the latest version")
+            box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            box.setIconPixmap(icons.app_icon().pixmap(64, 64))
+            box.setTextFormat(Qt.TextFormat.RichText)
+            box.setText(latest_version_text())
+            box.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.LinksAccessibleByMouse
+            )
+            self._make_links_open(box)
+            open_page = box.addButton("Open the download page", QMessageBox.ButtonRole.ActionRole)
+            open_page.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))
+            copy = box.addButton("Copy the link", QMessageBox.ButtonRole.ActionRole)
+            copy.clicked.connect(lambda: self._copy_text(RELEASES_URL, "Link copied."))
+            box.addButton(QMessageBox.StandardButton.Close)
+            box.open()
+            self._latest_box = box
+
+        @staticmethod
+        def _make_links_open(box) -> None:
+            # QMessageBox's text label: links open in the user's web browser.
+            for label in box.findChildren(QLabel):
+                label.setOpenExternalLinks(True)
+
+        def _copy_text(self, text: str, status: str) -> None:
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.clipboard().setText(text)
+            self.statusBar().showMessage(status, 5000)
 
         # -- preferences ------------------------------------------------------
         def restore_preferences(self) -> None:

@@ -1,5 +1,6 @@
 """The main window: module switcher, menus, About, theme, persisted layout."""
 
+import pytest
 from PySide6.QtCore import Qt
 
 from mef3io_studio import __version__
@@ -195,3 +196,57 @@ def test_error_dialog_hides_technical_details(window, qtbot):
     dialog.details.toggle.setChecked(True)
     assert dialog.details.box.isVisibleTo(dialog)
     dialog.close()
+
+
+def test_version_is_shown_in_the_window(window):
+    from mef3io_studio._version import version_label
+
+    assert __version__ in window.windowTitle()
+    assert window.version_label.text() == f"Version {version_label()}"
+
+
+@pytest.mark.parametrize(
+    ("version", "label"),
+    [
+        ("0.1.0.dev3", "0.1.0.dev3 (test version)"),
+        ("0.2.0rc1", "0.2.0rc1 (test version)"),
+        ("0.1.0", "0.1.0"),
+    ],
+)
+def test_version_label(version, label):
+    from mef3io_studio._version import version_label
+
+    assert version_label(version) == label
+
+
+def test_latest_version_dialog_links_the_releases_page(window, qtbot, monkeypatch):
+    from PySide6.QtGui import QDesktopServices
+
+    from mef3io_studio._version import RELEASES_URL
+
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    help_menu = window.menuBar().actions()[-1].menu()
+    action = next(a for a in help_menu.actions() if a.text() == "Get the latest version…")
+    action.trigger()
+    box = window._latest_box
+    assert RELEASES_URL in box.text() and __version__ in box.text()
+    assert "never connects" in box.text()
+    by_text = {b.text(): b for b in box.buttons()}
+    by_text["Open the download page"].click()
+    assert opened == [RELEASES_URL]
+    box.close()
+
+
+def test_copy_the_releases_link(window, qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from mef3io_studio._version import RELEASES_URL
+
+    window.show_latest_version()
+    box = window._latest_box
+    next(b for b in box.buttons() if b.text() == "Copy the link").click()
+    assert QApplication.clipboard().text() == RELEASES_URL
+    # Any button closes the message box; the status bar confirms the copy.
+    assert not box.isVisible()
+    assert window.statusBar().currentMessage() == "Link copied."
