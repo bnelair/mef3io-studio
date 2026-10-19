@@ -364,8 +364,7 @@ and the release tag all read it. Releasing is two steps:
      [docs/roadmap.md](docs/roadmap.md) including its Status column.
    - Have it reviewed.
 
-   The installer build shown on the pull request comes from its first
-   commit; pushes that change only notes or docs run the other checks.
+   Every push to that pull request builds and tests the installers again.
 
    **Merging publishes the release.** `build.yml` builds and tests every
    installer from the merged commit, then tags exactly that commit

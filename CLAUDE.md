@@ -67,7 +67,8 @@ Code (app shell, #2/#3):
   `release-decision` publishes only when THAT push changed VERSION (diff
   `github.event.before`..sha) and v<VERSION> has no tag; `release` then tags
   exactly that built commit (`gh release create --target`). A failed release
-  run is re-run, not re-merged. A hand-pushed tag must match VERSION and be
+  run is re-run, not re-merged (a tag already on THIS commit = finish that
+  release; on another commit = never touched). A hand-pushed tag must match VERSION and be
   on main. Test versions are pre-releases, finished ones `--latest`. Each
   main push has its own concurrency group (never cancelled, even queued).
   A published release is never overwritten from another commit.

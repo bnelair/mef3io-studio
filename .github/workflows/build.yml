@@ -12,9 +12,9 @@ name: Build installers
 # strace and must not open an internet socket.
 #
 # Releases (README "Make a release"): the `bump-version` workflow opens a PR
-# that changes VERSION. Once it is merged, the push to main finds a VERSION
-# with no `v<VERSION>` tag yet; after every installer has been built and
-# tested, the release job tags that exact commit and publishes the installers
+# that changes VERSION. The push to main that merges it (and only a push that
+# changes VERSION) publishes `v<VERSION>` if it has no tag yet; after every
+# installer has been built and tested, the release job tags that exact commit and publishes the installers
 # and SHA256SUMS as a GitHub Release, described by
 # docs/release-notes/<VERSION>.md (required). Test versions (.devN, aN, bN,
 # rcN) are published as pre-releases, finished versions as the latest
@@ -299,9 +299,16 @@ jobs:
                || git diff --quiet "$BEFORE" "$GITHUB_SHA" -- VERSION; then
             echo "this push did not change VERSION; nothing to publish"
             release=false
-          elif git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
-            echo "v$version is already released; nothing to publish"
-            release=false
+          elif tagged="$(git ls-remote --tags origin "refs/tags/v$version" | cut -f1)" && [ -n "$tagged" ]; then
+            if [ "$tagged" = "$GITHUB_SHA" ]; then
+              # A re-run after the tag was created but the release did not
+              # finish (e.g. an upload failed): finish it for this commit.
+              echo "v$version is tagged on this commit: finishing its release"
+              release=true
+            else
+              echo "v$version is already released from $tagged; nothing to publish"
+              release=false
+            fi
           else
             echo "this push set VERSION to $version, which has no tag yet: it publishes it"
             release=true
