@@ -299,7 +299,9 @@ jobs:
                || git diff --quiet "$BEFORE" "$GITHUB_SHA" -- VERSION; then
             echo "this push did not change VERSION; nothing to publish"
             release=false
-          elif tagged="$(git ls-remote --tags origin "refs/tags/v$version" | cut -f1)" && [ -n "$tagged" ]; then
+          elif ! refs="$(git ls-remote --tags origin "refs/tags/v$version")"; then
+            echo "cannot list the tags on origin; not deciding blind"; exit 1
+          elif tagged="$(printf '%s' "$refs" | cut -f1)" && [ -n "$tagged" ]; then
             if [ "$tagged" = "$GITHUB_SHA" ]; then
               # A re-run after the tag was created but the release did not
               # finish (e.g. an upload failed): finish it for this commit.
