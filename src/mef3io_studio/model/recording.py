@@ -61,6 +61,8 @@ OPERATION_WORDS = {
     "recovery": "rescued after an interrupted write",
     technical("segment-repaired"): "an earlier part was fixed",
     "anonymize": "made by the anonymizer",
+    "rename": "renamed",
+    technical("transform"): "copied with changes",
 }
 
 
