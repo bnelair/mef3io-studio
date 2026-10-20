@@ -257,6 +257,27 @@ WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
         "Part of the recording is damaged",
         f"A note or event in it did not pass its built-in check. {NOTHING} {CHECK}",
     ),
+    technical("text-unremovable"): _fixed(
+        "Some notes cannot be cleaned safely",
+        "The text of some notes and events still holds the patient's details in a form "
+        f"the app cannot take out safely. {NOTHING} Go back and choose Remove for the "
+        "text of notes and events.",
+    ),
+    technical("source-mid-operation"): _fixed(
+        "This recording is in the middle of a change",
+        "Renaming this recording was started and did not finish (the computer may have "
+        f"stopped, or another program is still working on it). {NOTHING} Finish or undo "
+        "the rename in the program that started it, then try again.",
+    ),
+    # Choosing a part of the recording (a time window). The app does not offer
+    # it yet: these can only be the app's own mistakes.
+    technical("time-range-invalid"): _fixed(
+        "The copy could not be made", f"A choice was not valid. {NOTHING} {REPORT}"
+    ),
+    technical("time-range-empty"): _fixed(
+        "The chosen time holds no recording",
+        f"There is no recording in the chosen time. {NOTHING} Choose another time.",
+    ),
     technical("record-locked"): _fixed(
         "This recording needs its full-access password",
         "The text of some notes is behind the full-access password, and it must be read to be "
