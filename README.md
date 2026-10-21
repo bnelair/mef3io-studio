@@ -382,12 +382,12 @@ point to a commit on `main`.
 
 mef3io-studio is in **early development**. The app, its installers, the
 **Explore** page and the **Anonymize** wizard (anonymized copies with a
-choice of channels, moved dates, new names and optional passwords, plus a
+choice of channels, moved dates, new names and optional password protection, plus a
 Privacy check for any recording, and unattended batches into shareable
 archives) are ready to try in test version **0.1.0.dev4**, built on mef3io
 1.5.1. Still to come for the first full release: copies with changes
 (keeping only part of a recording, merging recordings, adding or removing
-passwords), ordering and renaming recordings, viewing and editing details,
+password protection), ordering and renaming recordings, viewing and editing details,
 and saving channel choices and converting in batches. Test versions are
 published on the [Releases page](https://github.com/bnelair/mef3io-studio/releases)
 as pre-releases; what changed in each is in
