@@ -512,12 +512,16 @@ def _check_message(refusal, request: JoinRequest) -> UserMessage:
 
 def _last_sample_end(reader, channel: str, stated_end: int) -> int | None:
     """Where the channel's last sample ends, from its last block in the
-    index (only the last part's block index is read)."""
-    rows = reader.block_envelope(channel, t0=max(0, int(stated_end) - 1))
-    ends = rows.get("end_uutc")
-    if ends is None or len(ends) == 0:
-        return None
-    return int(max(ends))
+    index. Usually only the last part's block index is read (blocks from
+    just before the stated end on). If a writer stated an end LATER than its
+    data, no block is found there: then the channel's whole index is read
+    (still no samples) and its true last block end is used."""
+    for t0 in (max(0, int(stated_end) - 1), None):
+        rows = reader.block_envelope(channel, t0=t0)
+        ends = rows.get("end_uutc")
+        if ends is not None and len(ends):
+            return int(max(ends))
+    return None
 
 
 def read_layouts(
@@ -813,10 +817,14 @@ def make_parts_folder(request: JoinRequest) -> None:
         with open(os.path.join(request.parts_folder, PARTS_MARKER), "x", encoding="ascii") as f:
             f.write(request.run_token)
     except BaseException:
-        try:
-            os.rmdir(request.parts_folder)
-        except OSError:
-            pass
+        # The marker may exist half-written (e.g. a full disk): remove it,
+        # then the folder this call just made, so nothing is left behind.
+        for remove in (lambda: os.unlink(os.path.join(request.parts_folder, PARTS_MARKER)),
+                       lambda: os.rmdir(request.parts_folder)):
+            try:
+                remove()
+            except OSError:
+                pass
         raise
 
 

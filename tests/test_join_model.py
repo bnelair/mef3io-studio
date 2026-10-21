@@ -558,3 +558,54 @@ def test_the_end_comes_from_the_last_block_not_the_stated_end(two, monkeypatch):
     np.testing.assert_array_equal(
         kept_values(tmp / "x.mefd"), expected(T0 + 2 * HOUR - MINUTE, T0 + 2 * HOUR)
     )
+
+
+def test_an_end_stated_later_than_the_data_is_found_from_the_blocks(two, monkeypatch):
+    """A writer may state an end LATER than its last sample: no block lies at
+    that stated end, so the channel's whole index is read and its true last
+    block end is used (not the overstated one)."""
+    tmp, a, _b = two
+    real = mef3io.time_range
+
+    def late_end(path, password="", **kwargs):
+        found = real(path, password, **kwargs)
+        return dataclasses.replace(found, end_uutc=found.end_uutc + 10 * MINUTE)
+
+    monkeypatch.setattr(mef3io, "time_range", late_end)
+    request = j.new_request([source(a, j.Keep())], str(tmp / "x.mefd"))
+    layouts, findings = j.read_layouts(request, CancelToken())
+    assert not findings and layouts[str(a)].end == T0 + 2 * HOUR
+
+
+def test_a_failed_marker_leaves_no_folder(two, monkeypatch):
+    """The marker created but not written (e.g. a full disk): the half-made
+    marker and the folder this run just made are both removed."""
+    import builtins
+
+    tmp, a, b = two
+    request = j.new_request(
+        [source(a, j.Keep(j.KEEP_LAST, MINUTE)), source(b, j.Keep())], str(tmp / "j.mefd")
+    )
+    real_open = builtins.open
+
+    class Full:
+        def __init__(self, f):
+            self.f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.f.close()
+
+        def write(self, _):
+            raise OSError(28, "No space left on device")
+
+    def failing_open(path, mode="r", *args, **kwargs):
+        f = real_open(path, mode, *args, **kwargs)
+        return Full(f) if str(path).endswith(j.PARTS_MARKER) and "x" in mode else f
+
+    monkeypatch.setattr(builtins, "open", failing_open)
+    with pytest.raises(OSError):
+        j.make_parts_folder(request)
+    assert not os.path.exists(request.parts_folder)
