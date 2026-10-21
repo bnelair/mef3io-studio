@@ -819,8 +819,10 @@ def make_parts_folder(request: JoinRequest) -> None:
     except BaseException:
         # The marker may exist half-written (e.g. a full disk): remove it,
         # then the folder this call just made, so nothing is left behind.
-        for remove in (lambda: os.unlink(os.path.join(request.parts_folder, PARTS_MARKER)),
-                       lambda: os.rmdir(request.parts_folder)):
+        for remove in (
+            lambda: os.unlink(os.path.join(request.parts_folder, PARTS_MARKER)),
+            lambda: os.rmdir(request.parts_folder),
+        ):
             try:
                 remove()
             except OSError:
