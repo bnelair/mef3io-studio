@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mef3io-studio"
 dynamic = ["version"]
-description = "Desktop app for exploring and anonymizing MEF 3.0 recordings (distributed as installers, not on PyPI)."
+description = "Desktop app for exploring, anonymizing, joining and trimming MEF 3.0 recordings (distributed as installers, not on PyPI)."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
