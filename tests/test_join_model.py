@@ -5,6 +5,7 @@ result says exactly which samples it holds)."""
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 
@@ -324,6 +325,7 @@ def test_stop_during_a_cut_removes_the_temporary_parts(two):
 def test_tidy_removes_what_an_ended_helper_left(two):
     tmp, a, b = two
     request = j.new_request([source(a, j.Keep()), source(b, j.Keep())], str(tmp / "j.mefd"))
+    j.make_parts_folder(request)
     os.makedirs(os.path.join(request.parts_folder, "part-1.mefd"))
     os.makedirs(request.destination + ".partial")
     assert j.tidy(request)
@@ -331,6 +333,26 @@ def test_tidy_removes_what_an_ended_helper_left(two):
     # Never anything that is not the run's own parts folder.
     other = j.JoinRequest(request.sources, request.destination, parts_folder=str(a))
     assert j.remove_parts(other) and a.exists()
+
+
+def test_a_folder_that_was_already_there_is_never_removed(two):
+    """Only a parts folder carrying THIS run's marker is removed: one that
+    already existed under the name (or another run's) is left as it is,
+    also when the run fails because of it."""
+    tmp, a, b = two
+    request = j.new_request(
+        [source(a, j.Keep(j.KEEP_LAST, MINUTE)), source(b, j.Keep())], str(tmp / "j.mefd")
+    )
+    os.makedirs(request.parts_folder)
+    (Path(request.parts_folder) / "user.txt").write_text("keep me")
+    result = j.make_joined(request)
+    assert not result.ok and not result.parts_left
+    assert (Path(request.parts_folder) / "user.txt").read_text() == "keep me"
+    assert j.tidy(request) and os.path.isdir(request.parts_folder)
+    # Another run's marker is not this run's.
+    (Path(request.parts_folder) / j.PARTS_MARKER).write_text("someone-else")
+    assert j.remove_parts(request) and os.path.isdir(request.parts_folder)
+    assert not (tmp / "j.mefd").exists()
 
 
 def test_temporary_parts_are_password_protected(two, monkeypatch):
@@ -441,3 +463,98 @@ def test_refusals_are_translated_by_code(two):
     message = j.describe_join_error(exc, request)
     assert message.title == "The recordings may be of different patients"
     assert str(a) not in message.detail and "<" in message.detail
+
+
+# --------------------------------------------------------------------------
+# Side by side: parts of the same period with different channels
+
+
+def test_overlap_is_per_channel_and_honours_left_out_channels():
+    a = j.JoinSource("a", "a.mefd", j.Keep())
+    b = j.JoinSource("b", "b.mefd", j.Keep())
+    layouts = {"a": j.Layout(0, 100, ("a1", "x")), "b": j.Layout(0, 100, ("b1", "x"))}
+    plan = j.plan_join([a, b], layouts)
+    assert [p.code for p in plan.problems] == [j.OVERLAP]
+    assert plan.problems[0].channels == ("x",)
+    text = j.problem_text(plan.problems[0], {"a": "Alpha", "b": "Beta"})
+    assert "the channel x" in text and "leave out that channel" in text
+    assert j.plan_join([a, b], layouts, excluded=("x",)).ok
+    disjoint = {"a": j.Layout(0, 100, ("a1",)), "b": j.Layout(0, 100, ("b1",))}
+    assert j.plan_join([a, b], disjoint).ok
+    # Leaving out every channel of one recording is refused for it.
+    plan = j.plan_join([a, b], disjoint, excluded=("a1",))
+    assert [(p.code, p.keys) for p in plan.problems] == [(j.NO_CHANNELS_LEFT, ("a",))]
+
+
+def test_side_by_side_recordings_join_into_the_union_of_channels(tmp_path):
+    a = write(tmp_path / "A.mefd", T0, 3600, channels=("a1", "a2"))
+    b = write(tmp_path / "B.mefd", T0, 3600, channels=("b1", "b2"))
+    request = j.new_request(
+        [source(a, j.Keep(j.KEEP_FIRST, 30 * MINUTE)), source(b, j.Keep())],
+        str(tmp_path / "j.mefd"),
+    )
+    assert j.check_join(request) == []
+    result = j.make_joined(request)
+    assert result.ok, result.message
+    joined = mef3io.Reader(str(tmp_path / "j.mefd"))
+    assert sorted(joined.channels) == ["a1", "a2", "b1", "b2"]
+    np.testing.assert_array_equal(
+        kept_values(tmp_path / "j.mefd", "a1"), expected(T0, T0 + 30 * MINUTE)
+    )
+    for channel in ("b1", "b2"):
+        np.testing.assert_array_equal(
+            kept_values(tmp_path / "j.mefd", channel), kept_values(b, channel)
+        )
+    assert no_leftovers(tmp_path) == []
+
+
+def test_side_by_side_with_a_shared_channel_is_refused_unless_it_is_left_out(tmp_path):
+    a = write(tmp_path / "A.mefd", T0, 3600, channels=("a1", "x"))
+    b = write(tmp_path / "B.mefd", T0, 3600, channels=("b1", "x"))
+    sources = [source(a, j.Keep()), source(b, j.Keep())]
+    request = j.new_request(sources, str(tmp_path / "j.mefd"))
+    findings = j.check_join(request)
+    assert len(findings) == 1 and "the channel x" in findings[0].message.text
+    assert not j.make_joined(request).ok and not (tmp_path / "j.mefd").exists()
+    request = j.new_request(sources, str(tmp_path / "j.mefd"), exclude_channels=("x",))
+    assert j.check_join(request) == []
+    assert j.make_joined(request).ok
+    assert sorted(mef3io.Reader(str(tmp_path / "j.mefd")).channels) == ["a1", "b1"]
+    np.testing.assert_array_equal(kept_values(tmp_path / "j.mefd", "b1"), kept_values(b, "b1"))
+
+
+# --------------------------------------------------------------------------
+# Privacy of the plain data, and where a recording ends
+
+
+def test_no_path_in_any_repr(tmp_path):
+    path = str(tmp_path / "Jane_Doe.mefd")
+    src = j.JoinSource(path, path, j.Keep(j.KEEP_FIRST, 10), "pw")
+    plan = j.plan_join([src, j.JoinSource(path + "2", path + "2", j.Keep())], {})
+    finding = j.CheckFinding(path, j.UserMessage("t", "x"))
+    for thing in (src, plan, *plan.problems, finding, j.Layout(1, 2, ("Jane",))):
+        assert "Jane" not in repr(thing) and str(tmp_path) not in repr(thing), repr(thing)
+
+
+def test_the_end_comes_from_the_last_block_not_the_stated_end(two, monkeypatch):
+    """Another writer may state the last sample's own time as the end (one
+    sample period early): the run takes the end of the last block."""
+    tmp, a, _b = two
+    real = mef3io.time_range
+
+    def early_end(path, password="", **kwargs):
+        found = real(path, password, **kwargs)
+        return dataclasses.replace(found, end_uutc=found.end_uutc - S // 2)
+
+    monkeypatch.setattr(mef3io, "time_range", early_end)
+    request = j.new_request([source(a, j.Keep())], str(tmp / "x.mefd"))
+    layouts, findings = j.read_layouts(request, CancelToken())
+    assert not findings
+    assert layouts[str(a)].end == T0 + 2 * HOUR
+    assert layouts[str(a)].channels == ("a1", "a2")
+    # "The last minute" then holds exactly the last 120 samples.
+    request = j.new_request([source(a, j.Keep(j.KEEP_LAST, MINUTE))], str(tmp / "x.mefd"))
+    assert j.make_joined(request).ok
+    np.testing.assert_array_equal(
+        kept_values(tmp / "x.mefd"), expected(T0 + 2 * HOUR - MINUTE, T0 + 2 * HOUR)
+    )

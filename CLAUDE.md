@@ -236,44 +236,74 @@ Code (app shell, #2/#3):
 - Join or trim (#31): `model/join.py` (Qt-free) + `joiner/page.py` (a wizard
   like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
   `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,
-  `channel_selection_for` and `ChannelPicker`; built on first use). Keep =
-  whole | first(d) | last(d) | between(t0, t1) -> `resolve_keep` -> `Span`
+  `channel_selection_for` and `ChannelPicker`; built on first use). Steps:
+  Recordings, CHANNELS, What to keep, New recording, Save (channels BEFORE
+  keep: the overlap rule needs the left-out channels). Keep = whole |
+  first(d) | last(d) | between(t0, t1) -> `resolve_keep` -> `Span`
   `[start, end)`; a window reaching the recording's end goes to mef3io as
-  `end + 1` (`Span.to_end`), whatever a writer stored as end time.
-  `plan_join` (pure) orders by time and REFUSES any two kept parts that
-  overlap (stricter than merge_sessions, which allows take-turns recordings:
-  not a use case; merge's own `merge-overlap` stays the last word). One
-  recording kept whole with no channel left out and no new passwords =
-  `NOTHING_TO_CHANGE` (refused; with a change it is a plain transform copy).
-  Run (`make_joined`, ONE helper process for the whole run, one progress bar
-  via `JoinProgress.overall`): one recording -> `transform_session(src, dst,
-  time_range, exact=True, exclude, output_password)` straight to dst;
-  several -> each non-whole part cut with `transform_session` into
-  `<dst folder>/.mef3io-studio-parts-<hex>/part-N.mefd` (whole ones go to
-  merge as they are), then `merge_sessions(parts in time order, dst,
-  passwords, exclude_channels, output_password)`: channel choice and new
-  passwords apply ONCE, in the merge. TEMP PARTS ARE ALWAYS PASSWORD-
-  PROTECTED with throw-away passwords made in the helper (never returned,
-  logged or stored): an unprotected cut copy would leave readable patient
-  details and note text on disk beside dst for the run (or after a crash).
-  The parts folder is removed in the helper's `finally` AND by the task
-  (`join.tidy`, also `<dst>.partial`) when a helper had to be ended;
-  `remove_parts` only ever removes a `.mef3io-studio-parts-` folder, never a
-  link; `parts_left` is reported. Up-front (`check_join`, nothing written):
-  `time_range` per recording (offset unknown = needs full-access password),
-  `plan_join`, then one recording: `transform.check` as it will run;
-  several: `transform.check` per cut (placeholder dst, path codes ignored)
-  + `merge.check` over the ORIGINALS with the real dst/channels/passwords,
-  ignoring `merge-overlap` when anything is cut (the originals may overlap
-  where nothing is kept). Words: `refusals.JOIN_WORDS` covers EVERY code of
+  `end + 1` (`Span.to_end`). END CONVENTION: a recording's end is where its
+  last sample ENDS (exclusive). `time_range().end_uutc` is the end the
+  headers STATE (exclusive for mef3io's files; another writer may store the
+  last sample's own time), so `read_layouts` takes the end from each
+  channel's last block (`Reader.block_envelope(ch, t0=stated_end - 1)`:
+  only the last part's index, `end_uutc` = start + samples/fs); the page
+  uses Explore's details (header ends) for the preview only. Start and
+  "times confirmed" (`offset_known`) still come from `time_range`; channels
+  from the Reader. `plan_join(sources, layouts, excluded=, changes=)`
+  (pure) orders by time; OVERLAP IS PER CHANNEL: two kept parts conflict
+  only when they overlap in time AND share a channel not left out
+  (`Problem.channels`, named in the words; channels unknown = any time
+  overlap conflicts); side by side (same period, different channels) joins
+  into the union of channels, as merge_sessions does. Time windows are the
+  recording's, so it is stricter than merge (which decides per recorded
+  block and allows take-turns recordings: not a use case); merge's own
+  `merge-overlap` stays the last word. A recording with every channel left
+  out = `NO_CHANNELS_LEFT`. One recording kept whole with no channel left
+  out and no new passwords = `NOTHING_TO_CHANGE` (refused; with a change it
+  is a plain transform copy). Run (`make_joined`, ONE helper process for
+  the whole run, one progress bar via `JoinProgress.overall`): one
+  recording -> `transform_session(src, dst, time_range, exact=True,
+  exclude, output_password)` straight to dst; several -> each non-whole part
+  cut with `transform_session` into `<dst folder>/.mef3io-studio-parts-
+  <hex>/part-N.mefd` (whole ones go to merge as they are), then
+  `merge_sessions(parts in time order, dst, passwords, exclude_channels,
+  output_password)`: channel choice and new passwords apply ONCE, in the
+  merge. TEMP PARTS ARE ALWAYS PASSWORD-PROTECTED with throw-away passwords
+  made in the helper (never returned, logged or stored): an unprotected cut
+  copy would leave readable patient details and note text on disk beside
+  dst for the run (or after a crash). PARTS FOLDER OWNERSHIP:
+  `make_parts_folder` = `os.mkdir` (never an existing folder) then AT ONCE
+  a marker file `PARTS_MARKER` holding the request's random `run_token`
+  (marker write fails -> rmdir the still-empty folder, re-raise);
+  `remove_parts` removes ONLY a `.mef3io-studio-parts-` folder, not a link,
+  whose marker holds THIS run's token: a folder that was already there (a
+  FileExistsError from mkdir) or another run's is never touched. It runs in
+  the helper's `finally` AND in the task (`join.tidy`, also `<dst>.partial`)
+  after an ended helper; `parts_left` is reported. Up-front (`check_join`,
+  nothing written): `read_layouts`, `plan_for`, then one recording:
+  `transform.check` as it will run; several: `transform.check` per cut
+  (placeholder dst, path codes ignored) + `merge.check` over the ORIGINALS
+  with the real dst/channels/passwords, ignoring `merge-overlap` when
+  anything is cut. STALE CHECK: while the check runs the page disables its
+  steps (`stack`) and Back; every input change, `go()` and `hideEvent`
+  bump `_generation`, and the check's callback starts the run only if the
+  generation is unchanged, the page still on New recording and visible.
+  Words: `refusals.JOIN_WORDS` covers EVERY code of
   `mef3io.transform.REFUSAL_CODES` and `mef3io.merge.REFUSAL_CODES` (test;
   no "anonymi", "were not changed" in each); the anonymizer's `WORDS` stay
   anonymizer-only. Details via `join_technical_text` (every source/dst path
-  and name stripped), then `scrubbed`. Explore's details give the page's
-  times and preview; the helper re-reads them with `time_range` at run
-  time. Recordings needing a password use the one Explore opened them with
-  (`RecordingEntry.password`); basic-only access and unverified times are
-  not offered. "Open it in Explore" = `MainWindow.open_in_explorer` ->
+  and name stripped), then `scrubbed`. Keys are paths: `JoinSource.key`,
+  `Problem.keys`, `CheckFinding.key`, `JoinPlan.order`, `Layout` are
+  `repr=False` (test). Recordings needing a password use the one Explore
+  opened them with (`RecordingEntry.password`); basic-only access and
+  unverified times are not offered. Explore -> joiner: "Join or trim
+  these…" (button under the list + context menu) emits
+  `ExplorerPage.join_requested(keys)` -> `MainWindow.join_in_joiner` ->
+  `JoinerPage.choose(keys)` (restart, tick exactly those, on to Channels;
+  unusable ones named on step 1; refused while a check/run is going).
+  "Open it in Explore" = `MainWindow.open_in_explorer` ->
   `ExplorerPage.open_and_show`. Tests: tests/test_join_model.py (exact
-  samples via Reader, three-way, single trim, overlap, Stop, cleanup,
-  password-protected parts and sources), tests/test_joiner_ui.py.
+  samples via Reader, three-way, single trim, side by side incl. shared
+  channel and leaving it out, overlap, Stop, cleanup + pre-existing folder,
+  ends from blocks, reprs, password-protected parts and sources),
+  tests/test_joiner_ui.py (incl. stale check and the Explore action).

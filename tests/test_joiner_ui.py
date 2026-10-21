@@ -10,6 +10,7 @@ import mef3io
 import numpy as np
 import pytest
 from explorer_sessions import metadata
+from PySide6.QtCore import QItemSelectionModel
 from test_anonymizer_ui import open_in_explorer
 
 from mef3io_studio.joiner.page import (
@@ -27,10 +28,10 @@ T0 = 946_684_800_000_000
 HOUR = 3_600_000_000
 
 
-def write(path, start, seconds=2 * 3600, fs=2.0):
+def write(path, start, seconds=2 * 3600, fs=2.0, channels=("a1", "a2")):
     n = int(seconds * fs)
     with mef3io.Writer(str(path), overwrite=True, metadata=metadata()) as w:
-        for name in ("a1", "a2"):
+        for name in channels:
             w.write(name, np.arange(n, dtype=float), start, fs)
     return path
 
@@ -43,9 +44,14 @@ def window_page(window):
     return window, window.joiner
 
 
-def choose_all(page):
+def choose_all(page, leave_out=()):
+    """Tick every listed recording, leave out channels, on to What to keep."""
     page.go(STEP_RECORDINGS)
     page.recordings.set_ticked([e.key for e in page.recordings.rows])
+    page.next()
+    assert page.step == STEP_CHANNELS
+    for name in leave_out:
+        page.picker.click(name, False)
     page.next()
     assert page.step == STEP_KEEP
 
@@ -74,6 +80,7 @@ def test_keep_choices_preview_and_overlap(window_page, qtbot, tmp_path):
     # Both whole: they overlap by an hour. Start is not possible, and why.
     assert not keep.ok and not page.next_button.isEnabled()
     assert "overlap" in keep.problems.text()
+    assert "the channels a1, a2" in keep.problems.text()
     assert all(r[4] for r in keep.preview.rows)
     # The first 90 minutes of A and the last hour of B follow each other.
     keep.rows[0].set_how(KEEP_FIRST)
@@ -101,6 +108,8 @@ def test_keep_choices_preview_and_overlap(window_page, qtbot, tmp_path):
     assert keep.ok
     # Back and forth writes nothing.
     page.back()
+    assert page.step == STEP_CHANNELS
+    page.back()
     assert page.step == STEP_RECORDINGS
     assert sorted(p.name for p in tmp_path.rglob("*")) == before
 
@@ -110,14 +119,11 @@ def test_join_two_recordings_end_to_end(window_page, qtbot, tmp_path):
     a = write(tmp_path / "A.mefd", T0)
     b = write(tmp_path / "B.mefd", T0 + 3 * HOUR)
     open_in_explorer(qtbot, window, [a, b])
-    choose_all(page)
+    choose_all(page, leave_out=["a2"])
     page.keep.rows[0].set_how(KEEP_LAST)
     page.keep.rows[0].duration.set_seconds(3600)
     page.keep.rows[1].set_how(KEEP_FIRST)
     page.keep.rows[1].duration.set_seconds(1800)
-    page.next()
-    assert page.step == STEP_CHANNELS
-    page.picker.click("a2", False)
     page.next()
     assert page.step == STEP_NEW
     out = tmp_path / "out"
@@ -156,7 +162,6 @@ def test_a_refusal_is_shown_before_anything_is_written(window_page, qtbot, tmp_p
     open_in_explorer(qtbot, window, [a, b])
     choose_all(page)
     page.next()
-    page.next()
     assert page.step == STEP_NEW
     page.new.name.setText("joined")
     before = sorted(p.name for p in tmp_path.rglob("*"))
@@ -175,12 +180,94 @@ def test_one_recording_kept_whole_needs_a_change(window_page, qtbot, tmp_path):
     choose_all(page)
     assert page.keep.ok
     page.next()
-    page.next()
     assert page.step == STEP_NEW
     assert page.new.name.text() == "A-part"
     assert "Nothing would change" in page.new.problem_text()
     assert not page.next_button.isEnabled()
     page.back()
+    page.back()
+    assert page.step == STEP_CHANNELS
     page.picker.click("a2", False)
     page.next()
+    page.next()
     assert page.new.problem_text() == "" and page.next_button.isEnabled()
+
+
+def test_side_by_side_recordings_join_unless_they_share_a_kept_channel(
+    window_page, qtbot, tmp_path
+):
+    window, page = window_page
+    a = write(tmp_path / "A.mefd", T0, channels=("a1", "x"))
+    b = write(tmp_path / "B.mefd", T0, channels=("b1", "x"))
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page)
+    keep = page.keep
+    # The same hour, sharing "x": refused, naming it, both drawn red.
+    assert not keep.ok and "the channel x" in keep.problems.text()
+    assert all(r[4] for r in keep.preview.rows)
+    # Leaving "x" out makes them side by side: two rows, nothing red.
+    page.back()
+    page.picker.click("x", False)
+    page.next()
+    assert keep.ok and not any(r[4] for r in keep.preview.rows)
+    assert len(keep.preview.rows) == 2
+    page.next()
+    assert page.step == STEP_NEW and page.next_button.isEnabled()
+
+
+def test_a_check_that_finishes_after_a_change_starts_nothing(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write(tmp_path / "A.mefd", T0)
+    b = write(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page)
+    page.next()
+    page.new.name.setText("joined")
+    check = page.next()
+    # While it runs, nothing on the page can be changed.
+    assert not page.back_button.isEnabled() and not page.stack.isEnabled()
+    page.back()
+    assert page.step == STEP_NEW
+    # A change slipped in anyway (here: leaving the page forgets the
+    # passwords): the result of the check is stale and starts nothing.
+    page._inputs_changed()
+    with qtbot.waitSignal(check.finished, timeout=120_000):
+        pass
+    assert page.handle is None and page.step == STEP_NEW
+    assert page.stack.isEnabled() and page.back_button.isEnabled()
+    assert not (tmp_path / "joined.mefd").exists()
+    # Checked again, unchanged: it starts.
+    check = page.next()
+    with qtbot.waitSignal(check.finished, timeout=120_000):
+        pass
+    assert page.step == STEP_RUN
+    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
+        pass
+    assert page.result.ok
+
+
+def test_join_or_trim_these_from_explore(window_page, qtbot, tmp_path):
+    window, page = window_page
+    b = write(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    a = write(tmp_path / "A.mefd", T0)
+    c = write(tmp_path / "C.mefd", T0 + 6 * HOUR)
+    open_in_explorer(qtbot, window, [b, a, c])
+    explorer = window.explorer
+    window.module_list.setCurrentRow(window.module_keys.index("explorer"))
+    explorer.table.selectionModel().clear()
+    assert not explorer.join_button.isEnabled()
+    wanted = {e.key for e in explorer.entries() if e.name in ("A", "B")}
+    for entry in explorer.entries():
+        if entry.key in wanted:
+            index = explorer.model.index(explorer.model.row_of(entry), 0)
+            explorer.table.selectionModel().select(
+                explorer.proxy.mapFromSource(index),
+                QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+            )
+    assert explorer.join_button.isEnabled()
+    explorer.join_button.click()
+    assert window.pages.currentWidget() is page
+    assert page.recordings.ticked == wanted
+    assert page.step == STEP_CHANNELS
+    page.next()
+    assert [r.entry.name for r in page.keep.rows] == ["A", "B"]

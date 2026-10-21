@@ -40,11 +40,26 @@ there to prevent. The same is done for unprotected originals too: one rule
 is simpler to check, and costs only re-protecting a few small details
 files (the signal itself is never password-protected in MEF).
 
-Overlaps are refused, not worked around: when two kept parts overlap in
-time (after ordering by start) nothing is started. This is stricter than
-``merge_sessions``, which allows recordings that take turns; that is not
-what this feature is for. ``merge_sessions`` still checks the recorded
-signal itself (``merge-overlap``) as the last word.
+Overlaps are refused PER CHANNEL, not worked around: two kept parts
+conflict only when they overlap in time AND share a channel that is not
+left out. Recordings of the same period with different channels ("side by
+side") join, and the result holds the union of their channels, as
+``merge_sessions`` does; leaving out the shared channels makes overlapping
+parts joinable. The kept part's time window is the recording's (not each
+channel's own extent), so this is stricter than ``merge_sessions``, which
+decides on the recorded blocks and also allows recordings that take turns
+on one channel: not what this feature is for. ``merge_sessions`` still
+checks the recorded signal itself (``merge-overlap``) as the last word.
+
+End times: a recording's end is where its last sample ENDS (exclusive).
+mef3io's ``time_range`` reports the end its headers state, which is that
+for mef3io's own files but may be the last sample's own time for another
+writer's (one sample period earlier). So the run takes each recording's end
+from the index instead: the end of the last block of each channel
+(``Reader.block_envelope``, which reads only the last part's block index
+and gives ``start + samples / rate``), see :func:`read_layouts`. A window
+that reaches the recording's end is also handed to mef3io one microsecond
+past it (``Span.to_end``), so the last sample is kept either way.
 
 One recording kept whole with no channel left out and no new passwords
 would be an exact copy: refused as "nothing would change"
@@ -91,6 +106,10 @@ KEEP_CHOICES = (KEEP_WHOLE, KEEP_FIRST, KEEP_LAST, KEEP_BETWEEN)
 
 #: The temporary parts folder's name starts with this (then random hex).
 PARTS_PREFIX = ".mef3io-studio-parts-"
+#: Written into the parts folder right after this run creates it, holding
+#: the run's token: only a folder carrying it is ever removed, so a folder
+#: that was already there (whatever it holds) is never touched.
+PARTS_MARKER = ".made-by-mef3io-studio"
 
 #: Why a choice cannot be used (codes; words in :data:`PROBLEM_WORDS`).
 DURATION_NOT_POSITIVE = "duration-not-positive"
@@ -101,6 +120,7 @@ TIMES_UNKNOWN = "times-unknown"
 OVERLAP = "overlap"
 NOTHING_TO_CHANGE = "nothing-to-change"
 NO_RECORDINGS = "no-recordings"
+NO_CHANNELS_LEFT = "no-channels-left"
 UNKNOWN_CHOICE = "unknown-choice"
 
 PROBLEM_WORDS = {
@@ -116,6 +136,12 @@ PROBLEM_WORDS = {
         "The kept parts of {names} overlap in time. Keep less of one of them, so that the "
         "parts follow each other."
     ),
+    #: An overlap of parts that share channels: the words name them.
+    "overlap-channels": (
+        "The kept parts of {names} overlap in time, and both hold {channels}. Keep less of "
+        "one of them, or leave out {those} in the channel step."
+    ),
+    NO_CHANNELS_LEFT: "Every channel of this recording is left out.",
     NOTHING_TO_CHANGE: (
         "Nothing would change: the new recording would be an exact copy. Keep only part of "
         "the recording, leave out a channel, or add password protection."
@@ -198,7 +224,7 @@ class JoinSource:
     """One recording and what to keep of it. ``password``: its full-access
     password, when it has one (the one Explore opened it with)."""
 
-    key: str
+    key: str = field(repr=False)
     source: str = field(repr=False)
     keep: Keep = Keep()
     password: str = field(default="", repr=False)
@@ -211,15 +237,35 @@ class JoinSource:
 @dataclass(frozen=True)
 class Problem:
     code: str
-    #: The recordings it concerns (their keys).
-    keys: tuple[str, ...] = ()
+    #: The recordings it concerns (their keys: paths, so not in repr).
+    keys: tuple[str, ...] = field(default=(), repr=False)
+    #: For an overlap: the channels both parts hold (empty when not known).
+    channels: tuple[str, ...] = field(default=(), repr=False)
+
+
+@dataclass(frozen=True)
+class Layout:
+    """What the plan needs of one recording: its start and end (the end is
+    exclusive: where the last sample ends) and its channels (empty = not
+    known, and then any overlap in time counts as a conflict)."""
+
+    start: int | None = field(default=None, repr=False)
+    end: int | None = field(default=None, repr=False)
+    channels: tuple[str, ...] = field(default=(), repr=False)
+
+
+def _as_layout(value) -> Layout:
+    if isinstance(value, Layout):
+        return value
+    start, end, *rest = value
+    return Layout(start, end, tuple(rest[0]) if rest else ())
 
 
 @dataclass(frozen=True)
 class JoinPlan:
     """The kept parts, in time order, or why they cannot be used."""
 
-    order: tuple[str, ...] = ()
+    order: tuple[str, ...] = field(default=(), repr=False)
     spans: dict = field(default_factory=dict, repr=False)
     problems: tuple[Problem, ...] = ()
 
@@ -237,32 +283,50 @@ class JoinPlan:
 
 def plan_join(
     sources: list[JoinSource] | tuple[JoinSource, ...],
-    ranges: dict[str, tuple[int | None, int | None]],
+    layouts: dict,
     *,
+    excluded: tuple[str, ...] | frozenset[str] = (),
     changes: bool = True,
 ) -> JoinPlan:
-    """Resolve every recording's kept part (``ranges``: key -> the
-    recording's start and end) and order them by time. ``changes``: a
-    channel is left out or new passwords are set (a single recording kept
+    """Resolve every recording's kept part and order them by time.
+    ``layouts``: key -> :class:`Layout` (or ``(start, end)`` /
+    ``(start, end, channels)``). ``excluded``: the channels left out of the
+    result. Two kept parts conflict only when they overlap in time AND
+    share a kept channel (:data:`OVERLAP`, naming the channels). ``changes``:
+    a channel is left out or new passwords are set (a single recording kept
     whole is refused without one). Pure: no files are touched."""
     if not sources:
         return JoinPlan(problems=(Problem(NO_RECORDINGS),))
+    left_out = frozenset(excluded)
     problems: list[Problem] = []
     spans: dict[str, Span] = {}
+    kept: dict[str, frozenset[str] | None] = {}
     for s in sources:
-        start, end = ranges.get(s.key, (None, None))
-        found = resolve_keep(s.keep, start, end)
+        layout = _as_layout(layouts.get(s.key, (None, None)))
+        found = resolve_keep(s.keep, layout.start, layout.end)
         if isinstance(found, str):
             problems.append(Problem(found, (s.key,)))
+            continue
+        spans[s.key] = found
+        if layout.channels:
+            kept[s.key] = frozenset(layout.channels) - left_out
+            if not kept[s.key]:
+                problems.append(Problem(NO_CHANNELS_LEFT, (s.key,)))
         else:
-            spans[s.key] = found
+            kept[s.key] = None  # not known: any overlap in time conflicts
     order = tuple(sorted(spans, key=lambda k: (spans[k].start, spans[k].end, k)))
-    # Any two kept parts that overlap, also across a third one in between.
+    # Any two kept parts that overlap in time, also across a third one in
+    # between; a conflict only when they share a kept channel.
     for i, a in enumerate(order):
         for b in order[i + 1 :]:
             if spans[b].start >= spans[a].end:
                 break
-            problems.append(Problem(OVERLAP, (a, b)))
+            if kept[a] is None or kept[b] is None:
+                problems.append(Problem(OVERLAP, (a, b)))
+                continue
+            shared = kept[a] & kept[b]
+            if shared:
+                problems.append(Problem(OVERLAP, (a, b), tuple(sorted(shared))))
     if len(sources) == 1 and not problems and spans[order[0]].whole and not changes:
         problems.append(Problem(NOTHING_TO_CHANGE, (order[0],)))
     return JoinPlan(order, spans, tuple(problems))
@@ -272,7 +336,19 @@ def problem_text(problem: Problem, names: dict[str, str]) -> str:
     """A problem in plain words (``names``: key -> recording name)."""
     text = PROBLEM_WORDS.get(problem.code, PROBLEM_WORDS[UNKNOWN_CHOICE])
     if problem.code == OVERLAP:
-        return text.format(names=" and ".join(names.get(k, "") for k in problem.keys))
+        who = " and ".join(names.get(k, "") for k in problem.keys)
+        if not problem.channels:
+            return text.format(names=who)
+        channels = list(problem.channels)
+        shown = ", ".join(channels[:5])
+        if len(channels) > 5:
+            shown += f" and {len(channels) - 5} more"
+        one = len(channels) == 1
+        return PROBLEM_WORDS["overlap-channels"].format(
+            names=who,
+            channels=f"the channel {shown}" if one else f"the channels {shown}",
+            those="that channel" if one else "those channels",
+        )
     return text
 
 
@@ -293,6 +369,8 @@ class JoinRequest:
     output_password: tuple[str, str] | None = field(default=None, repr=False)
     #: The temporary parts folder (:func:`parts_folder_for`).
     parts_folder: str = field(default="", repr=False)
+    #: Proves a parts folder is this run's (:data:`PARTS_MARKER`).
+    run_token: str = field(default="", repr=False)
 
     @property
     def name(self) -> str:
@@ -326,6 +404,7 @@ def new_request(
         tuple(exclude_channels),
         output_password,
         parts_folder_for(destination),
+        secrets.token_hex(16),
     )
 
 
@@ -370,8 +449,8 @@ class CheckFinding:
     """One reason not to start, for one recording (``key``) or for the
     whole run (``key`` None)."""
 
-    key: str | None
-    message: UserMessage
+    key: str | None = field(repr=False)
+    message: UserMessage = None
 
 
 def _paths_and_stems(request: JoinRequest) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -431,33 +510,52 @@ def _check_message(refusal, request: JoinRequest) -> UserMessage:
     return message
 
 
-def read_ranges(
+def _last_sample_end(reader, channel: str, stated_end: int) -> int | None:
+    """Where the channel's last sample ends, from its last block in the
+    index (only the last part's block index is read)."""
+    rows = reader.block_envelope(channel, t0=max(0, int(stated_end) - 1))
+    ends = rows.get("end_uutc")
+    if ends is None or len(ends) == 0:
+        return None
+    return int(max(ends))
+
+
+def read_layouts(
     request: JoinRequest, cancel: CancelToken
-) -> tuple[dict[str, tuple[int | None, int | None]], list[CheckFinding]]:
-    """Each recording's start and end from ``mef3io.time_range`` (a few
-    small files per channel). A recording whose times are not confirmed
-    (its offset is behind a password not given) has none."""
+) -> tuple[dict[str, Layout], list[CheckFinding]]:
+    """Each recording's start, end and channels. The start and whether the
+    times are confirmed come from ``mef3io.time_range`` (a few small
+    files); the channels from a ``Reader``; the END from the last block of
+    each channel (``block_envelope``: where the last sample ends, whatever
+    a writer stated in its headers; see the module notes). A recording
+    whose times are not confirmed (protected, full-access password not
+    given) is reported, not planned."""
     import mef3io
 
-    ranges: dict[str, tuple[int | None, int | None]] = {}
+    layouts: dict[str, Layout] = {}
     findings: list[CheckFinding] = []
     for s in request.sources:
         cancel.raise_if_cancelled()
         try:
             found = mef3io.time_range(s.source, s.password, cancel=cancel.for_library())
+            if not found.offset_known:
+                # Password-protected, and the full-access password was not
+                # given: its times cannot be confirmed (nor the part cut).
+                findings.append(CheckFinding(s.key, join_message_for("password-required", {})))
+                continue
+            reader = mef3io.Reader(s.source, password=s.password, warn_declarations=False)
+            channels = tuple(reader.channels)
+            ends = [_last_sample_end(reader, c, found.end_uutc) for c in channels]
+            ends = [e for e in ends if e is not None]
+            end = max(ends) if ends else int(found.end_uutc)
+            del reader
         except Exception as exc:
             if is_stop(exc):
                 raise
             findings.append(CheckFinding(s.key, describe_join_error(exc, request)))
             continue
-        if not found.offset_known:
-            # Password-protected, and the full-access password was not
-            # given: its times cannot be confirmed (nor the part cut).
-            message = join_message_for("password-required", {}, "")
-            findings.append(CheckFinding(s.key, message))
-        else:
-            ranges[s.key] = (int(found.start_uutc), int(found.end_uutc))
-    return ranges, findings
+        layouts[s.key] = Layout(int(found.start_uutc), end, channels)
+    return layouts, findings
 
 
 def _plan_findings(plan: JoinPlan, request: JoinRequest) -> list[CheckFinding]:
@@ -475,6 +573,15 @@ def _plan_findings(plan: JoinPlan, request: JoinRequest) -> list[CheckFinding]:
             )
         )
     return out
+
+
+def plan_for(request: JoinRequest, layouts: dict) -> JoinPlan:
+    return plan_join(
+        request.sources,
+        layouts,
+        excluded=request.exclude_channels,
+        changes=request.changes,
+    )
 
 
 def _by_key(request: JoinRequest) -> dict[str, JoinSource]:
@@ -500,10 +607,10 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
     cancel = cancel or CancelToken()
     cancel.raise_if_cancelled()
     with stopped_by_library(), library_warnings_caught():
-        ranges, findings = read_ranges(request, cancel)
+        layouts, findings = read_layouts(request, cancel)
         if findings:
             return findings
-        plan = plan_join(request.sources, ranges, changes=request.changes)
+        plan = plan_for(request, layouts)
         if not plan.ok:
             return _plan_findings(plan, request)
         sources = _by_key(request)
@@ -592,10 +699,10 @@ def make_joined(
     cancel.raise_if_cancelled()
     try:
         with stopped_by_library(), library_warnings_caught():
-            ranges, findings = read_ranges(request, cancel)
+            layouts, findings = read_layouts(request, cancel)
             if findings:
                 return JoinResult(request.destination, message=findings[0].message)
-            plan = plan_join(request.sources, ranges, changes=request.changes)
+            plan = plan_for(request, layouts)
             if not plan.ok:
                 return JoinResult(
                     request.destination, message=_plan_findings(plan, request)[0].message
@@ -659,8 +766,7 @@ def _run(request: JoinRequest, plan: JoinPlan, send, cancel: CancelToken):
     passwords: list[str] = []
     temporary = None
     if to_cut:
-        # Never an existing folder: it would not be ours to remove.
-        os.mkdir(request.parts_folder)
+        make_parts_folder(request)
         temporary = _throwaway_passwords()
     for key in plan.order:
         s = sources[key]
@@ -697,15 +803,44 @@ def _run(request: JoinRequest, plan: JoinPlan, send, cancel: CancelToken):
     )
 
 
-def remove_parts(request: JoinRequest) -> bool:
-    """Remove the temporary parts folder (only ever one this run named:
-    :data:`PARTS_PREFIX` + hex, never a link). True when it is gone."""
+def make_parts_folder(request: JoinRequest) -> None:
+    """Create the parts folder and, at once, the marker that proves it is
+    this run's. Never an existing folder (``mkdir`` refuses one: it is not
+    ours to fill or remove). If the marker cannot be written, the folder,
+    still empty, is removed again before the error is raised."""
+    os.mkdir(request.parts_folder)
+    try:
+        with open(os.path.join(request.parts_folder, PARTS_MARKER), "x", encoding="ascii") as f:
+            f.write(request.run_token)
+    except BaseException:
+        try:
+            os.rmdir(request.parts_folder)
+        except OSError:
+            pass
+        raise
+
+
+def _is_ours(request: JoinRequest) -> bool:
     folder = request.parts_folder
-    if not folder or not os.path.basename(folder).startswith(PARTS_PREFIX):
+    if not request.run_token or not os.path.basename(folder).startswith(PARTS_PREFIX):
+        return False
+    if not os.path.isdir(folder) or os.path.islink(folder):
+        return False
+    try:
+        with open(os.path.join(folder, PARTS_MARKER), encoding="ascii") as f:
+            return f.read() == request.run_token
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def remove_parts(request: JoinRequest) -> bool:
+    """Remove the temporary parts folder, ONLY when it carries this run's
+    marker (:func:`make_parts_folder`): a folder that was already there is
+    never touched. True when nothing of this run is left."""
+    if not _is_ours(request):
         return True
-    if os.path.isdir(folder) and not os.path.islink(folder):
-        shutil.rmtree(folder, ignore_errors=True)
-    return not os.path.lexists(folder)
+    shutil.rmtree(request.parts_folder, ignore_errors=True)
+    return not os.path.lexists(request.parts_folder)
 
 
 def tidy(request: JoinRequest, partial_was_there: bool = False) -> bool:

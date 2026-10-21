@@ -160,12 +160,17 @@ See the [user guide](docs/user-guide.md#anonymize-recordings) and the
 ### Join or trim
 
 Keep **only part of a recording**, or **join parts of several recordings
-into one new recording**: for example the last hour of one recording and the
-first hour of the next. For each recording, keep all of it, the first or the
-last so many hours, minutes and seconds, or everything between two times.
+into one new recording**, one after another or side by side: for example the
+last hour of one recording and the first hour of the next, or two recordings
+of the same hour made with different channels. For each recording, keep all
+of it, the first or the last so many hours, minutes and seconds, or
+everything between two times. Start from the page itself, or select
+recordings in Explore and choose **Join or trim these…**.
 - The recordings are listed in **time order**, with a **preview** of the kept
-  parts and the gaps between them. Kept parts that **overlap in time** are
-  refused before anything starts.
+  parts and the gaps between them. Parts that run at the same time are fine
+  when they hold different channels; parts that **share a channel at the same
+  moment** are refused before anything starts (leave that channel out, or
+  keep less).
 - Leave out channels, and protect the new recording with two new passwords
   if you like.
 - Everything is **checked before anything is written** (sampling rates,

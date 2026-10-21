@@ -506,20 +506,29 @@ The **Join or trim** page makes **one new recording** from parts of others:
 - **Trim:** keep only part of one recording, for example its first two
   hours, or everything between 08:00 and 12:00.
 - **Join:** keep a part of each of several recordings and put them together,
-  for example the last hour of one recording and the first hour of the next.
-  Three or more work the same way, each trimmed at the start, the end or
-  both.
+  **one after another or side by side**: for example the last hour of one
+  recording and the first hour of the next, or two recordings of the same
+  hour made with different channels. Three or more work the same way, each
+  trimmed at the start, the end or both.
 
 The originals are never changed. Like the Anonymize page, it goes step by
 step with **Back** and **Next**, and **nothing is written until you choose
 Check and save**.
+
+**Starting from Explore:** select one or more recordings in the Explore list
+and choose **Join or trim these…** (the button under the list, or the menu
+you get with a right-click). The Join or trim page opens with exactly those
+recordings chosen.
 
 1. **Recordings.** Tick the recordings to use, from the list in Explore (open
    or scan for more here). One recording is trimmed; several are joined. A
    recording that cannot be used says why: for example, a password-protected
    recording opened only with its basic password (open it again in Explore
    with the full-access password).
-2. **What to keep.** The recordings are listed **in time order**, with their
+2. **Channels.** Every channel of every chosen recording is kept unless you
+   leave it out (the same channel list as on the Anonymize page). The new
+   recording holds every channel you keep, from all the recordings.
+3. **What to keep.** The recordings are listed **in time order**, with their
    start and end in your time zone. For each, choose what to keep:
    - **The whole recording**;
    - **The first…** or **The last…** so many hours, minutes and seconds
@@ -527,14 +536,20 @@ Check and save**.
    - **From … to …** two dates and times, typed in the time zone shown above
      the list (a time outside the recording is cut back to it).
 
-   The **preview** under the list shows each recording as a light bar and the
-   part you keep in blue, on one timeline, so the gaps between them are easy
-   to see. The new recording keeps those gaps exactly as they were: joining
-   never moves anything in time. **Kept parts must not overlap in time**: if
-   two do, they turn red, the step says which, and you cannot go on until
-   you keep less of one of them.
-3. **Channels.** Every channel of every chosen recording is kept unless you
-   leave it out (the same channel list as on the Anonymize page).
+   The **preview** under the list shows each recording on its own row, as a
+   light bar, with the part you keep in blue, on one timeline, so the gaps
+   between them, and parts that run at the same time, are easy to see. The
+   new recording keeps the times exactly as they were: joining never moves
+   anything in time. **Two kept parts may run at the same time only if they
+   share no channel you keep.** If they do share one, they turn red, the step
+   names the shared channels, and you cannot go on until you keep less of one
+   of them, or go **Back** and leave those channels out.
+
+   *Where a recording ends:* the end shown is where its last sample ends. The
+   app takes it from the recording's own list of stored stretches of signal,
+   because some recording programs write the time of the last sample itself
+   as the end, which is one sample earlier. "The last hour" is therefore
+   exactly the last hour of signal, whichever program made the recording.
 4. **New recording.** Type its name and choose the folder (by default the
    folder of the first recording). Choose **No password** or protect it with
    **two new passwords**; the originals' passwords are not carried over, and
@@ -543,14 +558,17 @@ Check and save**.
    recording and keeping all of it, with no channel left out and no new
    passwords, would only make an exact copy, so it is refused.
 5. **Check and save.** First everything is checked, without writing
-   anything: that each kept part holds signal, that the parts do not overlap,
-   that the channels have the same sampling rate in every recording, that
-   the recordings are of the same patient (their patient details match),
-   the passwords, and that the name is free. Anything that stops it is
-   listed in plain words on the New recording step. Then the new recording is
-   made, with one progress bar for all of it and a **Stop** button, and it is
-   **checked against the originals** before it gets its name. At the end,
-   **Open it in Explore** shows it there.
+   anything: that each kept part holds signal, that no two parts share a
+   channel at the same time, that the channels have the same sampling rate
+   in every recording, that the recordings are of the same patient (their
+   patient details match), the passwords, and that the name is free. While
+   the check runs, the choices cannot be changed; if something changes
+   anyway (for example you switch to another page, which clears typed
+   passwords), nothing is started and you choose Check and save again.
+   Anything that stops it is listed in plain words on the New recording
+   step. Then the new recording is made, with one progress bar for all of it
+   and a **Stop** button, and it is **checked against the originals** before
+   it gets its name. At the end, **Open it in Explore** shows it there.
 
 **How joining works, and the temporary folder.** When several recordings are
 joined and some are trimmed, the kept part of each trimmed one is first saved
@@ -561,6 +579,8 @@ passwords** made for that run only, so the folder never holds readable
 patient details, even if the computer stops halfway. The folder is always
 removed at the end, also when you press Stop or something goes wrong; if it
 ever cannot be removed, the result says so, and you can delete it yourself.
+The app only ever removes a temporary folder it made for that run (it leaves
+a small note inside it to recognise it); anything else is left alone.
 A recording you keep whole is used as it is, without a temporary copy.
 
 ## Help and reporting problems

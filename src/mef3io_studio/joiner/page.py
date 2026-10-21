@@ -77,6 +77,7 @@ from ..model.join import (
     JoinResult,
     JoinSource,
     Keep,
+    Layout,
     plan_join,
     problem_text,
 )
@@ -97,8 +98,11 @@ from ..workers.tasks import check_join, join_recordings
 #: the recordings again (a scan delivers them in quick bursts).
 REFRESH_DELAY_MS = 150
 
-STEPS = ("Recordings", "What to keep", "Channels", "New recording", "Save")
-STEP_RECORDINGS, STEP_KEEP, STEP_CHANNELS, STEP_NEW, STEP_RUN = range(len(STEPS))
+# Channels come before "What to keep": two parts that overlap in time are
+# fine when they share no kept channel, so the overlap rule needs the
+# channel choice.
+STEPS = ("Recordings", "Channels", "What to keep", "New recording", "Save")
+STEP_RECORDINGS, STEP_CHANNELS, STEP_KEEP, STEP_NEW, STEP_RUN = range(len(STEPS))
 
 #: The "Keep" choices, in the order the list shows them.
 KEEP_LABELS = (
@@ -425,7 +429,9 @@ class KeepStep(QWidget):
             _label(
                 "Choose what to keep of each recording. They are listed in time order, and "
                 "the new recording holds the kept parts in that order, with the gaps between "
-                "them as they really were. The kept parts must not overlap in time.",
+                "them as they really were. Parts may run at the same time (side by side) only "
+                "when they hold different channels: two parts that overlap in time must not "
+                "share a channel you keep.",
                 muted=True,
             )
         )
@@ -471,11 +477,20 @@ class KeepStep(QWidget):
             JoinSource(r.entry.key, r.entry.location, r.keep(), r.entry.password) for r in self.rows
         ]
 
-    def ranges(self) -> dict:
-        return {r.entry.key: (r.entry.details.start, r.entry.details.end) for r in self.rows}
+    def layouts(self) -> dict:
+        return {
+            r.entry.key: Layout(
+                r.entry.details.start,
+                r.entry.details.end,
+                tuple(c.name for c in r.entry.details.channels),
+            )
+            for r in self.rows
+        }
 
     def recompute(self, *_args) -> None:
-        self.plan = plan_join(self.sources(), self.ranges(), changes=True)
+        self.plan = plan_join(
+            self.sources(), self.layouts(), excluded=self.page.selection.excluded, changes=True
+        )
         names = {r.entry.key: r.entry.name for r in self.rows}
         overlapping = self.plan.overlapping
         preview = []
@@ -617,7 +632,10 @@ class NewRecordingStep(QWidget):
         if password:
             return password
         plan = plan_join(
-            self.page.keep.sources(), self.page.keep.ranges(), changes=self.page.has_changes()
+            self.page.keep.sources(),
+            self.page.keep.layouts(),
+            excluded=self.page.selection.excluded,
+            changes=self.page.has_changes(),
         )
         if not plan.ok:
             names = {r.entry.key: r.entry.name for r in self.page.keep.rows}
@@ -755,6 +773,9 @@ class JoinerPage(QWidget):
         self.result: JoinResult | None = None
         self._stopped = False
         self._failure = None
+        #: Bumped by every change of a choice: a check that finishes after
+        #: one is stale and never starts a run.
+        self._generation = 0
         self._recordings_dirty = True
         self._built = False
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -801,10 +822,10 @@ class JoinerPage(QWidget):
         self.new = NewRecordingStep(self)
         self.run_step = RunStep(self)
         self.stack = QStackedWidget(self)
-        for widget in (self.recordings, self.keep, self.picker, self.new, self.run_step):
+        for widget in (self.recordings, self.picker, self.keep, self.new, self.run_step):
             self.stack.addWidget(widget)
         for step in (self.recordings, self.keep, self.picker, self.new):
-            step.changed.connect(self._update_buttons)
+            step.changed.connect(self._inputs_changed)
         self.keep.preview.set_theme(self.theme)
 
         self.back_button = QPushButton("Back")
@@ -872,6 +893,7 @@ class JoinerPage(QWidget):
     def hideEvent(self, event) -> None:  # noqa: N802
         # Passwords typed but not used yet are not kept while the page is away.
         if self._built and self.step != STEP_RUN:
+            self._generation += 1
             self.new.passwords.forget()
         super().hideEvent(event)
 
@@ -895,8 +917,16 @@ class JoinerPage(QWidget):
         self.recordings.lost.setVisible(True)
         return False
 
+    def _inputs_changed(self, *_args) -> None:
+        self._generation += 1
+        self._update_buttons()
+
+    def _checking(self) -> bool:
+        return self.check_handle is not None and not self.check_handle.is_finished
+
     def go(self, step: int) -> None:
-        if step > STEP_KEEP and step != STEP_RUN and not self._still_readable():
+        self._generation += 1
+        if step > STEP_RECORDINGS and step != STEP_RUN and not self._still_readable():
             return
         if step != STEP_RECORDINGS:
             self.recordings.lost.setVisible(False)
@@ -913,6 +943,9 @@ class JoinerPage(QWidget):
             self.recordings.refresh()
         elif step == STEP_CHANNELS:
             self._prepare_channels()
+        elif step == STEP_KEEP:
+            self._prepare_channels()
+            self.keep.recompute()
         elif step == STEP_NEW:
             self.new.prepare()
         passwords = self.new.passwords
@@ -942,7 +975,7 @@ class JoinerPage(QWidget):
         if step == STEP_CHANNELS:
             return "" if self.selection.can_continue else "Keep at least one channel."
         if step == STEP_NEW:
-            if self.check_handle is not None and not self.check_handle.is_finished:
+            if self._checking():
                 return "Checking everything before starting…"
             return "Fix what is listed above first." if self.new.problem_text() else ""
         return ""
@@ -952,8 +985,11 @@ class JoinerPage(QWidget):
         running = self.handle is not None and not self.handle.is_finished
         why = self._blocker_text()
         self.why_not.setText(why)
+        checking = self._checking()
+        # Nothing can be changed while the check runs (it checks THESE choices).
+        self.stack.setEnabled(not checking)
         self.back_button.setVisible(step != STEP_RUN)
-        self.back_button.setEnabled(step > STEP_RECORDINGS)
+        self.back_button.setEnabled(step > STEP_RECORDINGS and not checking)
         if step == STEP_NEW:
             self.next_button.setText("Check and save")
         elif step == STEP_RUN:
@@ -963,7 +999,7 @@ class JoinerPage(QWidget):
         self.next_button.setEnabled(not running if step == STEP_RUN else not why)
 
     def back(self) -> None:
-        if STEP_RECORDINGS < self.step < STEP_RUN:
+        if STEP_RECORDINGS < self.step < STEP_RUN and not self._checking():
             self.go(self.step - 1)
 
     def next(self):
@@ -1003,8 +1039,22 @@ class JoinerPage(QWidget):
         self.new.set_findings([])
         handle = self.jobs.submit("Checking before joining", check_join, request)
         self.check_handle = handle
+        generation = self._generation
 
         def checked(findings) -> None:
+            if (
+                generation != self._generation
+                or self.step != STEP_NEW
+                or not self.isVisible()
+                or self.handle is not None
+            ):
+                # Something changed while it was being checked (or the page
+                # was left): this check is not about the choices on screen.
+                self.status.emit(
+                    "The choices changed during the check, so nothing was started. Choose "
+                    "Check and save again."
+                )
+                return
             if findings:
                 self.new.set_findings(findings, self._names())
                 return
@@ -1074,10 +1124,37 @@ class JoinerPage(QWidget):
             folder = os.path.dirname(self.request.destination)
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
+    def choose(self, keys) -> bool:
+        """Start over with exactly these recordings (Explore's "Join or trim
+        these…"), then go on to the next step. Recordings that cannot be
+        used are named on the first step instead. False while a check or a
+        run is going on (nothing is changed then)."""
+        self._build()
+        running = self.handle is not None and not self.handle.is_finished
+        if running or self._checking():
+            self.status.emit("Join or trim is busy: wait until it has finished.")
+            return False
+        self.restart()
+        keys = list(keys)
+        self.recordings.set_ticked(keys)
+        dropped = [k for k in keys if k not in self.recordings.ticked]
+        if dropped:
+            names = {e.key: e.name for e in self.recordings.rows}
+            self.recordings.lost.setText(
+                "These recordings cannot be used here (the list says why): "
+                f"{', '.join(names.get(k, '') for k in dropped)}."
+            )
+            self.recordings.lost.setVisible(True)
+            return True
+        if self.recordings.ticked:
+            self.next()
+        return True
+
     def restart(self) -> None:
         self.request = None
         self.result = None
         self.handle = None
+        self.check_handle = None
         self._stopped = False
         self.new.passwords.forget()
         self.new.passwords.cleared_once = False
@@ -1085,4 +1162,5 @@ class JoinerPage(QWidget):
         self._selection_keys = ()
         self.keep.set_recordings([])
         self.recordings.ticked.clear()
+        self.recordings.lost.setVisible(False)
         self.go(STEP_RECORDINGS)

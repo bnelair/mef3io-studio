@@ -203,6 +203,7 @@ def _build_main_window_class():
             self.joiner = JoinerPage(jobs, self.explorer, parent=self.pages)
             self.joiner.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
             self.joiner.open_recording.connect(self.open_in_explorer)
+            self.explorer.join_requested.connect(self.join_in_joiner)
             self._tray = None
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)
@@ -560,6 +561,12 @@ def _build_main_window_class():
             """Show a recording the app just made (a joined one) in Explore."""
             self.module_list.setCurrentRow(self.module_keys.index("explorer"))
             self.explorer.open_and_show(path, password)
+
+        def join_in_joiner(self, keys: list) -> None:
+            """Explore's "Join or trim these…": the joiner, with exactly
+            those recordings chosen."""
+            self.module_list.setCurrentRow(self.module_keys.index("joiner"))
+            self.joiner.choose(keys)
 
         def choose_time_zone(self) -> None:
             dialog = TimeZoneDialog(self.settings.get("time/site_zone"), self)
