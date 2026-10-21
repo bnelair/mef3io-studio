@@ -82,7 +82,7 @@ PYSIDE_SOURCE_URL = "https://code.qt.io/cgit/pyside/pyside-setup.git/"
 def about_text() -> str:
     return (
         f"<h3>mef3io-studio {app_version()}</h3>"
-        "<p>Explore and anonymize MEF 3.0 recordings, with no programming needed.</p>"
+        "<p>Explore, anonymize, join and trim MEF 3.0 recordings, with no programming needed.</p>"
         "<p>Every file operation is done by the bundled mef3io library.</p>"
         "<table>"
         f"<tr><td>App version&nbsp;&nbsp;</td><td>{app_version()}</td></tr>"
@@ -1033,7 +1033,7 @@ def self_test(report_path: str | None = None, gui: bool = False) -> int:
 def parse_args(argv: Sequence[str] | None):
     parser = argparse.ArgumentParser(
         prog="mef3io-studio",
-        description="Explore and anonymize MEF 3.0 recordings.",
+        description="Explore, anonymize, join and trim MEF 3.0 recordings.",
     )
     parser.add_argument("--version", action="version", version=f"mef3io-studio {app_version()}")
     parser.add_argument(

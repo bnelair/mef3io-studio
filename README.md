@@ -6,10 +6,11 @@
 [![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
 
-The app is in early development. The current test version, **0.1.0.dev3**,
-can explore recordings and make anonymized copies of them; the other
-features below are still being built. See [Project status](#project-status)
-and the [release notes](docs/release-notes/0.1.0.dev3.md).
+The app is in early development. The current test version, **0.1.0.dev5**,
+can explore recordings, make anonymized copies of them, and keep part of a
+recording or join parts of several into one; the other features below are
+still being built. See [Project status](#project-status) and the
+[release notes](docs/release-notes/0.1.0.dev5.md).
 
 ## Getting the app
 
@@ -81,7 +82,7 @@ easier to copy and share. It is read directly; there's no need to unpack it.
 ## What the app does
 
 The app has three pages: **Explore**, **Anonymize** and **Join or trim**
-(the last is new since test version 0.1.0.dev4). The rest of the first
+(the last is new in test version 0.1.0.dev5). The rest of the first
 release is still being built (see
 [Still to come](#still-to-come-for-the-first-release)).
 
@@ -408,10 +409,9 @@ mef3io-studio is in **early development**. The app, its installers, the
 **Explore** page and the **Anonymize** wizard (anonymized copies with a
 choice of channels, moved dates, new names and optional password protection, plus a
 Privacy check for any recording, and unattended batches into shareable
-archives) are ready to try in test version **0.1.0.dev4**, built on mef3io
-1.5.1. Keeping only part of a recording and joining parts of several
-recordings into one (**Join or trim**) are available in the development
-version and come with the next test version. Still to come for the first
+archives) and **Join or trim** (keeping only part of a recording, or joining
+parts of several recordings into one, one after another or side by side) are
+ready to try in test version **0.1.0.dev5**, built on mef3io 1.5.1. Still to come for the first
 full release: other copies with changes (adding or removing password
 protection, cutting a recording into pieces), ordering and renaming
 recordings, viewing and editing details, and saving channel choices and

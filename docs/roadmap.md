@@ -18,7 +18,7 @@ Shipped **only as installers** (Windows `.exe`, macOS, Linux) on GitHub Releases
 | 5 | studio | **Metadata view and edit** ([#14](https://github.com/bnelair/mef3io-studio/issues/14)); timestamps never editable | Planned |
 | 6 | studio | **Passwords** ([#15](https://github.com/bnelair/mef3io-studio/issues/15)) and **channel presets + batch conversion** ([#16](https://github.com/bnelair/mef3io-studio/issues/16)) | Planned |
 | 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) | Wizard, unattended batch (folders, per-recording archives, one batch archive; resume after a crash) and Privacy check built, on mef3io 1.4.0 (test versions 0.1.0.dev2 and dev3) and 1.5.1 (0.1.0.dev4); the deferred items are listed in [design/anonymizer.md](design/anonymizer.md#as-built-wizard-for-010dev2) |
-| 7b | studio | **Join or trim** ([#31](https://github.com/bnelair/mef3io-studio/issues/31)): keep part of a recording, or join parts of several into one new recording, on mef3io 1.5.1 (`time_range`, `transform_session` with a time window, `merge_sessions`) | Built (after 0.1.0.dev4); cutting one recording into several pieces is still to come |
+| 7b | studio | **Join or trim** ([#31](https://github.com/bnelair/mef3io-studio/issues/31)): keep part of a recording, or join parts of several into one new recording, on mef3io 1.5.1 (`time_range`, `transform_session` with a time window, `merge_sessions`) | Built, in test version 0.1.0.dev5 (also side by side, and from the Explore selection); cutting one recording into several pieces is still to come |
 | 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release | Started (user guide for Explore, Anonymize and Join or trim) |
 
 ## Test versions
@@ -32,6 +32,7 @@ Published as GitHub pre-releases; what changed in each is in
 | 0.1.0.dev2 | 1.4.0 | Explore with the combined timeline, CSV export of times and a working Stop; the Anonymize wizard with unattended batches; the Privacy check ([notes](release-notes/0.1.0.dev2.md)) |
 | 0.1.0.dev3 | 1.4.0 | Clearly outlined option buttons, tick boxes and fields in both themes ([#35](https://github.com/bnelair/mef3io-studio/issues/35)); a stricter check before continuing a batch removes an earlier result ([#36](https://github.com/bnelair/mef3io-studio/issues/36)) ([notes](release-notes/0.1.0.dev3.md)) |
 | 0.1.0.dev4 | 1.5.1 | Runs on mef3io 1.5.1; plain words for its new reasons to refuse a copy; History shows recordings renamed or copied with changes ([notes](release-notes/0.1.0.dev4.md)) |
+| 0.1.0.dev5 | 1.5.1 | **Join or trim**: keep part of a recording, or join parts of several into one (one after another or side by side), from its own page or the Explore selection ([notes](release-notes/0.1.0.dev5.md)) |
 
 ## Next directions (each needs a specification first)
 
