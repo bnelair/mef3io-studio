@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 from ..common.privacy import register_identity, scrub
-from ..model import anonymize, archive, awake, bundle, pipeline
+from ..model import anonymize, archive, awake, bundle, join, pipeline
 from ..model import journal as journal_
 from ..model.cancel import JobCancelled, is_stop
 from ..model.coverage import Stopped, combine
@@ -334,6 +334,70 @@ def anonymize_recordings(
     saved = sum(1 for r in results if r.ok)
     log.info("job %d: %d of %d anonymized copies saved and checked", ctx.job_id, saved, total)
     return results
+
+
+def _register_join_identity(request: join.JoinRequest) -> None:
+    """Everything a join request carries that identifies or unlocks: the
+    originals' names and passwords, the new name and passwords."""
+    values = [request.name]
+    for s in request.sources:
+        values += [s.name, s.password]
+    if request.output_password:
+        values += list(request.output_password)
+    register_identity(*(v for v in values if v))
+
+
+def check_join(ctx: JobContext, request: join.JoinRequest) -> list[join.CheckFinding]:
+    """mef3io's verdict on a join or trim, before anything is written:
+    every reason not to start, in plain words (empty = it would start). In
+    a helper process (it opens the recordings)."""
+    _register_join_identity(request)
+    ctx.report(0, None, "Checking everything before starting")
+    findings = ctx.run_isolated(join.check_join, request, stop_grace=STOP_GRACE_SECONDS)
+    findings = [replace(f, message=scrubbed(f.message)) for f in findings]
+    log.info("job %d: join check found %d problem(s)", ctx.job_id, len(findings))
+    return findings
+
+
+def join_recordings(ctx: JobContext, request: join.JoinRequest) -> join.JoinResult:
+    """Make the joined or trimmed recording in a helper process, with one
+    progress bar over every step (each cut, then the join). A refusal or
+    failure comes back as the result's message; Stop ends the helper
+    (mef3io removes what it had started) and the temporary parts and an
+    unfinished destination are removed here too, in case the helper had to
+    be ended before it could tidy up."""
+    _register_join_identity(request)
+    partial_was_there = os.path.lexists(request.destination + ".partial")
+    ctx.add_cleanup(lambda: join.tidy(request, partial_was_there))
+    phase = "Starting"
+    ctx.report(0, 1000, phase)
+
+    def got(message) -> None:
+        if isinstance(message, join.JoinProgress):
+            ctx.report(round(1000 * message.overall), 1000, join.progress_phase(message))
+
+    try:
+        result = ctx.run_isolated(
+            join.make_joined, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
+        )
+    except Exception as exc:
+        if isinstance(exc, JobCancelled) or is_stop(exc):
+            raise
+        # The helper itself failed (a crash): tidy up, then say what happened.
+        left = not join.tidy(request, partial_was_there)
+        result = join.JoinResult(
+            request.destination, message=join.describe_join_error(exc, request), parts_left=left
+        )
+    if not result.ok and not join.tidy(request, partial_was_there):
+        result = replace(result, parts_left=True)
+    elif result.ok and not join.remove_parts(request):
+        result = replace(result, parts_left=True)
+    if result.message is not None:
+        result = replace(result, message=scrubbed(result.message))
+    if result.parts_left:
+        log.warning("job %d: temporary files of a join could not be removed", ctx.job_id)
+    log.info("job %d: join %s", ctx.job_id, "saved and checked" if result.ok else "not saved")
+    return result
 
 
 @dataclass(frozen=True)

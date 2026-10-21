@@ -55,6 +55,13 @@ def to_datetime(us: int, zone: tzinfo = UTC) -> datetime:
     return (_EPOCH + timedelta(microseconds=int(us))).astimezone(zone)
 
 
+def from_local(moment: datetime, zone: tzinfo = UTC) -> int:
+    """Microseconds since 1970 of a wall-clock ``moment`` (naive) in
+    ``zone``: the inverse of :func:`to_datetime`. In the repeated hour when
+    clocks go back, the first of the two instants."""
+    return (moment.replace(tzinfo=zone, fold=0) - _EPOCH) // timedelta(microseconds=1)
+
+
 def format_time(us: int | None, zone: tzinfo = UTC, seconds_decimals: int = 0) -> str:
     """ "2000-01-01 01:00:00 +01:00" in a site zone, "2000-01-01 00:00:00 UTC"
     in UTC. The offset is always shown, so the reader never has to guess."""

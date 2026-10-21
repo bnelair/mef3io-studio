@@ -315,6 +315,51 @@ BLOCKER_PLAN_WORDS = {
 }
 
 
+def channel_selection_for(
+    entries: list[RecordingEntry], previous: ChannelSelection | None = None
+) -> tuple[ChannelSelection, str]:
+    """The channel picker's choice over ``entries`` (every channel any of
+    them has, all kept), and a notice for the picker. ``previous``: the
+    choice for an earlier set of recordings, carried over by name. Also
+    used by the joiner."""
+    recordings = {e.key: [ch.name for ch in e.details.channels] for e in entries}
+    info: dict[str, list] = {}
+    for e in entries:
+        for ch in e.details.channels:
+            info.setdefault(ch.name, []).append(ch)
+    rows = []
+    for name, channels in info.items():
+        rates = {format_rate(ch.sampling_frequency) for ch in channels}
+        units = {ch.units for ch in channels}
+        rows.append(
+            ChannelRow(
+                name,
+                rate=rates.pop() if len(rates) == 1 else "varies",
+                unit=units.pop() if len(units) == 1 else "varies",
+                present_in=len(channels),
+            )
+        )
+    selection = ChannelSelection(recordings, rows)
+    notice = ""
+    if previous is not None:
+        # The recordings changed: carry the choice over by name, and say so.
+        carried = [n for n in previous.excluded if n in selection.rows]
+        if carried:
+            selection.set_kept(carried, False)
+            selection.clear_history()
+        notice = (
+            "The chosen recordings changed. "
+            + (
+                f"{format_count(len(carried), 'channel')} you had left out "
+                f"{'is' if len(carried) == 1 else 'are'} still left out, by name. "
+                if carried
+                else ""
+            )
+            + "Undo starts again from here."
+        )
+    return selection, notice
+
+
 @dataclass
 class Choice:
     """One recording in this run."""
@@ -359,11 +404,11 @@ class RecordingsModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self.rows)
 
     def columnCount(self, parent=QModelIndex()):  # noqa: B008, N802
-        return 0 if parent.isValid() else len(self.COLUMNS)
+        return 0 if parent.isValid() else len(self.step.COLUMNS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            return self.COLUMNS[section]
+            return self.step.COLUMNS[section]
         return None
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
@@ -416,26 +461,31 @@ class RecordingsModel(QAbstractTableModel):
 
 
 class RecordingsStep(QWidget):
+    """Tick recordings from the Explore list. Also the joiner's first step
+    (``joiner/page.py``), which changes the texts below and :meth:`_reason`;
+    ``page`` needs ``explorer``, ``zone`` and ``_refresh_recordings``."""
+
     changed = Signal()
 
     COLUMNS = RecordingsModel.COLUMNS
+    INTRO = (
+        "Choose the recordings to anonymize, from the list in Explore. Each one gets "
+        "its own anonymized copy; the originals are never changed."
+    )
+    ALL_LABEL = "Tick all that can be anonymized"
 
-    def __init__(self, page: AnonymizerPage):
+    def __init__(self, page):
         super().__init__(page)
         self.page = page
         self.ticked: set[str] = set()
-        intro = _label(
-            "Choose the recordings to anonymize, from the list in Explore. Each one gets "
-            "its own anonymized copy; the originals are never changed.",
-            muted=True,
-        )
+        intro = _label(self.INTRO, muted=True)
         self.open_button = QPushButton("Open a recording…")
         self.open_button.clicked.connect(lambda: page.explorer.choose_folder_recording())
         self.open_file_button = QPushButton("Open a single-file recording…")
         self.open_file_button.clicked.connect(lambda: page.explorer.choose_file_recording())
         self.scan_button = QPushButton("Scan a folder…")
         self.scan_button.clicked.connect(lambda: page.explorer.choose_scan_folder())
-        self.all_button = QPushButton("Tick all that can be anonymized")
+        self.all_button = QPushButton(self.ALL_LABEL)
         self.all_button.clicked.connect(self.tick_all)
         self.none_button = QPushButton("Untick all")
         self.none_button.clicked.connect(self.untick_all)
@@ -860,12 +910,22 @@ class IdentityStep(QWidget):
 
 
 class PasswordsStep(QWidget):
+    """No password, or two new ones. Also the joiner's (``joiner/page.py``),
+    which names what is protected (``what``) and explains it its own way."""
+
     changed = Signal()
 
-    def __init__(self, page: AnonymizerPage):
+    def __init__(
+        self,
+        page,
+        what: str = "the copies",
+        explanation: str = PASSWORD_EXPLANATION,
+        none_label: str = "No password (the usual choice for sharing)",
+    ):
         super().__init__(page)
-        self.none = QRadioButton("No password (the usual choice for sharing)")
-        self.both = QRadioButton("Protect the copies with two new passwords")
+        self.what = what
+        self.none = QRadioButton(none_label)
+        self.both = QRadioButton(f"Protect {what} with two new passwords")
         self.none.setChecked(True)
         group = QButtonGroup(self)
         group.addButton(self.none)
@@ -896,7 +956,7 @@ class PasswordsStep(QWidget):
         self.cleared.setVisible(False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(_label(PASSWORD_EXPLANATION, muted=True))
+        layout.addWidget(_label(explanation, muted=True))
         layout.addWidget(self.cleared)
         layout.addWidget(self.none)
         layout.addWidget(self.both)
@@ -913,7 +973,7 @@ class PasswordsStep(QWidget):
             return ""
         if any(password_may_not_work_elsewhere(f.text()) for f in (self.basic, self.full)):
             return (
-                "Other programs may not open the copies with these passwords: keep each "
+                f"Other programs may not open {self.what} with these passwords: keep each "
                 "password to at most 15 characters, using letters, digits and common "
                 "punctuation (accented letters such as é count twice). This app will open them."
             )
@@ -1814,43 +1874,8 @@ class AnonymizerPage(QWidget):
         keys = tuple(c.key for c in self.choices)
         if keys == self._selection_keys:
             return
-        recordings = {c.key: [ch.name for ch in c.entry.details.channels] for c in self.choices}
-        info: dict[str, list] = {}
-        for c in self.choices:
-            for ch in c.entry.details.channels:
-                info.setdefault(ch.name, []).append(ch)
-        rows = []
-        for name, channels in info.items():
-            rates = {format_rate(ch.sampling_frequency) for ch in channels}
-            units = {ch.units for ch in channels}
-            rows.append(
-                ChannelRow(
-                    name,
-                    rate=rates.pop() if len(rates) == 1 else "varies",
-                    unit=units.pop() if len(units) == 1 else "varies",
-                    present_in=len(channels),
-                )
-            )
-        previous = self.selection.excluded if self._selection_keys else ()
-        selection = ChannelSelection(recordings, rows)
-        notice = ""
-        if self._selection_keys:
-            # The batch changed: carry the choice over by name, and say so.
-            carried = [n for n in previous if n in selection.rows]
-            if carried:
-                selection.set_kept(carried, False)
-                selection.clear_history()
-            notice = (
-                "The chosen recordings changed. "
-                + (
-                    f"{format_count(len(carried), 'channel')} you had left out "
-                    f"{'is' if len(carried) == 1 else 'are'} still left out, by name. "
-                    if carried
-                    else ""
-                )
-                + "Undo starts again from here."
-            )
-        self.selection = selection
+        previous = self.selection if self._selection_keys else None
+        self.selection, notice = channel_selection_for([c.entry for c in self.choices], previous)
         self._selection_keys = keys
         self.picker.set_selection(self.selection, len(self.choices), notice)
 

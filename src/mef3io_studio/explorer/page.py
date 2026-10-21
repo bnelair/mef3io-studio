@@ -351,6 +351,8 @@ class ExplorerPage(QWidget):
 
     #: Emitted with a short plain message for the status bar.
     status = Signal(str)
+    #: "Join or trim these…": the keys of the selected recordings.
+    join_requested = Signal(list)
 
     def __init__(
         self,
@@ -434,6 +436,11 @@ class ExplorerPage(QWidget):
         self.pack_button.clicked.connect(self.pack_current)
         self.check_selected_button = QPushButton("Check for problems", self)
         self.check_selected_button.clicked.connect(self.check_selected)
+        self.join_button = QPushButton("Join or trim these…", self)
+        self.join_button.setToolTip(
+            "Keep part of the selected recordings, or join them into one new recording"
+        )
+        self.join_button.clicked.connect(self.join_selected)
         self.remove_button = QPushButton("Remove from the list", self)
         self.remove_button.setToolTip("Only removes it from this list; nothing is deleted")
         self.remove_button.clicked.connect(self.remove_selected)
@@ -444,6 +451,7 @@ class ExplorerPage(QWidget):
         actions.addWidget(self.check_selected_button)
         actions.addWidget(self.copy_button)
         actions.addWidget(self.pack_button)
+        actions.addWidget(self.join_button)
         actions.addWidget(self.remove_button)
 
         list_box = _ListBox(self.table, actions, self)
@@ -643,6 +651,7 @@ class ExplorerPage(QWidget):
         self.check_selected_button.setEnabled(
             any(e.outcome is not None and not e.busy and not e.needs_password for e in selected)
         )
+        self.join_button.setEnabled(bool(self._joinable(selected)))
         can_pack = current is not None and current.details is not None and not current.busy
         self.pack_button.setEnabled(can_pack)
         if current is not None and current.outcome is not None and current.outcome.packed:
@@ -941,12 +950,18 @@ class ExplorerPage(QWidget):
         """Open a recording (normally a copy the anonymizer just made) and
         show its Privacy check, so the first sight of the copy is the proof.
         Returns the opening task's handle (None when it was already listed)."""
+        handle = self.open_and_show(path, password)
+        self.tabs.setCurrentWidget(self.privacy)
+        return handle
+
+    def open_and_show(self, path: str, password: str = ""):
+        """Open a recording the app just made (a joined one) and select it.
+        Returns the opening task's handle (None when it was already listed)."""
         self.show_combined(False)
         handle = self.open_paths([path], interactive=False, password=password)
         entry = self.model.entry_for(location_key(path))
         if entry is not None:
             self.select_entry(entry)
-        self.tabs.setCurrentWidget(self.privacy)
         return handle
 
     def _submit_open(self, entries: list[RecordingEntry], prompt: bool):
@@ -1274,11 +1289,24 @@ class ExplorerPage(QWidget):
             lambda: self.export_times(LEVEL_RECORDINGS, self.selected_entries()),
         )
         menu.addAction("Show them on one timeline", lambda: self.show_combined(True))
+        join = menu.addAction("Join or trim these…", self.join_selected)
+        join.setEnabled(bool(self._joinable(self.selected_entries())))
         menu.addSeparator()
         menu.addAction("Remove from the list", self.remove_selected)
         menu.popup(self.table.viewport().mapToGlobal(pos))
         self._dialogs.append(menu)
         menu.aboutToHide.connect(lambda: self._forget_menu(menu))
+
+    @staticmethod
+    def _joinable(entries: list[RecordingEntry]) -> list[str]:
+        return [e.key for e in entries if e.outcome is not None and not e.busy]
+
+    def join_selected(self) -> None:
+        """Open Join or trim with exactly the selected recordings (the
+        joiner orders them by time and says why any cannot be used)."""
+        keys = self._joinable(self.selected_entries())
+        if keys:
+            self.join_requested.emit(keys)
 
     def _forget_menu(self, menu) -> None:
         if menu in self._dialogs:

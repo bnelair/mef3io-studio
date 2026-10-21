@@ -42,6 +42,15 @@ MODULES = (
         "moved by the same amount. Each copy is checked before it is kept, and the "
         "originals are never changed.",
     ),
+    (
+        "joiner",
+        "Join or trim",
+        "join",
+        "Join or trim recordings",
+        "Keep only part of a recording, or join parts of several recordings into one new "
+        "recording. The new recording is checked before it is kept, and the originals are "
+        "never changed.",
+    ),
 )
 
 
@@ -140,6 +149,7 @@ def _build_main_window_class():
     from .common.theme import Theme, ThemeManager
     from .explorer import ExplorerPage
     from .explorer.dialogs import TimeZoneDialog
+    from .joiner import JoinerPage
     from .model.errors import UserMessage
     from .model.timefmt import zone_names
     from .workers.jobs import JobManager
@@ -190,6 +200,10 @@ def _build_main_window_class():
             self.anonymizer.settings_requested.connect(self.show_settings)
             self.anonymizer.batch_finished.connect(self.notify)
             self.anonymizer.resume_problems.connect(self._resume_refused)
+            self.joiner = JoinerPage(jobs, self.explorer, parent=self.pages)
+            self.joiner.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
+            self.joiner.open_recording.connect(self.open_in_explorer)
+            self.explorer.join_requested.connect(self.join_in_joiner)
             self._tray = None
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)
@@ -199,6 +213,8 @@ def _build_main_window_class():
                     page = self.explorer
                 elif key == "anonymizer":
                     page = self.anonymizer
+                elif key == "joiner":
+                    page = self.joiner
                 else:
                     page = PlaceholderPage(icon_name, page_title, page_text, self.pages)
                 self.pages.addWidget(page)
@@ -541,6 +557,17 @@ def _build_main_window_class():
             self.module_list.setCurrentRow(self.module_keys.index("explorer"))
             self.explorer.open_for_privacy_check(path, password)
 
+        def open_in_explorer(self, path: str, password: str = "") -> None:
+            """Show a recording the app just made (a joined one) in Explore."""
+            self.module_list.setCurrentRow(self.module_keys.index("explorer"))
+            self.explorer.open_and_show(path, password)
+
+        def join_in_joiner(self, keys: list) -> None:
+            """Explore's "Join or trim these…": the joiner, with exactly
+            those recordings chosen."""
+            self.module_list.setCurrentRow(self.module_keys.index("joiner"))
+            self.joiner.choose(keys)
+
         def choose_time_zone(self) -> None:
             dialog = TimeZoneDialog(self.settings.get("time/site_zone"), self)
             dialog.accepted.connect(lambda: self.set_time_zone(dialog.zone_name()))
@@ -553,6 +580,7 @@ def _build_main_window_class():
             self.settings.set("time/site_zone", "" if name == "UTC" else name)
             self.explorer.set_zone_name(name)
             self.anonymizer.set_zone_name(name)
+            self.joiner.set_zone_name(name)
 
         def _switch_module(self, row: int) -> None:
             if row < 0:
@@ -689,6 +717,7 @@ def _build_main_window_class():
                 self.explorer.splitter.restoreState(explorer_splitter)
             self.explorer.set_zone_name(self.settings.get("time/site_zone"))
             self.anonymizer.set_zone_name(self.settings.get("time/site_zone"))
+            self.joiner.set_zone_name(self.settings.get("time/site_zone"))
             self.activity_dock.setVisible(self.settings.get("ui/activity_visible"))
             key = self.settings.get("ui/module")
             self.module_list.setCurrentRow(

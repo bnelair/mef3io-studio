@@ -18,7 +18,8 @@ Shipped **only as installers** (Windows `.exe`, macOS, Linux) on GitHub Releases
 | 5 | studio | **Metadata view and edit** ([#14](https://github.com/bnelair/mef3io-studio/issues/14)); timestamps never editable | Planned |
 | 6 | studio | **Passwords** ([#15](https://github.com/bnelair/mef3io-studio/issues/15)) and **channel presets + batch conversion** ([#16](https://github.com/bnelair/mef3io-studio/issues/16)) | Planned |
 | 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) | Wizard, unattended batch (folders, per-recording archives, one batch archive; resume after a crash) and Privacy check built, on mef3io 1.4.0 (test versions 0.1.0.dev2 and dev3) and 1.5.1 (0.1.0.dev4); the deferred items are listed in [design/anonymizer.md](design/anonymizer.md#as-built-wizard-for-010dev2) |
-| 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release | Started (user guide for Explore and Anonymize) |
+| 7b | studio | **Join or trim** ([#31](https://github.com/bnelair/mef3io-studio/issues/31)): keep part of a recording, or join parts of several into one new recording, on mef3io 1.5.1 (`time_range`, `transform_session` with a time window, `merge_sessions`) | Built (after 0.1.0.dev4); cutting one recording into several pieces is still to come |
+| 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release | Started (user guide for Explore, Anonymize and Join or trim) |
 
 ## Test versions
 
@@ -34,7 +35,7 @@ Published as GitHub pre-releases; what changed in each is in
 
 ## Next directions (each needs a specification first)
 
-- **Save a part, cut into pieces, merge recordings** ([#31](https://github.com/bnelair/mef3io-studio/issues/31); library side [mef3io#103](https://github.com/bnelair/mef3io/issues/103)): the first feature planned after the anonymizer test version. Every result is a new, checked copy.
+- **Cut a recording into pieces** (for example one per day) ([#31](https://github.com/bnelair/mef3io-studio/issues/31); library side [mef3io#103](https://github.com/bnelair/mef3io/issues/103)). Saving a part and joining parts of several recordings are built (**Join or trim**, step 7b above). Every result is a new, checked copy.
 - **Signal viewer:** traces, zoom and pan, gaps; built on mef3io-server's cache, decode and prefetch (driven without gRPC locally; needs a password parameter and a plain-Python API there first), fast on multi-TB recordings via mef3io [#68](https://github.com/bnelair/mef3io/issues/68).
 - **Data coverage view:** when data exists and at what rate, per channel, from the block index (mef3io [#68](https://github.com/bnelair/mef3io/issues/68), [mef3io-server#13](https://github.com/bnelair/mef3io-server/issues/13)).
 - **Annotations:** view, then create and edit.

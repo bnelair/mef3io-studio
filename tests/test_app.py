@@ -12,12 +12,15 @@ from mef3io_studio.model.jobs import JobStatus
 
 def test_window_has_module_switcher_and_menus(window):
     labels = [window.module_list.item(i).text() for i in range(window.module_list.count())]
-    assert labels == ["Explore", "Anonymize"]
+    assert labels == ["Explore", "Anonymize", "Join or trim"]
     menus = [a.text() for a in window.menuBar().actions()]
     assert menus == ["&File", "&View", "&Help"]
     window.module_list.setCurrentRow(1)
     assert window.pages.currentIndex() == 1
     assert window.settings.get("ui/module") == "anonymizer"
+    window.module_list.setCurrentRow(2)
+    assert window.pages.currentWidget() is window.joiner
+    assert window.settings.get("ui/module") == "joiner"
 
 
 def test_about_shows_app_and_mef3io_versions(window, qtbot):
