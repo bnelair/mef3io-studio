@@ -521,24 +521,30 @@ def _strip(text: str, *paths: str, stems: tuple[str, ...] = ()) -> str:
     return text
 
 
-def technical_text(exc: BaseException, request: CopyRequest | None = None) -> str:
+def technical_text(
+    exc: BaseException,
+    request: CopyRequest | None = None,
+    *,
+    paths: tuple[str, ...] = (),
+    stems: tuple[str, ...] = (),
+) -> str:
     """mef3io's own wording, for "Technical details" only: without paths
     and without the recording's name (also inside file names and a single
-    file's inner folder). The task layer then passes it through the log
-    filter's ``scrub()`` (dates, times, raw microsecond times, identities it
-    knows) before the UI gets it: ``workers.tasks.scrubbed``."""
+    file's inner folder). ``paths`` and ``stems`` add more of both (the
+    joiner has several recordings). The task layer then passes it through
+    the log filter's ``scrub()`` (dates, times, raw microsecond times,
+    identities it knows) before the UI gets it: ``workers.tasks.scrubbed``."""
     from .recording import recording_name
 
-    paths: tuple[str, ...] = ()
-    stems: tuple[str, ...] = ()
     if request is not None:
         paths = (
+            *paths,
             request.source,
             request.destination,
             os.path.dirname(request.source),
             os.path.dirname(request.destination),
         )
-        stems = (recording_name(request.source), request.name)
+        stems = (*stems, recording_name(request.source), request.name)
     text = _strip(f"{type(exc).__name__}: {exc}", *paths, stems=stems)
     return technical(collapse_placeholders(text))
 

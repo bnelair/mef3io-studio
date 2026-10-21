@@ -1,13 +1,14 @@
 # User guide
 
-This guide describes test version **0.1.0.dev3**, which has two pages:
-**Explore** (see what is in your recordings) and **Anonymize** (make
-anonymized copies of them). What is new in each test version is in the
-[release notes](release-notes/).
+This guide describes the app after test version **0.1.0.dev4**, which has
+three pages: **Explore** (see what is in your recordings), **Anonymize**
+(make anonymized copies of them) and **Join or trim** (keep part of a
+recording, or join parts of several into one; new since 0.1.0.dev4). What is
+new in each test version is in the [release notes](release-notes/).
 
 Times are shown in **UTC** until you choose a time zone (see *Times and time
-zones*). The app never changes your original recordings: anonymizing makes a
-new copy and checks it.
+zones*). The app never changes your original recordings: anonymizing,
+joining and trimming make a new recording and check it.
 
 ## Explore recordings
 
@@ -497,6 +498,70 @@ example, data was added) says that its dates can no longer be confirmed. For any
 other recording it says: "This recording wasn't made by the anonymizer, so we
 can't confirm its dates were moved." The check reads nothing but the
 recording's details, so it is instant even on very large recordings.
+
+## Join or trim recordings
+
+The **Join or trim** page makes **one new recording** from parts of others:
+
+- **Trim:** keep only part of one recording, for example its first two
+  hours, or everything between 08:00 and 12:00.
+- **Join:** keep a part of each of several recordings and put them together,
+  for example the last hour of one recording and the first hour of the next.
+  Three or more work the same way, each trimmed at the start, the end or
+  both.
+
+The originals are never changed. Like the Anonymize page, it goes step by
+step with **Back** and **Next**, and **nothing is written until you choose
+Check and save**.
+
+1. **Recordings.** Tick the recordings to use, from the list in Explore (open
+   or scan for more here). One recording is trimmed; several are joined. A
+   recording that cannot be used says why: for example, a password-protected
+   recording opened only with its basic password (open it again in Explore
+   with the full-access password).
+2. **What to keep.** The recordings are listed **in time order**, with their
+   start and end in your time zone. For each, choose what to keep:
+   - **The whole recording**;
+   - **The first…** or **The last…** so many hours, minutes and seconds
+     (more than the recording holds keeps all of it);
+   - **From … to …** two dates and times, typed in the time zone shown above
+     the list (a time outside the recording is cut back to it).
+
+   The **preview** under the list shows each recording as a light bar and the
+   part you keep in blue, on one timeline, so the gaps between them are easy
+   to see. The new recording keeps those gaps exactly as they were: joining
+   never moves anything in time. **Kept parts must not overlap in time**: if
+   two do, they turn red, the step says which, and you cannot go on until
+   you keep less of one of them.
+3. **Channels.** Every channel of every chosen recording is kept unless you
+   leave it out (the same channel list as on the Anonymize page).
+4. **New recording.** Type its name and choose the folder (by default the
+   folder of the first recording). Choose **No password** or protect it with
+   **two new passwords**; the originals' passwords are not carried over, and
+   if any original is password-protected the step reminds you that the new
+   recording will not be unless you choose passwords here. Trimming one
+   recording and keeping all of it, with no channel left out and no new
+   passwords, would only make an exact copy, so it is refused.
+5. **Check and save.** First everything is checked, without writing
+   anything: that each kept part holds signal, that the parts do not overlap,
+   that the channels have the same sampling rate in every recording, that
+   the recordings are of the same patient (their patient details match),
+   the passwords, and that the name is free. Anything that stops it is
+   listed in plain words on the New recording step. Then the new recording is
+   made, with one progress bar for all of it and a **Stop** button, and it is
+   **checked against the originals** before it gets its name. At the end,
+   **Open it in Explore** shows it there.
+
+**How joining works, and the temporary folder.** When several recordings are
+joined and some are trimmed, the kept part of each trimmed one is first saved
+on its own, in a hidden temporary folder next to the new recording (its name
+starts with `.mef3io-studio-parts-`); then the parts are joined into the new
+recording. Those temporary parts are **password-protected with throw-away
+passwords** made for that run only, so the folder never holds readable
+patient details, even if the computer stops halfway. The folder is always
+removed at the end, also when you press Stop or something goes wrong; if it
+ever cannot be removed, the result says so, and you can delete it yourself.
+A recording you keep whole is used as it is, without a temporary copy.
 
 ## Help and reporting problems
 

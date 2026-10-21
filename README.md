@@ -80,8 +80,9 @@ easier to copy and share. It is read directly; there's no need to unpack it.
 
 ## What the app does
 
-The current test version, **0.1.0.dev3**, has two pages: **Explore** and
-**Anonymize**. The rest of the first release is still being built (see
+The app has three pages: **Explore**, **Anonymize** and **Join or trim**
+(the last is new since test version 0.1.0.dev4). The rest of the first
+release is still being built (see
 [Still to come](#still-to-come-for-the-first-release)).
 
 <p align="center">
@@ -156,6 +157,24 @@ originals are never changed**: the app makes a new copy and checks it.
 See the [user guide](docs/user-guide.md#anonymize-recordings) and the
 [anonymizer design](docs/design/anonymizer.md).
 
+### Join or trim
+
+Keep **only part of a recording**, or **join parts of several recordings
+into one new recording**: for example the last hour of one recording and the
+first hour of the next. For each recording, keep all of it, the first or the
+last so many hours, minutes and seconds, or everything between two times.
+- The recordings are listed in **time order**, with a **preview** of the kept
+  parts and the gaps between them. Kept parts that **overlap in time** are
+  refused before anything starts.
+- Leave out channels, and protect the new recording with two new passwords
+  if you like.
+- Everything is **checked before anything is written** (sampling rates,
+  patient details, passwords, where the new recording goes), and the new
+  recording is **checked against the originals** before it is kept. **The
+  originals are never changed.**
+
+See the [user guide](docs/user-guide.md#join-or-trim-recordings).
+
 Everything that takes time (reading, packing, anonymizing, checking big
 recordings) runs in the background with a **progress bar** and a **Stop**
 button. The window stays usable.
@@ -227,8 +246,8 @@ recordings kept elsewhere.
 - **Nothing leaves your computer.** The app makes no network connections.
 - **Logs never contain** patient details, recording names or folder paths, or
   original recording dates.
-- **Anonymizing always writes a new, checked copy;** the original is not
-  touched. (Password changes and channel selections, still to come, will
+- **Anonymizing, joining and trimming always write a new, checked
+  recording;** the originals are not touched. (Password changes and channel selections, still to come, will
   work the same way. Renaming and editing details, also still to come, will
   change a recording in place, only after you confirm, with undo.)
 - **Notes about an unfinished batch** (so it can be continued after a crash)
@@ -385,10 +404,13 @@ mef3io-studio is in **early development**. The app, its installers, the
 choice of channels, moved dates, new names and optional password protection, plus a
 Privacy check for any recording, and unattended batches into shareable
 archives) are ready to try in test version **0.1.0.dev4**, built on mef3io
-1.5.1. Still to come for the first full release: copies with changes
-(keeping only part of a recording, merging recordings, adding or removing
-password protection), ordering and renaming recordings, viewing and editing details,
-and saving channel choices and converting in batches. Test versions are
+1.5.1. Keeping only part of a recording and joining parts of several
+recordings into one (**Join or trim**) are available in the development
+version and come with the next test version. Still to come for the first
+full release: other copies with changes (adding or removing password
+protection, cutting a recording into pieces), ordering and renaming
+recordings, viewing and editing details, and saving channel choices and
+converting in batches. Test versions are
 published on the [Releases page](https://github.com/bnelair/mef3io-studio/releases)
 as pre-releases; what changed in each is in
 [docs/release-notes/](docs/release-notes/). Progress is tracked in the

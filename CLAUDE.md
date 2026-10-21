@@ -3,8 +3,9 @@
 Desktop app (PySide6) for exploring, organizing, protecting and anonymizing
 MEF 3.0 recordings, built
 on the mef3io library (github.com/bnelair/mef3io). Status: early development;
-test version 0.1.0.dev3 = Explore + Anonymize on mef3io 1.4.0 (ordering/
-renaming, metadata edit, passwords, channel presets still to come). Design in
+test version 0.1.0.dev4 = Explore + Anonymize on mef3io 1.5.1; Join or trim
+(#31) built after it (ordering/renaming, metadata edit, passwords, channel
+presets, cutting into pieces still to come). Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
 Hard rules:
@@ -41,9 +42,9 @@ Hard rules:
 - v0.1 scope = explore (incl. order/rename, pack/unpack), metadata view/edit,
   passwords, channel presets + batch conversion, anonymize; installers only
   (no PyPI).
-  Save a part / cut / merge (#31, first after the anonymizer), viewer (on
-  mef3io-server), coverage view, annotations, export, remote access are
-  NEXT DIRECTIONS needing their own specs.
+  Save a part + join (#31) is built ("Join or trim", below); cutting into
+  pieces, viewer (on mef3io-server), coverage view, annotations, export,
+  remote access are NEXT DIRECTIONS needing their own specs.
 
 Code (app shell, #2/#3):
 - Dev: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`
@@ -232,3 +233,47 @@ Code (app shell, #2/#3):
   (only this Python may be started). The Anonymize page builds its widgets on
   first use (`AnonymizerPage._build`): built eagerly they made Explore's
   0.25 s responsiveness test flaky.
+- Join or trim (#31): `model/join.py` (Qt-free) + `joiner/page.py` (a wizard
+  like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
+  `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,
+  `channel_selection_for` and `ChannelPicker`; built on first use). Keep =
+  whole | first(d) | last(d) | between(t0, t1) -> `resolve_keep` -> `Span`
+  `[start, end)`; a window reaching the recording's end goes to mef3io as
+  `end + 1` (`Span.to_end`), whatever a writer stored as end time.
+  `plan_join` (pure) orders by time and REFUSES any two kept parts that
+  overlap (stricter than merge_sessions, which allows take-turns recordings:
+  not a use case; merge's own `merge-overlap` stays the last word). One
+  recording kept whole with no channel left out and no new passwords =
+  `NOTHING_TO_CHANGE` (refused; with a change it is a plain transform copy).
+  Run (`make_joined`, ONE helper process for the whole run, one progress bar
+  via `JoinProgress.overall`): one recording -> `transform_session(src, dst,
+  time_range, exact=True, exclude, output_password)` straight to dst;
+  several -> each non-whole part cut with `transform_session` into
+  `<dst folder>/.mef3io-studio-parts-<hex>/part-N.mefd` (whole ones go to
+  merge as they are), then `merge_sessions(parts in time order, dst,
+  passwords, exclude_channels, output_password)`: channel choice and new
+  passwords apply ONCE, in the merge. TEMP PARTS ARE ALWAYS PASSWORD-
+  PROTECTED with throw-away passwords made in the helper (never returned,
+  logged or stored): an unprotected cut copy would leave readable patient
+  details and note text on disk beside dst for the run (or after a crash).
+  The parts folder is removed in the helper's `finally` AND by the task
+  (`join.tidy`, also `<dst>.partial`) when a helper had to be ended;
+  `remove_parts` only ever removes a `.mef3io-studio-parts-` folder, never a
+  link; `parts_left` is reported. Up-front (`check_join`, nothing written):
+  `time_range` per recording (offset unknown = needs full-access password),
+  `plan_join`, then one recording: `transform.check` as it will run;
+  several: `transform.check` per cut (placeholder dst, path codes ignored)
+  + `merge.check` over the ORIGINALS with the real dst/channels/passwords,
+  ignoring `merge-overlap` when anything is cut (the originals may overlap
+  where nothing is kept). Words: `refusals.JOIN_WORDS` covers EVERY code of
+  `mef3io.transform.REFUSAL_CODES` and `mef3io.merge.REFUSAL_CODES` (test;
+  no "anonymi", "were not changed" in each); the anonymizer's `WORDS` stay
+  anonymizer-only. Details via `join_technical_text` (every source/dst path
+  and name stripped), then `scrubbed`. Explore's details give the page's
+  times and preview; the helper re-reads them with `time_range` at run
+  time. Recordings needing a password use the one Explore opened them with
+  (`RecordingEntry.password`); basic-only access and unverified times are
+  not offered. "Open it in Explore" = `MainWindow.open_in_explorer` ->
+  `ExplorerPage.open_and_show`. Tests: tests/test_join_model.py (exact
+  samples via Reader, three-way, single trim, overlap, Stop, cleanup,
+  password-protected parts and sources), tests/test_joiner_ui.py.

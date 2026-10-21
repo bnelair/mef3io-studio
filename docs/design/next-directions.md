@@ -18,6 +18,14 @@ and the library side in [mef3io#103](https://github.com/bnelair/mef3io/issues/10
 merge are refused, never guessed at; a channel's sampling rate must be the
 same in every recording that is merged.
 
+**Built so far: Join or trim.** Saving a part of one recording, and joining
+parts of several recordings one after another in time, are built (the
+"Join or trim" page, on mef3io 1.5.1; see the
+[user guide](../user-guide.md#join-or-trim-recordings) and `model/join.py`).
+Still open: cutting one recording into several pieces in one go, and
+joining side by side (different channels of the same period, which the
+joiner refuses as overlapping parts).
+
 ## Signal viewer
 
 **Goal:** scroll and zoom through the traces of a recording of any length,

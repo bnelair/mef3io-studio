@@ -941,12 +941,18 @@ class ExplorerPage(QWidget):
         """Open a recording (normally a copy the anonymizer just made) and
         show its Privacy check, so the first sight of the copy is the proof.
         Returns the opening task's handle (None when it was already listed)."""
+        handle = self.open_and_show(path, password)
+        self.tabs.setCurrentWidget(self.privacy)
+        return handle
+
+    def open_and_show(self, path: str, password: str = ""):
+        """Open a recording the app just made (a joined one) and select it.
+        Returns the opening task's handle (None when it was already listed)."""
         self.show_combined(False)
         handle = self.open_paths([path], interactive=False, password=password)
         entry = self.model.entry_for(location_key(path))
         if entry is not None:
             self.select_entry(entry)
-        self.tabs.setCurrentWidget(self.privacy)
         return handle
 
     def _submit_open(self, entries: list[RecordingEntry], prompt: bool):

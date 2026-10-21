@@ -32,7 +32,7 @@ PREFERENCES: dict[str, Preference] = {
     for p in (
         # "system" follows the operating system's light/dark setting.
         Preference("appearance/theme", "system", str, ("system", "light", "dark")),
-        Preference("ui/module", "explorer", str, ("explorer", "anonymizer")),
+        Preference("ui/module", "explorer", str, ("explorer", "anonymizer", "joiner")),
         Preference("ui/window_geometry", QByteArray(), QByteArray),
         Preference("ui/window_state", QByteArray(), QByteArray),
         Preference("ui/main_splitter", QByteArray(), QByteArray),
