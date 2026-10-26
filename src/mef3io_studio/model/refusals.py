@@ -191,7 +191,9 @@ WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     technical("channel-name-identity"): _dynamic(
         "A channel's name identifies the patient",
         lambda d: (
-            f"The name of a channel{f' ({d['channel']})' if d.get('channel') else ''} contains "
+            "The name of a channel"
+            + (f" ({d.get('channel')})" if d.get("channel") else "")
+            + " contains "
             "something that identifies the patient (their name, ID or the place where it was "
             f"recorded), so the copy would still identify the patient. {NOTHING} Leave that "
             "channel out in the channel step, or remove the identifying part from its name "
