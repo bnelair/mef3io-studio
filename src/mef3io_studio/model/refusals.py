@@ -188,6 +188,23 @@ WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
         f"Some parts of it stay locked with the password given. {NOTHING} Open it in Explore "
         "with its full-access password, then try again.",
     ),
+    technical("channel-name-identity"): _dynamic(
+        "A channel's name identifies the patient",
+        lambda d: (
+            "The name of a channel"
+            + (f" ({d.get('channel')})" if d.get("channel") else "")
+            + " contains "
+            "something that identifies the patient (their name, ID or the place where it was "
+            f"recorded), so the copy would still identify the patient. {NOTHING} Leave that "
+            "channel out in the channel step, or remove the identifying part from its name "
+            "first."
+        ),
+    ),
+    technical("time-range-offset-disputed"): _fixed(
+        "The part to keep cannot be placed safely",
+        "The parts of this recording disagree about how the real dates are hidden in it, so "
+        f"the part to keep cannot be placed in time. {NOTHING} {CHECK}",
+    ),
     technical("rto-disputed"): _fixed(
         "This recording cannot be anonymized safely",
         "Its parts disagree about how the real dates are hidden in it, so its times are "
@@ -576,6 +593,10 @@ JOIN_WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
         "The new recording did not pass its check",
         "The new recording was compared with the originals and something was not right, so it "
         f"was removed. The original recordings were not changed. {REPORT}",
+    ),
+    technical("time-range-offset-disputed"): _unsafe(
+        "The parts of a recording disagree about how the real dates are hidden in it, so the "
+        "part to keep cannot be placed in time."
     ),
     technical("write-failed"): _WRITE_FAILED,
     technical("io-error"): _fixed(
