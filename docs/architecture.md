@@ -48,7 +48,7 @@ that will.
 ## Library APIs the first release depends on
 
 Tracked in [mef3io#71](https://github.com/bnelair/mef3io/issues/71). The app
-pins one exact mef3io version (today **2.0.0**, in `pyproject.toml` and the
+pins one exact mef3io version (today **2.0.1**, in `pyproject.toml` and the
 hashed lock files).
 
 | API | Used by | mef3io issue | Status |
