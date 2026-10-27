@@ -135,7 +135,9 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           Compress-Archive -Path dist\mef3io-studio -DestinationPath "dist\mef3io-studio-$version-windows-x64-portable.zip"
       - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'   # only a release run reads the installers
         with:
+          retention-days: 3
           name: mef3io-studio-windows-x64
           path: |
             dist/*-setup.exe
@@ -191,7 +193,9 @@ jobs:
           echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
       - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'   # only a release run reads the installers
         with:
+          retention-days: 3
           name: mef3io-studio-macos-${{ matrix.arch }}
           path: dist/*.dmg
           if-no-files-found: error
@@ -232,8 +236,20 @@ jobs:
         run: |
           out="$(dist/*.AppImage --appimage-extract-and-run --self-test)"; echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
+      # Artifact storage is a shared quota: a PR keeps only the tarball, for one day (the distro
+      # checks below are its only reader); other runs keep both for 3 days (the release job reads
+      # them in the same run).
       - uses: actions/upload-artifact@v7
+        if: github.event_name == 'pull_request'
         with:
+          retention-days: 1
+          name: mef3io-studio-linux-x86_64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
+        with:
+          retention-days: 3
           name: mef3io-studio-linux-x86_64
           path: |
             dist/*.tar.gz

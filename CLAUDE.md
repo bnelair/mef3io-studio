@@ -52,7 +52,8 @@ Code (app shell, #2/#3):
   `ruff check . && ruff format --check .`. CI installs from the hashed
   `requirements/*.lock` (regenerate with uv, see requirements/README.md). Installers:
   `packaging/mef3io-studio.spec` + `.github/workflows/build.yml`; every build
-  must pass `mef3io-studio --self-test`. Not on PyPI, ever. Version = `VERSION`
+  must pass `mef3io-studio --self-test`. Artifacts (shared org storage quota): PRs
+  upload only the Linux tarball, kept 1 day; other runs everything, kept 3 days. Not on PyPI, ever. Version = `VERSION`
   (read by `_version.py`, pyproject, the spec, the installers; a test pins
   `app_version()` to it); shown in the window title, the sidebar
   (`AppVersion`, "(test version)" for .devN/aN/bN/rcN) and About. Help → "Get
