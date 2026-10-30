@@ -205,6 +205,8 @@ def _build_main_window_class():
             self.joiner.open_recording.connect(self.open_in_explorer)
             self.explorer.join_requested.connect(self.join_in_joiner)
             self.explorer.view_requested.connect(self.view_signals)
+            self.joiner.view_requested.connect(self.view_signals)
+            self.explorer.details_visibility_changed.connect(self._viewers_follow_privacy)
             #: Open signal viewer windows.
             self.viewers: list = []
             self._tray = None
@@ -584,11 +586,23 @@ def _build_main_window_class():
                 parent=self,
                 on_window=add,
                 on_failed=self.show_error,
+                on_revealed=self.explorer.refresh_entry,
+                on_join=self.join_window_in_joiner,
             )
+
+        def _viewers_follow_privacy(self) -> None:
+            for viewer in list(self.viewers):
+                viewer.refresh_privacy()
 
         def _viewer_closed(self, window) -> None:
             if window in self.viewers:
                 self.viewers.remove(window)
+
+        def join_window_in_joiner(self, keys: list, start: int, end: int) -> None:
+            """The viewer's "Send to Join or trim": the joiner with those
+            recordings and that part of them."""
+            self.module_list.setCurrentRow(self.module_keys.index("joiner"))
+            self.joiner.choose_window(keys, start, end)
 
         def join_in_joiner(self, keys: list) -> None:
             """Explore's "Join or trim these…": the joiner, with exactly

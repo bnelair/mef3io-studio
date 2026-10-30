@@ -45,8 +45,25 @@ class DrawRow:
     piece: ViewPiece | EnvelopePiece | None
     local: int = 0  # the row's index inside ``piece``
     units: str = ""
-    tag: str = ""  # recording letters, only with 2+ recordings
+    tag: str = ""  # recording letters, only when rows come from different recordings
     note: str | None = None
+    minus: str | None = None  # the channel subtracted (reference and bipolar rows)
+
+
+@dataclass(frozen=True)
+class CanvasMark:
+    """A note or event drawn over the traces: a band (``end`` set) or a line.
+    ``channel``: bound to that channel's row; None = all rows."""
+
+    time: int
+    end: int | None
+    colour: str
+    channel: str | None = None
+    tip: str = ""
+
+
+#: The export range's colour (light, dark): black or white, with a dashed edge.
+EDGE_GRAB_PX = 5
 
 
 def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
@@ -67,6 +84,9 @@ class TraceCanvas(QWidget):
     #: Right-click: (row index or -1, time µs, global position, on_name).
     context_requested = Signal(int, object, object, bool)
     size_changed = Signal()
+    #: An export edge is being dragged: ("start" | "end", time µs); released.
+    edge_dragged = Signal(str, object)
+    edge_released = Signal()
 
     def __init__(self, palette: Palette, parent=None):
         super().__init__(parent)
@@ -103,6 +123,23 @@ class TraceCanvas(QWidget):
         self._shapes: dict = {}
         self._pm_key = None
         self._wheel_rows = 0.0
+        #: Labelled lines where the recordings change: (time, label).
+        self.boundaries: list[tuple[int, str]] = []
+        #: Notes and events drawn on the traces.
+        self.marks: list[CanvasMark] = []
+        #: Stretches with no data from any recording, shaded over every row.
+        self.gap_spans: list[tuple[int, int]] = []
+        #: The export range edges (µs) and the text drawn with it.
+        self.export_start: int | None = None
+        self.export_end: int | None = None
+        self.export_text = ""
+        #: Letter -> colour, for the letter tags in the gutter.
+        self.letter_colours: dict[str, str] = {}
+        #: A kept Shift+drag selection: (from, to, row) or None.
+        self.selection: tuple[int, int, int | None] | None = None
+        self._edge_drag: str | None = None
+        #: The export edge last clicked or dragged (arrows move it by a sample).
+        self.active_edge: str | None = None
         self.setMinimumHeight(self.fontMetrics().height() * 8)
 
     # -- geometry ---------------------------------------------------------
@@ -231,6 +268,7 @@ class TraceCanvas(QWidget):
         self.drawn_points = {}
         plot = self.plot_rect()
         self._paint_grid(p, plot)
+        self._paint_gap_spans(p, plot)
         p.save()
         p.setClipRect(plot)
         self._paint_gaps_and_traces(p, plot)
@@ -263,6 +301,16 @@ class TraceCanvas(QWidget):
         for t in self._ticks()[0]:
             x = self.x_of(t)
             p.drawLine(QPointF(x, 0), QPointF(x, plot.height()))
+
+    def _paint_gap_spans(self, p: QPainter, plot: QRectF) -> None:
+        """Stretches where no recording holds data, over the full height."""
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(self.palette_.gap))
+        for a, b in self.gap_spans:
+            if b > self.t0 and a < self.t1:
+                x0, x1 = max(plot.left(), self.x_of(a)), min(plot.right(), self.x_of(b))
+                if x1 > x0:
+                    p.drawRect(QRectF(x0, 0, x1 - x0, plot.height()))
 
     def _ticks(self) -> tuple[list[int], int]:
         span = int(self.t1 - self.t0)
@@ -364,11 +412,14 @@ class TraceCanvas(QWidget):
             )
             p.drawText(QPointF(4, yc + fm.ascent() / 2 - 1), label)
             if row.tag:
-                p.setPen(QColor(pal.muted))
                 tw = fm.horizontalAdvance(row.tag)
-                p.drawText(
-                    QPointF(self.gutter - tw - 4, yc - self.row_height / 2 + fm.ascent()), row.tag
-                )
+                x = self.gutter - tw - 4
+                y = yc - self.row_height / 2 + fm.ascent()
+                for ch in row.tag:
+                    colour = self.letter_colours.get(ch)
+                    p.setPen(QColor(colour) if colour else QColor(pal.muted))
+                    p.drawText(QPointF(x, y), ch)
+                    x += fm.horizontalAdvance(ch)
             if row.note:
                 p.setPen(QColor(pal.muted))
                 small = QFont(font)
@@ -427,6 +478,10 @@ class TraceCanvas(QWidget):
         pal = self.palette_
         plot = self.plot_rect()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self._paint_marks(p, plot)
+        self._paint_boundaries(p, plot)
+        self._paint_selection(p, plot)
+        self._paint_export(p, plot)
         if self._pointer is not None and plot.contains(self._pointer):
             x = self._pointer.x()
             p.setPen(QPen(QColor(pal.cursor), 1, Qt.PenStyle.DashLine))
@@ -483,6 +538,161 @@ class TraceCanvas(QWidget):
             p.setPen(QColor(pal.muted))
             p.drawText(QPointF(c.x() - 30, c.y() + r + p.fontMetrics().height()), "Loading…")
 
+    def _row_spans(self, channel: str | None, plot: QRectF) -> list[tuple[float, float]]:
+        """Top and height of everything a mark bound to ``channel`` covers:
+        the whole plot for None, else every row on screen that shows that
+        channel (as its plus or its minus: bipolar and reference rows)."""
+        if channel is None:
+            return [(0.0, plot.height())]
+        out = []
+        for i, r in enumerate(self.rows):
+            if channel in (r.channel, r.minus):
+                top = self.row_y(i) - self.row_height / 2
+                if top + self.row_height >= 0 and top <= plot.height():
+                    out.append((top, self.row_height))
+        return out
+
+    def _paint_marks(self, p: QPainter, plot: QRectF) -> None:
+        p.save()
+        p.setClipRect(plot)
+        for m in self.marks:
+            end = m.end if m.end is not None and m.end > m.time else None
+            if m.time > self.t1 or (end or m.time) < self.t0:
+                continue
+            for top, height in self._row_spans(m.channel, plot):
+                self._paint_mark(p, m, end, top, height)
+        p.restore()
+
+    def _paint_mark(self, p: QPainter, m: CanvasMark, end, top: float, height: float) -> None:
+        colour = QColor(m.colour)
+        x0 = self.x_of(m.time)
+        if end is not None:
+            x1 = self.x_of(end)
+            fill = QColor(colour)
+            fill.setAlpha(46)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(fill)
+            p.drawRect(QRectF(x0, top, max(2.0, x1 - x0), height))
+            p.setPen(QPen(colour, 1))
+            p.drawLine(QPointF(x0, top), QPointF(x0, top + height))
+            p.drawLine(QPointF(x1, top), QPointF(x1, top + height))
+        else:
+            p.setPen(QPen(colour, 1.6))
+            p.drawLine(QPointF(x0, top), QPointF(x0, top + height))
+
+    def _paint_boundaries(self, p: QPainter, plot: QRectF) -> None:
+        if not self.boundaries:
+            return
+        pal = self.palette_
+        fm = p.fontMetrics()
+        p.save()
+        p.setClipRect(plot)
+        for t, label in self.boundaries:
+            if not (self.t0 <= t <= self.t1):
+                continue
+            x = self.x_of(t)
+            p.setPen(QPen(QColor(pal.text), 1.2, Qt.PenStyle.DashDotLine))
+            p.drawLine(QPointF(x, 0), QPointF(x, plot.height()))
+            tw = fm.horizontalAdvance(label) + 8
+            bx = x + 4 if x + 4 + tw < plot.right() else x - 4 - tw
+            box = QRectF(bx, plot.height() - fm.height() - 6, tw, fm.height() + 2)
+            fill = QColor(pal.background)
+            fill.setAlpha(235)
+            p.setPen(QPen(QColor(pal.muted), 1))
+            p.setBrush(fill)
+            p.drawRoundedRect(box, 3, 3)
+            p.setPen(QColor(pal.text))
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
+        p.restore()
+
+    def _paint_selection(self, p: QPainter, plot: QRectF) -> None:
+        if self.selection is None:
+            return
+        pal = self.palette_
+        a, b, row = self.selection
+        top, height = 0.0, plot.height()
+        if row is not None and row < len(self.rows):
+            top, height = self.row_y(row) - self.row_height / 2, self.row_height
+        sel = QColor(pal.selection)
+        sel.setAlpha(40)
+        p.setPen(QPen(QColor(pal.selection), 1, Qt.PenStyle.DotLine))
+        p.setBrush(sel)
+        p.drawRect(QRectF(self.x_of(a), top, self.x_of(b) - self.x_of(a), height))
+
+    def edge_x(self, which: str) -> float | None:
+        t = self.export_start if which == "start" else self.export_end
+        return None if t is None else self.x_of(t)
+
+    def _edge_near(self, pos: QPointF) -> str | None:
+        if not self.plot_rect().contains(pos):
+            return None
+        best, which = EDGE_GRAB_PX + 0.5, None
+        for w in ("start", "end"):
+            x = self.edge_x(w)
+            if x is not None and abs(x - pos.x()) < best:
+                best, which = abs(x - pos.x()), w
+        return which
+
+    def _paint_export(self, p: QPainter, plot: QRectF) -> None:
+        a, b = self.export_start, self.export_end
+        if a is None and b is None:
+            return
+        pal = self.palette_
+        ink = QColor("#ffffff" if pal.dark else "#111827")
+        fm = p.fontMetrics()
+        p.save()
+        p.setClipRect(QRectF(plot.left() - 8, 0, plot.width() + 16, plot.height()))
+        if a is not None and b is not None:
+            shade = QColor(ink)
+            shade.setAlpha(22)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(shade)
+            p.drawRect(QRectF(self.x_of(a), 0, self.x_of(b) - self.x_of(a), plot.height()))
+        for which, t in (("start", a), ("end", b)):
+            if t is None:
+                continue
+            x = self.x_of(t)
+            p.setPen(QPen(ink, 3.5 if which == self.active_edge else 2, Qt.PenStyle.DashLine))
+            p.drawLine(QPointF(x, 0), QPointF(x, plot.height()))
+            # a handle at the top, pointing into the range
+            sign = 1 if which == "start" else -1
+            tri = QPolygonF([QPointF(x, 0), QPointF(x + sign * 9, 0), QPointF(x, 12)])
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(ink)
+            p.drawPolygon(tri)
+        if self.export_text and a is not None:
+            tw = fm.horizontalAdvance(self.export_text) + 10
+            x0 = self.x_of(a) + 12
+            bx = min(max(x0, plot.left()), plot.right() - tw)
+            box = QRectF(bx, plot.height() - 2 * fm.height() - 10, tw, fm.height() + 4)
+            fill = QColor(pal.background)
+            fill.setAlpha(240)
+            p.setPen(QPen(ink, 1))
+            p.setBrush(fill)
+            p.drawRoundedRect(box, 3, 3)
+            p.setPen(QColor(pal.text))
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, self.export_text)
+        p.restore()
+
+    def mark_at(self, pos: QPointF) -> CanvasMark | None:
+        """The note or event under ``pos`` (a line within 4 pixels, or a
+        band), for the tooltip."""
+        plot = self.plot_rect()
+        if not plot.contains(pos):
+            return None
+        t = self.t_of(pos.x())
+        px = (self.t1 - self.t0) / plot.width()
+        best = None
+        for m in self.marks:
+            if not any(a <= pos.y() <= a + h for a, h in self._row_spans(m.channel, plot)):
+                continue
+            end = m.end if m.end is not None and m.end > m.time else None
+            if end is not None and m.time - 3 * px <= t <= end + 3 * px:
+                best = best or m
+            elif end is None and abs(t - m.time) <= 4 * px:
+                return m
+        return best
+
     # -- measurement ------------------------------------------------------------------------
 
     def measurement(self) -> str:
@@ -511,6 +721,15 @@ class TraceCanvas(QWidget):
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         pos = event.position()
         self._pointer = pos
+        if self._edge_drag is not None:
+            self.edge_dragged.emit(self._edge_drag, int(self.t_of(pos.x())))
+            self.pointer_changed.emit(self._t_at(pos), self.row_at(pos.y()))
+            self.update()
+            return
+        near = self._edge_near(pos)
+        self.setCursor(Qt.CursorShape.SizeHorCursor if near else Qt.CursorShape.ArrowCursor)
+        mark = self.mark_at(pos) if near is None and self._drag is None else None
+        self.setToolTip(mark.tip if mark is not None else "")
         if self._measure_from is not None:
             self.measure_text = self.measurement()
         elif self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
@@ -531,6 +750,14 @@ class TraceCanvas(QWidget):
         self.setFocus()
         pos = event.position()
         if event.button() == Qt.MouseButton.LeftButton and self.plot_rect().contains(pos):
+            edge = self._edge_near(pos)
+            if edge is not None:
+                self._edge_drag = edge
+                self.active_edge = edge
+                return
+            if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.selection = None
+                self.active_edge = None
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self._measure_from = pos
                 self._pointer = pos
@@ -549,10 +776,18 @@ class TraceCanvas(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._edge_drag is not None:
+                self._edge_drag = None
+                self.edge_released.emit()
+                return
             if self._drag is not None:
                 self._drag = None
                 self.pan_finished.emit()
             if self._measure_from is not None:
+                a, b = self._measure_from, event.position()
+                if abs(b.x() - a.x()) >= 3:
+                    ta, tb = sorted((int(self.t_of(a.x())), int(self.t_of(b.x()))))
+                    self.selection = (ta, tb, self.row_at(a.y()))
                 self._measure_from = None
                 self.measure_text = ""
                 self.update()
@@ -582,6 +817,7 @@ class TraceCanvas(QWidget):
         event.accept()
 
     def clear_selection(self) -> None:
+        self.selection = None
         self._measure_from = None
         self.measure_text = ""
         self.update()
@@ -663,4 +899,4 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(edges[0::2].tolist(), edges[1::2].tolist(), strict=True))
 
 
-__all__ = ["DrawRow", "TraceCanvas"]
+__all__ = ["CanvasMark", "DrawRow", "TraceCanvas"]

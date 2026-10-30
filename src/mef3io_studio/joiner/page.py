@@ -72,6 +72,7 @@ from ..model.join import (
     KEEP_FIRST,
     KEEP_LAST,
     KEEP_WHOLE,
+    SECOND_US,
     JoinPlan,
     JoinRequest,
     JoinResult,
@@ -417,6 +418,9 @@ class KeepStep(QWidget):
         self.rows: list[KeepRow] = []
         self.plan = JoinPlan()
         self.zone_note = _label(muted=True)
+        #: What the signal viewer asked for and what this page holds instead.
+        self.viewer_note = _label(muted=True)
+        self.viewer_note.setVisible(False)
         self.table = _table(self.COLUMNS)
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.preview = KeptPartsPreview()
@@ -436,6 +440,7 @@ class KeepStep(QWidget):
             )
         )
         layout.addWidget(self.zone_note)
+        layout.addWidget(self.viewer_note)
         layout.addWidget(self.table, 1)
         layout.addWidget(_label("Preview of the kept parts", bold=True))
         layout.addWidget(self.preview)
@@ -757,6 +762,9 @@ class JoinerPage(QWidget):
     #: Open the new recording in Explore: (path, password).
     open_recording = Signal(str, str)
     status = Signal(str)
+    #: "View these recordings": the chosen Explore entries, to look at in the
+    #: signal viewer.
+    view_requested = Signal(list)
 
     def __init__(self, jobs: JobManager, explorer, parent=None):
         super().__init__(parent)
@@ -834,8 +842,12 @@ class JoinerPage(QWidget):
         self.next_button.setProperty("primary", True)
         self.next_button.clicked.connect(self.next)
         self.why_not = _label(muted=True)
+        self.view_button = QPushButton("View these recordings")
+        self.view_button.setToolTip("Look at the chosen recordings in the signal viewer")
+        self.view_button.clicked.connect(self.view_chosen)
         nav = QHBoxLayout()
         nav.addWidget(self.why_not, 1)
+        nav.addWidget(self.view_button)
         nav.addWidget(self.back_button)
         nav.addWidget(self.next_button)
         inner = QWidget()
@@ -997,6 +1009,14 @@ class JoinerPage(QWidget):
         else:
             self.next_button.setText("Next")
         self.next_button.setEnabled(not running if step == STEP_RUN else not why)
+        self.view_button.setVisible(step in (STEP_RECORDINGS, STEP_CHANNELS, STEP_KEEP))
+        self.view_button.setEnabled(bool(self.recordings.ticked) and not checking)
+
+    def view_chosen(self) -> None:
+        """Open the signal viewer on the recordings chosen so far."""
+        entries = [e for e in self.recordings.chosen() if not e.busy]
+        if entries:
+            self.view_requested.emit(entries)
 
     def back(self) -> None:
         if STEP_RECORDINGS < self.step < STEP_RUN and not self._checking():
@@ -1150,6 +1170,39 @@ class JoinerPage(QWidget):
             self.next()
         return True
 
+    def choose_window(self, keys, start: int, end: int) -> bool:
+        """Start over with exactly these recordings and keep ``[start, end)``
+        of each (the signal viewer's "Send to Join or trim"), stopping at the
+        "What to keep" step so the window can be checked. The page works in
+        whole seconds: the start is rounded down and the end up, so the part
+        asked for is always inside what is kept. False when it could not."""
+        if not self.choose(keys) or self.step != STEP_CHANNELS:
+            return False
+        self.next()  # the channels step has nothing to decide here
+        if self.step != STEP_KEEP:
+            return False
+        end_up = -(-end // SECOND_US) * SECOND_US
+        for row in self.keep.rows:
+            row.set_how(KEEP_BETWEEN)
+            row.start.set_us(max(start, row.entry.details.start), self.zone)
+            row.end.set_us(min(end_up, row.entry.details.end), self.zone)
+        self.keep.recompute()
+        # What is kept now (a recording ending mid-second is kept to its end).
+        kept = [r.keep() for r in self.keep.rows]
+        new_start = min(k.start_us for k in kept)
+        new_end = max(k.end_us for k in kept)
+        asked = f"{format_time(start, self.zone, 3)} to {format_time(end, self.zone, 3)}"
+        now = f"{format_time(new_start, self.zone, 3)} to {format_time(new_end, self.zone, 3)}"
+        text = (
+            f"From the viewer: {asked}. This page works in whole seconds, so it keeps {now}"
+            if (new_start, new_end) != (start, end)
+            else f"From the viewer: {asked}."
+        )
+        self.keep.viewer_note.setText(text)
+        self.keep.viewer_note.setVisible(True)
+        self.status.emit(text)
+        return True
+
     def restart(self) -> None:
         self.request = None
         self.result = None
@@ -1161,6 +1214,7 @@ class JoinerPage(QWidget):
         self.new.name.clear()
         self._selection_keys = ()
         self.keep.set_recordings([])
+        self.keep.viewer_note.setVisible(False)
         self.recordings.ticked.clear()
         self.recordings.lost.setVisible(False)
         self.go(STEP_RECORDINGS)

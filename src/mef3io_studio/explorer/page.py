@@ -356,6 +356,9 @@ class ExplorerPage(QWidget):
     #: "View signals": the selected RecordingEntry objects (their paths,
     #: passwords and privacy state stay in memory, in the entries).
     view_requested = Signal(list)
+    #: A recording's details were shown or hidden: open signal viewers follow
+    #: at once (they hold names and note texts).
+    details_visibility_changed = Signal()
 
     def __init__(
         self,
@@ -695,6 +698,13 @@ class ExplorerPage(QWidget):
             panel.show_entry(entry, self.zone)
         self.check_panel.set_progress(self._check_progress.get(entry.key))
         self.detail_stack.setCurrentWidget(self.tabs)
+
+    def refresh_entry(self, entry: RecordingEntry) -> None:
+        """Show ``entry`` again after something outside changed it (the
+        signal viewer's Show button set ``revealed``)."""
+        if self.model.row_of(entry) >= 0:
+            self._entry_changed(entry)
+        self.details_visibility_changed.emit()
 
     def _entry_changed(self, entry: RecordingEntry) -> None:
         self.model.refresh(entry)
@@ -1119,6 +1129,7 @@ class ExplorerPage(QWidget):
             return
         entry.revealed = shown
         self._show_current()
+        self.details_visibility_changed.emit()
 
     # ------------------------------------------------------------------
     # Check for problems

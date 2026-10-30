@@ -39,7 +39,16 @@ class OverviewStrip(QWidget):
         self.page = (0, 1)
         self.multi = False
         self.envelope: np.ndarray | None = None  # [2, bins]: min, max (normalised -1..1)
+        #: The export range (µs, either end may be unset) and its label.
+        self.export: tuple[int | None, int | None] = (None, None)
+        self.export_text = ""
+        #: Where the recordings' colours come from: ``(index, dark) -> colour``.
+        #: The window sets the one the recording band uses.
+        self.colour_of = None
         self.setToolTip("The whole timeline. Click or drag to go there.")
+
+    def _colour_of(self, rec: int, dark: bool) -> str:
+        return self.colour_of(rec) if self.colour_of else recording_colour(rec, dark)
 
     def set_palette(self, palette: Palette) -> None:
         self.palette_ = palette
@@ -53,6 +62,15 @@ class OverviewStrip(QWidget):
 
     def set_page(self, t0: int, t1: int) -> None:
         self.page = (t0, t1)
+        self.update()
+
+    def set_export(self, start: int | None, end: int | None, text: str = "") -> None:
+        self.export = (start, end)
+        self.export_text = text
+        self.setToolTip(
+            "The whole timeline. Click or drag to go there."
+            + (f"\nExport range: {text}" if text else "")
+        )
         self.update()
 
     def set_envelope(self, env: np.ndarray | None) -> None:
@@ -83,7 +101,7 @@ class OverviewStrip(QWidget):
         for t0, t1, rec in self.coverage:
             x0, x1 = self.x_of(t0), self.x_of(t1)
             r = QRectF(x0, bar.top(), max(1.5, x1 - x0), bar.height())
-            colour = recording_colour(rec, dark) if self.multi else STRIP_DATA[shade]
+            colour = self._colour_of(rec, dark) if self.multi else STRIP_DATA[shade]
             p.fillRect(r, QColor(colour))
         if self.envelope is not None and self.envelope.shape[1] > 1:
             n = self.envelope.shape[1]
@@ -116,11 +134,12 @@ class OverviewStrip(QWidget):
                 p.setPen(QColor(pal.muted))
                 p.drawText(QPointF(x - tw / 2, self.height() - 2), label)
                 last = x + tw / 2
+        self._paint_export(p, bar)
         # the page
         x0, x1 = self.x_of(self.page[0]), self.x_of(self.page[1])
         box = QRectF(x0, 1.5, max(4.0, x1 - x0), bar.bottom() + 1)  # taller than the bar
         fill = QColor(pal.cursor)
-        fill.setAlpha(60)
+        fill.setAlpha(0)  # outline only: a fill would tint the recording colours underneath
         p.setBrush(fill)
         p.setPen(QPen(QColor("#000000"), 4))  # dark outside, white inside, then the cursor colour
         p.drawRect(box)
@@ -129,6 +148,24 @@ class OverviewStrip(QWidget):
         p.setPen(QPen(QColor(pal.cursor), 1))
         p.drawRect(box)
         p.end()
+
+    def _paint_export(self, p: QPainter, bar: QRectF) -> None:
+        a, b = self.export
+        if a is None and b is None:
+            return
+        pal = self.palette_
+        ink = QColor("#ffffff" if pal.dark else "#111827")
+        top, bottom = bar.top() - 2, bar.bottom() + 2
+        if a is not None and b is not None:
+            x0, x1 = self.x_of(a), self.x_of(b)
+            shade = QColor(ink)
+            shade.setAlpha(40)
+            p.fillRect(QRectF(x0, top, max(2.0, x1 - x0), bottom - top), shade)
+        p.setPen(QPen(ink, 2))
+        for t in (a, b):
+            if t is not None:
+                x = self.x_of(t)
+                p.drawLine(QPointF(x, top), QPointF(x, bottom))
 
     def _go(self, event) -> None:
         self.navigate.emit(self.t_of(event.position().x()))

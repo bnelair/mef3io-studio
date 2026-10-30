@@ -158,6 +158,7 @@ class ViewerData:
         self._combined = combined
         self._multi = combined is not None and len(readers) > 1
         self._lock = threading.RLock()
+        self._notes_lock = threading.Lock()
         #: Unique per ViewerData; with ``epoch`` (bumped by every reopen) it
         #: goes into every cache key, so nothing read before a reopen is
         #: ever served after it.
@@ -303,6 +304,13 @@ class ViewerData:
         recording, each tagged with ``recording`` (index); sorted by time.
         Recordings whose records are locked contribute nothing and are
         listed in :attr:`annotations_locked`."""
+        # The lock is held across the record reads, so a second caller waits
+        # for the first read instead of starting another. Only the viewer's
+        # notes thread calls this; never call it from the GUI thread.
+        with self._notes_lock:
+            return self._annotations_locked()
+
+    def _annotations_locked(self) -> list[Annotation]:
         import mef3io
 
         if self._annotations is not None:
