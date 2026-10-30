@@ -206,6 +206,7 @@ def _build_main_window_class():
             self.explorer.join_requested.connect(self.join_in_joiner)
             self.explorer.view_requested.connect(self.view_signals)
             self.joiner.view_requested.connect(self.view_signals)
+            self.explorer.details_visibility_changed.connect(self._viewers_follow_privacy)
             #: Open signal viewer windows.
             self.viewers: list = []
             self._tray = None
@@ -588,6 +589,10 @@ def _build_main_window_class():
                 on_revealed=self.explorer.refresh_entry,
                 on_join=self.join_window_in_joiner,
             )
+
+        def _viewers_follow_privacy(self) -> None:
+            for viewer in list(self.viewers):
+                viewer.refresh_privacy()
 
         def _viewer_closed(self, window) -> None:
             if window in self.viewers:

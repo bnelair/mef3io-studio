@@ -151,8 +151,10 @@ class Banner(QLabel):
             "border-radius: 6px; padding: 6px 14px; font-weight: 600; }"
         )
 
-    def announce(self, text: str, show_ms: int = BANNER_SHOW_MS) -> None:
-        self.history.append(text)
+    def announce(self, text: str, show_ms: int = BANNER_SHOW_MS, plain: str | None = None) -> None:
+        """Show ``text``. ``plain``: the same without any name (what the
+        history keeps); defaults to ``text``."""
+        self.history.append(text if plain is None else plain)
         self._timer.stop()
         self._fade.stop()
         self._effect.setOpacity(1.0)
@@ -165,6 +167,15 @@ class Banner(QLabel):
         self._timer.start(show_ms)
         if QAccessible.isActive():
             QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(self, text))
+
+    def clear_now(self) -> None:
+        """Take the banner away at once, with its text and its accessible
+        description (a name it held may now be hidden)."""
+        self._timer.stop()
+        self._fade.stop()
+        self.setText("")
+        self.setAccessibleDescription("")
+        self.hide()
 
     def place(self) -> None:
         parent = self.parentWidget()

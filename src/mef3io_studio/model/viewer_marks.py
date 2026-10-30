@@ -14,6 +14,7 @@ import bisect
 import csv
 import io
 import json
+import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import tzinfo
@@ -259,13 +260,17 @@ def ordered(a: int, b: int) -> tuple[int, int]:
     return (a, b) if a <= b else (b, a)
 
 
-def snap(t: float, anchor: int, rate: float) -> int:
-    """``t`` moved to the nearest sample time of a grid that starts at
-    ``anchor`` and runs at ``rate`` Hz."""
+def snap(t: float, anchor: int, rate: float, mode: str = "nearest") -> int:
+    """``t`` moved to a sample time of the grid that starts at ``anchor`` and
+    runs at ``rate`` Hz: the nearest, or ("floor" / "ceil") the one at or
+    before / at or after it. An export start floors and an end ceils, so the
+    range always holds what was pointed at and end > start."""
     if rate <= 0:
         return int(round(t))
     step = 1e6 / rate
-    return int(round(anchor + round((t - anchor) / step) * step))
+    k = (t - anchor) / step
+    k = {"floor": math.floor(k + 1e-9), "ceil": math.ceil(k - 1e-9)}.get(mode, round(k))
+    return int(round(anchor + k * step))
 
 
 def range_length_text(start: int, end: int) -> str:
@@ -309,11 +314,19 @@ def export_rows(
     ]
 
 
+def _safe_cell(value):
+    """A text cell a spreadsheet would run as a formula (= + - @) gets a
+    leading apostrophe."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
+
+
 def to_csv(rows: Sequence[dict]) -> str:
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=EXPORT_COLUMNS, lineterminator="\n")
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows({k: _safe_cell(v) for k, v in row.items()} for row in rows)
     return out.getvalue()
 
 

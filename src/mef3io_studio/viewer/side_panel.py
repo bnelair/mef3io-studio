@@ -110,6 +110,10 @@ class NotesTab(QWidget):
         self.locked.setObjectName("Muted")
         self.locked.setWordWrap(True)
         self.locked.setVisible(False)
+        self.failed = QLabel("The notes and events could not be read.", self)
+        self.failed.setObjectName("Danger")
+        self.failed.setWordWrap(True)
+        self.failed.setVisible(False)
         self.hidden_box = QWidget(self)
         self.hidden_layout = QVBoxLayout(self.hidden_box)
         self.hidden_layout.setContentsMargins(0, 0, 0, 0)
@@ -123,6 +127,7 @@ class NotesTab(QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         box.addLayout(top)
         box.addWidget(self.locked)
+        box.addWidget(self.failed)
         box.addWidget(self.hidden_box)
         box.addWidget(self.table, 1)
         box.addWidget(self.count)
@@ -150,6 +155,11 @@ class NotesTab(QWidget):
         i = self.type_box.findData(keep)
         self.type_box.setCurrentIndex(max(0, i))
         self._busy = False
+
+    def set_failed(self, failed: bool) -> None:
+        self.failed.setVisible(failed)
+        if failed:
+            self.count.setText("")
 
     def set_locked(self, letters: Sequence[str]) -> None:
         if letters:

@@ -105,14 +105,14 @@ def test_opens_on_two_recordings_and_names_follow_privacy(make_window, tmp_path)
     assert "Alpha" not in win.windowTitle() and "Beta" not in win.windowTitle()
     assert win.windowTitle() == "Signal viewer: recordings A, B"
     assert win.recording_label(1) == "Recording B"
-    assert {r.tag for r in win.canvas.rows} == {"A"}
+    assert {r.tag for r in win.canvas.rows} == {""}  # recordings in turn: no tags
     shown[0] = shown[1] = True
     win.refresh_privacy()
     assert "Alpha_case" in win.windowTitle()
     assert win.recording_label(1) == "Recording B: Beta_case"
     win.go_to(T0 + 130 * SEC)
     settle_page = win.canvas.rows
-    assert {r.tag for r in settle_page} == {"B"}
+    assert {r.tag for r in settle_page} == {""}
 
 
 # --- navigation ----------

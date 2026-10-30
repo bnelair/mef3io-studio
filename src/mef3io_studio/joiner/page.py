@@ -418,6 +418,9 @@ class KeepStep(QWidget):
         self.rows: list[KeepRow] = []
         self.plan = JoinPlan()
         self.zone_note = _label(muted=True)
+        #: What the signal viewer asked for and what this page holds instead.
+        self.viewer_note = _label(muted=True)
+        self.viewer_note.setVisible(False)
         self.table = _table(self.COLUMNS)
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.preview = KeptPartsPreview()
@@ -437,6 +440,7 @@ class KeepStep(QWidget):
             )
         )
         layout.addWidget(self.zone_note)
+        layout.addWidget(self.viewer_note)
         layout.addWidget(self.table, 1)
         layout.addWidget(_label("Preview of the kept parts", bold=True))
         layout.addWidget(self.preview)
@@ -1183,10 +1187,20 @@ class JoinerPage(QWidget):
             row.start.set_us(max(start, row.entry.details.start), self.zone)
             row.end.set_us(min(end_up, row.entry.details.end), self.zone)
         self.keep.recompute()
-        self.status.emit(
-            "The part chosen in the viewer is set. This page works in whole seconds, so it "
-            "starts and ends on a whole second."
+        # What is kept now (a recording ending mid-second is kept to its end).
+        kept = [r.keep() for r in self.keep.rows]
+        new_start = min(k.start_us for k in kept)
+        new_end = max(k.end_us for k in kept)
+        asked = f"{format_time(start, self.zone, 3)} to {format_time(end, self.zone, 3)}"
+        now = f"{format_time(new_start, self.zone, 3)} to {format_time(new_end, self.zone, 3)}"
+        text = (
+            f"From the viewer: {asked}. This page works in whole seconds, so it keeps {now}"
+            if (new_start, new_end) != (start, end)
+            else f"From the viewer: {asked}."
         )
+        self.keep.viewer_note.setText(text)
+        self.keep.viewer_note.setVisible(True)
+        self.status.emit(text)
         return True
 
     def restart(self) -> None:
@@ -1200,6 +1214,7 @@ class JoinerPage(QWidget):
         self.new.name.clear()
         self._selection_keys = ()
         self.keep.set_recordings([])
+        self.keep.viewer_note.setVisible(False)
         self.recordings.ticked.clear()
         self.recordings.lost.setVisible(False)
         self.go(STEP_RECORDINGS)

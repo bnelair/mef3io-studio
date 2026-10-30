@@ -174,6 +174,10 @@ class ViewerWindow(QMainWindow):
         self.saved_ranges: list[tuple[int, int]] = []
         #: The last reason something was refused (plain words), for tests.
         self.last_refusal = ""
+        self._edge_channel: str | None = None
+        self._banner_has_name = False
+        self._notes_thread: threading.Thread | None = None
+        self.notes_failed = False
         self.controller.pieces_changed.connect(self._apply_pieces)
         self.controller.loading_changed.connect(lambda on: self.canvas.set_loading(on))
         self.controller.failed.connect(self._failed)
@@ -227,6 +231,7 @@ class ViewerWindow(QMainWindow):
         self.montage_bar.set_channels(self._channels)
         self.montage_bar.set_state(self.state.montage, self._default_reference())
         self._apply_profile()
+        self.strip.colour_of = self._rec_colour
         self.strip.set_timeline(data.timeline_start, data.timeline_end, self._coverage)
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -808,17 +813,25 @@ class ViewerWindow(QMainWindow):
         data = self.data
         t0, t1 = self.state.t0, self.state.t0 + self.page_us()
         out = []
-        for row, pc in zip(rows, pieces, strict=True):
-            tag = ""
+        tags = []
+        for row in rows:
+            letters = ""
             if self.multi:
-                letters = sorted(
-                    {
-                        data.recordings[i].letter
-                        for a, b, i in data.ownership(row.plus)
-                        if a < t1 and b > t0
-                    }
+                letters = ",".join(
+                    sorted(
+                        {
+                            data.recordings[i].letter
+                            for a, b, i in data.ownership(row.plus)
+                            if a < t1 and b > t0
+                        }
+                    )
                 )
-                tag = ",".join(letters)
+            tags.append(letters)
+        # A letter tag is only worth its space where rows differ (recordings
+        # side by side); with recordings in turn the band says it.
+        keep_tags = len(set(tags)) > 1
+        for row, pc, tag in zip(rows, pieces, tags, strict=True):
+            tag = tag if keep_tags else ""
             out.append(
                 DrawRow(
                     row.label,
@@ -828,6 +841,7 @@ class ViewerWindow(QMainWindow):
                     data.units(row.plus),
                     tag,
                     row.note,
+                    row.minus,
                 )
             )
         return out
@@ -949,6 +963,10 @@ class ViewerWindow(QMainWindow):
     def _update_recordings_view(self, t0: int, t1: int) -> None:
         spans = vm.band_spans(self._coverage, t0, t1)
         self.band.set_view(t0, t1, self.canvas.gutter, spans)
+        gaps = [(a, b) for a, b, who in spans if not who]
+        if gaps != self.canvas.gap_spans:
+            self.canvas.gap_spans = gaps
+            self.canvas.invalidate()
         self.canvas.boundaries = [
             (
                 b.time_us,
@@ -961,10 +979,12 @@ class ViewerWindow(QMainWindow):
         before, self._page_set = self._page_set, now
         if not self.multi or before is None or now == before or not now:
             return
+        letters = self._letters_of(now)
         name = None
         if len(now) == 1 and self._shown(now[0]):
             name = self.data.recordings[now[0]].name or None
-        self.banner.announce(vm.banner_text(self._letters_of(now), name))
+        self._banner_has_name = bool(name)
+        self.banner.announce(vm.banner_text(letters, name), plain=vm.banner_text(letters))
 
     def show_recording_details(self, index: int) -> None:
         """Show a recording's details, as the Show button in Explore does."""
@@ -999,14 +1019,16 @@ class ViewerWindow(QMainWindow):
             except RuntimeError:
                 pass  # the window is gone
 
-        threading.Thread(target=run, daemon=True, name="viewer-notes").start()
+        self._notes_thread = threading.Thread(target=run, daemon=True, name="viewer-notes")
+        self._notes_thread.start()
 
     def _on_annotations(self, records, locked) -> None:
         if self._closed:
             return
+        self.notes_failed = records is None
         if records is None:
-            self.status_message.setText("The notes and events could not be read.")
             records = []
+        self.notes_tab.set_failed(self.notes_failed)
         self.marks = vm.build_marks(records)
         self.locked_recordings = tuple(locked)
         self.marks_loaded = True
@@ -1022,7 +1044,16 @@ class ViewerWindow(QMainWindow):
             [(k, label, n, vm.kind_colour(k, dark)) for k, label, n in counts], self.hidden_kinds
         )
         self.notes_tab.set_types(counts)
-        self.notes_button.setText(f"Notes and events ({len(self.marks)})")
+        self.notes_button.setText(
+            "Notes and events (not available)"
+            if self.notes_failed
+            else f"Notes and events ({len(self.marks)})"
+        )
+        self.notes_button.setToolTip(
+            "The notes and events could not be read."
+            if self.notes_failed
+            else "The list of notes and events, and the recordings (M)"
+        )
         self._set_visible()
 
     def _set_visible(self) -> None:
@@ -1137,26 +1168,32 @@ class ViewerWindow(QMainWindow):
         a, b = self.export_start, self.export_end
         return (a, b) if a is not None and b is not None and a < b else None
 
-    def _sample_step(self, row: int | None = None) -> float:
-        ch = self._export_channel(row)
+    def _export_channel(self, row: int | None) -> str | None:
+        """The channel whose samples an export edge snaps to: the row under
+        the pointer, else the one with the finest rate among the shown rows."""
+        rows = self.canvas.rows
+        if row is not None and 0 <= row < len(rows):
+            return rows[row].channel
+        chans = [r.channel for r in rows] or list(self._channels)
+        return max(chans, key=self._rate_of) if chans else None
+
+    def _sample_step(self) -> float:
+        """One sample (µs) of the channel the edges were last snapped to."""
+        ch = self._edge_channel or self._export_channel(None)
         return 1e6 / self._rate_of(ch) if ch is not None else 1.0
 
-    def _export_channel(self, row: int | None) -> str | None:
-        if row is not None and 0 <= row < len(self.canvas.rows):
-            return self.canvas.rows[row].channel
-        if self.canvas.rows:
-            return self.canvas.rows[0].channel
-        return self._channels[0] if self._channels else None
-
-    def snap_time(self, t: float, row: int | None = None) -> int:
-        """``t`` moved to the nearest sample of the channel in ``row`` (the
-        first row by default); between recordings, just rounded."""
+    def snap_time(self, t: float, row: int | None = None, mode: str = "nearest") -> int:
+        """``t`` moved onto the sample grid of the channel in ``row`` (the
+        finest shown rate without one), counted from the first sample of the
+        stretch holding ``t``; between recordings, just rounded. ``mode``:
+        "floor" for a start, "ceil" for an end."""
         ch = self._export_channel(row)
         if ch is None:
             return int(round(t))
+        self._edge_channel = ch
         for a, b, _i in self.data.ownership(ch):
             if a <= t < b:
-                return vm.snap(t, a, self._rate_of(ch))
+                return vm.snap(t, a, self._rate_of(ch), mode)
         return int(round(t))
 
     def _export_edge(self, which: str) -> None:
@@ -1175,25 +1212,36 @@ class ViewerWindow(QMainWindow):
         self.set_export_edge(which, t, row)
 
     def set_export_edge(self, which: str, t: float, row: int | None = None) -> None:
-        t = self.snap_time(t, row)
-        if which == "start":
-            self.export_start = t
-            if self.export_end is not None and self.export_end <= t:
-                self.export_end = None
+        """Set an export edge at ``t`` (snapped: a start down, an end up, to a
+        sample). It never silently drops the other edge: an edge that would
+        leave the range empty or backwards is refused, with the reason."""
+        mode = "floor" if which == "start" else "ceil"
+        snapped = self.snap_time(t, row, mode)
+        step = self._sample_step()
+        if which == "start" and self.export_end is not None and snapped >= self.export_end:
+            if t >= self.export_end:
                 self.status_message.setText(
-                    "The export end was before the new start: set it again."
+                    "The start must be before the export end. Choose an earlier time."
                 )
+                return
+            snapped = self.snap_time(self.export_end - step, row, "floor")
+        if which == "end" and self.export_start is not None and snapped <= self.export_start:
+            if t <= self.export_start:
+                self.status_message.setText(
+                    "The end must be after the export start. Choose a later time."
+                )
+                return
+            snapped = self.snap_time(self.export_start + step, row, "ceil")
+        if which == "start":
+            self.export_start = snapped
         else:
-            self.export_end = t
-            if self.export_start is not None and self.export_start >= t:
-                self.export_start = None
-                self.status_message.setText("The export start was after the new end: set it again.")
+            self.export_end = snapped
         self._sync_export()
-        self.export_edge.emit(which, t)
+        self.export_edge.emit(which, snapped)
 
     def _edge_dragged(self, which: str, t: int) -> None:
+        t = self.snap_time(t, self._pointer_row, "floor" if which == "start" else "ceil")
         step = self._sample_step()
-        t = self.snap_time(t)
         if which == "start":
             if self.export_end is not None:
                 t = min(t, int(self.export_end - step))
@@ -1205,12 +1253,14 @@ class ViewerWindow(QMainWindow):
         self._sync_export()
 
     def nudge_edge(self, direction: int) -> None:
-        """Move the active export edge by one sample."""
+        """Move the active export edge by one sample (of the channel it was
+        snapped to)."""
         which = self.canvas.active_edge
         t = self.export_start if which == "start" else self.export_end
         if which is None or t is None:
             return
-        t = vm.snap(t + direction * self._sample_step(), t, 1e6 / self._sample_step())
+        step = self._sample_step()
+        t = vm.snap(t + direction * step, t, 1e6 / step)
         if which == "start" and self.export_end is not None and t >= self.export_end:
             return
         if which == "end" and self.export_start is not None and t <= self.export_start:
@@ -1369,8 +1419,13 @@ class ViewerWindow(QMainWindow):
 
         rows = vm.export_rows(ranges, self.zone, names)
         text = vm.to_csv(rows) if kind == "csv" else vm.to_json(rows)
-        with open(path, "w", encoding="utf-8", newline="") as handle:
-            handle.write(text)
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(text)
+        except OSError:
+            self.last_refusal = "The file could not be written. Nothing was saved."
+            self.status_message.setText(self.last_refusal)
+            return False
         self.status_message.setText("The ranges were saved.")
         return True
 
@@ -1454,6 +1509,9 @@ class ViewerWindow(QMainWindow):
         if sig == self._privacy_sig:
             return
         self._privacy_sig = sig
+        if self._banner_has_name:  # a name it showed may be hidden now
+            self._banner_has_name = False
+            self.banner.clear_now()
         self.recordings_tab.refresh(self.data.recordings, self._rec_colour, self._shown, self.zone)
         self._rebuild_types()
         self._refresh_note_list()
@@ -1530,6 +1588,9 @@ class ViewerWindow(QMainWindow):
         try:
             self.controller.finish_close()
         finally:
+            thread = self._notes_thread
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=30)  # a read of the notes must end before the data closes
             self.data.close()
 
     def closeEvent(self, event) -> None:  # noqa: N802

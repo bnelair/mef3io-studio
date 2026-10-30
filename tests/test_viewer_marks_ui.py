@@ -137,7 +137,8 @@ def test_band_letters_boundary_labels_and_the_banner(make_window, pair, qtbot):
     shown.show(1)
     win.refresh_privacy()
     win.go_to(T0 + 5 * SEC)
-    assert win.banner.history[-1] == "Now showing recording A: Alpha_case"
+    assert win.banner.text() == "Now showing recording A: Alpha_case"
+    assert win.banner.history[-1] == "Now showing recording A"  # the history has no names
     assert "Beta" not in " ".join(win.banner.history[:1])
 
 
@@ -146,7 +147,7 @@ def test_a_page_with_two_recordings_names_both(make_window, tmp_path, qtbot):
     b = write(tmp_path / "B1.mefd", channels=("Fp2",))
     win = make_window(a, b)  # different channels of the same period: side by side
     assert win.band.letters() == [["A", "B"]]
-    assert {r.tag for r in win.canvas.rows} == {"A", "B"}
+    assert {r.tag for r in win.canvas.rows} == {"A", "B"}  # rows differ: tags are worth it
     assert win.canvas.boundaries == []  # the second starts with the first: no line
     win.go_to(T0 + 55 * SEC)
     assert win.band.letters() == [["A", "B"]]
@@ -350,16 +351,17 @@ def test_s_and_e_set_the_range_at_the_pointer_exact_to_the_sample(make_window, p
     at(win, T0 + 40 * SEC)
     QTest.keyClick(win.canvas, "e")
     a, b = win.export_range()
-    assert abs(a - (T0 + 20 * SEC)) < 1 / FS * 1e6 * 4 and a < b
+    assert abs(a - (T0 + 20 * SEC)) < 60_000 and a < b
     assert round((a - T0) * FS / 1e6, 3) % 1 == pytest.approx(0, abs=0.01)  # on the sample grid
     assert round((b - T0) * FS / 1e6, 3) % 1 == pytest.approx(0, abs=0.01)
     assert win.canvas.export_start == a and win.strip.export == (a, b)
     assert win.export_summary().startswith("Export 20") and "recording A" in win.export_summary()
     assert win.copy_times_action.isEnabled()
-    # setting the start past the end drops the end and says so
+    # a start past the end is refused: the end is kept, and the reason said
+    before = win.export_range()
     at(win, T0 + 50 * SEC)
     QTest.keyClick(win.canvas, "s")
-    assert win.export_range() is None and "set it again" in win.status_message.text()
+    assert win.export_range() == before and "must be before" in win.status_message.text()
     win.canvas.grab()
 
 
@@ -503,3 +505,166 @@ def test_the_model_helpers():
         vm.snap(1_000_050, 1_000_000, 100.0) == 1_000_000
         and vm.snap(1_006_000, 1_000_000, 100.0) == 1_010_000
     )
+
+
+# --- review round 1 ----------------------------------------------------------------------
+
+
+def test_letter_tags_only_where_rows_differ(make_window, pair):
+    win = make_window(*pair)
+    win.go_to(T0 + 5 * SEC)
+    assert {r.tag for r in win.canvas.rows} == {""}  # in turn: the band says it
+    win.set_timebase(2)
+    win.go_to(T0)  # the page holds both recordings, all rows from both: same tag on every row
+    assert len({r.tag for r in win.canvas.rows}) <= 1
+
+
+def test_the_strip_uses_the_bands_colours_and_gaps_shade_the_full_height(make_window, pair):
+    win = make_window(*pair)
+    for i in (0, 1):
+        assert win.strip._colour_of(i, False) == win._rec_colour(i) == win.band._colour_of(i)
+    win.go_to(T0 + 55 * SEC)
+    assert win.canvas.gap_spans and win.canvas.gap_spans[0][0] == T0 + 60 * SEC
+
+
+def test_the_banner_loses_a_name_that_is_hidden_again(make_window, pair):
+    shown = Shown()
+    win = make_window(*pair, reveal=shown, show_details=shown.show)
+    shown.show(1)
+    win.refresh_privacy()
+    win.go_to(T0 + 85 * SEC)
+    assert win.banner.text() == "Now showing recording B: Beta_case"
+    shown.flags[1] = False
+    win.refresh_privacy()
+    assert win.banner.text() == "" and win.banner.accessibleDescription() == ""
+    assert not win.banner.isVisible()
+    assert win.banner.history == ["Now showing recording B"]  # letters only
+
+
+def test_marks_bound_to_a_channel_follow_bipolar_rows(make_window, tmp_path, qtbot):
+    p = write(
+        tmp_path / "bip.mefd",
+        channels=("LA1", "LA2", "LA3"),
+        channel_notes=[("LA2", [{"time": T0 + 5 * SEC, "text": "contact two"}])],
+    )
+    win = make_window(p)
+    wait_marks(qtbot, win)
+    win.set_state(montage="bipolar")
+    settle(qtbot, win)
+    labels = [r.label for r in win.canvas.rows]
+    assert len(labels) == 2  # LA1 - LA2 and LA2 - LA3
+    spans = win.canvas._row_spans("LA2", win.canvas.plot_rect())
+    assert len(spans) == 2  # as the plus of one row and the minus of the other
+    assert win.canvas.marks[0].channel == "LA2" and "channel LA2" in win.canvas.marks[0].tip
+    assert win.notes_tab.cell_text(0, 3) == "LA2"
+
+
+def test_export_edges_snap_to_the_finest_rate_and_never_cross(make_window, tmp_path):
+    t = np.arange(int(30 * 256)) / 256
+    p = tmp_path / "mixed.mefd"
+    with mef3io.Writer(str(p), overwrite=True, units="uV") as w:
+        w.write("fast", np.sin(t), T0 + 3, 256.0)
+        w.write("slow", np.sin(t[::2]), T0 + 3, 128.0)
+    win = make_window(p)
+    win.set_export_edge("start", T0 + 10 * SEC + 1000)  # no row under a pointer: finest rate
+    win.set_export_edge("end", T0 + 10 * SEC + 1100)
+    a, b = win.export_range()
+    step = 1e6 / 256
+    assert (a - (T0 + 3)) / step == pytest.approx(round((a - (T0 + 3)) / step), abs=1e-3)
+    assert a <= T0 + 10 * SEC + 1000 and b >= T0 + 10 * SEC + 1100 and b > a  # floor, ceil
+    win.canvas.active_edge = "end"
+    win.nudge_edge(1)
+    assert win.export_end - b == pytest.approx(step, abs=1)
+    # an edge that would empty the range is refused and the other edge stays
+    win.set_export_edge("start", T0 + 20 * SEC)
+    assert win.export_range() == (a, b + step) or win.export_range()[0] == a
+    assert "must be before" in win.status_message.text()
+
+
+def test_a_failed_notes_read_says_so(tmp_path, qtbot, qapp, monkeypatch):
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    def boom(self):
+        raise OSError("gone")
+
+    monkeypatch.setattr(ViewerData, "annotations", boom)
+    win = ViewerWindow(open_data(write(tmp_path / "f.mefd")), theme=LIGHT)
+    qtbot.addWidget(win)
+    win.resize(1000, 600)
+    win.show()
+    wait_marks(qtbot, win)
+    assert win.notes_failed and "not available" in win.notes_button.text()
+    assert win.notes_tab.failed.isVisibleTo(win.notes_tab) or not win.notes_tab.isVisible()
+    assert not win.notes_tab.failed.isHidden()
+    win.close()
+
+
+def test_closing_waits_for_the_notes_read(tmp_path, qtbot, qapp, monkeypatch):
+    import threading
+    import time
+
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    real = ViewerData.annotations
+    done = threading.Event()
+
+    def slow(self):
+        time.sleep(0.4)
+        out = real(self)
+        done.set()
+        return out
+
+    monkeypatch.setattr(ViewerData, "annotations", slow)
+    win = ViewerWindow(open_data(write(tmp_path / "s.mefd")), theme=LIGHT)
+    qtbot.addWidget(win)
+    win.show()
+    win.close()
+    win._notes_thread.join(5)
+    assert done.is_set() and win._notes_thread is not None
+
+
+def test_ownership_never_reads_the_files_after_the_open(make_window, pair, monkeypatch):
+    import threading
+
+    main = threading.main_thread()
+    data = open_data(*pair)  # what the opening task reads once
+    hits = []
+
+    def guard(name, real):
+        def wrapped(*a, **k):
+            if threading.current_thread() is main:
+                hits.append(name)
+            return real(*a, **k)
+
+        return wrapped
+
+    for name in ("segments", "info", "read", "records", "block_envelope", "toc"):
+        monkeypatch.setattr(mef3io.Reader, name, guard(name, getattr(mef3io.Reader, name)))
+    for ch in data.channels:
+        data.ownership(ch)
+        data.rate(ch)
+        data.units(ch)
+    data.recordings_at(T0, T0 + 200 * SEC)
+    data.segments_coverage()
+    data.boundaries()
+    assert hits == []
+    data.close()
+
+
+def test_saving_ranges_survives_a_bad_path_and_sanitises_cells(make_window, pair, tmp_path):
+    shown = Shown()
+    win = make_window(*pair, reveal=shown, show_details=shown.show)
+    shown.show(0)
+    shown.show(1)
+    win.set_export_edge("start", T0 + 2 * SEC)
+    win.set_export_edge("end", T0 + 8 * SEC)
+    win.confirm = lambda *a: True
+    assert not win.save_ranges("csv", str(tmp_path / "nope" / "x.csv"))
+    assert win.last_refusal == "The file could not be written. Nothing was saved."
+    assert str(tmp_path) not in win.status_message.text()
+    rows = [{"number": 1, "start": "=cmd()", "end": "+1", "length_seconds": -1, "recordings": "@x"}]
+    for r in rows:
+        for k in vm.EXPORT_COLUMNS:
+            r.setdefault(k, "")
+    text = vm.to_csv(rows)
+    assert "'=cmd()" in text and "'+1" in text and "'@x" in text

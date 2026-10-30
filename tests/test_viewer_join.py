@@ -17,7 +17,7 @@ T0 = 946_684_800_000_000
 HOUR = 3_600_000_000
 
 
-def write(path, start, seconds=2 * 3600, fs=2.0):
+def write(path, start, seconds=2 * 3600, fs=2.0):  # seconds may end mid-second
     n = int(seconds * fs)
     with mef3io.Writer(str(path), overwrite=True, metadata=metadata()) as w:
         for name in ("a1", "a2"):
@@ -79,5 +79,50 @@ def test_the_joiner_opens_the_viewer_on_its_recordings(window, qtbot, tmp_path):
     qtbot.waitUntil(lambda: bool(window.viewers), timeout=60_000)
     win = window.viewers[0]
     assert win.multi and [r.letter for r in win.data.recordings] == ["A", "B"]
+    win.close()
+    qtbot.waitUntil(lambda: not window.viewers, timeout=5000)
+
+
+def test_a_recording_ending_mid_second_is_kept_to_its_end(window, qtbot, tmp_path):
+    window._closing = True
+    window.show()
+    a = write(tmp_path / "A.mefd", T0, seconds=3600.5)
+    open_in_explorer(qtbot, window, [a])
+    qtbot.waitUntil(lambda: all(not e.busy for e in window.explorer.entries()), timeout=60_000)
+    entry = window.explorer.entries()[0]
+    end = entry.details.end
+    assert end % 1_000_000 != 0
+    window.module_list.setCurrentRow(window.module_keys.index("joiner"))
+    page = window.joiner
+    assert page.choose_window([entry.key], T0 + 10 * 1_000_000 + 500, end)
+    row = page.keep.rows[0]
+    assert row.keep().end_us >= end  # never floored below the requested end
+    assert row.keep().start_us <= T0 + 10 * 1_000_000 + 500
+    note = page.keep.viewer_note
+    assert not note.isHidden() and "whole seconds" in note.text()
+    page.keep.recompute()
+    assert not note.isHidden() and "From the viewer" in note.text()  # survives the recompute
+
+
+def test_hiding_in_explore_reaches_an_open_viewer_at_once(window, qtbot, tmp_path):
+    window._closing = True
+    window.show()
+    a = write(tmp_path / "Case_A.mefd", T0)
+    b = write(tmp_path / "Case_B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    win = open_viewer(window, qtbot)
+    entries = window.explorer.entries()
+    assert win.recording_label(0) == "Recording A"
+    for e in entries:
+        e.revealed = True
+    window.explorer.refresh_entry(entries[0])
+    assert win.recording_label(0).startswith("Recording A: ")
+    assert win.recordings_tab.cell_text(0, 1) != "(hidden)"
+    for e in entries:
+        e.revealed = False
+    window.explorer.refresh_entry(entries[0])  # Hide, without touching the viewer
+    assert win.recording_label(0) == "Recording A"
+    assert win.recordings_tab.cell_text(0, 1) == "(hidden)"
+    assert "Case" not in win.windowTitle()
     win.close()
     qtbot.waitUntil(lambda: not window.viewers, timeout=5000)

@@ -45,8 +45,9 @@ class DrawRow:
     piece: ViewPiece | EnvelopePiece | None
     local: int = 0  # the row's index inside ``piece``
     units: str = ""
-    tag: str = ""  # recording letters, only with 2+ recordings
+    tag: str = ""  # recording letters, only when rows come from different recordings
     note: str | None = None
+    minus: str | None = None  # the channel subtracted (reference and bipolar rows)
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,8 @@ class TraceCanvas(QWidget):
         self.boundaries: list[tuple[int, str]] = []
         #: Notes and events drawn on the traces.
         self.marks: list[CanvasMark] = []
+        #: Stretches with no data from any recording, shaded over every row.
+        self.gap_spans: list[tuple[int, int]] = []
         #: The export range edges (µs) and the text drawn with it.
         self.export_start: int | None = None
         self.export_end: int | None = None
@@ -265,6 +268,7 @@ class TraceCanvas(QWidget):
         self.drawn_points = {}
         plot = self.plot_rect()
         self._paint_grid(p, plot)
+        self._paint_gap_spans(p, plot)
         p.save()
         p.setClipRect(plot)
         self._paint_gaps_and_traces(p, plot)
@@ -297,6 +301,16 @@ class TraceCanvas(QWidget):
         for t in self._ticks()[0]:
             x = self.x_of(t)
             p.drawLine(QPointF(x, 0), QPointF(x, plot.height()))
+
+    def _paint_gap_spans(self, p: QPainter, plot: QRectF) -> None:
+        """Stretches where no recording holds data, over the full height."""
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(self.palette_.gap))
+        for a, b in self.gap_spans:
+            if b > self.t0 and a < self.t1:
+                x0, x1 = max(plot.left(), self.x_of(a)), min(plot.right(), self.x_of(b))
+                if x1 > x0:
+                    p.drawRect(QRectF(x0, 0, x1 - x0, plot.height()))
 
     def _ticks(self) -> tuple[list[int], int]:
         span = int(self.t1 - self.t0)
@@ -524,18 +538,19 @@ class TraceCanvas(QWidget):
             p.setPen(QColor(pal.muted))
             p.drawText(QPointF(c.x() - 30, c.y() + r + p.fontMetrics().height()), "Loading…")
 
-    def _row_span(self, channel: str | None, plot: QRectF) -> tuple[float, float] | None:
-        """Top and height of what a mark bound to ``channel`` covers (the
-        whole plot for None); None when that row is not on screen."""
+    def _row_spans(self, channel: str | None, plot: QRectF) -> list[tuple[float, float]]:
+        """Top and height of everything a mark bound to ``channel`` covers:
+        the whole plot for None, else every row on screen that shows that
+        channel (as its plus or its minus: bipolar and reference rows)."""
         if channel is None:
-            return 0.0, plot.height()
+            return [(0.0, plot.height())]
+        out = []
         for i, r in enumerate(self.rows):
-            if r.channel == channel:
+            if channel in (r.channel, r.minus):
                 top = self.row_y(i) - self.row_height / 2
-                if top + self.row_height < 0 or top > plot.height():
-                    return None
-                return top, self.row_height
-        return None
+                if top + self.row_height >= 0 and top <= plot.height():
+                    out.append((top, self.row_height))
+        return out
 
     def _paint_marks(self, p: QPainter, plot: QRectF) -> None:
         p.save()
@@ -544,26 +559,26 @@ class TraceCanvas(QWidget):
             end = m.end if m.end is not None and m.end > m.time else None
             if m.time > self.t1 or (end or m.time) < self.t0:
                 continue
-            span = self._row_span(m.channel, plot)
-            if span is None:
-                continue
-            top, height = span
-            colour = QColor(m.colour)
-            x0 = self.x_of(m.time)
-            if end is not None:
-                x1 = self.x_of(end)
-                fill = QColor(colour)
-                fill.setAlpha(46)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(fill)
-                p.drawRect(QRectF(x0, top, max(2.0, x1 - x0), height))
-                p.setPen(QPen(colour, 1))
-                p.drawLine(QPointF(x0, top), QPointF(x0, top + height))
-                p.drawLine(QPointF(x1, top), QPointF(x1, top + height))
-            else:
-                p.setPen(QPen(colour, 1.6))
-                p.drawLine(QPointF(x0, top), QPointF(x0, top + height))
+            for top, height in self._row_spans(m.channel, plot):
+                self._paint_mark(p, m, end, top, height)
         p.restore()
+
+    def _paint_mark(self, p: QPainter, m: CanvasMark, end, top: float, height: float) -> None:
+        colour = QColor(m.colour)
+        x0 = self.x_of(m.time)
+        if end is not None:
+            x1 = self.x_of(end)
+            fill = QColor(colour)
+            fill.setAlpha(46)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(fill)
+            p.drawRect(QRectF(x0, top, max(2.0, x1 - x0), height))
+            p.setPen(QPen(colour, 1))
+            p.drawLine(QPointF(x0, top), QPointF(x0, top + height))
+            p.drawLine(QPointF(x1, top), QPointF(x1, top + height))
+        else:
+            p.setPen(QPen(colour, 1.6))
+            p.drawLine(QPointF(x0, top), QPointF(x0, top + height))
 
     def _paint_boundaries(self, p: QPainter, plot: QRectF) -> None:
         if not self.boundaries:
@@ -669,8 +684,7 @@ class TraceCanvas(QWidget):
         px = (self.t1 - self.t0) / plot.width()
         best = None
         for m in self.marks:
-            span = self._row_span(m.channel, plot)
-            if span is None or not (span[0] <= pos.y() <= span[0] + span[1]):
+            if not any(a <= pos.y() <= a + h for a, h in self._row_spans(m.channel, plot)):
                 continue
             end = m.end if m.end is not None and m.end > m.time else None
             if end is not None and m.time - 3 * px <= t <= end + 3 * px:

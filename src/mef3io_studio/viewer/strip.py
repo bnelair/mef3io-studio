@@ -42,7 +42,13 @@ class OverviewStrip(QWidget):
         #: The export range (µs, either end may be unset) and its label.
         self.export: tuple[int | None, int | None] = (None, None)
         self.export_text = ""
+        #: Where the recordings' colours come from: ``(index, dark) -> colour``.
+        #: The window sets the one the recording band uses.
+        self.colour_of = None
         self.setToolTip("The whole timeline. Click or drag to go there.")
+
+    def _colour_of(self, rec: int, dark: bool) -> str:
+        return self.colour_of(rec) if self.colour_of else recording_colour(rec, dark)
 
     def set_palette(self, palette: Palette) -> None:
         self.palette_ = palette
@@ -95,7 +101,7 @@ class OverviewStrip(QWidget):
         for t0, t1, rec in self.coverage:
             x0, x1 = self.x_of(t0), self.x_of(t1)
             r = QRectF(x0, bar.top(), max(1.5, x1 - x0), bar.height())
-            colour = recording_colour(rec, dark) if self.multi else STRIP_DATA[shade]
+            colour = self._colour_of(rec, dark) if self.multi else STRIP_DATA[shade]
             p.fillRect(r, QColor(colour))
         if self.envelope is not None and self.envelope.shape[1] > 1:
             n = self.envelope.shape[1]
@@ -133,7 +139,7 @@ class OverviewStrip(QWidget):
         x0, x1 = self.x_of(self.page[0]), self.x_of(self.page[1])
         box = QRectF(x0, 1.5, max(4.0, x1 - x0), bar.bottom() + 1)  # taller than the bar
         fill = QColor(pal.cursor)
-        fill.setAlpha(60)
+        fill.setAlpha(0)  # outline only: a fill would tint the recording colours underneath
         p.setBrush(fill)
         p.setPen(QPen(QColor("#000000"), 4))  # dark outside, white inside, then the cursor colour
         p.drawRect(box)
@@ -153,22 +159,8 @@ class OverviewStrip(QWidget):
         if a is not None and b is not None:
             x0, x1 = self.x_of(a), self.x_of(b)
             shade = QColor(ink)
-            shade.setAlpha(60)
+            shade.setAlpha(40)
             p.fillRect(QRectF(x0, top, max(2.0, x1 - x0), bottom - top), shade)
-            if self.export_text:
-                fm = p.fontMetrics()
-                small = QFont(self.font())
-                small.setPointSizeF(max(6.0, small.pointSizeF() * 0.78))
-                p.setFont(small)
-                fm = p.fontMetrics()
-                tw = fm.horizontalAdvance(self.export_text) + 8
-                bx = x1 + 3 if x1 + 3 + tw < self.width() else max(0.0, x0 - 3 - tw)
-                box = QRectF(bx, top, tw, bottom - top)
-                fill = QColor(pal.background)
-                fill.setAlpha(235)
-                p.fillRect(box, fill)
-                p.setPen(QColor(pal.text))
-                p.drawText(box, Qt.AlignmentFlag.AlignCenter, self.export_text)
         p.setPen(QPen(ink, 2))
         for t in (a, b):
             if t is not None:
