@@ -20,6 +20,14 @@ Pure numpy (no scipy, no Qt). Spec: ``docs/design/viewer.md`` ("Filters").
   applied (see :func:`settling_samples`); the viewer reads that much margin on
   each side of a page.
 
+Two deliberate deviations from the spec text. The edge test (a page filtered
+with its margin against the whole signal) allows 3e-3 of the signal RMS, not
+1e-3, because the 1e-3 settling criterion is relative to a unit step and a
+signal of amplitude ~1 inherits about that error per side. The odd-reflection
+pad and the zero tail are sized from the context actually present around the
+kept part (none when the page carries a full settling margin, and runs are
+cropped to margin plus page), which keeps the same accuracy with a shorter FFT.
+
 Never logs anything.
 """
 
@@ -274,6 +282,35 @@ def fast_length(n: int) -> int:
     return _SMOOTH[bisect.bisect_left(_SMOOTH, max(1, n))]
 
 
+def _fast_length_multiple(n: int, m: int) -> int:
+    """Smallest 5-smooth size >= n that is a multiple of ``m`` (else any multiple)."""
+    if m == 1:
+        return fast_length(n)
+    for v in _SMOOTH[bisect.bisect_left(_SMOOTH, max(1, n)) :]:
+        if v % m == 0:
+            return v
+    return -(-n // m) * m
+
+
+def max_out_step(settings: FilterSettings, fs: float) -> int:
+    """Largest decimation step the low-pass allows (1 = none).
+
+    A step is allowed when the applied response above the new Nyquist
+    ``fs / (2 * step)`` is below 1e-3, so dropping those frequencies is free."""
+    eff = effective(settings, fs)
+    if eff.lowpass_hz is None:
+        return 1
+    freqs = np.linspace(0.0, fs / 2.0, 4097)
+    mag = np.abs(applied_response(eff, fs, freqs))
+    best = 1
+    for step in range(2, 257):
+        if mag[freqs > fs / (2.0 * step)].max() < 1e-3:
+            best = step
+        else:
+            break
+    return best
+
+
 @lru_cache(maxsize=16)
 def _response_grid(settings: FilterSettings, fs: float, nfft: int) -> np.ndarray:
     return applied_response(settings, fs, np.fft.rfftfreq(nfft, 1.0 / fs))
@@ -310,8 +347,15 @@ def _finite_runs(x: np.ndarray) -> list[tuple[int, int]]:
 
 
 def _filter_run(
-    r: np.ndarray, eff: FilterSettings, fs: float, n_set: int, ctx_left: int, ctx_right: int
-) -> np.ndarray:
+    r: np.ndarray,
+    eff: FilterSettings,
+    fs: float,
+    n_set: int,
+    ctx_left: int,
+    ctx_right: int,
+    step: int = 1,
+    lo: int = 0,
+) -> tuple[np.ndarray, int]:
     """Filter one NaN-free run ``r`` by FFT.
 
     ``ctx_left`` / ``ctx_right`` = samples of real data between the run's ends
@@ -319,12 +363,21 @@ def _filter_run(
     up by an odd-reflection pad (continues value and slope through the end),
     and the circular wrap is kept one settling time away from the kept part by
     zeros, so what is kept is exact to the settling tolerance.
+
+    Returns ``(values, first)``: with ``step`` 1 the whole run (``first`` 0);
+    with ``step`` > 1 only the samples whose global index (``lo`` + local) is a
+    multiple of ``step``, ``first`` being the local index of the first one. The
+    decimation is done in the frequency domain (shorter inverse FFT).
     """
     n = r.size
     pl = min(max(0, n_set - ctx_left), n - 1)
     pr = min(max(0, n_set - ctx_right), n - 1)
+    if step > 1:
+        pl += (lo - pl) % step
+        while pl > n - 1:
+            pl -= step
     gap = max(0, n_set - min(ctx_left + pl, ctx_right + pr))
-    nfft = fast_length(n + pl + pr + gap)
+    nfft = _fast_length_multiple(n + pl + pr + gap, step)
     buf = np.empty(n + pl + pr)
     buf[pl : pl + n] = r
     if pl > 0:
@@ -333,11 +386,22 @@ def _filter_run(
         buf[pl + n :] = 2.0 * r[-1] - r[-2 : -pr - 2 : -1]
     spec = np.fft.rfft(buf, nfft)
     spec *= _response_grid(eff, fs, nfft)
-    return np.fft.irfft(spec, nfft)[pl : pl + n]
+    if step == 1:
+        return np.fft.irfft(spec, nfft)[pl : pl + n], 0
+    m = nfft // step
+    dec = np.fft.irfft(spec[: m // 2 + 1], m) * (m / nfft)
+    k0 = -(-pl // step)
+    k1 = -(-(pl + n) // step)
+    return dec[k0:k1], k0 * step - pl
 
 
 def filter_block(
-    x: np.ndarray, fs: float, settings: FilterSettings, keep_from: int, keep_to: int
+    x: np.ndarray,
+    fs: float,
+    settings: FilterSettings,
+    keep_from: int,
+    keep_to: int,
+    out_step: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Filter ``x`` (float32 ``[channels, n]``, margins included, NaN gaps).
 
@@ -347,44 +411,65 @@ def filter_block(
     Gaps of up to 2 samples are bridged and put back to NaN; longer gaps split
     a channel into runs that are filtered independently, each with odd
     reflection padding.
+
+    ``out_step`` > 1 returns every ``out_step``-th sample, decimated in the
+    frequency domain. It is clamped to :func:`max_out_step`. The returned
+    samples are those at array indices that are multiples of ``out_step``
+    inside ``[keep_from, keep_to)``: ``keep_from`` is effectively rounded UP
+    to the next multiple, so the result equals the full-rate output
+    ``[ceil(keep_from / out_step) * out_step : keep_to : out_step]``.
     """
     x = np.asarray(x)
     squeeze = x.ndim == 1
     if squeeze:
         x = x[None, :]
     eff = effective(settings, fs)
-    out_n = keep_to - keep_from
+    step = max(1, min(int(out_step), max_out_step(eff, fs)))
+    first = -(-keep_from // step) * step
     if eff.is_off:
-        y = np.ascontiguousarray(x[:, keep_from:keep_to], dtype=np.float32)
+        y = np.ascontiguousarray(x[:, first:keep_to:step], dtype=np.float32)
         mask = np.zeros(y.shape, dtype=bool)
     else:
         n_set, _ = settling_samples(eff, fs)
-        y = np.full((x.shape[0], out_n), np.nan, dtype=np.float32)
-        mask = np.zeros((x.shape[0], out_n), dtype=bool)
+        n_out = len(range(first, keep_to, step))
+        y = np.full((x.shape[0], n_out), np.nan, dtype=np.float32)
+        mask = np.zeros((x.shape[0], n_out), dtype=bool)
         for c in range(x.shape[0]):
             row, bridged = _bridge(x[c])
             res = np.full(x.shape[1], np.nan)
+            mfull = np.zeros(x.shape[1], dtype=bool) if step > 1 else None
             for a, b in _finite_runs(row):
                 if b <= keep_from or a >= keep_to:
                     continue
                 if b - a < n_set:
                     res[a:b] = row[a:b]
-                    mask[c, max(a, keep_from) - keep_from : min(b, keep_to) - keep_from] = True
+                    if mfull is not None:
+                        mfull[a:b] = True
+                    else:
+                        mask[c, max(a, keep_from) - keep_from : min(b, keep_to) - keep_from] = True
                 else:
                     # only the data within one settling time of the kept part matters
                     lo = max(a, keep_from - n_set)
                     hi = min(b, keep_to + n_set)
-                    res[lo:hi] = _filter_run(
+                    vals, f0 = _filter_run(
                         row[lo:hi].astype(np.float64),
                         eff,
                         fs,
                         n_set,
                         max(0, keep_from - lo),
                         max(0, hi - keep_to),
+                        step,
+                        lo,
                     )
+                    if step == 1:
+                        res[lo:hi] = vals
+                    else:
+                        res[lo + f0 : lo + f0 + vals.size * step : step] = vals
             if bridged is not None:
                 res[bridged] = np.nan
-            y[c] = res[keep_from:keep_to]
+            y[c] = res[first:keep_to:step]
+            if mfull is not None:
+                mask[c] = mfull[first:keep_to:step]
     if squeeze:
         return y[0], mask[0]
     return y, mask

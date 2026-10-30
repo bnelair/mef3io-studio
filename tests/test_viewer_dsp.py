@@ -222,6 +222,19 @@ def test_benchmark_64ch_30s_8khz():
             t0 = time.perf_counter()
             list(pool.map(work, chunks))
             best = min(best, time.perf_counter() - t0)
+    ms = dsp.max_out_step(s, fs)
+
+    def work_dec(rows):
+        return dsp.filter_block(x[rows], fs, s, a, b, out_step=ms)
+
+    work_dec(slice(0, 1))
+    best_dec = 1e9
+    with ThreadPoolExecutor(4) as pool:
+        for _ in range(3):
+            t0 = time.perf_counter()
+            list(pool.map(work_dec, chunks))
+            best_dec = min(best_dec, time.perf_counter() - t0)
+    print(f"\nbench out_step={ms}: 4 threads {best_dec * 1e3:.0f} ms")
     print(
         f"\nbench 64ch x 30s @ 8 kHz (margin {n_set / fs:.1f} s/side): "
         f"single {single * 1e3:.0f} ms, 4 threads {best * 1e3:.0f} ms, "
