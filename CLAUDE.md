@@ -43,7 +43,7 @@ Hard rules:
   passwords, channel presets + batch conversion, anonymize; installers only
   (no PyPI).
   Save a part + join (#31) is built ("Join or trim", below); cutting into
-  pieces, viewer (on mef3io-server), coverage view, annotations, export,
+  pieces, viewer (spec: docs/design/viewer.md; local reads through mef3io), coverage view, annotations, export,
   remote access are NEXT DIRECTIONS needing their own specs.
 
 Code (app shell, #2/#3):

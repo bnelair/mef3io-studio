@@ -37,7 +37,7 @@ Published as GitHub pre-releases; what changed in each is in
 ## Next directions (each needs a specification first)
 
 - **Cut a recording into pieces** (for example one per day) ([#31](https://github.com/bnelair/mef3io-studio/issues/31); library side [mef3io#103](https://github.com/bnelair/mef3io/issues/103)). Saving a part and joining parts of several recordings are built (**Join or trim**, step 7b above). Every result is a new, checked copy.
-- **Signal viewer:** traces, zoom and pan, gaps; built on mef3io-server's cache, decode and prefetch (driven without gRPC locally; needs a password parameter and a plain-Python API there first), fast on multi-TB recordings via mef3io [#68](https://github.com/bnelair/mef3io/issues/68).
+- **Signal viewer:** one or more recordings with clear recording boundaries, clinical-style scales and keys, three montages, adjustable filters with a frequency-response view, annotations (view; edit mode with save by append or as a new copy), and export ranges for Join or trim. Specified in [design/viewer.md](design/viewer.md).
 - **Data coverage view:** when data exists and at what rate, per channel, from the block index (mef3io [#68](https://github.com/bnelair/mef3io/issues/68), [mef3io-server#13](https://github.com/bnelair/mef3io-server/issues/13)).
 - **Annotations:** view, then create and edit.
 - **Export** to other formats.
