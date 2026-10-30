@@ -66,7 +66,6 @@ def test_bipolar_duplicates_not_paired():
 def test_bipolar_prime_forms_share_lead_and_labels_unique():
     rows = m.lead_bipolar(["A1'", "A'2"])
     assert [(r.plus, r.minus) for r in rows] == [("A1'", "A'2")]
-    assert len({r.label for r in m.lead_bipolar(["X", "X "])}) == 2 or True
 
 
 def test_bipolar_different_rate_pair_left_alone():
@@ -87,3 +86,31 @@ def test_apply_nan_propagates_and_required():
     assert out[1, 0] == 0 and np.isnan(out[1, 1]) and np.isnan(out[1, 2]) and out[1, 3] == 3
     assert m.required_channels(rows) == ["a", "b"]
     assert m.apply([], data).shape[0] == 0
+
+
+def test_already_bipolar_names_stay_as_recorded():
+    assert m.lead_and_contact("F3-C3") == ("F3-C3", None)
+    assert m.lead_and_contact("C3-C4") == ("C3-C4", None)
+    assert m.lead_and_contact("LA-3") == ("LA", 3)
+    rows = m.lead_bipolar(["F3-C3", "C3-C4", "LA1", "LA2"])
+    assert [r.label for r in rows] == ["F3-C3", "C3-C4", "LA1 \u2212 LA2"]
+
+
+def test_labels_unique_against_existing_labels_in_every_montage():
+    names = ["X", "X (2)", "X "]
+    for rows in (
+        m.as_recorded(["X", "X", "X (2)"]),
+        m.lead_bipolar(["X", "X", "X (2)", "Y1", "Y1"]),
+        m.referenced(["R", "A", "A"], "R", lambda n: 1.0),
+    ):
+        labels = [r.label for r in rows]
+        assert len(set(labels)) == len(labels)
+    assert names  # keeps the list used
+
+
+def test_apply_errors_name_the_row_not_the_data():
+    rows = [m.Row("LA1 \u2212 LA2", "LA1", "LA2")]
+    with pytest.raises(ValueError, match="LA1 \u2212 LA2"):
+        m.apply(rows, {"LA1": np.zeros(4, np.float32)})
+    with pytest.raises(ValueError, match="different length"):
+        m.apply(rows, {"LA1": np.zeros(4, np.float32), "LA2": np.zeros(3, np.float32)})

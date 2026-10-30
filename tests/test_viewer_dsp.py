@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -194,6 +195,118 @@ def test_minmax_columns():
     assert lo.shape == (6,) and lo[0] == 0 and lo[-1] == 2
     lo, hi = dsp.minmax_columns(np.zeros((2, 10)), 5)
     assert lo.shape == (2, 5)
+
+
+def _decim_signal(fs, n_set):
+    n = 20 * int(fs) + 2 * n_set
+    rng = np.random.default_rng(5)
+    t = np.arange(n) / fs
+    x = np.sin(2 * np.pi * 9 * t) + 0.3 * np.sin(2 * np.pi * 40 * t) + 0.1 * rng.standard_normal(n)
+    x = x.astype(np.float32)[None]
+    x[0, n // 2 : n // 2 + 400] = np.nan
+    return x
+
+
+@pytest.mark.parametrize("zero_phase", [True, False])
+@pytest.mark.parametrize("step", [2, 3, 4, 6, 10])
+def test_out_step_matches_full_rate(zero_phase, step):
+    fs = 8000.0
+    s = FS(highpass_hz=0.5, lowpass_hz=70.0, zero_phase=zero_phase)
+    assert dsp.max_out_step(s, fs) >= step
+    n_set, _ = dsp.settling_samples(s, fs)
+    x = _decim_signal(fs, n_set)
+    n = x.shape[1]
+    a, b = n_set + 3, n - n_set
+    full, _ = dsp.filter_block(x, fs, s, a, b)
+    ref = np.full(n, np.nan)
+    ref[a:b] = full[0]
+    dec, mask = dsp.filter_block(x, fs, s, a, b, out_step=step)
+    first = -(-a // step) * step  # keep_from rounds UP to a multiple of the step
+    want = ref[first:b:step]
+    assert dec.shape == (1, want.size) and mask.shape == dec.shape and not mask.any()
+    np.testing.assert_array_equal(np.isnan(dec[0]), np.isnan(want))
+    rms = float(np.sqrt(np.nanmean(want**2)))
+    # both runs carry the 1e-3 settling error, so allow twice that between them
+    assert np.nanmax(np.abs(dec[0] - want)) < 2e-3 * rms
+
+
+def test_out_step_clamped_and_rounded_to_smooth():
+    fs = 8000.0
+    s = FS(highpass_hz=0.5, lowpass_hz=70.0)
+    ms = dsp.max_out_step(s, fs)
+    assert ms == dsp._smooth_step(ms) and ms >= 8
+    assert dsp.max_out_step(FS(highpass_hz=1.0), fs) == 1
+    n_set, _ = dsp.settling_samples(s, fs)
+    x = _decim_signal(fs, n_set)
+    a, b = n_set, x.shape[1] - n_set
+    same, _ = dsp.filter_block(x, fs, s, a, b, out_step=ms)
+    clamped, _ = dsp.filter_block(x, fs, s, a, b, out_step=ms * 50)
+    np.testing.assert_array_equal(clamped, same)
+    seven, _ = dsp.filter_block(x, fs, s, a, b, out_step=7)
+    six, _ = dsp.filter_block(x, fs, s, a, b, out_step=6)
+    np.testing.assert_array_equal(seven, six)
+
+
+def test_short_runs_are_mean_reduced_and_masked_when_decimated():
+    fs = 8000.0
+    s = FS(highpass_hz=0.5, lowpass_hz=70.0)
+    n_set, _ = dsp.settling_samples(s, fs)
+    x = np.full((1, 3 * n_set), np.nan, np.float32)
+    x[0, n_set : n_set + 100] = np.arange(100, dtype=np.float32)
+    step = 4
+    y, mask = dsp.filter_block(x, fs, s, 0, x.shape[1], out_step=step)
+    idx = np.flatnonzero(mask[0])
+    assert idx.size == 25
+    g = idx * step
+    want = np.array([np.mean(x[0, k : min(k + step, n_set + 100)]) for k in g])
+    np.testing.assert_allclose(y[0, idx], want, rtol=1e-6)
+    assert np.isnan(y[0, ~mask[0]]).all()
+
+
+@pytest.mark.parametrize("zero_phase", [True, False])
+@pytest.mark.parametrize("order", [2, 4, 8])
+def test_rolloff_matches_closed_form(zero_phase, order):
+    fs, fc = 20000.0, 100.0
+    t_c = math.tan(math.pi * fc / fs)
+    e = 2 * order
+    for k in (2.0, 4.0):
+        uc = (math.sqrt(2) - 1) ** (1 / e) if zero_phase else 1.0
+        u = math.tan(math.pi * fc * k / fs) / t_c * uc
+        want = 1 / (1 + u**e) if zero_phase else 1 / math.sqrt(1 + u**e)
+        s = FS(lowpass_hz=fc, order=order, zero_phase=zero_phase)
+        assert abs(dsp.applied_response(s, fs, [fc * k])[0]) == pytest.approx(want, rel=1e-9)
+        uc = (math.sqrt(2) + 1) ** (1 / e) if zero_phase else 1.0
+        u = math.tan(math.pi * fc / k / fs) / t_c * uc
+        want = 1 / (1 + u**-e) if zero_phase else 1 / math.sqrt(1 + u**-e)
+        s = FS(highpass_hz=fc, order=order, zero_phase=zero_phase)
+        assert abs(dsp.applied_response(s, fs, [fc / k])[0]) == pytest.approx(want, rel=1e-9)
+
+
+def test_highpass_must_be_below_lowpass():
+    with pytest.raises(ValueError, match="high-pass cutoff must be below the low-pass"):
+        FS(highpass_hz=70.0, lowpass_hz=0.5)
+    with pytest.raises(ValueError):
+        FS(highpass_hz=5.0, lowpass_hz=5.0)
+
+
+def test_cutoff_near_nyquist_odd_rate_causal_edges():
+    fs = 1000.0 / 3
+    nyq = fs / 2
+    s = FS(highpass_hz=0.5, lowpass_hz=0.99 * nyq, zero_phase=False)
+    assert dsp.inactive_filters(s, fs) == ()
+    h = dsp.applied_response(s, fs, [0.98 * nyq])
+    assert abs(h[0]) < 0.75 * abs(dsp.applied_response(s, fs, [nyq / 2])[0])
+    n_set, capped = dsp.settling_samples(s, fs)
+    assert not capped
+    rng = np.random.default_rng(7)
+    n = int(150 * fs)
+    t = np.arange(n) / fs
+    x = (np.sin(2 * np.pi * 9 * t) + 0.3 * rng.standard_normal(n)).astype(np.float32)[None]
+    whole, _ = dsp.filter_block(x, fs, s, 0, n)
+    a, b = int(60 * fs), int(70 * fs)
+    page, _ = dsp.filter_block(x[:, a - n_set : b + n_set], fs, s, n_set, n_set + b - a)
+    rms = float(np.sqrt(np.mean(whole[0, a:b] ** 2)))
+    assert np.max(np.abs(page[0] - whole[0, a:b])) < 3e-3 * rms
 
 
 @pytest.mark.skipif(

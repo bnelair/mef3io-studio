@@ -73,6 +73,12 @@ class FilterSettings:
         for v in (self.highpass_hz, self.lowpass_hz, self.mains_hz):
             if v is not None and not v > 0:
                 raise ValueError("frequencies must be positive")
+        if (
+            self.highpass_hz is not None
+            and self.lowpass_hz is not None
+            and self.highpass_hz >= self.lowpass_hz
+        ):
+            raise ValueError("The high-pass cutoff must be below the low-pass cutoff.")
 
     @property
     def is_off(self) -> bool:
@@ -292,8 +298,14 @@ def _fast_length_multiple(n: int, m: int) -> int:
     return -(-n // m) * m
 
 
+def _smooth_step(k: int) -> int:
+    """Largest 5-smooth integer <= k (steps with other factors make slow FFT sizes)."""
+    k = max(1, k)
+    return _SMOOTH[bisect.bisect_right(_SMOOTH, k) - 1]
+
+
 def max_out_step(settings: FilterSettings, fs: float) -> int:
-    """Largest decimation step the low-pass allows (1 = none).
+    """Largest decimation step the low-pass allows (1 = none), 5-smooth only.
 
     A step is allowed when the applied response above the new Nyquist
     ``fs / (2 * step)`` is below 1e-3, so dropping those frequencies is free."""
@@ -308,10 +320,10 @@ def max_out_step(settings: FilterSettings, fs: float) -> int:
             best = step
         else:
             break
-    return best
+    return _smooth_step(best)
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=4)
 def _response_grid(settings: FilterSettings, fs: float, nfft: int) -> np.ndarray:
     return applied_response(settings, fs, np.fft.rfftfreq(nfft, 1.0 / fs))
 
@@ -417,14 +429,17 @@ def filter_block(
     samples are those at array indices that are multiples of ``out_step``
     inside ``[keep_from, keep_to)``: ``keep_from`` is effectively rounded UP
     to the next multiple, so the result equals the full-rate output
-    ``[ceil(keep_from / out_step) * out_step : keep_to : out_step]``.
+    ``[ceil(keep_from / out_step) * out_step : keep_to : out_step]``. The step
+    is also rounded down to a 5-smooth number (FFT sizes stay fast). Runs too
+    short to filter are reduced to the per-step mean (not plain subsampling,
+    which would alias) and stay masked.
     """
     x = np.asarray(x)
     squeeze = x.ndim == 1
     if squeeze:
         x = x[None, :]
     eff = effective(settings, fs)
-    step = max(1, min(int(out_step), max_out_step(eff, fs)))
+    step = _smooth_step(min(int(out_step), max_out_step(eff, fs)))
     first = -(-keep_from // step) * step
     if eff.is_off:
         y = np.ascontiguousarray(x[:, first:keep_to:step], dtype=np.float32)
@@ -442,11 +457,16 @@ def filter_block(
                 if b <= keep_from or a >= keep_to:
                     continue
                 if b - a < n_set:
-                    res[a:b] = row[a:b]
-                    if mfull is not None:
-                        mfull[a:b] = True
-                    else:
+                    if step == 1:
+                        res[a:b] = row[a:b]
                         mask[c, max(a, keep_from) - keep_from : min(b, keep_to) - keep_from] = True
+                    else:
+                        gs = np.arange(-(-a // step) * step, b, step)
+                        cs = np.concatenate(([0.0], np.cumsum(row[a:b], dtype=np.float64)))
+                        i0 = gs - a
+                        i1 = np.minimum(i0 + step, b - a)
+                        res[gs] = (cs[i1] - cs[i0]) / (i1 - i0)
+                        mfull[gs] = True
                 else:
                     # only the data within one settling time of the kept part matters
                     lo = max(a, keep_from - n_set)

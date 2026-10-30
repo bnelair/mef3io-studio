@@ -38,6 +38,9 @@ def lead_and_contact(name: str) -> tuple[str, int | None]:
     contact number (or made only of one) is its own lead with contact None.
     """
     s = name.strip()
+    tail = s.rsplit("-", 1)[1] if "-" in s else ""
+    if any(ch.isalpha() for ch in tail):
+        return name, None  # already a derivation ("F3-C3")
     m = _PRIME_AFTER.match(s)
     if m and m.group(1).strip(" _-"):
         return m.group(1).rstrip(" _-") + "'", int(m.group(2))
@@ -54,7 +57,7 @@ def natural_key(name: str) -> list:
 
 
 def as_recorded(names: Sequence[str]) -> list[Row]:
-    return [Row(n, n) for n in names]
+    return _unique([Row(n, n) for n in names])
 
 
 def referenced(names: Sequence[str], ref: str, rate_of: Callable[[str], float]) -> list[Row]:
@@ -72,7 +75,7 @@ def referenced(names: Sequence[str], ref: str, rate_of: Callable[[str], float]) 
             rows.append(Row(n, n, None, DIFFERENT_RATE_NOTE))
         else:
             rows.append(Row(f"{n} {MINUS} {ref}", n, ref))
-    return rows
+    return _unique(rows)
 
 
 def lead_bipolar(names: Sequence[str], rate_of: Callable[[str], float] | None = None) -> list[Row]:
@@ -122,15 +125,20 @@ def lead_bipolar(names: Sequence[str], rate_of: Callable[[str], float] | None = 
 
 
 def _unique(rows: list[Row]) -> list[Row]:
-    seen: dict[str, int] = {}
+    """Make labels unique, also against labels that exist elsewhere in the list."""
+    reserved = {r.label for r in rows}
+    used: set[str] = set()
     out = []
     for r in rows:
-        k = seen.get(r.label, 0) + 1
-        seen[r.label] = k
-        if k == 1:
-            out.append(r)
-        else:
-            out.append(Row(f"{r.label} ({k})", r.plus, r.minus, r.note))
+        label = r.label
+        if label in used:
+            k = 2
+            while f"{r.label} ({k})" in reserved or f"{r.label} ({k})" in used:
+                k += 1
+            label = f"{r.label} ({k})"
+            r = Row(label, r.plus, r.minus, r.note)
+        used.add(label)
+        out.append(r)
     return out
 
 
@@ -147,12 +155,25 @@ def required_channels(rows: Sequence[Row]) -> list[str]:
 def apply(rows: Sequence[Row], data: Mapping[str, np.ndarray]) -> np.ndarray:
     """Compute the rows from ``data`` (name -> equal-length 1-D arrays).
 
-    Returns float32 ``[len(rows), n]``. NaN in either channel gives NaN."""
+    Returns float32 ``[len(rows), n]``. NaN in either channel gives NaN. A row
+    whose channel is missing, or arrays of different lengths, raise ValueError
+    (naming the row label, never the data)."""
     if not rows:
         return np.zeros((0, 0), dtype=np.float32)
-    n = len(data[rows[0].plus])
+    arrays = []
+    for r in rows:
+        for name in (r.plus, r.minus):
+            if name is not None and name not in data:
+                raise ValueError(f"No data for the row '{r.label}'.")
+        arrays.append((np.asarray(data[r.plus], dtype=np.float32), r))
+    n = max(
+        [a.shape[0] for a, _ in arrays]
+        + [np.shape(data[r.minus])[0] for r in rows if r.minus is not None]
+    )
     out = np.empty((len(rows), n), dtype=np.float32)
-    for i, r in enumerate(rows):
-        a = np.asarray(data[r.plus], dtype=np.float32)
-        out[i] = a if r.minus is None else a - np.asarray(data[r.minus], dtype=np.float32)
+    for i, (a, r) in enumerate(arrays):
+        b = None if r.minus is None else np.asarray(data[r.minus], dtype=np.float32)
+        if a.shape[0] != n or (b is not None and b.shape[0] != n):
+            raise ValueError(f"The row '{r.label}' has a different length from the others.")
+        out[i] = a if b is None else a - b
     return out
