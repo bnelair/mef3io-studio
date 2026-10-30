@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import mef3io
 import numpy as np
@@ -28,7 +29,9 @@ class FakeData:
     """Stands in for ViewerData: reads wait for a gate, and are recorded."""
 
     timeline_start = T0
-    warning_count = 7
+    data_id = 1
+    epoch = 0
+    threads = None
 
     def __init__(self, gate: threading.Event | None = None, tiles: int = 100):
         self.gate = gate
@@ -37,6 +40,9 @@ class FakeData:
         self.started = threading.Event()
         self.cancelled: list[tuple] = []
         self.lock = threading.Lock()
+
+    def set_read_threads(self, n):
+        self.threads = n
 
     def rate(self, ch):
         return 512.0 if ch.startswith("hi") else 256.0
@@ -93,11 +99,13 @@ def test_view_blocks_share_the_tile_budget():
     arr = np.zeros(250, dtype=np.float32)
     cache.put(("tile", 1), arr)
     cache.put(("tile", 2), arr)
-    views.put((0, 10), "bip", None, "hp0.5", arr)
-    assert views.get((0, 10), "bip", None, "hp0.5") is not None
-    assert views.get((0, 10), "bip", None, "hp1") is None  # other filter settings
-    assert views.get((0, 10), "ref", "Cz", "hp0.5") is None  # other montage/reference
-    views.put((10, 20), "bip", None, "hp0.5", arr)  # over the budget: oldest tile goes
+    dk = (1, 0)
+    views.put(dk, (0, 10), "bip", None, "hp0.5", arr)
+    assert views.get(dk, (0, 10), "bip", None, "hp0.5") is not None
+    assert views.get(dk, (0, 10), "bip", None, "hp1") is None  # other filter settings
+    assert views.get(dk, (0, 10), "ref", "Cz", "hp0.5") is None  # other montage/reference
+    assert views.get((1, 1), (0, 10), "bip", None, "hp0.5") is None  # after a reopen
+    views.put(dk, (10, 20), "bip", None, "hp0.5", arr)  # over the budget: oldest tile goes
     assert ("tile", 1) not in cache and cache.bytes_used <= 3000
 
 
@@ -121,7 +129,7 @@ def test_visible_tiles_are_read_before_lookahead_before_screens():
     gate = threading.Event()
     data = FakeData(gate)
     ready = []
-    sched = TileScheduler(data, TileCache(), workers=1, on_ready=ready.append)
+    sched = TileScheduler(data, TileCache(), workers=1, on_ready=lambda k, a: ready.append(k))
     try:
         # the first request occupies the only worker
         sched.request(256.0, ("blocker",), 0, VISIBLE, 0)
@@ -159,7 +167,7 @@ def test_stale_requests_are_cancelled_queued_and_running():
     gate = threading.Event()
     data = FakeData(gate)
     ready = []
-    sched = TileScheduler(data, TileCache(), workers=1, on_ready=ready.append)
+    sched = TileScheduler(data, TileCache(), workers=1, on_ready=lambda k, a: ready.append(k))
     try:
         running = sched.request(256.0, ("run",), 0, LOOKAHEAD, generation=1)
         assert data.started.wait(5)
@@ -180,7 +188,7 @@ def test_cached_tiles_are_not_read_again_and_still_signal():
     data = FakeData()
     cache = TileCache()
     ready = []
-    sched = TileScheduler(data, cache, workers=2, on_ready=ready.append)
+    sched = TileScheduler(data, cache, workers=2, on_ready=lambda k, a: ready.append(k))
     try:
         key = sched.request(256.0, ("a", "b"), 3)
         assert sched.wait_idle(10)
@@ -188,7 +196,6 @@ def test_cached_tiles_are_not_read_again_and_still_signal():
         sched.request(256.0, ("a", "b"), 3)
         assert sched.wait_idle(10)
         assert len(data.order) == 1 and ready == [key, key]
-        assert sched.warning_count == 7
     finally:
         sched.close()
 
@@ -205,14 +212,14 @@ def test_a_failing_read_reports_and_the_worker_survives():
         Broken(),
         TileCache(),
         workers=1,
-        on_ready=ready.append,
+        on_ready=lambda k, a: ready.append(k),
         on_error=lambda k, e: errors.append(k),
     )
     try:
         sched.request(256.0, ("bad",), 0)
         good = sched.request(256.0, ("ok",), 0)
         assert sched.wait_idle(10)
-        assert [e[1] for e in errors] == [("bad",)] and ready == [good]
+        assert [e[3] for e in errors] == [("bad",)] and ready == [good]
     finally:
         sched.close()
 
@@ -276,7 +283,7 @@ def test_the_scheduler_fills_the_cache_from_a_real_session(tmp_path):
     ready = threading.Event()
     seen = []
 
-    def on_ready(key):
+    def on_ready(key, array):
         seen.append(key)
         if len(seen) == 2:
             ready.set()
@@ -289,9 +296,125 @@ def test_the_scheduler_fills_the_cache_from_a_real_session(tmp_path):
         sched.request_all(plan)
         assert ready.wait(20)
         assert sched.wait_idle(20)
-        key = sched.key_of(fs, ("a", "b"), 0)
+        key = sched.key_of(fs, ("a", "b"), 0, (data.data_id, data.epoch))
         assert np.isfinite(cache.get(key)).all()
-        assert cache.get(sched.key_of(fs, ("a", "b"), 1)) is not None
+        assert cache.get(sched.key_of(fs, ("a", "b"), 1, (data.data_id, data.epoch))) is not None
     finally:
         sched.close()
         data.close()
+
+
+def test_on_ready_gets_the_array_even_when_it_does_not_fit_the_cache():
+    got = []
+    sched = TileScheduler(
+        FakeData(), TileCache(budget_bytes=1), workers=1, on_ready=lambda k, a: got.append((k, a))
+    )
+    try:
+        key = sched.request(256.0, ("a",), 0)
+        assert sched.wait_idle(10)
+        assert len(got) == 1 and got[0][0] == key and got[0][1].shape == (1, 4)
+    finally:
+        sched.close()
+
+
+def test_keys_change_with_the_epoch_so_old_tiles_are_never_served():
+    data = FakeData()
+    cache = TileCache()
+    sched = TileScheduler(data, cache, workers=1)
+    try:
+        k0 = sched.request(256.0, ("a",), 0)
+        assert sched.wait_idle(10)
+        data.epoch = 1  # a reopen
+        k1 = sched.request(256.0, ("a",), 0)
+        assert sched.wait_idle(10)
+        assert k0 != k1 and len(data.order) == 2
+    finally:
+        sched.close()
+
+
+def test_drain_cancels_everything_and_waits_and_reports_no_error():
+    gate = threading.Event()
+
+    class Closing(FakeData):
+        def read_tile(self, channels, rate, k, cancel=None):
+            try:
+                return super().read_tile(channels, rate, k, cancel)
+            except JobCancelled:
+                raise ValueError("reader closed") from None  # as a closed Reader would
+
+    data = Closing(gate)
+    errors, ready = [], []
+    sched = TileScheduler(
+        data,
+        TileCache(),
+        workers=1,
+        on_ready=lambda k, a: ready.append(k),
+        on_error=lambda k, e: errors.append(k),
+    )
+    try:
+        sched.request(256.0, ("run",), 0)
+        assert data.started.wait(5)
+        sched.request(256.0, ("queued",), 0)
+        assert sched.drain(10)
+        assert sched.pending() == 0 and errors == [] and ready == []
+        assert [c[0] for c, _ in data.order] == ["run"]
+    finally:
+        gate.set()
+        sched.close()
+
+
+def test_a_rerequest_of_a_cancelled_running_read_waits_for_it():
+    gate = threading.Event()
+    data = FakeData(gate)
+    running = {"now": 0, "max": 0}
+    original = data.read_tile
+
+    def tracked(channels, rate, k, cancel=None):
+        running["now"] += 1
+        running["max"] = max(running["max"], running["now"])
+        try:
+            return original(channels, rate, k, cancel)
+        finally:
+            running["now"] -= 1
+
+    data.read_tile = tracked
+    ready = []
+    sched = TileScheduler(data, TileCache(), workers=2, on_ready=lambda k, a: ready.append(k))
+    try:
+        sched.request(256.0, ("a",), 0, LOOKAHEAD, generation=1)
+        assert data.started.wait(5)
+        assert sched.cancel_stale(2) == 1
+        key = sched.request(256.0, ("a",), 0, VISIBLE, generation=2)
+        time.sleep(0.1)
+        assert running["max"] == 1  # no second read of the key while the first still runs
+        gate.set()
+        assert sched.wait_idle(10)
+        assert ready == [key] and len(data.order) == 2
+    finally:
+        gate.set()
+        sched.close()
+
+
+def test_nothing_is_called_back_after_close_returns():
+    gate = threading.Event()
+    data = FakeData(gate)
+    ready = []
+    sched = TileScheduler(data, TileCache(), workers=2, on_ready=lambda k, a: ready.append(k))
+    for k in range(6):
+        sched.request(256.0, ("a",), k)
+    assert data.started.wait(5)
+    gate.set()
+    sched.close()
+    count = len(ready)
+    time.sleep(0.2)
+    assert len(ready) == count
+
+
+def test_several_workers_get_a_small_share_of_the_decode_threads():
+    data = FakeData()
+    sched = TileScheduler(data, TileCache(), workers=4)
+    sched.close()
+    assert data.threads in (1, 2)
+    single = FakeData()
+    TileScheduler(single, TileCache(), workers=1).close()
+    assert single.threads is None  # a lone worker keeps mef3io's automatic count

@@ -112,15 +112,27 @@ class ViewBlockCache:
 
     @staticmethod
     def key(
-        span: tuple[int, int], montage_key: Hashable, reference: Hashable, filter_key: Hashable
+        data_key: Hashable,
+        span: tuple[int, int],
+        montage_key: Hashable,
+        reference: Hashable,
+        filter_key: Hashable,
     ) -> tuple:
-        return ("view", (int(span[0]), int(span[1])), montage_key, reference, filter_key)
+        """``data_key`` = ``(data.data_id, data.epoch)`` (see
+        :func:`data_key_of`)."""
+        return ("view", data_key, (int(span[0]), int(span[1])), montage_key, reference, filter_key)
 
-    def get(self, span, montage_key, reference, filter_key) -> np.ndarray | None:
-        return self._cache.get(self.key(span, montage_key, reference, filter_key))
+    def get(self, data_key, span, montage_key, reference, filter_key) -> np.ndarray | None:
+        return self._cache.get(self.key(data_key, span, montage_key, reference, filter_key))
 
-    def put(self, span, montage_key, reference, filter_key, value: np.ndarray) -> None:
-        self._cache.put(self.key(span, montage_key, reference, filter_key), value)
+    def put(self, data_key, span, montage_key, reference, filter_key, value: np.ndarray) -> None:
+        self._cache.put(self.key(data_key, span, montage_key, reference, filter_key), value)
+
+
+def data_key_of(data) -> tuple:
+    """What goes into every cache key so a reopened (or other) data object
+    never serves old values."""
+    return (getattr(data, "data_id", 0), getattr(data, "epoch", 0))
 
 
 @dataclass(frozen=True)
@@ -166,7 +178,7 @@ def group_channels(
 
 
 class _Job:
-    __slots__ = ("key", "request", "token", "state", "seq")
+    __slots__ = ("key", "request", "token", "state", "seq", "deferred")
 
     def __init__(self, key, request: Request, seq: int) -> None:
         self.key = key
@@ -174,15 +186,19 @@ class _Job:
         self.token = CancelToken()
         self.state = "queued"  # queued | running | done | cancelled
         self.seq = seq
+        self.deferred = False  # waiting for a cancelled read of the same key
 
 
 class TileScheduler:
     """Reads tiles by priority on a thread pool and fills a cache.
 
-    ``on_ready(key)`` is called from a worker thread when a tile is in the
-    cache (also for one that was already cached); ``on_error(key, exc)`` when
-    a read failed (the exception is never logged here). Tile keys are
-    ``(rate, channels, k)``; ``cache.get(key)`` gives the array.
+    ``on_ready(key, array)`` is called from a worker thread with the tile
+    (also one that was already cached) exactly once per finished request,
+    even when the tile is larger than the cache budget or evicted before the
+    callback (the array is passed, not looked up); never after ``close()``
+    returned. ``on_error(key, exc)`` is called when a read failed (never for
+    a cancelled one; the exception is never logged here). Tile keys are
+    ``(data_id, epoch, rate, channels, k)``.
     """
 
     def __init__(
@@ -190,7 +206,7 @@ class TileScheduler:
         data,
         cache: TileCache,
         workers: int | None = None,
-        on_ready: Callable[[tuple], object] | None = None,
+        on_ready: Callable[[tuple, np.ndarray], object] | None = None,
         on_error: Callable[[tuple, BaseException], object] | None = None,
     ) -> None:
         self._data = data
@@ -203,24 +219,32 @@ class TileScheduler:
         self._seq = itertools.count()
         self._closed = False
         self._active = 0
+        #: Cancelled reads still running, by key (a re-request waits for them).
+        self._zombies: dict[tuple, _Job] = {}
+        #: Held while a callback runs; close() takes it, so none runs after.
+        self._cb_lock = threading.RLock()
         n = workers if workers else default_workers()
         self._threads = [
             threading.Thread(target=self._run, name=f"viewer-tiles-{i}", daemon=True)
             for i in range(n)
         ]
+        # One read decodes with several threads of its own. With several
+        # reads at once that would oversubscribe the cores (workers x
+        # mef3io's automatic pool), so each read gets its share of the
+        # cores, at most 2 (mef3io 2.0: one n_threads count per reader).
+        if n > 1 and hasattr(data, "set_read_threads"):
+            data.set_read_threads(max(1, min(2, (os.cpu_count() or 2) // n)))
         for t in self._threads:
             t.start()
 
     # -- API -----------------------------------------------------------------
 
     @staticmethod
-    def key_of(rate: float, channels: Sequence[str], k: int) -> tuple:
-        return (float(rate), tuple(channels), int(k))
+    def key_of(rate: float, channels: Sequence[str], k: int, data_key: tuple = (0, 0)) -> tuple:
+        return (*data_key, float(rate), tuple(channels), int(k))
 
-    @property
-    def warning_count(self) -> int:
-        """mef3io warnings during reads (counted by the data object)."""
-        return int(getattr(self._data, "warning_count", 0))
+    def _key(self, rate, channels, k) -> tuple:
+        return self.key_of(rate, channels, k, data_key_of(self._data))
 
     def request(
         self,
@@ -232,8 +256,8 @@ class TileScheduler:
     ) -> tuple:
         """Ask for a tile; returns its key. Asking again for a tile that is
         queued or running only raises its urgency / generation."""
-        key = self.key_of(rate, channels_group, k)
-        req = Request(float(rate), key[1], int(k), int(priority), int(generation))
+        key = self._key(rate, channels_group, k)
+        req = Request(float(rate), tuple(channels_group), int(k), int(priority), int(generation))
         with self._cv:
             if self._closed:
                 return key
@@ -247,13 +271,16 @@ class TileScheduler:
                     min(old.priority, req.priority),
                     max(old.generation, req.generation),
                 )
-                if job.state == "queued" and req.priority < old.priority:
+                if job.state == "queued" and not job.deferred and req.priority < old.priority:
                     heapq.heappush(self._heap, (req.priority, next(self._seq), key))
                 return key
             job = _Job(key, req, next(self._seq))
             self._jobs[key] = job
-            heapq.heappush(self._heap, (req.priority, job.seq, key))
-            self._cv.notify()
+            if key in self._zombies:
+                job.deferred = True  # starts when the cancelled read of it ends
+            else:
+                heapq.heappush(self._heap, (req.priority, job.seq, key))
+                self._cv.notify()
         return key
 
     def request_all(self, plan: Iterable[Request]) -> list[tuple]:
@@ -265,14 +292,31 @@ class TileScheduler:
         how many were cancelled."""
         cancelled = 0
         with self._cv:
-            for key, job in list(self._jobs.items()):
+            for job in list(self._jobs.values()):
                 if job.state in ("queued", "running") and job.request.generation < generation:
-                    if job.state == "running":
-                        job.token.cancel()
-                    job.state = "cancelled"
-                    del self._jobs[key]
+                    self._abandon(job)
                     cancelled += 1
         return cancelled
+
+    def _abandon(self, job: _Job) -> None:
+        """Cancel a job (caller holds the lock)."""
+        if job.state == "running":
+            job.token.cancel()
+            self._zombies[job.key] = job
+        job.state = "cancelled"
+        if self._jobs.get(job.key) is job:
+            del self._jobs[job.key]
+
+    def drain(self, timeout: float | None = None) -> bool:
+        """Cancel everything, queued and running, and wait for the running
+        reads to end. Call before ``ViewerData.reopen()`` / ``close()``.
+        Returns False on timeout."""
+        with self._cv:
+            for job in list(self._jobs.values()):
+                if job.state in ("queued", "running"):
+                    self._abandon(job)
+            self._heap.clear()
+            return self._cv.wait_for(lambda: self._active == 0, timeout)
 
     def pending(self) -> int:
         with self._cv:
@@ -291,15 +335,15 @@ class TileScheduler:
     def close(self) -> None:
         with self._cv:
             self._closed = True
-            for job in self._jobs.values():
-                if job.state == "running":
-                    job.token.cancel()
-                job.state = "cancelled"
-            self._jobs.clear()
+            for job in list(self._jobs.values()):
+                self._abandon(job)
             self._heap.clear()
             self._cv.notify_all()
+        with self._cb_lock:  # a callback in flight finishes; no later one starts
+            pass
         for t in self._threads:
-            t.join(timeout=5)
+            if t is not threading.current_thread():
+                t.join(timeout=5)
 
     # -- planning ---------------------------------------------------------------
 
@@ -328,7 +372,7 @@ class TileScheduler:
         seen: set[tuple] = set()
 
         def add(group: ChannelGroup, k: int, priority: int) -> None:
-            key = self.key_of(group.rate, group.channels, k)
+            key = self._key(group.rate, group.channels, k)
             if key in seen or k < 0 or k >= data.tile_count(group.rate):
                 return
             seen.add(key)
@@ -376,7 +420,7 @@ class TileScheduler:
             if job is None:
                 return
             key = job.key
-            result = None
+            result: np.ndarray | None = None
             error: BaseException | None = None
             try:
                 result = self._cache.get(key)
@@ -390,19 +434,29 @@ class TileScheduler:
                     error = exc
                 result = None
             with self._cv:
-                still = job.state == "running"
-                if still:
+                live = job.state == "running"
+                if live:
                     job.state = "done"
                     if self._jobs.get(key) is job:
                         del self._jobs[key]
+                if self._zombies.get(key) is job:
+                    del self._zombies[key]
+                    waiting = self._jobs.get(key)
+                    if waiting is not None and waiting.deferred:
+                        waiting.deferred = False
+                        heapq.heappush(self._heap, (waiting.request.priority, waiting.seq, key))
                 self._active -= 1
                 self._cv.notify_all()
-            if not still:
-                continue
-            try:
-                if error is not None and self.on_error is not None:
-                    self.on_error(key, error)
-                elif result is not None and self.on_ready is not None:
-                    self.on_ready(key)
-            except Exception:  # a callback must never kill a worker
-                pass
+            if not live:
+                continue  # cancelled: no result, no error
+            with self._cb_lock:
+                if self._closed:
+                    continue
+                try:
+                    if error is not None:
+                        if self.on_error is not None:
+                            self.on_error(key, error)
+                    elif result is not None and self.on_ready is not None:
+                        self.on_ready(key, result)
+                except Exception:  # a callback must never kill a worker
+                    pass

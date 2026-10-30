@@ -3,14 +3,12 @@ written by mef3io in a temporary folder. No real data, ever."""
 
 from __future__ import annotations
 
-import warnings
 from pathlib import Path
 
 import mef3io
 import numpy as np
 import pytest
 
-from mef3io_studio.model import viewer_source as vs
 from mef3io_studio.model.cancel import CancelToken, JobCancelled
 from mef3io_studio.model.errors import describe_error
 from mef3io_studio.model.source import LocalRecordingSource
@@ -387,17 +385,107 @@ def test_the_envelope_reads_the_index_only(tmp_path):
         data.close()
 
 
-# --- warnings --------------------------------------------------------------------
+# --- review round 1 ----------------------------------------------------------------
 
 
-def test_a_mef_warning_reaches_the_counter_not_the_output(capsys):
-    import mef3io
+def test_mid_read_cancellation_reaches_the_library(tmp_path):
+    import threading
+    import time
 
-    vs._install_warning_counter()
-    before = vs._warn_count
-    # call the hook the way warnings does outside a recorder
-    warnings.showwarning(
-        mef3io.UnscaledSamplesWarning("secret text"), mef3io.UnscaledSamplesWarning, "f.py", 1
-    )
-    assert vs._warn_count == before + 1
-    assert "secret" not in capsys.readouterr().err
+    from mef3io_studio.model.cancel import stopped_by_library
+
+    fs = 1000.0
+    path = write(tmp_path / "big.mefd", [f"c{i}" for i in range(8)], T0, 3600, fs=fs)
+    data = open_recordings([str(path)])
+    try:
+        names = list(data.channels)
+        t1 = T0 + 3600 * SEC
+        start = time.perf_counter()
+        data._combined.read(names, T0, t1, dtype="float32")
+        full = time.perf_counter() - start
+
+        token = CancelToken()
+        threading.Timer(full * 0.1, token.cancel).start()
+        start = time.perf_counter()
+        with pytest.raises(JobCancelled), stopped_by_library():
+            data._combined.read(names, T0, t1, dtype="float32", cancel=token.for_library())
+        assert time.perf_counter() - start < full * 0.7
+    finally:
+        data.close()
+
+
+def test_seams_are_exact_with_a_recording_off_the_grid(tmp_path):
+    fs = 256.0
+    a = write(tmp_path / "a.mefd", ["x"], T0, 200, fs=fs, seed=5)
+    b = write(tmp_path / "b.mefd", ["x"], T0 + 200 * SEC + 1953, 200, fs=fs, seed=6)
+    data = open_recordings([str(a), str(b)])
+    try:
+        joined = np.concatenate([data.read_tile(["x"], fs, k) for k in range(2)], axis=1)
+        t0 = data.timeline_start
+        one = data._combined.read(
+            ["x"], t0, t0 + round(2 * TILE_SAMPLES * 1e6 / fs), dtype="float32"
+        )
+        np.testing.assert_array_equal(joined, one)
+    finally:
+        data.close()
+
+
+def test_the_same_recording_twice_is_its_own_refusal(sequential):
+    a, _ = sequential
+    with pytest.raises(ViewerRefusal) as err:
+        open_recordings([str(a), str(a)])
+    assert err.value.code == "twice"
+    assert err.value.user_message.title == "This recording was selected twice."
+
+
+def test_other_value_errors_are_not_turned_into_a_refusal(sequential, monkeypatch):
+    def boom(*args, **kwargs):
+        raise ValueError("something else")
+
+    monkeypatch.setattr(mef3io, "MultiReader", boom)
+    with pytest.raises(ValueError, match="something else") as err:
+        open_recordings([str(p) for p in sequential])
+    assert not isinstance(err.value, ViewerRefusal)
+
+
+def test_a_recording_without_data_is_refused_by_letter(tmp_path):
+    a = write(tmp_path / "a.mefd", ["x"], T0, 10)
+    empty = tmp_path / "Hidden_Name.mefd"
+    with mef3io.Writer(str(empty), overwrite=True):
+        pass
+    try:
+        open_recordings([str(a), str(empty)])
+    except ViewerRefusal as refusal:
+        assert refusal.code == "empty" and refusal.letters == ("B",)
+        assert "Hidden_Name" not in refusal.user_message.text
+        assert "Recording B" in refusal.user_message.text
+    else:  # mef3io refuses to open it at all: nothing for the viewer to do
+        pytest.skip("an empty session cannot be built here")
+
+
+def test_reopen_bumps_the_epoch_and_keeps_the_id(sequential):
+    data = open_recordings([str(sequential[0])])
+    try:
+        ident, epoch = data.data_id, data.epoch
+        data.reopen()
+        assert (data.data_id, data.epoch) == (ident, epoch + 1)
+        assert not data.closed
+    finally:
+        data.close()
+    other = open_recordings([str(sequential[0])])
+    try:
+        assert other.data_id != ident
+    finally:
+        other.close()
+
+
+def test_reprs_hold_no_names_or_note_text(tmp_path):
+    a = write(tmp_path / "Quentin_Zebedee.mefd", ["x"], T0, 10)
+    with mef3io.Writer(str(a)) as w:
+        w.write_annotations([{"time": T0 + SEC, "text": "Quentin moved"}])
+    data = open_recordings([str(a)])
+    try:
+        shown = repr(data.recordings) + repr(data.annotations())
+        assert "Quentin" not in shown and "Zebedee" not in shown
+    finally:
+        data.close()

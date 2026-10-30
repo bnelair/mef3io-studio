@@ -10,25 +10,25 @@ Rules: no paths, names or notes in anything that can reach a log (messages
 name recordings by letter only); names are handed out through
 :meth:`ViewerData.identity_values` for the caller (a job thread) to register
 with ``register_identity``; opens run inside ``library_warnings_caught()``;
-reads run without the process-wide quiet lock, and mef3io's warnings during
-them are counted (never logged, never shown).
+reads run without the process-wide quiet lock and add no warning handling
+(conditions found at open time come from ``problems()``).
 
 Plain Python, no Qt.
 """
 
 from __future__ import annotations
 
+import itertools
 import os
 import re
 import threading
-import warnings
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from .cancel import CancelToken, stopped_by_library
+from .cancel import CancelToken, JobCancelled, stopped_by_library
 from .errors import UserMessage
 from .quiet import library_warnings_caught
 
@@ -41,42 +41,6 @@ TILE_SAMPLES = 65536
 COVERAGE_MERGE_US = 1_000_000
 
 _LEVEL_ORDER = {"session": 0, "channel": 1, "segment": 2}
-
-
-# --- mef3io warnings during reads: counted, never shown ---------------------
-
-_warn_lock = threading.Lock()
-_warn_count = 0
-
-
-def _count_mef_warning() -> None:
-    global _warn_count
-    with _warn_lock:
-        _warn_count += 1
-
-
-def _install_warning_counter() -> None:
-    """Route every ``mef3io.MefWarning`` to a counter instead of the log or
-    the console. Installed once per process (re-installed if something
-    replaced the hook); the other warnings pass through untouched."""
-    import mef3io
-
-    category = mef3io.MefWarning
-    current = warnings.showwarning
-    if getattr(current, "_mef3io_studio_counter", False):
-        return
-    previous = current
-
-    def showwarning(message, cat, filename, lineno, file=None, line=None):
-        if isinstance(cat, type) and issubclass(cat, category):
-            _count_mef_warning()
-            return None
-        return previous(message, cat, filename, lineno, file, line)
-
-    showwarning._mef3io_studio_counter = True  # type: ignore[attr-defined]
-    warnings.showwarning = showwarning
-    # Make sure these warnings reach showwarning (not de-duplicated away).
-    warnings.filterwarnings("always", category=category)
 
 
 # --- plain-language refusals -------------------------------------------------
@@ -135,7 +99,7 @@ class RecordingInfo:
     colour: int
     #: The recording's name. Identifying: shown only while the recording's
     #: details are visible, never logged.
-    name: str
+    name: str = field(repr=False)
     start_us: int
     end_us: int
     channels: tuple[str, ...]
@@ -170,6 +134,20 @@ def tile_start_index(k: int) -> int:
     return k * TILE_SAMPLES
 
 
+class Annotation(dict):
+    """One record (the library's dict plus ``recording``). Its repr leaves
+    out the text and everything else that could identify someone."""
+
+    def __repr__(self) -> str:
+        return (
+            f"Record(recording={self.get('recording')}, level={self.get('level')!r}, "
+            f"type={self.get('type')!r}, time={self.get('time')})"
+        )
+
+
+_data_ids = itertools.count(1)
+
+
 class ViewerData:
     """What the viewer reads from: built by :func:`open_recordings`."""
 
@@ -180,6 +158,12 @@ class ViewerData:
         self._combined = combined
         self._multi = combined is not None and len(readers) > 1
         self._lock = threading.RLock()
+        #: Unique per ViewerData; with ``epoch`` (bumped by every reopen) it
+        #: goes into every cache key, so nothing read before a reopen is
+        #: ever served after it.
+        self.data_id: int = next(_data_ids)
+        self.epoch: int = 0
+        self._closed = False
         names = [_session_name(p) for p in self._paths]
         self.recordings: tuple[RecordingInfo, ...] = tuple(
             RecordingInfo(i, _letter(i), i, names[i], starts[i], ends[i], tuple(rec_channels[i]))
@@ -190,11 +174,8 @@ class ViewerData:
         self.channels: tuple[str, ...] = tuple(sorted(combined.channels, key=_natural_key))
         self._info: dict[str, dict] = {}
         self._ownership: dict[str, list[tuple[int, int, int]]] = {}
-        self._annotations: list[dict] | None = None
+        self._annotations: list[Annotation] | None = None
         self._locked: tuple[int, ...] = ()
-        self._warn_base = _warn_count
-        #: Warnings the library gave while opening (counted, text dropped).
-        self.open_warning_count = 0
 
     # -- identity (for register_identity, called by the job's thread) ----------
 
@@ -309,7 +290,7 @@ class ViewerData:
         full access). Valid after :meth:`annotations`."""
         return self._locked
 
-    def annotations(self) -> list[dict]:
+    def annotations(self) -> list[Annotation]:
         """Every record at session, channel and segment level of every
         recording, each tagged with ``recording`` (index); sorted by time.
         Recordings whose records are locked contribute nothing and are
@@ -318,7 +299,7 @@ class ViewerData:
 
         if self._annotations is not None:
             return list(self._annotations)
-        out: list[dict] = []
+        out: list[Annotation] = []
         locked: list[int] = []
         for i, reader in enumerate(self._readers):
             try:
@@ -327,7 +308,7 @@ class ViewerData:
                 locked.append(i)
                 continue
             for rec in records:
-                item = dict(rec)
+                item = Annotation(rec)
                 item["recording"] = i
                 out.append(item)
         out.sort(
@@ -377,6 +358,8 @@ class ViewerData:
         outer slots (which belong to the neighbouring tiles) are dropped.
         """
         names = list(channels)
+        if self._closed:
+            raise JobCancelled()
         for ch in names:
             if abs(self.rate(ch) - rate) > 1e-9 * max(1.0, rate):
                 raise ValueError("the channels of a tile must share one sampling rate")
@@ -397,17 +380,28 @@ class ViewerData:
 
     # -- counts / lifecycle ---------------------------------------------------------------------
 
-    @property
-    def warning_count(self) -> int:
-        """mef3io warnings since this data was opened (text never kept)."""
-        return _warn_count - self._warn_base
-
     def problems(self) -> list[int]:
         """Recordings with unreadable parts (indexes), from ``problems()``."""
         return [i for i, r in enumerate(self._readers) if r.problems]
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def set_read_threads(self, n: int) -> None:
+        """How many threads one read may use (0 = automatic). The scheduler
+        sets a small number when it runs several reads at once, so the
+        decode pools do not oversubscribe the cores."""
+        try:
+            self._combined.n_threads = int(n)
+        except Exception:
+            pass
+
     def close(self) -> None:
+        """Close the readers. Reads still running fail; stop them first
+        (``TileScheduler.drain``)."""
         with self._lock:
+            self._closed = True
             for obj in [self._combined, *self._readers]:
                 try:
                     obj.close()
@@ -416,11 +410,17 @@ class ViewerData:
 
     def reopen(self) -> None:
         """Close and open again (after an annotation save), keeping the
-        letters, and forget what was cached."""
+        letters; forgets what was cached here and bumps ``epoch``.
+
+        CONTRACT: the caller drains the scheduler first
+        (``TileScheduler.drain``): reads running during a reopen fail."""
         fresh = open_recordings(self._paths, self._passwords)
         with self._lock:
             self.close()
+            data_id, epoch = self.data_id, self.epoch
             self.__dict__.update(fresh.__dict__)
+            self.data_id, self.epoch = data_id, epoch + 1
+            self._closed = False
         fresh._combined = fresh._readers = None  # the state moved to self
 
 
@@ -438,7 +438,7 @@ def _password_list(paths: Sequence, passwords) -> list[str]:
     return out
 
 
-def _diagnose(readers, rec_channels, letters) -> ViewerRefusal:
+def _diagnose(readers, rec_channels, letters) -> ViewerRefusal | None:
     """Say which recordings clash and why, in letters, from metadata."""
     clash_rate: set[int] = set()
     clash_time: set[int] = set()
@@ -466,7 +466,9 @@ def _diagnose(readers, rec_channels, letters) -> ViewerRefusal:
             ),
             who,
         )
-    who_idx = sorted(clash_time or set(range(len(readers))))
+    if not clash_time:
+        return None  # not a clash we know: the caller lets the error through
+    who_idx = sorted(clash_time)
     who = [letters[i] for i in who_idx]
     return ViewerRefusal(
         "overlap",
@@ -493,6 +495,16 @@ def open_recordings(
     given = [os.fspath(p) for p in paths]
     if not given:
         raise ValueError("no recordings to open")
+    if len({os.path.normcase(os.path.realpath(p)) for p in given}) < len(given):
+        raise ViewerRefusal(
+            "twice",
+            UserMessage(
+                "This recording was selected twice.",
+                "The same recording appears more than once in the selection, and one "
+                "timeline cannot show it twice. Nothing was changed. Select each recording "
+                "once.",
+            ),
+        )
     pwds = _password_list(given, passwords)
     if len({p for p in pwds if p}) > 1:
         raise _passwords_refusal()
@@ -500,7 +512,7 @@ def open_recordings(
 
     opened: list = []
     try:
-        with stopped_by_library(), library_warnings_caught() as caught:
+        with stopped_by_library(), library_warnings_caught():
             for path, pwd in zip(given, pwds, strict=True):
                 if cancel is not None:
                     cancel.raise_if_cancelled()
@@ -510,9 +522,10 @@ def open_recordings(
                 chans = list(r.channels)
                 infos = [r.info(c) for c in chans]
                 rec_channels.append(chans)
-                starts.append(min((int(i["start_time"]) for i in infos), default=0))
-                ends.append(max((int(i["end_time"]) for i in infos), default=0))
-            order = sorted(range(len(opened)), key=lambda i: (starts[i], i))
+                starts.append(min((int(i["start_time"]) for i in infos), default=None))
+                ends.append(max((int(i["end_time"]) for i in infos), default=None))
+            # recordings without data sort last, so the letters of the others hold
+            order = sorted(range(len(opened)), key=lambda i: (starts[i] is None, starts[i] or 0, i))
             readers = [opened[i] for i in order]
             paths_o = [given[i] for i in order]
             pwds_o = [pwds[i] for i in order]
@@ -520,6 +533,19 @@ def open_recordings(
             ends = [ends[i] for i in order]
             rec_channels = [rec_channels[i] for i in order]
             letters = [_letter(i) for i in range(len(readers))]
+            empty = [letters[i] for i, st in enumerate(starts) if st is None]
+            if empty:
+                verb = "holds" if len(empty) == 1 else "hold"
+                raise ViewerRefusal(
+                    "empty",
+                    UserMessage(
+                        "Nothing to show",
+                        f"{_letters_text(empty)} {verb} no signal data, so there is nothing to "
+                        "show on a timeline. Nothing was changed. Open the other recordings "
+                        "without it.",
+                    ),
+                    empty,
+                )
             if len(readers) == 1:
                 combined = readers[0]
             else:
@@ -527,10 +553,12 @@ def open_recordings(
                     cancel.raise_if_cancelled()
                 try:
                     combined = mef3io.MultiReader(paths_o, shared)
-                except ValueError:
-                    raise _diagnose(readers, rec_channels, letters) from None
+                except ValueError as exc:
+                    refusal = _diagnose(readers, rec_channels, letters)
+                    if refusal is None:
+                        raise
+                    raise refusal from exc
         data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels)
-        data.open_warning_count = len(caught)
         opened = []  # owned by `data` now
     finally:
         for r in opened:
@@ -538,6 +566,4 @@ def open_recordings(
                 r.close()
             except Exception:
                 pass
-    _install_warning_counter()
-    data._warn_base = _warn_count
     return data
