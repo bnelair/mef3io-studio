@@ -266,6 +266,20 @@ def test_a_span_must_lie_within_one_recordings_data():
     )
 
 
+def test_c1_separators_and_lone_surrogates_are_refused_everywhere():
+    d = ad.Draft()
+    for bad in ("a\x85b", "x\x9fy", "l\u2028s", "p\u2029s", "lone\ud800", "\udfffx"):
+        assert ad.control_problem(bad), repr(bad)
+        with pytest.raises(ValueError, match="control character"):
+            d.add(T0, None, "Note", bad)
+        with pytest.raises(ValueError, match="control character"):
+            d.add(T0, None, "Note", "fine", bad)
+    assert not ad.control_problem("Zoë ünï – ok\t\n", None)
+    assert (
+        "control character" in ad.read_rows(f'start,text\n{T0},"a\u2028b"\n', "csv").invalid[0][1]
+    )
+
+
 def test_control_characters_are_refused_in_the_draft_and_in_imports():
     d = ad.Draft()
     for bad in ("a\x00b", "bell\x07", "esc\x1b", "del\x7f"):

@@ -85,11 +85,9 @@ def _refuse(title: str, text: str) -> SaveFailed:
     return SaveFailed(UserMessage(title, text + " Nothing was added to any recording."))
 
 
-def prepare(data, index: int, other_password: str = "") -> tuple[str, str]:
-    """Check recording ``index`` and return the ``(basic, full-access)``
-    passwords to write with (``("", "")`` for a recording without any).
-    Raises :class:`SaveFailed` (nothing has been written) when the recording
-    moved or changed, or the passwords are missing or wrong."""
+def check_same(data, index: int):
+    """Re-read recording ``index`` and return its summary; raises
+    :class:`SaveFailed` when it is gone or is not the one that was opened."""
     import mef3io
 
     from .viewer_source import fingerprint_of
@@ -119,6 +117,20 @@ def prepare(data, index: int, other_password: str = "") -> tuple[str, str]:
             f"Recording {letter} is not the same as when it was opened. Close this window "
             "and open it again.",
         )
+    return now
+
+
+def prepare(data, index: int, other_password: str = "") -> tuple[str, str]:
+    """Check recording ``index`` and return the ``(basic, full-access)``
+    passwords to write with (``("", "")`` for a recording without any).
+    Raises :class:`SaveFailed` (nothing has been written) when the recording
+    moved or changed, or the passwords are missing or wrong."""
+    import mef3io
+
+    letter = data.recordings[index].letter
+    path = data.location_of(index)
+    held = data.password_of(index)
+    now = check_same(data, index)
     if not now.encryption["encrypted"]:
         return "", ""
     if not held or not other_password:
@@ -170,10 +182,13 @@ def write_plan(
     those and no others."""
     import mef3io
 
+    from ..common.privacy import register_identity
     from .cancel import is_stop
 
     result = WriteResult()
     extra = extra_passwords or {}
+    # Typed passwords reach the log filter before any library call (task thread).
+    register_identity(*(p for p in extra.values() if p))
     pairs: dict[int, tuple[str, str]] = {}
     try:
         for index in sorted(plan.by_recording):
@@ -192,6 +207,17 @@ def write_plan(
         if share.session:
             steps.append((share.session, None))
         steps += [(share.channels[c], c) for c in sorted(share.channels)]
+        try:  # it may have moved since the up-front check: look again before writing
+            check_same(data, index)
+        except SaveFailed as exc:
+            result.error = UserMessage(
+                exc.user_message.title,
+                exc.user_message.text.replace(
+                    " Nothing was added to any recording.", _added_text(data, added)
+                ),
+                exc.user_message.detail,
+            )
+            return result
         for items, channel in steps:
             try:
                 check_cancelled()
@@ -201,7 +227,10 @@ def write_plan(
                 if is_stop(exc):
                     result.stopped = True
                     result.error = UserMessage(
-                        "Stopped", "The save was stopped." + _added_text(data, added)
+                        "Stopped",
+                        "The save was stopped."
+                        + _added_text(data, added)
+                        + " Everything not yet added remains in the draft.",
                     )
                 elif isinstance(exc, Exception):
                     result.error = _plain(exc, letter, data, added).user_message

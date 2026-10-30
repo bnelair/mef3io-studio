@@ -47,11 +47,18 @@ _MAX_ROWS = 200_000
 
 def control_problem(*texts: str | None) -> str:
     """A plain reason when a text holds a control character (NUL and the
-    other C0 controls except tab and newline, or DEL), else "". Such
+    other C0 controls except tab and newline, DEL, C1 controls, the line and
+    paragraph separators, or a lone surrogate), else "". Such
     characters would be stored in a note and break other tools."""
     for text in texts:
         for ch in text or "":
-            if (ord(ch) < 32 and ch not in "\t\n") or ord(ch) == 127:
+            o = ord(ch)
+            if (
+                (o < 32 and ch not in "\t\n")
+                or 127 <= o <= 159
+                or o in (0x2028, 0x2029)
+                or 0xD800 <= o <= 0xDFFF
+            ):
                 return (
                     "The text holds a control character (an invisible character such as a "
                     "null or a bell). Remove it and try again."

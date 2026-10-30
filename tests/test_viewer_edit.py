@@ -727,6 +727,54 @@ def test_a_moved_or_replaced_recording_is_refused_before_anything_is_written(ed,
     assert not records(a)  # nothing was added to the stand-in
 
 
+def test_a_recording_that_moves_mid_save_is_refused_and_earlier_additions_reported(
+    ed, qtbot, monkeypatch
+):
+    win, spy, (a, b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")  # recording A
+    win.edit.add(T0 + 120 * SEC, None, "Spike", "y")  # recording B
+    real = mef3io.Writer.write_annotations
+    moved = Path(b).with_name("MovedAway.mefd")
+
+    def rename_b_after_a(self, annotations, channel=None):
+        out = real(self, annotations, channel)
+        if not moved.exists():
+            Path(b).rename(moved)
+        return out
+
+    monkeypatch.setattr(mef3io.Writer, "write_annotations", rename_b_after_a)
+    finish_save(qtbot, win)
+    text = spy.problems[-1].text
+    assert "not where it was opened" in spy.problems[-1].title
+    assert "recording A: 1 note or event" in text and "Nothing was added" not in text
+    assert not Path(b).exists()  # nothing created at the old path
+    assert [i.text for i in win.edit.draft.items] == ["y"]
+
+
+def test_the_stop_message_says_the_rest_remains_in_the_draft(ed, qtbot, monkeypatch):
+    from mef3io_studio.model import annotation_save as asave
+    from mef3io_studio.model.cancel import JobCancelled as Cancelled
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.edit.add(T0 + 31 * SEC, None, "Note", "c", "Cz")
+    calls = []
+
+    def stop_second(ctx_check=None):
+        calls.append(1)
+        if len(calls) == 2:
+            raise Cancelled()
+
+    real = asave.write_plan
+    monkeypatch.setattr(
+        asave, "write_plan", lambda d, p, pw, chk, rep: real(d, p, pw, stop_second, rep)
+    )
+    finish_save(qtbot, win)
+    assert "remains in the draft" in spy.problems[-1].text
+
+
 def test_the_draft_is_locked_while_a_save_runs_and_the_gui_thread_stays_off_mef3io(
     ed, qtbot, monkeypatch
 ):
