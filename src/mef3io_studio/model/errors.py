@@ -63,6 +63,10 @@ def _describe(exc: BaseException) -> UserMessage:
             detail,
         )
 
+    refusal = getattr(exc, "user_message", None)
+    if isinstance(refusal, UserMessage):  # e.g. the viewer's ViewerRefusal
+        return UserMessage(refusal.title, refusal.text, detail)
+
     if isinstance(exc, HelperCrashed):
         return UserMessage(
             "The app stopped while reading this recording",
