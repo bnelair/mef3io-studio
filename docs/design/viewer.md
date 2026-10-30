@@ -106,7 +106,9 @@ From top to bottom, as in the clinical viewer:
 7. **Status line:**
    - the time under the pointer;
    - **"Recording B: <name>"** for the row under the pointer;
-   - montage, reference and filter summary.
+   - montage, reference and filter summary. In overview mode it reads
+     "Overview: as recorded, no filters"; the chosen montage and filters
+     are kept and come back on zooming in.
 
 Colour profiles: White, Green (paper style with minor/major grid), Dark,
 High contrast. They follow the app theme by default.
@@ -267,26 +269,36 @@ against hand-made channel lists, including the edge cases above.
   numerically fragile at extreme ratios, such as a 0.5 Hz high-pass on
   8 kHz data, which is a cutoff at 1/16000 of the rate. The FFT form has no
   such problem, and it handles any cutoff value without a design table.
-  Arithmetic is float64; each run's mean is removed before and restored
-  after (only where a high-pass is off), and FFT lengths are rounded up to
-  5-smooth sizes.
+  Arithmetic is float64, and FFT lengths are rounded up to 5-smooth sizes.
+  No mean removal is needed: the odd-reflection pad (below) already makes
+  the edges continuous.
 - **Edges and context:**
   - Each read fetches a **margin** on both sides of the page and discards it
     after filtering.
   - The margin is computed from the filter itself, as its **settling
     time**: the time after which the step response stays within 0.1% of
-    its final value (relative to the step height). It is found once per
+    its final value (relative to the step height). It is computed for the
+    response **actually applied**: |H|² in zero-phase mode, whose impulse
+    response is symmetric and about twice as long as H's, measured from
+    its centre on both sides; H in causal mode. It covers high-pass,
+    low-pass and notch (with harmonics) alike, since a narrow notch's
+    ring-down shows up in its step response too. It is found once per
     (filter settings, rate) from an inverse FFT and cached.
     - The impulse-response peak would be the wrong measure: a high-pass's
       impulse response is a spike at zero plus a long, tiny tail, so it
       decays "immediately" while the filter takes seconds to settle.
-  - The margin is capped at 60 s. If the cap bites (e.g. a 0.01 Hz
-    high-pass), the panel says the edges of the page may show slow drift.
+  - The margin and the pad are capped at 60 s. If the cap bites, whatever
+    the filter (a 0.01 Hz high-pass, a very narrow notch), the panel says
+    the edges of the page may not be fully settled.
   - Runs are padded by **odd (point) reflection** about their end samples,
-    which keeps both the value and the slope continuous, by at least the
-    settling time.
-  - The FFT length is at least the run plus both pads, so the circular wrap
-    of FFT filtering can never reach the kept page.
+    `x[-k] = 2·x[0] − x[k]`. It continues the signal's value and slope
+    through the edge, so no filter type sees a step or a kink there (an
+    even reflection leaves a kink, and zero padding a step).
+    - Pad length = min(settling time, run length − 1).
+    - A run shorter than the settling time is not filtered (see Gaps).
+  - The FFT length is at least run + both pads + one more settling time of
+    zeros, so the circular wrap of FFT filtering stays below 0.1% at the
+    kept page (exactly the settling criterion), also when the cap bites.
   - Causal mode needs the margin and padding before the page only.
 - **Gaps:**
   - NaN gaps are never filled with zeros.
@@ -340,15 +352,17 @@ All in `model/viewer_source.py` (the only viewer module that imports
 mef3io), driven by a scheduler in `workers/`.
 
 - **Tiles:**
-  - Pages are served from tiles on a **sample grid**: tile k of a rate
-    starts at the timeline's start + k·n samples. `read()` anchors its grid
-    at the t0 it is given, so tiles must start exactly on that grid.
-  - n is about 64k samples, chosen so one tile spans a whole number of
-    microseconds where the rate allows (e.g. a multiple of 4 samples at
-    256 Hz, of 1 at 1000/3 Hz). Where no such n exists, tiles overlap by
-    one sample and are joined by time.
+  - Pages are served from tiles on a **sample grid**: sample index
+    i = round((t − timeline start)·fs/1e6), per rate. Tile k holds indices
+    [k·n, (k+1)·n), n = 65536.
+  - `read()` anchors its grid at the t0 it is given and rounds to the
+    microsecond, so a tile is read over its span widened by one sample on
+    each side. Each sample is then placed by its index (from the read's
+    own t0), and the samples the neighbouring tile also holds are
+    dropped. The seams are therefore exact by construction, at any rate.
   - Seams are tested at 256 Hz, 1000/3 Hz and 8 kHz: no duplicated or
-    dropped sample.
+    dropped sample, and a page read across tiles equals one `read()` of
+    the page.
   - Channels are fetched in groups of 16. The montage's **reference channel
     and bipolar partners are always fetched with the group** that needs
     them.
@@ -372,10 +386,11 @@ mef3io), driven by a scheduler in `workers/`.
     the UI thread receives ready-to-draw arrays.
 - **Cache:**
   - An LRU by bytes. Default budget 512 MB, a preference.
-  - Holds raw tiles, plus **filtered pages**. A filtered page is keyed by
-    (page span, montage, reference, filter settings), because its values
-    depend on the margin's neighbouring tiles and on gap runs crossing tile
-    edges.
+  - Holds raw tiles, plus **filtered view blocks**: one page length,
+    aligned to half pages on the sample grid, so panning and small moves
+    reuse them. A view block is keyed by (block span, montage, reference,
+    filter settings), not by tile, because its values depend on the
+    margin's neighbouring tiles and on gap runs crossing tile edges.
   - Montage, gap runs and filtering are computed over the
     margin-extended window, never per tile.
   - Changing a filter re-filters from the cached raw tiles without reading
