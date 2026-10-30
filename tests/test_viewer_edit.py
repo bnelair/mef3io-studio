@@ -769,7 +769,7 @@ def test_the_stop_message_says_the_rest_remains_in_the_draft(ed, qtbot, monkeypa
 
     real = asave.write_plan
     monkeypatch.setattr(
-        asave, "write_plan", lambda d, p, pw, chk, rep: real(d, p, pw, stop_second, rep)
+        asave, "write_plan", lambda d, p, pw, chk, rep, reg: real(d, p, pw, stop_second, rep, reg)
     )
     finish_save(qtbot, win)
     assert "remains in the draft" in spy.problems[-1].text

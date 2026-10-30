@@ -442,13 +442,13 @@ def test_a_password_typed_in_the_save_preview_is_redacted(monkeypatch):
 
     secret = "Typed-Save-Pw-7731"
     seen = []
-    monkeypatch.setattr(privacy, "register_identity", lambda *v: seen.extend(v))
 
     class Plan:
         by_recording: dict = {}
         count = 0
 
-    asave.write_plan(object(), Plan(), {0: secret})
+    # The save job passes the app's register_identity in (model/ cannot import it).
+    asave.write_plan(object(), Plan(), {0: secret}, register=lambda *v: seen.extend(v))
     assert secret in seen
     registry = IdentityRegistry()
     registry.register(secret)

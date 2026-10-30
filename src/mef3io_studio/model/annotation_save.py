@@ -174,6 +174,7 @@ def write_plan(
     extra_passwords: dict[int, str] | None = None,
     check_cancelled: Callable[[], None] = lambda: None,
     report: Callable[[int, int], None] = lambda _done, _total: None,
+    register: Callable[..., None] = lambda *_values: None,
 ) -> WriteResult:
     """Append every recording's share of ``plan``. Every recording is checked
     first (nothing is written when any check fails). Then recording by
@@ -182,13 +183,13 @@ def write_plan(
     those and no others."""
     import mef3io
 
-    from ..common.privacy import register_identity
     from .cancel import is_stop
 
     result = WriteResult()
     extra = extra_passwords or {}
     # Typed passwords reach the log filter before any library call (task thread).
-    register_identity(*(p for p in extra.values() if p))
+    # ``register`` is the app's register_identity (model/ cannot import common/).
+    register(*(p for p in extra.values() if p))
     pairs: dict[int, tuple[str, str]] = {}
     try:
         for index in sorted(plan.by_recording):

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QPushButton,
 )
 
+from ..common.privacy import register_identity
 from ..model import annotation_draft as ad
 from ..model import annotation_save as asave
 from ..model import timefmt
@@ -632,6 +633,7 @@ class EditMode(QObject):
                 passwords,
                 ctx.check_cancelled,
                 lambda done, total: ctx.report(done, total, "Adding the notes and events"),
+                register_identity,
             )
             records, locked, error = None, (), result.error
             if result.uids:
