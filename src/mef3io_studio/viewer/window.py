@@ -17,6 +17,7 @@ thread of their own and arrive by a signal.
 from __future__ import annotations
 
 import bisect
+import dataclasses
 import json
 import os
 import threading
@@ -55,6 +56,7 @@ from . import jump as jumping
 from .canvas import CanvasMark, DrawRow, TraceCanvas
 from .controller import ViewController
 from .dialogs import JumpDialog
+from .edit_mode import EditMode
 from .export_range import IDENTIFYING_NOTE, RangeListDialog
 from .filters import FilterPanel, ResponseDialog
 from .keymap import KEYMAP, NAVIGATION_ACTIONS, TIMEBASE_ACTIONS, HelpOverlay, entry_for
@@ -129,10 +131,14 @@ class ViewerWindow(QMainWindow):
         zone: tzinfo = UTC,
         reveal: Callable[[int], bool] | None = None,
         show_details: Callable[[int], None] | None = None,
+        jobs=None,
         parent=None,
     ):
         super().__init__(parent)
         self.data = data
+        #: The app's task manager (edit mode saves and reads files through
+        #: it); None = edit mode makes its own.
+        self.jobs = jobs
         self.settings = settings
         self.theme = theme
         self.zone = zone
@@ -206,11 +212,13 @@ class ViewerWindow(QMainWindow):
         self.types_panel = TypesPanel(self)
         self.range_dialog = RangeListDialog(self)
         self.help = HelpOverlay(self.canvas, frozenset(self.features))
+        self.edit = EditMode(self)
 
         left = QWidget(self)
         box = QVBoxLayout(left)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(0)
+        box.addWidget(self.edit.banner)
         for w in (self.strip, self.band_slot, self.chips_slot):
             box.addWidget(w)
         box.addWidget(self.canvas, 1)
@@ -240,6 +248,7 @@ class ViewerWindow(QMainWindow):
         self.canvas.setFocus()
         self._install_handlers()
         self.context_hooks.append(self._export_context)
+        self.context_hooks.append(self.edit.context)
         self._recolour()
         self.refresh_privacy()
         self._sync_export()
@@ -278,7 +287,14 @@ class ViewerWindow(QMainWindow):
         self.jump_button = tool(
             "Jump…", "Jump to a time, a move or a recording (Ctrl+K)", self.open_jump
         )
-        self.edit_button = tool("Edit mode", "Add notes (not available yet)", lambda: None, False)
+        self.edit_button = tool(
+            "Edit mode",
+            "Add notes and events: changes are a draft until you save (off every time a "
+            "recording is opened)",
+            lambda: None,
+        )
+        self.edit_button.setCheckable(True)
+        self.edit_button.toggled.connect(self._edit_toggled)
         press = self.press
         self.export_start_button = tool(
             "Export start",
@@ -399,12 +415,21 @@ class ViewerWindow(QMainWindow):
         c.context_requested.connect(self._context_menu)
         c.edge_dragged.connect(self._edge_dragged)
         c.size_changed.connect(self.banner.place)
-        self.chips.clicked.connect(self.centre_at)
+        self.chips.picked.connect(self.edit.on_chip)
+        self.chips.clicked.connect(self._chip_clicked)
         self.types_panel.hidden_changed.connect(self._types_chosen)
         self.recordings_tab.go_to.connect(self.go_to)
         self.notes_tab.go_to.connect(lambda t, _r: self.centre_at(t))
         self.notes_tab.show_requested.connect(self.show_recording_details)
         self.notes_tab.changed.connect(self._refresh_note_list)
+        self.notes_tab.picked.connect(self.edit.on_row)
+        self.notes_tab.add_requested.connect(self.edit.add_here)
+        self.notes_tab.edit_requested.connect(self.edit.edit_selected)
+        self.notes_tab.remove_requested.connect(self.edit.remove_selected)
+        self.notes_tab.import_requested.connect(self.edit.import_file)
+        self.notes_tab.export_requested.connect(
+            lambda kind, scope: self.edit.export_marks(kind, scope)
+        )
         self.range_dialog.save_requested.connect(self.save_ranges)
         self.range_dialog.removed.connect(self._remove_range)
         self.range_dialog.chosen.connect(self._choose_range)
@@ -462,6 +487,9 @@ class ViewerWindow(QMainWindow):
         h["note_forward"] = lambda: self.go_to_mark(1)
         h["types"] = lambda: self._toggle_tool(self.types_panel, self.types_button)
         h["note_list"] = self.toggle_side_panel
+        h["add_note"] = self._add_key
+        h["undo"] = self.edit.undo
+        h["redo"] = self.edit.redo
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if (
@@ -759,7 +787,7 @@ class ViewerWindow(QMainWindow):
         return [r for r in rows if r.plus not in self.state.hidden]
 
     def _refresh(self) -> None:
-        if self._closed or self.canvas.width() < 10:
+        if self._closed or self.canvas.width() < 10 or self.edit.saving:
             return
         length = self.page_us()
         t0 = vv.clamp_start(self.state.t0, length, self.data.timeline_start, self.data.timeline_end)
@@ -1039,7 +1067,7 @@ class ViewerWindow(QMainWindow):
 
     def _rebuild_types(self) -> None:
         dark = self.canvas.palette_.dark
-        counts = vm.type_counts(self.marks, self._shown)
+        counts = vm.type_counts(self._display_marks(), self._shown)
         self.types_panel.set_types(
             [(k, label, n, vm.kind_colour(k, dark)) for k, label, n in counts], self.hidden_kinds
         )
@@ -1056,8 +1084,43 @@ class ViewerWindow(QMainWindow):
         )
         self._set_visible()
 
+    def _display_marks(self) -> list[vm.Mark]:
+        """What is shown: the stored notes and events, with the draft's
+        changes on top (a taken-out or changed stored note stays, marked; a
+        new one is added)."""
+        d = self.edit.draft
+        if not d.dirty:
+            return self.marks
+        changed = {i.replaces: i for i in d.items if i.replaces is not None}
+        out: list[vm.Mark] = []
+        for m in self.marks:
+            if d.is_removed(m) or m in changed:
+                out.append(dataclasses.replace(m, state="removed"))
+            else:
+                out.append(m)
+        for item in d.items:
+            holders = self.data.holders_at(item.channel, item.time)
+            recording = (
+                item.recording if item.recording is not None else (holders[0] if holders else 0)
+            )
+            out.append(
+                vm.Mark(
+                    item.time,
+                    item.end,
+                    item.code,
+                    recording,
+                    "channel" if item.channel else "session",
+                    item.channel,
+                    item.stored_text,
+                    "changed" if item.replaces is not None else "new",
+                    item.uid,
+                )
+            )
+        out.sort(key=lambda m: (m.time, m.recording, m.channel or ""))
+        return out
+
     def _set_visible(self) -> None:
-        self._visible = vm.visible(self.marks, self.hidden_kinds, self._shown)
+        self._visible = vm.visible(self._display_marks(), self.hidden_kinds, self._shown)
         self._visible_times = [m.time for m in self._visible]
         self._max_span = max((m.end - m.time for m in self._visible if m.end), default=0)
 
@@ -1102,7 +1165,8 @@ class ViewerWindow(QMainWindow):
             key, _label = vm.kind_for(m, ok)
             colour = vm.kind_colour(key, dark)
             tip = self._mark_tip(m)
-            canvas_marks.append(CanvasMark(m.time, m.end, colour, m.channel, tip))
+            style = {"new": "new", "changed": "new", "removed": "removed"}.get(m.state, "")
+            canvas_marks.append(CanvasMark(m.time, m.end, colour, m.channel, tip, style))
             text = self._mark_text(m, ok)
             letter = self._rec_letter(m.recording) if self.multi else ""
             chips.append(
@@ -1115,6 +1179,8 @@ class ViewerWindow(QMainWindow):
                     letter,
                     key,
                     m.channel,
+                    m.state,
+                    m,
                 )
             )
         self.canvas.marks = canvas_marks
@@ -1151,6 +1217,40 @@ class ViewerWindow(QMainWindow):
             ]
         )
         self.notes_tab.set_locked(self._letters_of(self.locked_recordings))
+
+    def _chip_clicked(self, t: int) -> None:
+        if not self.edit.on:  # edit mode selects the chip instead
+            self.centre_at(t)
+
+    def _edit_toggled(self, on: bool) -> None:
+        if self.edit.set_on(on) != on:  # refused or still asking: show the real state
+            self.edit_button.blockSignals(True)
+            self.edit_button.setChecked(self.edit.on)
+            self.edit_button.blockSignals(False)
+        self.canvas.setFocus()
+
+    def _add_key(self) -> None:
+        """A (the editor) and 1 to 9 (a quick type), edit mode only."""
+        text = self.last_key_text
+        if text.isdigit() and text != "0":
+            self.edit.add_quick(int(text))
+        else:
+            self.edit.add_here()
+
+    def begin_data_change(self) -> None:
+        """Before the recordings are reopened: nothing else asks them for data."""
+        self.controller.abandon_all()
+        self.canvas.set_loading(True)
+
+    def end_data_change(self, records, locked, reopened: bool = True) -> None:
+        """After a save: show what is stored now (when the data was reopened)."""
+        if reopened:
+            self._coverage = self.data.segments_coverage()
+            self._boundaries = self.data.boundaries()
+            self.marks_loaded = False
+            self._on_annotations(records, locked)
+        self.canvas.invalidate()
+        self._refresh()
 
     def go_to_mark(self, direction: int) -> None:
         """[ and ]: the previous or next note or event (of the types shown)."""
@@ -1471,7 +1571,7 @@ class ViewerWindow(QMainWindow):
     # -- misc ----------
 
     def toggle_help(self) -> None:
-        self.help.features = frozenset(self.features)
+        self.help.set_features(frozenset(self.features))
         if self.help.isVisible():
             self.help.hide()
             return
@@ -1534,6 +1634,7 @@ class ViewerWindow(QMainWindow):
 
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
+        self.edit.style_banner(theme)
         self._apply_profile()
 
     def row_labels(self) -> list[str]:
@@ -1541,7 +1642,7 @@ class ViewerWindow(QMainWindow):
 
     def request_strip_envelope(self) -> None:
         """Draw a faint envelope of the first channel in the strip (index only)."""
-        if self._channels:
+        if self._channels and not self.edit.saving:
             self.controller.request_strip_envelope(self._channels[0])
 
     def changeEvent(self, event) -> None:  # noqa: N802
@@ -1600,6 +1701,10 @@ class ViewerWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self._closed:
+            if not self.edit.confirm_close():  # unsaved draft: Save / Discard / Cancel
+                event.ignore()
+                return
+            self.edit.dispose()
             self._closed = True
             self._debounce.stop()
             self.save_preferences()

@@ -19,9 +19,11 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -96,6 +98,13 @@ class NotesTab(QWidget):
     go_to = Signal(object, int)  # time (µs), recording index
     show_requested = Signal(int)  # a recording whose details are hidden
     changed = Signal()
+    #: Edit mode: a row was clicked (the Mark) / the edit buttons.
+    picked = Signal(object)
+    add_requested = Signal()
+    edit_requested = Signal()
+    remove_requested = Signal()
+    import_requested = Signal()
+    export_requested = Signal(str, str)  # kind ("csv" | "json"), scope ("listed" | "all")
 
     COLUMNS = ("Time", "Rec.", "Type", "Where", "Text")
 
@@ -123,9 +132,41 @@ class NotesTab(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.search, 1)
         top.addWidget(self.type_box)
+        # Edit mode: add / change / take out / import; Export is always there.
+        self.edit_bar = QWidget(self)
+        bar = QHBoxLayout(self.edit_bar)
+        bar.setContentsMargins(0, 0, 0, 0)
+        self.add_button = QPushButton("Add…", self.edit_bar)
+        self.add_button.setToolTip("Add a note or event at the pointer (A)")
+        self.edit_button = QPushButton("Change…", self.edit_bar)
+        self.edit_button.setToolTip("Change the selected note or event")
+        self.remove_button = QPushButton("Take out", self.edit_bar)
+        self.remove_button.setToolTip("Take the selected note or event out of the draft")
+        self.import_button = QPushButton("Import…", self.edit_bar)
+        self.import_button.setToolTip("Add notes and events from a CSV or JSON file")
+        for b in (self.add_button, self.edit_button, self.remove_button, self.import_button):
+            bar.addWidget(b)
+        bar.addStretch(1)
+        self.edit_bar.setVisible(False)
+        self.export_button = QToolButton(self)
+        self.export_button.setText("Export…")
+        self.export_button.setToolTip("Save the notes and events as a CSV or JSON file")
+        self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.export_button)
+        self.export_actions = {}
+        for scope, scope_text in (("listed", "the listed ones"), ("all", "all of them")):
+            for kind in ("csv", "json"):
+                act = menu.addAction(
+                    f"Save {scope_text} as {kind.upper()}…",
+                    lambda k=kind, sc=scope: self.export_requested.emit(k, sc),
+                )
+                self.export_actions[(kind, scope)] = act
+        self.export_button.setMenu(menu)
+        bar.addWidget(self.export_button)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.addLayout(top)
+        box.addWidget(self.edit_bar)
         box.addWidget(self.locked)
         box.addWidget(self.failed)
         box.addWidget(self.hidden_box)
@@ -141,6 +182,23 @@ class NotesTab(QWidget):
             lambda _i: None if self._busy else self.changed.emit()
         )
         self.table.cellClicked.connect(self._clicked)
+        self.add_button.clicked.connect(self.add_requested)
+        self.edit_button.clicked.connect(self.edit_requested)
+        self.remove_button.clicked.connect(self.remove_requested)
+        self.import_button.clicked.connect(self.import_requested)
+        self.selected_mark = None
+
+    def set_editing(self, on: bool) -> None:
+        self.edit_bar.setVisible(on)
+
+    def select_mark(self, mark) -> None:
+        """Highlight the row of ``mark`` (edit mode), or none."""
+        self.selected_mark = mark
+        self.table.clearSelection()
+        for row, m in enumerate(self.rows):
+            if mark is not None and m == mark and m.state == mark.state and m.uid == mark.uid:
+                self.table.selectRow(row)
+                return
 
     def selected_type(self) -> str | None:
         return self.type_box.currentData()
@@ -211,6 +269,15 @@ class NotesTab(QWidget):
                 item = QTableWidgetItem(text)
                 if col == 4 and not ok:
                     item.setForeground(QBrush(QColor("#6b7280")))
+                if m.state:  # edit mode: a draft row is italic, a taken-out one struck through
+                    font = item.font()
+                    font.setItalic(True)
+                    font.setStrikeOut(m.state == "removed")
+                    item.setFont(font)
+                    if m.state == "removed":
+                        item.setForeground(QBrush(QColor("#6b7280")))
+                    if col == 0 and m.state != "removed":
+                        item.setText(text + ("  (new)" if m.state == "new" else "  (changed)"))
                 self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
         self.count.setText(f"{len(marks)} listed" if marks else "Nothing to list.")
@@ -222,6 +289,7 @@ class NotesTab(QWidget):
     def _clicked(self, row: int, _col: int) -> None:
         if 0 <= row < len(self.rows):
             m = self.rows[row]
+            self.picked.emit(m)
             self.go_to.emit(m.time, m.recording)
 
 

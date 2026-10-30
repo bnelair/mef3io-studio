@@ -62,6 +62,7 @@ def launch(
             zone=zone,
             reveal=reveal,
             show_details=show_details,
+            jobs=jobs,
             parent=parent,
         )
         if on_join is not None:

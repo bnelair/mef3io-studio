@@ -274,6 +274,34 @@ Code (app shell, #2/#3):
   -> `JoinerPage.choose_window` (the joiner works in whole seconds: start
   rounded down, end up); the joiner's "View these recordings" emits
   `view_requested` -> `App.view_signals`.
+- Viewer edit mode (phase 2, additions only): Qt-free `model/annotation_draft.py`
+  (Draft with undo/redo; items are new or the changed version of a stored
+  note (`replaces`); `route`/`make_plan` -> `SavePlan`: channel note -> the
+  recording holding that channel then, whole-recording -> the recording
+  holding data then, side by side -> `choice_groups` the user decides in the
+  preview, outside -> refused with a reason; `stored_changes` = `needs_copy`,
+  NEVER written; import `read_rows`/`preview_import`, export `export_rows`
+  with ISO + offset and uUTC, `vm.safe_cell` formula escaping; point -> Note,
+  with end -> EDFA, quick type = text prefix "Spike: ..."), `model/
+  annotation_save.py` (the other mef3io user: appends with
+  `Writer.write_annotations` per level, trying password pairs ("", pwd) then
+  (pwd, pwd) because the library wants them that way for a new / an existing
+  notes file; stops at the first failure and reports which recordings were
+  done, so the draft drops exactly those; plain messages incl. "rescue first"
+  for a torn file). `viewer/edit_mode.py` (`window.edit`: switch, banner,
+  selection, add/change/take out, import/export, save as ONE JobManager task:
+  write, `scheduler.drain`, `data.reopen()`, re-read notes; `window.jobs` from
+  `launch`, else its own manager) and `viewer/edit_dialogs.py` (editor, save
+  preview, import preview, Save/Discard/Cancel with Qt's standard buttons).
+  Rules: off on every open; keys (a, 1-9, Ctrl+Z, Ctrl+Shift+Z) work only with
+  the "edit" feature on; digits 2-9 add a quick type at once, "Note" opens the
+  editor; quick types = `viewer/quick_types` (one per line); the window
+  closes only after Save/Discard (a save in progress blocks it); while a save
+  runs `_refresh` is off and `controller.abandon_all()` ran; `ViewerData.
+  reopen()` primes the rate/units/ownership caches (the GUI thread must not
+  call mef3io after it); a stored note of a hidden recording cannot be
+  edited (it would show its text); export waits for details to be shown.
+  Tests: tests/test_annotation_draft.py, tests/test_viewer_edit.py.
 - Join or trim (#31): `model/join.py` (Qt-free) + `joiner/page.py` (a wizard
   like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
   `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,

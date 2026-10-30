@@ -161,6 +161,13 @@ class Mark:
     level: str
     channel: str | None
     text: str = field(repr=False, default="")
+    #: Edit mode: "" (stored, plain) | "new" (in the draft) | "changed" (the
+    #: draft's version of a stored note) | "removed" (a stored note the draft
+    #: takes out). Not part of the mark's identity: a stored note is found
+    #: again by its time, type, place and text.
+    state: str = field(default="", compare=False)
+    #: The draft item behind a "new" / "changed" mark.
+    uid: int | None = field(default=None, compare=False, repr=False)
 
     @property
     def is_span(self) -> bool:
@@ -314,7 +321,7 @@ def export_rows(
     ]
 
 
-def _safe_cell(value):
+def safe_cell(value):
     """A text cell a spreadsheet would run as a formula (= + - @) gets a
     leading apostrophe."""
     if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
@@ -326,7 +333,7 @@ def to_csv(rows: Sequence[dict]) -> str:
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=EXPORT_COLUMNS, lineterminator="\n")
     writer.writeheader()
-    writer.writerows({k: _safe_cell(v) for k, v in row.items()} for row in rows)
+    writer.writerows({k: safe_cell(v) for k, v in row.items()} for row in rows)
     return out.getvalue()
 
 

@@ -71,6 +71,16 @@ KEYMAP: tuple[KeyEntry, ...] = (
         False,
         "edit",
     ),  # fmt: skip
+    KeyEntry(
+        "undo", ("Ctrl+Z",), "Undo the last change to the draft (edit mode only)", False, "edit"
+    ),
+    KeyEntry(
+        "redo",
+        ("Ctrl+Shift+Z", "Ctrl+Y"),
+        "Redo (edit mode only)",
+        False,
+        "edit",
+    ),
     KeyEntry("escape", ("Esc",), "Clear the selection and close panels"),
     KeyEntry("help", ("?", "Shift+/"), "Show this help"),
 )
@@ -137,17 +147,14 @@ class HelpOverlay(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.features = features
         self.rows: list[tuple[str, str]] = []
+        self._labels: list[tuple[KeyEntry, QLabel]] = []
         box = QVBoxLayout(self)
         title = QLabel("Keys and mouse", self)
         title.setObjectName("Caption")
         box.addWidget(title)
         for entry in KEYMAP:
-            available = not entry.feature or entry.feature in features
-            text = entry.text if available else f"{entry.text} (not available yet)"
-            keys = keys_text(entry)
-            self.rows.append((keys, text))
-            label = QLabel(f"<b>{keys}</b> &nbsp; {text}", self)
-            label.setEnabled(available)
+            label = QLabel("", self)
+            self._labels.append((entry, label))
             box.addWidget(label)
         mouse = QLabel(
             "<b>Mouse</b><br>Wheel: move in time. Shift+wheel: move through channels. "
@@ -159,4 +166,19 @@ class HelpOverlay(QWidget):
         )
         mouse.setWordWrap(True)
         box.addWidget(mouse)
+        self.set_features(features)
         self.hide()
+
+    def set_features(self, features: frozenset[str]) -> None:
+        """Show which keys work now (the edit keys only in edit mode)."""
+        self.features = features
+        self.rows = []
+        for entry, label in self._labels:
+            available = not entry.feature or entry.feature in features
+            text = entry.text
+            if not available:
+                text = text if entry.feature == "edit" else f"{text} (not available yet)"
+            keys = keys_text(entry)
+            self.rows.append((keys, text))
+            label.setText(f"<b>{keys}</b> &nbsp; {text}")
+            label.setEnabled(available)
