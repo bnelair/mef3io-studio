@@ -49,8 +49,32 @@ rule), and all signal processing runs in numpy beside mef3io.
   The viewer then explains this in plain words and offers to open them one
   at a time. Recordings that hold *different channels* of the same period
   are accepted (side-by-side merge preview).
-- Passwords: the explorer's. An encrypted recording opened without the
-  full-access password shows signals but no annotations, and says why.
+- **Also one `Reader` per recording.** The viewer opens one per recording
+  beside the MultiReader. MultiReader's `segments()` and `records()` don't
+  say which recording a result came from, so the per-recording Readers
+  provide the ownership map (their own `segments(channel)`) and the
+  annotations, each tagged with its recording. The combined reads go
+  through the MultiReader. With mef3io 2.0's parallel open the extra opens
+  cost little, and the opens are one job with one progress bar.
+- **Passwords:** the explorer's, per recording. `MultiReader` takes one
+  password for all of them. If the recordings need different passwords,
+  the viewer says so and offers to open them one at a time; per-recording
+  passwords in MultiReader are [mef3io#164](https://github.com/bnelair/mef3io/issues/164). An encrypted recording
+  opened without the full-access password shows signals but no
+  annotations, and says why.
+- **How it fits the app:**
+  - `RecordingSource` gains `open_viewer(paths, passwords)`, which returns
+    the viewer's data object, so a remote source can implement it later.
+  - The opens run as one `JobManager.submit` job, inside
+    `library_warnings_caught()`. They run in-process: mef3io 2.0 releases
+    the GIL, which was the reason for the `isolate` helper.
+  - Page reads are too small and too many to be jobs. They run on the
+    viewer's own scheduler, without the process-wide quiet lock (it would
+    serialise every read).
+  - `Reader.read` emits no block-copy warnings, and open-time problems are
+    taken from `problems()`. Any other mef3io warning during a read is
+    filtered by category (`mef3io.MefWarning`) and counted in the status
+    line, never logged with its text.
 
 ## Layout
 
@@ -70,8 +94,10 @@ From top to bottom, as in the clinical viewer:
    - Day/time ticks.
    - Click or drag to go there.
 4. **Recording band (with 2+ recordings):** a thin bar above the traces. It
-   is coloured and lettered (A, B, C…) by which recording owns each part
-   of the page, and labelled boundary lines run through the traces.
+   is coloured and lettered (A, B, C…) by **which recordings hold data**
+   in each part of the page (one letter, or several side by side when
+   recordings hold different channels of the same period). Labelled
+   boundary lines run through the traces.
 5. **Annotation chips row**, then the **trace area** with the channel-name
    gutter on the left and the time axis below.
 6. **Side panel (toggle):**
@@ -79,7 +105,7 @@ From top to bottom, as in the clinical viewer:
    - **Annotations** tab: list, search, type filter.
 7. **Status line:**
    - the time under the pointer;
-   - **"Recording B: <name>"**;
+   - **"Recording B: <name>"** for the row under the pointer;
    - montage, reference and filter summary.
 
 Colour profiles: White, Green (paper style with minor/major grid), Dark,
@@ -89,13 +115,24 @@ High contrast. They follow the app theme by default.
 
 - **Assignment:** each recording gets a fixed letter and colour for the
   window's lifetime, in time order of its first sample.
-- **Ownership map:** MultiReader's `segments(channel)` is turned into spans
-  per recording. They are shown in the overview strip, the recording band,
-  the side panel and the status line.
-- **Crossing a boundary:** when the page *moves into* a different recording,
-  a banner says **"Now showing recording B: <name>"**. It fades after a few
-  seconds and is also announced to screen readers.
+- **Ownership is per channel:** at a given time, a channel's data comes
+  from at most one recording (MultiReader refuses overlaps on a channel).
+  Different channels may come from different recordings.
+- **The map:** built from each recording's own `Reader.segments(channel)`
+  (start/end per segment). It is shown in the overview strip, the
+  recording band (the set of recordings holding data in each span), the
+  side panel, the status line (for the row under the pointer) and the
+  channel-name gutter (a small letter tag when 2+ recordings are open).
+- **Crossing a boundary:** when the set of recordings on the page changes,
+  a banner says **"Now showing recording B: <name>"** (or "recordings A
+  and B"). It fades after a few seconds and is also announced to screen
+  readers.
 - **Mixed pages:** a page holding two recordings shows both letters.
+- **Names follow privacy:** while a recording's patient details are hidden
+  (the explorer's per-recording mask), the viewer shows its **letter
+  only**, in the banner, status line, tooltips, screen-reader text and
+  side panel too. Names and notes are never logged. Names are registered
+  with `register_identity()` from the open job's thread.
 - **Merge previews:** where recordings meet, the gap between them (or the
   fact that they touch) is labelled with its length.
 
@@ -161,7 +198,8 @@ Held keys repeat navigation only, never writes.
 View settings (scales, montage, filters, hidden channels) are remembered per
 window while it is open. Only *preferences* are saved, through
 `common/settings.PREFERENCES`: the default timebase, sensitivity, colour
-profile, filter presets and the memory budget. Never per-recording state,
+profile, filter presets (cutoffs, steepness, timing, mains), the quick
+annotation types and the memory budget. Never per-recording state,
 which would put recording identity into preferences.
 
 ## Montages
@@ -205,7 +243,9 @@ against hand-made channel lists, including the edge cases above.
   - "Also remove harmonics" (2×, 3×… below the low-pass, or below Nyquist).
 - **Steepness:**
   - Gentle (order 2), Standard (order 4), or Sharp (order 8).
-  - Technical details show "Butterworth, order N".
+  - Technical details show "Butterworth, order N". In zero-phase mode it
+    is applied twice, so they say "order N, applied twice (as steep as
+    order 2N)".
 - **Timing:**
   - **No time shift** (default, zero-phase): best for reading timing
     between channels.
@@ -226,18 +266,28 @@ against hand-made channel lists, including the edge cases above.
 - **Why frequency domain:** the classic difference equation becomes
   numerically fragile at extreme ratios, such as a 0.5 Hz high-pass on
   8 kHz data, which is a cutoff at 1/16000 of the rate. The FFT form has no
-  such problem. It costs O(n log n) in C (numpy's FFT, which releases the
-  GIL), and it handles any cutoff value without a design table.
+  such problem, and it handles any cutoff value without a design table.
+  Arithmetic is float64; each run's mean is removed before and restored
+  after (only where a high-pass is off), and FFT lengths are rounded up to
+  5-smooth sizes.
 - **Edges and context:**
   - Each read fetches a **margin** on both sides of the page and discards it
     after filtering.
-  - The margin is computed from the filter itself: the time for the
-    response's impulse response to decay below 0.1% of its peak, found once
-    per (filter, rate) by an inverse FFT and cached.
+  - The margin is computed from the filter itself, as its **settling
+    time**: the time after which the step response stays within 0.1% of
+    its final value (relative to the step height). It is found once per
+    (filter settings, rate) from an inverse FFT and cached.
+    - The impulse-response peak would be the wrong measure: a high-pass's
+      impulse response is a spike at zero plus a long, tiny tail, so it
+      decays "immediately" while the filter takes seconds to settle.
   - The margin is capped at 60 s. If the cap bites (e.g. a 0.01 Hz
     high-pass), the panel says the edges of the page may show slow drift.
-  - Runs are padded by reflection, which removes the step a hard edge would
-    cause.
+  - Runs are padded by **odd (point) reflection** about their end samples,
+    which keeps both the value and the slope continuous, by at least the
+    settling time.
+  - The FFT length is at least the run plus both pads, so the circular wrap
+    of FFT filtering can never reach the kept page.
+  - Causal mode needs the margin and padding before the page only.
 - **Gaps:**
   - NaN gaps are never filled with zeros.
   - Gaps of up to 2 samples are bridged linearly before filtering and put
@@ -249,11 +299,16 @@ against hand-made channel lists, including the edge cases above.
   - Above about 2 million samples per channel (an 8 kHz page past ~4
     minutes), filtering is done in overlap-save chunks with the same
     margin.
-  - In overview mode filters are off: min/max envelopes cannot be filtered.
-    The panel says so.
-- **Performance target:** 64 channels × 30 s at 8 kHz, with a 0.5 Hz
-  high-pass, 70 Hz low-pass and 60 Hz notch, filtered in under 150 ms on a
-  4-core laptop. Pinned by a benchmark test, skipped on slow CI.
+  - In overview mode, filters and montages other than "as recorded" are
+    off: min/max envelopes cannot be filtered, and the minimum of a
+    difference is not the difference of the minimums. The toolbar says so.
+- **Performance target:**
+  - 64 channels × 30 s at 8 kHz, with a 0.5 Hz high-pass, 70 Hz low-pass
+    and 60 Hz notch, should be filtered in under 300 ms on a 4-core laptop.
+  - The first build measures it, including whether numpy's FFT runs in
+    parallel across worker threads on the pinned numpy, and pins the result
+    in a benchmark test (skipped on slow CI).
+  - If threads don't scale, filtering moves to a small process pool.
 
 **Frequency response** (button **Show response** in the filter panel):
 - It plots the combined response of the current settings for the sampling
@@ -285,18 +340,26 @@ All in `model/viewer_source.py` (the only viewer module that imports
 mef3io), driven by a scheduler in `workers/`.
 
 - **Tiles:**
-  - Pages are served from tiles on a fixed absolute time grid. The tile
-    length is chosen per sampling rate so a tile holds about 64k samples
-    per channel (e.g. 8 s at 8 kHz, 128 s at 512 Hz).
-  - Channels are fetched in groups of 16.
-  - A tile is decoded once into float32, scaled by mef3io (NaN gaps
-    included).
+  - Pages are served from tiles on a **sample grid**: tile k of a rate
+    starts at the timeline's start + k·n samples. `read()` anchors its grid
+    at the t0 it is given, so tiles must start exactly on that grid.
+  - n is about 64k samples, chosen so one tile spans a whole number of
+    microseconds where the rate allows (e.g. a multiple of 4 samples at
+    256 Hz, of 1 at 1000/3 Hz). Where no such n exists, tiles overlap by
+    one sample and are joined by time.
+  - Seams are tested at 256 Hz, 1000/3 Hz and 8 kHz: no duplicated or
+    dropped sample.
+  - Channels are fetched in groups of 16. The montage's **reference channel
+    and bipolar partners are always fetched with the group** that needs
+    them.
+  - Read with `dtype="float32"` (scaled by mef3io, NaN gaps included).
 - **Two levels:**
   - **Samples** (`read`): used while samples per pixel ≤ 64.
   - **Envelope** (`block_envelope`): the index's per-block min/max. It reads
     the index only, never the data file, and is used for overview mode and
-    the overview strip. It is refined progressively over the visible span,
-    coarse first.
+    the overview strip. Before the index of a span is read, the strip shows
+    segment-level coverage from the recordings' segment start/end times.
+    The block level (about 1–10 s) is the finest the envelope gets.
 - **Scheduler:**
   - A priority queue on a small thread pool (default: half the cores, at
     most 6).
@@ -309,8 +372,12 @@ mef3io), driven by a scheduler in `workers/`.
     the UI thread receives ready-to-draw arrays.
 - **Cache:**
   - An LRU by bytes. Default budget 512 MB, a preference.
-  - Holds raw tiles, plus filtered pages keyed by (tile, montage,
-    reference, filter settings).
+  - Holds raw tiles, plus **filtered pages**. A filtered page is keyed by
+    (page span, montage, reference, filter settings), because its values
+    depend on the margin's neighbouring tiles and on gap runs crossing tile
+    edges.
+  - Montage, gap runs and filtering are computed over the
+    margin-extended window, never per tile.
   - Changing a filter re-filters from the cached raw tiles without reading
     again.
 - **Drawing:**
@@ -363,6 +430,13 @@ mef3io), driven by a scheduler in `workers/`.
     duration).
   - The type, the text, and either the whole recording or a channel are
     chosen.
+  - **How they are stored:**
+    - mef3io writes bodies for Note, SyLg and EDFA only. A point annotation
+      is a `Note` and one with a duration is an `EDFA`.
+    - The quick type is the start of the text, e.g. `Spike: <text>` (the
+      app's own convention, readable by any MEF tool). The viewer colours
+      by that label when present, otherwise by record type.
+    - Seiz, Epoc, Curs, CSti, ESti and LNTP are display-only.
 - **Edit and remove:** select a chip or a list row. Changed and removed
   stored records are shown struck through / outlined until saved, so
   nothing silently disappears.
@@ -375,17 +449,42 @@ mef3io), driven by a scheduler in `workers/`.
   - CSV or JSON of the visible annotations (or of all of them), in the same
     columns.
   - The times are written in the site time zone with the offset, plus uUTC.
+  - The save dialog says the file holds note text and real dates, so it is
+    identifying.
+  - Export is only offered for recordings whose details are shown. While
+    any are hidden, it asks to Show them first.
 - **Save:**
   - **Only additions:** written with `Writer.write_annotations`, which
-    **appends**. Each annotation goes to the recording that owns its time.
-    An annotation that falls in no recording is refused, with the reason.
+    **appends**.
+    - **Routing:**
+      - A channel annotation goes to the recording holding that channel at
+        its time.
+      - A whole-recording annotation goes to the recording holding data at
+        its time. If several hold data then (side-by-side recordings), the
+        user picks one in the preview.
+      - An annotation that falls in no recording is refused, with the
+        reason.
+    - **Preview and confirmation:** Save first shows what will be written:
+      per recording (name or letter), the number of annotations and their
+      time span. It says plainly that **adding annotations to a recording
+      cannot be undone in place**. They can only be left out later in a
+      new copy.
+    - **Why no marker or journal** (unlike renames and metadata edits):
+      those protect in-place *rewrites*. An append never rewrites a stored
+      record, so an interrupted save cannot damage what was there. mef3io
+      refuses a torn annotation file until `recover_session` has fixed it,
+      and the viewer then says so in plain words.
+    - **Writer:** opened on the existing session with that recording's
+      passwords (the full-access one for an encrypted recording).
+    - **After Save:** the viewer reopens the affected Readers and the
+      MultiReader, so what is shown is what is stored.
   - **Any change to or removal of a stored annotation:**
     - Save offers **Save as a new copy** only, never an in-place change.
     - The copy is made with `mef3io.transform_session` (verified, original
       untouched), with the draft's annotation changes applied in the copy.
     - **This needs a mef3io feature first:** an annotation-edit option on
       transform, which removes or replaces given stored records, plus verify
-      support for it. Tracked as a mef3io issue before this part is built.
+      support for it. Tracked as [mef3io#163](https://github.com/bnelair/mef3io/issues/163).
 - **Leaving with unsaved changes:** leaving edit mode or closing the window
   asks Save / Discard / Cancel.
 
