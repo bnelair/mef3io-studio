@@ -144,7 +144,15 @@ def test_double_click_centres_and_right_click_offers_the_channel_menu(one):
     assert abs(one.state.t0 + one.page_us() / 2 - want) < 0.2 * SEC
     QTest.mouseClick(c, Qt.MouseButton.RightButton, pos=QPoint(x, int(c.row_y(2))))
     texts = [a.text() for a in one._menu.actions()]
-    assert texts == ["Use as reference", "Hide channel", "Hide lead", "Show only this lead"]
+    assert texts == [
+        "Use as reference",
+        "Hide channel",
+        "Hide lead",
+        "Show only this lead",
+        "",  # a separator
+        "Set export start here",
+        "Set export end here",
+    ]
     one._menu.close()
 
 

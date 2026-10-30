@@ -1,6 +1,11 @@
 # Design: signal viewer
 
-**Status:** specification. Built so far: the window (toolbars, canvas, overview strip, keys, montages, filter panel and response plot, jump) in `viewer/`, opened from Explore's "View signals". Still to come: recording band, banner, side panel, notes and events, export range, edit mode. Supersedes the "Signal viewer"
+**Status:** specification, built in two parts. Part 1: the window (toolbars,
+canvas, overview strip, keys, montages, filter panel and response plot, jump).
+Part 2: the recording band, boundary lines, banner, side panel, notes and
+events (read-only: chips, bands, types, stepping) and the export range
+(Copy times, the list, Send to Join or trim, and "View these recordings" in
+the joiner). Still to come: edit mode. Supersedes the "Signal viewer"
 section of [next directions](next-directions.md) and the viewer part of its
 "Annotations" section.
 

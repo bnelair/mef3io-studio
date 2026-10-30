@@ -39,6 +39,9 @@ class OverviewStrip(QWidget):
         self.page = (0, 1)
         self.multi = False
         self.envelope: np.ndarray | None = None  # [2, bins]: min, max (normalised -1..1)
+        #: The export range (µs, either end may be unset) and its label.
+        self.export: tuple[int | None, int | None] = (None, None)
+        self.export_text = ""
         self.setToolTip("The whole timeline. Click or drag to go there.")
 
     def set_palette(self, palette: Palette) -> None:
@@ -53,6 +56,15 @@ class OverviewStrip(QWidget):
 
     def set_page(self, t0: int, t1: int) -> None:
         self.page = (t0, t1)
+        self.update()
+
+    def set_export(self, start: int | None, end: int | None, text: str = "") -> None:
+        self.export = (start, end)
+        self.export_text = text
+        self.setToolTip(
+            "The whole timeline. Click or drag to go there."
+            + (f"\nExport range: {text}" if text else "")
+        )
         self.update()
 
     def set_envelope(self, env: np.ndarray | None) -> None:
@@ -116,6 +128,7 @@ class OverviewStrip(QWidget):
                 p.setPen(QColor(pal.muted))
                 p.drawText(QPointF(x - tw / 2, self.height() - 2), label)
                 last = x + tw / 2
+        self._paint_export(p, bar)
         # the page
         x0, x1 = self.x_of(self.page[0]), self.x_of(self.page[1])
         box = QRectF(x0, 1.5, max(4.0, x1 - x0), bar.bottom() + 1)  # taller than the bar
@@ -129,6 +142,38 @@ class OverviewStrip(QWidget):
         p.setPen(QPen(QColor(pal.cursor), 1))
         p.drawRect(box)
         p.end()
+
+    def _paint_export(self, p: QPainter, bar: QRectF) -> None:
+        a, b = self.export
+        if a is None and b is None:
+            return
+        pal = self.palette_
+        ink = QColor("#ffffff" if pal.dark else "#111827")
+        top, bottom = bar.top() - 2, bar.bottom() + 2
+        if a is not None and b is not None:
+            x0, x1 = self.x_of(a), self.x_of(b)
+            shade = QColor(ink)
+            shade.setAlpha(60)
+            p.fillRect(QRectF(x0, top, max(2.0, x1 - x0), bottom - top), shade)
+            if self.export_text:
+                fm = p.fontMetrics()
+                small = QFont(self.font())
+                small.setPointSizeF(max(6.0, small.pointSizeF() * 0.78))
+                p.setFont(small)
+                fm = p.fontMetrics()
+                tw = fm.horizontalAdvance(self.export_text) + 8
+                bx = x1 + 3 if x1 + 3 + tw < self.width() else max(0.0, x0 - 3 - tw)
+                box = QRectF(bx, top, tw, bottom - top)
+                fill = QColor(pal.background)
+                fill.setAlpha(235)
+                p.fillRect(box, fill)
+                p.setPen(QColor(pal.text))
+                p.drawText(box, Qt.AlignmentFlag.AlignCenter, self.export_text)
+        p.setPen(QPen(ink, 2))
+        for t in (a, b):
+            if t is not None:
+                x = self.x_of(t)
+                p.drawLine(QPointF(x, top), QPointF(x, bottom))
 
     def _go(self, event) -> None:
         self.navigate.emit(self.t_of(event.position().x()))

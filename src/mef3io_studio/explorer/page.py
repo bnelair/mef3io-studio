@@ -696,6 +696,12 @@ class ExplorerPage(QWidget):
         self.check_panel.set_progress(self._check_progress.get(entry.key))
         self.detail_stack.setCurrentWidget(self.tabs)
 
+    def refresh_entry(self, entry: RecordingEntry) -> None:
+        """Show ``entry`` again after something outside changed it (the
+        signal viewer's Show button set ``revealed``)."""
+        if self.model.row_of(entry) >= 0:
+            self._entry_changed(entry)
+
     def _entry_changed(self, entry: RecordingEntry) -> None:
         self.model.refresh(entry)
         if entry is self.current_entry():

@@ -152,7 +152,9 @@ class HelpOverlay(QWidget):
         mouse = QLabel(
             "<b>Mouse</b><br>Wheel: move in time. Shift+wheel: move through channels. "
             "Ctrl+wheel: zoom the timebase at the pointer. Drag: pan. Shift+drag: measure. "
-            "Double-click: centre the page there. Right-click: more choices.",
+            "Double-click: centre the page there. Right-click: more choices. "
+            "Drag an export edge to move it; with it selected, Left and Right move it by "
+            "one sample.",
             self,
         )
         mouse.setWordWrap(True)

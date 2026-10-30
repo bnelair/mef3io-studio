@@ -239,9 +239,10 @@ Code (app shell, #2/#3):
   0.25 s responsiveness test flaky.
 - Signal viewer window (viewer/, spec docs/design/viewer.md; part 1 = window,
   data flow, navigation, montages, filters; recording band/banner/side panel,
-  notes, export range, edit mode are part 2 and have HOOKS in
-  `viewer/window.py`: `features`, `handlers`, `context_hooks`, `band_slot`,
-  `chips_slot`, `side_panel`, `export_edge`). Pure logic in `model/viewer_view.py`
+  part 2 = recording band/boundaries/banner, side panel, notes and events
+  (read-only), export range; edit mode is still to come. The hooks in
+  `viewer/window.py` (`features`, `handlers`, `context_hooks`, `band_slot`,
+  `chips_slot`, `side_panel`, `export_edge`) are now filled). Pure logic in `model/viewer_view.py`
   (scales, ViewState, profiles) and `workers/viewer_pipeline.py` (tiles ->
   montage -> `dsp.filter_block`, view blocks = 1.5 pages aligned to half
   pages); `viewer/controller.py` marshals scheduler/compute callbacks to the
@@ -251,6 +252,28 @@ Code (app shell, #2/#3):
   thread. Overview beyond 300 s = envelope, as recorded, no filters. Keys:
   ONE table in `viewer/keymap.py` (also generates the help overlay). Viewer
   defaults are `viewer/*` preferences (numbers and words only).
+  Part 2: Qt-free logic in `model/viewer_marks.py` (band spans, banner and
+  boundary texts, the FIXED type colour table + the app's quick-type prefix
+  "Spike: ...", search, stepping, snap to the sample grid, Copy times text,
+  CSV/JSON rows); widgets in `viewer/recordings.py` (band, banner: fades,
+  QAccessibleAnnouncementEvent), `viewer/marks.py` (chips row, Types panel),
+  `viewer/side_panel.py` (Recordings / Notes and events tabs),
+  `viewer/export_range.py` (the list dialog); the canvas draws marks,
+  boundaries, the persistent Shift+drag selection and the export edges
+  (draggable; with an edge active Left/Right nudge it one sample instead of
+  paging; Esc releases). Rules: the notes are read ONCE on a thread of their
+  own (`annotations_ready` signal; the GUI thread never calls mef3io); every
+  name and note text follows the per-recording mask (`reveal(i)`): letter only
+  / "(hidden)" while hidden, and the type key uses the text's quick label only
+  when shown; the viewer's Show buttons call `show_details(i)` (launch sets
+  `entry.revealed`, Explore refreshes via `ExplorerPage.refresh_entry`);
+  saving the range list is REFUSED while a covered recording is hidden
+  (`ask_show` then `confirm`, both replaceable in tests). UI text says "notes
+  and events" (ui-language bans "annotations"). Send to Join or trim:
+  `ViewerWindow.join_requested` -> `launch(on_join=)` -> `App.join_window_in_joiner`
+  -> `JoinerPage.choose_window` (the joiner works in whole seconds: start
+  rounded down, end up); the joiner's "View these recordings" emits
+  `view_requested` -> `App.view_signals`.
 - Join or trim (#31): `model/join.py` (Qt-free) + `joiner/page.py` (a wizard
   like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
   `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,
