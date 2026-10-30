@@ -353,6 +353,9 @@ class ExplorerPage(QWidget):
     status = Signal(str)
     #: "Join or trim these…": the keys of the selected recordings.
     join_requested = Signal(list)
+    #: "View signals": the selected RecordingEntry objects (their paths,
+    #: passwords and privacy state stay in memory, in the entries).
+    view_requested = Signal(list)
 
     def __init__(
         self,
@@ -436,6 +439,9 @@ class ExplorerPage(QWidget):
         self.pack_button.clicked.connect(self.pack_current)
         self.check_selected_button = QPushButton("Check for problems", self)
         self.check_selected_button.clicked.connect(self.check_selected)
+        self.view_button = QPushButton("View signals", self)
+        self.view_button.setToolTip("Look at the signals of the selected recordings")
+        self.view_button.clicked.connect(self.view_selected)
         self.join_button = QPushButton("Join or trim these…", self)
         self.join_button.setToolTip(
             "Keep part of the selected recordings, or join them into one new recording"
@@ -451,6 +457,7 @@ class ExplorerPage(QWidget):
         actions.addWidget(self.check_selected_button)
         actions.addWidget(self.copy_button)
         actions.addWidget(self.pack_button)
+        actions.addWidget(self.view_button)
         actions.addWidget(self.join_button)
         actions.addWidget(self.remove_button)
 
@@ -652,6 +659,7 @@ class ExplorerPage(QWidget):
             any(e.outcome is not None and not e.busy and not e.needs_password for e in selected)
         )
         self.join_button.setEnabled(bool(self._joinable(selected)))
+        self.view_button.setEnabled(bool(self._viewable(selected)))
         can_pack = current is not None and current.details is not None and not current.busy
         self.pack_button.setEnabled(can_pack)
         if current is not None and current.outcome is not None and current.outcome.packed:
@@ -1289,6 +1297,8 @@ class ExplorerPage(QWidget):
             lambda: self.export_times(LEVEL_RECORDINGS, self.selected_entries()),
         )
         menu.addAction("Show them on one timeline", lambda: self.show_combined(True))
+        view = menu.addAction("View signals", self.view_selected)
+        view.setEnabled(bool(self._viewable(self.selected_entries())))
         join = menu.addAction("Join or trim these…", self.join_selected)
         join.setEnabled(bool(self._joinable(self.selected_entries())))
         menu.addSeparator()
@@ -1300,6 +1310,18 @@ class ExplorerPage(QWidget):
     @staticmethod
     def _joinable(entries: list[RecordingEntry]) -> list[str]:
         return [e.key for e in entries if e.outcome is not None and not e.busy]
+
+    @staticmethod
+    def _viewable(entries: list[RecordingEntry]) -> list[RecordingEntry]:
+        """Recordings that can be looked at: read, not busy, and either not
+        password-protected or opened with a password."""
+        return [e for e in entries if e.outcome is not None and not e.busy and not e.needs_password]
+
+    def view_selected(self) -> None:
+        """ "View signals": the signal viewer, with exactly the selected recordings."""
+        entries = self._viewable(self.selected_entries())
+        if entries:
+            self.view_requested.emit(entries)
 
     def join_selected(self) -> None:
         """Open Join or trim with exactly the selected recordings (the

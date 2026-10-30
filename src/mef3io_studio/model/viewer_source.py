@@ -180,6 +180,11 @@ class ViewerData:
         self._annotations: list[Annotation] | None = None
         self._locked: tuple[int, ...] = ()
 
+    def location_of(self, index: int) -> str:
+        """Where recording ``index`` (letter order) was opened from. A path:
+        identifying, for matching with the caller's own list only."""
+        return self._paths[index]
+
     # -- identity (for register_identity, called by the job's thread) ----------
 
     def identity_values(self) -> list[str]:

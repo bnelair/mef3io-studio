@@ -45,6 +45,13 @@ def test_preferences_are_exactly_the_reviewed_list():
         "anonymizer/work_folder",
         "anonymizer/work_folders_used",
         "anonymizer/keep_awake",
+        # The signal viewer's defaults: scales, colours, filters, memory.
+        "viewer/sensitivity",
+        "viewer/timebase",
+        "viewer/spacing",
+        "viewer/profile",
+        "viewer/filters",
+        "viewer/memory_mb",
     }
 
 
