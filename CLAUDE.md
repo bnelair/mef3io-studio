@@ -13,7 +13,9 @@ Hard rules:
   (no `mef3io._*` imports). Missing capability → mef3io issue first.
 - Originals change only when the user explicitly says so. Content changes
   (anonymization, encryption, channel subsets) ALWAYS write a verified copy;
-  renames (via mef3io's rename_session: folder + session .rdat/.ridx + stored
+  annotation ADDITIONS (viewer edit mode: append-only via write_annotations,
+  preview + confirmation, no in-place undo; changes/removals only as a new
+  verified copy, docs/design/viewer.md) and renames (via mef3io's rename_session: folder + session .rdat/.ridx + stored
   names + description where it equals the old name; fix_name_drift for drift)
   and metadata edits are explicit in-place operations with preview,
   confirmation and undo. Undo is a LOGICAL INVERSE (rename back / edit_metadata
@@ -43,7 +45,7 @@ Hard rules:
   passwords, channel presets + batch conversion, anonymize; installers only
   (no PyPI).
   Save a part + join (#31) is built ("Join or trim", below); cutting into
-  pieces, viewer (on mef3io-server), coverage view, annotations, export,
+  pieces, viewer (spec: docs/design/viewer.md; local reads through mef3io), coverage view, annotations, export,
   remote access are NEXT DIRECTIONS needing their own specs.
 
 Code (app shell, #2/#3):
@@ -116,8 +118,9 @@ Code (app shell, #2/#3):
   tests/test_theme.py pins >= 3:1 against every `indicator_backgrounds()`
   colour AND on rendered pixels (indicators and frames), both themes. QTreeView selection = accent_soft (like QTableView),
   so a box on a selected row keeps its outline.
-- Explorer (#4): `model/inspect.py` is the ONLY place that reads a recording
-  for display: a thin adapter over `mef3io.inspect(strict=False,
+- Explorer (#4): `model/inspect.py` is the ONLY place the EXPLORER reads a recording
+  for display (the signal viewer reads signals through `model/viewer_source.py`,
+  windowed and byte-bounded, see docs/design/viewer.md): a thin adapter over `mef3io.inspect(strict=False,
   include_values=True)` (mef3io 1.3). Unreadable parts -> `part_problems`,
   the rest shown; `offset_assumed_zero` (basic password) = unverified times;
   a non-ASCII password that matched only mef3io's pre-1.3 rule (#84) ->

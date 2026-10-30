@@ -28,32 +28,13 @@ joiner refuses as overlapping parts).
 
 ## Signal viewer
 
-**Goal:** scroll and zoom through the traces of a recording of any length,
-with gaps and annotations visible.
-
-**Built on mef3io-server.** The server's `FileManager` already does the
-caching (a byte-budgeted per-channel tile cache), parallel decode and prefetch
-a viewer needs. The app drives it directly, without gRPC, for local files,
-and through the gRPC client for remote ones, behind one "recording source"
-interface. See [architecture](../architecture.md), including what has to
-change in mef3io-server first: encrypted sessions, a plain-Python API, and
-logging hooks.
-
-**What makes it feasible on multi-TB recordings:** mef3io's index stores every
-block's minimum and maximum. A zoomed-out overview can therefore be drawn
-from the index alone, without decompressing any data. The index is about 2%
-of the data, though, which is tens of GB on a multi-TB recording. The
-overview therefore starts coarse (from segment metadata), refines
-progressively from the index of the visible span, and caches what it has
-read. Zooming in
-switches to a min/max envelope computed in C++, and finally to the samples
-themselves. Planned in [mef3io#68](https://github.com/bnelair/mef3io/issues/68);
-cancellation for fast scrolling came with [mef3io#69](https://github.com/bnelair/mef3io/issues/69) (mef3io 1.3, already used by the app).
-
-**Open questions for the spec:**
-- **What mef3io-server must provide** for local use without gRPC: a password parameter, a plain-Python API next to the protobuf one, logging hooks, and PyInstaller-safe worker processes.
-- **The rendering stack:** pyqtgraph/OpenGL in the app, or a web view.
-- **Montages, filters and per-channel scaling:** how far a viewer should go before it becomes an analysis tool.
+**Specified:** see [viewer](viewer.md). It reads local recordings through
+mef3io directly (Reader / MultiReader, windowed reads, block min/max from the
+index) with its own tile cache and prefetch, rather than through
+mef3io-server's `FileManager` as first planned: mef3io 2.0 now provides the
+parallel decode, cancellation and index-only envelope that made the server
+attractive, and going direct avoids a second process and the server-side
+changes listed before. Remote recordings stay a later "recording source".
 
 ## Data coverage view
 
@@ -83,7 +64,8 @@ is the block-level one.
 ## Annotations
 
 **Goal:** see every annotation (session, channel and segment level) on the
-timeline, jump between them, then **create and edit** them.
+timeline, jump between them, then **create and edit** them. Viewing and
+editing in the viewer are specified in [viewer](viewer.md#annotations).
 
 **Known constraints:**
 - MEF defines several record types: Note, Seiz, Epoc, EDFA, and others ([mef3io#62](https://github.com/bnelair/mef3io/issues/62)).
