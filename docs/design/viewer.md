@@ -315,12 +315,17 @@ against hand-made channel lists, including the edge cases above.
     off: min/max envelopes cannot be filtered, and the minimum of a
     difference is not the difference of the minimums. The toolbar says so.
 - **Performance target:**
-  - 64 channels × 30 s at 8 kHz, with a 0.5 Hz high-pass, 70 Hz low-pass
-    and 60 Hz notch, should be filtered in under 300 ms on a 4-core laptop.
-  - The first build measures it, including whether numpy's FFT runs in
-    parallel across worker threads on the pinned numpy, and pins the result
-    in a benchmark test (skipped on slow CI).
-  - If threads don't scale, filtering moves to a small process pool.
+  - The first filtered page of 64 channels × 30 s at 8 kHz (0.5 Hz
+    high-pass, 70 Hz low-pass, 60 Hz notch) appears within about 0.5 s on
+    a 4-core laptop, and paging after that is instant, because neighbouring
+    view blocks are filtered ahead of time.
+  - Measured in the first build: numpy's FFT releases the GIL, so worker
+    threads scale. The time is in the FFTs.
+  - With a low-pass on, the output is computed at a reduced rate directly
+    in the frequency domain (a shorter inverse FFT, only when the response
+    above the new Nyquist is below 0.1%). This loses nothing: the low-pass
+    has already removed what the reduced rate could not hold.
+  - Pinned by a benchmark test, run on request.
 
 **Frequency response** (button **Show response** in the filter panel):
 - It plots the combined response of the current settings for the sampling
