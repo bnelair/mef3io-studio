@@ -237,6 +237,20 @@ Code (app shell, #2/#3):
   (only this Python may be started). The Anonymize page builds its widgets on
   first use (`AnonymizerPage._build`): built eagerly they made Explore's
   0.25 s responsiveness test flaky.
+- Signal viewer window (viewer/, spec docs/design/viewer.md; part 1 = window,
+  data flow, navigation, montages, filters; recording band/banner/side panel,
+  notes, export range, edit mode are part 2 and have HOOKS in
+  `viewer/window.py`: `features`, `handlers`, `context_hooks`, `band_slot`,
+  `chips_slot`, `side_panel`, `export_edge`). Pure logic in `model/viewer_view.py`
+  (scales, ViewState, profiles) and `workers/viewer_pipeline.py` (tiles ->
+  montage -> `dsp.filter_block`, view blocks = 1.5 pages aligned to half
+  pages); `viewer/controller.py` marshals scheduler/compute callbacks to the
+  GUI thread by signals. The GUI thread never calls mef3io: `tasks.open_viewer`
+  reads rates/units/ownership once on its job thread (the window uses only the
+  cached facts), reads run on scheduler/compute threads, `data.close` on a
+  thread. Overview beyond 300 s = envelope, as recorded, no filters. Keys:
+  ONE table in `viewer/keymap.py` (also generates the help overlay). Viewer
+  defaults are `viewer/*` preferences (numbers and words only).
 - Join or trim (#31): `model/join.py` (Qt-free) + `joiner/page.py` (a wizard
   like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
   `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,

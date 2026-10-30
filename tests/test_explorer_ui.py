@@ -341,7 +341,7 @@ def test_widgets_never_import_mef3io():
     """The explorer's, the anonymizer's, the joiner's and the shell's widgets reach mef3io
     only through background tasks (workers/) and the plain model."""
     offenders = []
-    for folder in ("explorer", "anonymizer", "joiner", "common"):
+    for folder in ("explorer", "anonymizer", "joiner", "common", "viewer"):
         for path in (SRC / folder).rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):

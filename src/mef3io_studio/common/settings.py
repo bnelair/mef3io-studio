@@ -49,6 +49,20 @@ PREFERENCES: dict[str, Preference] = {
         Preference("anonymizer/work_folders_used", "", str),
         # Keep the computer from sleeping while a batch runs.
         Preference("anonymizer/keep_awake", True, bool),
+        # The signal viewer's defaults (scales, colours, filters, memory):
+        # numbers and words only, never anything about a recording.
+        Preference("viewer/sensitivity", 100.0, float),
+        Preference("viewer/timebase", 30.0, float),
+        Preference("viewer/spacing", 7.0, float),
+        Preference("viewer/profile", "auto", str, ("auto", "white", "green", "dark", "contrast")),
+        # The default filters as JSON (cutoffs, mains, steepness, timing).
+        Preference("viewer/filters", "", str),
+        # Performance (0 = automatic, applies to windows opened afterwards).
+        Preference("viewer/load_workers", 0, int),
+        Preference("viewer/decode_threads", 0, int),
+        Preference("viewer/filter_workers", 0, int),
+        Preference("viewer/lookahead_pages", 2, int),
+        Preference("viewer/memory_mb", 0, int),
     )
 }
 

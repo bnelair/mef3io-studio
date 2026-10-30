@@ -127,6 +127,27 @@ def open_recordings(
     return _inspect(ctx, source, list(requests))
 
 
+def open_viewer(ctx: JobContext, source: RecordingSource, paths: list[str], passwords: list[str]):
+    """Open recordings for the signal viewer (one progress bar). Runs in this
+    process: mef3io releases the GIL while opening. Registers the names and
+    passwords with the log filter first, then reads once what the window
+    needs on its own thread (rates, units, who holds what), so the window
+    never calls the library itself. Raises the viewer's plain refusals."""
+    register_identity(*(recording_name(p) for p in paths), *(p for p in passwords if p))
+    ctx.report(0, None, "Opening the recordings")
+    data = source.open_viewer(list(paths), list(passwords), cancel=ctx.cancel_token)
+    ctx.add_cleanup(data.close)
+    register_identity(*data.identity_values())
+    ctx.report(0, None, "Reading the channel list")
+    for channel in data.channels:
+        ctx.check_cancelled()
+        data.rate(channel)
+        data.units(channel)
+        data.ownership(channel)
+    ctx.report(1, 1, "Ready")
+    return data
+
+
 def scan_and_open(
     ctx: JobContext, source: RecordingSource, root: str, known: frozenset[str] = frozenset()
 ) -> ScanResult:

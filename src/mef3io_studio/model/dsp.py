@@ -323,6 +323,12 @@ def max_out_step(settings: FilterSettings, fs: float) -> int:
     return _smooth_step(best)
 
 
+def effective_out_step(settings: FilterSettings, fs: float, out_step: int) -> int:
+    """The decimation step :func:`filter_block` really uses for a requested
+    ``out_step`` (clamped to :func:`max_out_step`, rounded to a 5-smooth number)."""
+    return _smooth_step(min(int(out_step), max_out_step(effective(settings, fs), fs)))
+
+
 @lru_cache(maxsize=4)
 def _response_grid(settings: FilterSettings, fs: float, nfft: int) -> np.ndarray:
     return applied_response(settings, fs, np.fft.rfftfreq(nfft, 1.0 / fs))
@@ -439,7 +445,7 @@ def filter_block(
     if squeeze:
         x = x[None, :]
     eff = effective(settings, fs)
-    step = _smooth_step(min(int(out_step), max_out_step(eff, fs)))
+    step = effective_out_step(eff, fs, out_step)
     first = -(-keep_from // step) * step
     if eff.is_off:
         y = np.ascontiguousarray(x[:, first:keep_to:step], dtype=np.float32)

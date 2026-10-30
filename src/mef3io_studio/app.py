@@ -204,6 +204,9 @@ def _build_main_window_class():
             self.joiner.status.connect(lambda text: self.statusBar().showMessage(text, 8000))
             self.joiner.open_recording.connect(self.open_in_explorer)
             self.explorer.join_requested.connect(self.join_in_joiner)
+            self.explorer.view_requested.connect(self.view_signals)
+            #: Open signal viewer windows.
+            self.viewers: list = []
             self._tray = None
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)
@@ -562,6 +565,31 @@ def _build_main_window_class():
             self.module_list.setCurrentRow(self.module_keys.index("explorer"))
             self.explorer.open_and_show(path, password)
 
+        def view_signals(self, entries: list) -> None:
+            """Explore's "View signals": a viewer window with exactly those
+            recordings (opened by one background task)."""
+            from .viewer.launch import launch
+
+            def add(window) -> None:
+                self.viewers.append(window)
+                window.closed.connect(lambda w=window: self._viewer_closed(w))
+
+            launch(
+                self.jobs,
+                self.explorer.source,
+                entries,
+                settings=self.settings,
+                theme=self.themes.theme,
+                zone=self.explorer.zone,
+                parent=self,
+                on_window=add,
+                on_failed=self.show_error,
+            )
+
+        def _viewer_closed(self, window) -> None:
+            if window in self.viewers:
+                self.viewers.remove(window)
+
         def join_in_joiner(self, keys: list) -> None:
             """Explore's "Join or trim these…": the joiner, with exactly
             those recordings chosen."""
@@ -581,6 +609,8 @@ def _build_main_window_class():
             self.explorer.set_zone_name(name)
             self.anonymizer.set_zone_name(name)
             self.joiner.set_zone_name(name)
+            for viewer in self.viewers:
+                viewer.set_zone(self.explorer.zone)
 
         def _switch_module(self, row: int) -> None:
             if row < 0:
@@ -610,6 +640,8 @@ def _build_main_window_class():
                 page.set_theme(theme)
             self.activity.set_theme(theme)
             self.indicator.set_theme(theme)
+            for viewer in getattr(self, "viewers", []):
+                viewer.set_theme(theme)
             self.about_action.setIcon(icons.icon("info", theme.text))
             self.open_action.setIcon(icons.icon("folder", theme.text))
             self.self_check_action.setIcon(icons.icon("check", theme.text))
