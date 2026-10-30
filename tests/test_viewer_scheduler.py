@@ -395,6 +395,50 @@ def test_a_rerequest_of_a_cancelled_running_read_waits_for_it():
         sched.close()
 
 
+def test_requests_during_a_drain_are_not_accepted():
+    gate = threading.Event()
+    data = FakeData(gate)
+    sched = TileScheduler(data, TileCache(), workers=1)
+    try:
+        sched.request(256.0, ("run",), 0)
+        assert data.started.wait(5)
+        done = []
+        t = threading.Thread(target=lambda: done.append(sched.drain(10)))
+        t.start()
+        time.sleep(0.1)
+        sched.request(256.0, ("late",), 0)
+        assert sched.pending() == 1  # only the cancelled running read, nothing new
+        gate.set()
+        t.join(10)
+        assert done == [True]
+        assert [c[0] for c, _ in data.order] == ["run"]
+        sched.request(256.0, ("after",), 0)  # accepted again once drained
+        assert sched.wait_idle(10)
+    finally:
+        gate.set()
+        sched.close()
+
+
+def test_a_blocking_callback_does_not_hold_up_close():
+    release = threading.Event()
+    entered = threading.Event()
+
+    def slow(key, array):
+        entered.set()
+        release.wait(10)
+
+    sched = TileScheduler(FakeData(), TileCache(), workers=1, on_ready=slow)
+    sched.request(256.0, ("a",), 0)
+    assert entered.wait(5)
+    start = time.perf_counter()
+    t = threading.Thread(target=sched.close)
+    t.start()
+    t.join(1.0)
+    release.set()
+    assert time.perf_counter() - start < 3
+    sched.close()
+
+
 def test_nothing_is_called_back_after_close_returns():
     gate = threading.Event()
     data = FakeData(gate)
@@ -407,7 +451,7 @@ def test_nothing_is_called_back_after_close_returns():
     sched.close()
     count = len(ready)
     time.sleep(0.2)
-    assert len(ready) == count
+    assert len(ready) == count  # nothing new started after close()
 
 
 def test_several_workers_get_a_small_share_of_the_decode_threads():
@@ -415,6 +459,5 @@ def test_several_workers_get_a_small_share_of_the_decode_threads():
     sched = TileScheduler(data, TileCache(), workers=4)
     sched.close()
     assert data.threads in (1, 2)
-    single = FakeData()
-    TileScheduler(single, TileCache(), workers=1).close()
-    assert single.threads is None  # a lone worker keeps mef3io's automatic count
+    TileScheduler(data, TileCache(), workers=1).close()
+    assert data.threads is None  # a lone worker restores mef3io's automatic count

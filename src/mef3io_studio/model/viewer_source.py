@@ -141,7 +141,7 @@ class Annotation(dict):
     def __repr__(self) -> str:
         return (
             f"Item(from={self.get('recording')}, level={self.get('level')!r}, "
-            f"type={self.get('type')!r}, time={self.get('time')})"
+            f"type={self.get('type')!r})"
         )
 
 
@@ -164,6 +164,9 @@ class ViewerData:
         self.data_id: int = next(_data_ids)
         self.epoch: int = 0
         self._closed = False
+        #: The decode-thread cap for one read (None = mef3io's automatic).
+        #: State of this object, so a reopen applies it again.
+        self._read_threads: int | None = None
         names = [_session_name(p) for p in self._paths]
         self.recordings: tuple[RecordingInfo, ...] = tuple(
             RecordingInfo(i, _letter(i), i, names[i], starts[i], ends[i], tuple(rec_channels[i]))
@@ -388,14 +391,18 @@ class ViewerData:
     def closed(self) -> bool:
         return self._closed
 
-    def set_read_threads(self, n: int) -> None:
-        """How many threads one read may use (0 = automatic). The scheduler
-        sets a small number when it runs several reads at once, so the
-        decode pools do not oversubscribe the cores."""
-        try:
-            self._combined.n_threads = int(n)
-        except Exception:
-            pass
+    def set_read_threads(self, n: int | None) -> None:
+        """How many threads one read may use (``None`` or 0 = automatic).
+        The scheduler sets a small number when it runs several reads at once,
+        so the decode pools do not oversubscribe the cores. Kept across
+        :meth:`reopen`. Raises if the library refuses the value."""
+        self._read_threads = None if not n else int(n)
+        self._apply_read_threads()
+
+    def _apply_read_threads(self) -> None:
+        wanted = self._read_threads or 0
+        if getattr(self._combined, "n_threads", wanted) != wanted:
+            self._combined.n_threads = wanted
 
     def close(self) -> None:
         """Close the readers. Reads still running fail; stop them first
@@ -417,10 +424,11 @@ class ViewerData:
         fresh = open_recordings(self._paths, self._passwords)
         with self._lock:
             self.close()
-            data_id, epoch = self.data_id, self.epoch
+            data_id, epoch, cap = self.data_id, self.epoch, self._read_threads
             self.__dict__.update(fresh.__dict__)
-            self.data_id, self.epoch = data_id, epoch + 1
+            self.data_id, self.epoch, self._read_threads = data_id, epoch + 1, cap
             self._closed = False
+            self._apply_read_threads()
         fresh._combined = fresh._readers = None  # the state moved to self
 
 
@@ -438,25 +446,37 @@ def _password_list(paths: Sequence, passwords) -> list[str]:
     return out
 
 
-def _diagnose(readers, rec_channels, letters) -> ViewerRefusal | None:
-    """Say which recordings clash and why, in letters, from metadata."""
-    clash_rate: set[int] = set()
-    clash_time: set[int] = set()
-    for a in range(len(readers)):
-        for b in range(a + 1, len(readers)):
-            for ch in set(rec_channels[a]) & set(rec_channels[b]):
-                if (
-                    readers[a].info(ch)["sampling_frequency"]
-                    != readers[b].info(ch)["sampling_frequency"]
-                ):
-                    clash_rate |= {a, b}
-                    continue
-                sa = [(s["start_time"], s["end_time"]) for s in readers[a].segments(ch)]
-                sb = [(s["start_time"], s["end_time"]) for s in readers[b].segments(ch)]
-                if any(x0 < y1 and y0 < x1 for x0, x1 in sa for y0, y1 in sb):
-                    clash_time |= {a, b}
-    if clash_rate and not clash_time:
-        who = [letters[i] for i in sorted(clash_rate)]
+def _involved(readers, rec_channels, letters, kind: str) -> list[str]:
+    """Letters of the recordings that clash, from metadata, as far as that is
+    possible. It never decides WHETHER there is a clash (MultiReader's own
+    verdict does); with no answer it names them all."""
+    found: set[int] = set()
+    try:
+        for a in range(len(readers)):
+            for b in range(a + 1, len(readers)):
+                for ch in set(rec_channels[a]) & set(rec_channels[b]):
+                    ra = readers[a].info(ch)["sampling_frequency"]
+                    rb = readers[b].info(ch)["sampling_frequency"]
+                    if kind == "rate":
+                        if ra != rb:
+                            found |= {a, b}
+                        continue
+                    sa = [(x["start_time"], x["end_time"]) for x in readers[a].segments(ch)]
+                    sb = [(x["start_time"], x["end_time"]) for x in readers[b].segments(ch)]
+                    if any(x0 < y1 and y0 < x1 for x0, x1 in sa for y0, y1 in sb):
+                        found |= {a, b}
+    except Exception:
+        found = set()
+    return [letters[i] for i in sorted(found or range(len(readers)))]
+
+
+def _classify(exc: ValueError, readers, rec_channels, letters) -> ViewerRefusal | None:
+    """MultiReader's own ValueError as a plain refusal, by the kind of its
+    message (never its text, which names channels and paths); None for any
+    other error."""
+    text = str(exc)
+    if "different sampling rates" in text:
+        who = _involved(readers, rec_channels, letters, "rate")
         return ViewerRefusal(
             "rate",
             UserMessage(
@@ -466,19 +486,18 @@ def _diagnose(readers, rec_channels, letters) -> ViewerRefusal | None:
             ),
             who,
         )
-    if not clash_time:
-        return None  # not a clash we know: the caller lets the error through
-    who_idx = sorted(clash_time)
-    who = [letters[i] for i in who_idx]
-    return ViewerRefusal(
-        "overlap",
-        UserMessage(
-            "These recordings cannot be shown together",
-            f"{_letters_text(who)} hold data of the same channel at the same "
-            f"time, so one timeline cannot show both. {_ONE_AT_A_TIME}",
-        ),
-        who,
-    )
+    if "must not overlap" in text:
+        who = _involved(readers, rec_channels, letters, "overlap")
+        return ViewerRefusal(
+            "overlap",
+            UserMessage(
+                "These recordings cannot be shown together",
+                f"{_letters_text(who)} hold data of the same channel at the same "
+                f"time, so one timeline cannot show both. {_ONE_AT_A_TIME}",
+            ),
+            who,
+        )
+    return None
 
 
 def open_recordings(
@@ -554,7 +573,7 @@ def open_recordings(
                 try:
                     combined = mef3io.MultiReader(paths_o, shared)
                 except ValueError as exc:
-                    refusal = _diagnose(readers, rec_channels, letters)
+                    refusal = _classify(exc, readers, rec_channels, letters)
                     if refusal is None:
                         raise
                     raise refusal from exc

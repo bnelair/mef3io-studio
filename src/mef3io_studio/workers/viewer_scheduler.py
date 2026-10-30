@@ -196,7 +196,8 @@ class TileScheduler:
     (also one that was already cached) exactly once per finished request,
     even when the tile is larger than the cache budget or evicted before the
     callback (the array is passed, not looked up); never after ``close()``
-    returned. ``on_error(key, exc)`` is called when a read failed (never for
+    returned (one already running may finish: callbacks must not block, close()
+    does not wait for them). ``on_error(key, exc)`` is called when a read failed (never for
     a cancelled one; the exception is never logged here). Tile keys are
     ``(data_id, epoch, rate, channels, k)``.
     """
@@ -221,8 +222,7 @@ class TileScheduler:
         self._active = 0
         #: Cancelled reads still running, by key (a re-request waits for them).
         self._zombies: dict[tuple, _Job] = {}
-        #: Held while a callback runs; close() takes it, so none runs after.
-        self._cb_lock = threading.RLock()
+        self._draining = False
         n = workers if workers else default_workers()
         self._threads = [
             threading.Thread(target=self._run, name=f"viewer-tiles-{i}", daemon=True)
@@ -232,8 +232,10 @@ class TileScheduler:
         # reads at once that would oversubscribe the cores (workers x
         # mef3io's automatic pool), so each read gets its share of the
         # cores, at most 2 (mef3io 2.0: one n_threads count per reader).
-        if n > 1 and hasattr(data, "set_read_threads"):
-            data.set_read_threads(max(1, min(2, (os.cpu_count() or 2) // n)))
+        # A lone worker keeps mef3io's automatic count (set explicitly, so a
+        # cap left by an earlier scheduler on the same data is lifted).
+        if hasattr(data, "set_read_threads"):
+            data.set_read_threads(max(1, min(2, (os.cpu_count() or 2) // n)) if n > 1 else None)
         for t in self._threads:
             t.start()
 
@@ -259,8 +261,8 @@ class TileScheduler:
         key = self._key(rate, channels_group, k)
         req = Request(float(rate), tuple(channels_group), int(k), int(priority), int(generation))
         with self._cv:
-            if self._closed:
-                return key
+            if self._closed or self._draining:
+                return key  # not accepted: the caller sees it never becomes ready
             job = self._jobs.get(key)
             if job is not None and job.state in ("queued", "running"):
                 old = job.request
@@ -312,11 +314,15 @@ class TileScheduler:
         reads to end. Call before ``ViewerData.reopen()`` / ``close()``.
         Returns False on timeout."""
         with self._cv:
-            for job in list(self._jobs.values()):
-                if job.state in ("queued", "running"):
-                    self._abandon(job)
-            self._heap.clear()
-            return self._cv.wait_for(lambda: self._active == 0, timeout)
+            self._draining = True  # requests made meanwhile are refused
+            try:
+                for job in list(self._jobs.values()):
+                    if job.state in ("queued", "running"):
+                        self._abandon(job)
+                self._heap.clear()
+                return self._cv.wait_for(lambda: self._active == 0, timeout)
+            finally:
+                self._draining = False
 
     def pending(self) -> int:
         with self._cv:
@@ -339,8 +345,6 @@ class TileScheduler:
                 self._abandon(job)
             self._heap.clear()
             self._cv.notify_all()
-        with self._cb_lock:  # a callback in flight finishes; no later one starts
-            pass
         for t in self._threads:
             if t is not threading.current_thread():
                 t.join(timeout=5)
@@ -449,14 +453,14 @@ class TileScheduler:
                 self._cv.notify_all()
             if not live:
                 continue  # cancelled: no result, no error
-            with self._cb_lock:
+            with self._cv:
                 if self._closed:
-                    continue
-                try:
-                    if error is not None:
-                        if self.on_error is not None:
-                            self.on_error(key, error)
-                    elif result is not None and self.on_ready is not None:
-                        self.on_ready(key, result)
-                except Exception:  # a callback must never kill a worker
-                    pass
+                    continue  # none starts after close(); one already running may finish
+            try:
+                if error is not None:
+                    if self.on_error is not None:
+                        self.on_error(key, error)
+                elif result is not None and self.on_ready is not None:
+                    self.on_ready(key, result)
+            except Exception:  # a callback must never kill a worker
+                pass

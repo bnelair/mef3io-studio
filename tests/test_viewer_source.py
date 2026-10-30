@@ -486,6 +486,37 @@ def test_reprs_hold_no_names_or_note_text(tmp_path):
     data = open_recordings([str(a)])
     try:
         shown = repr(data.recordings) + repr(data.annotations())
+        assert str(T0 + SEC) not in shown
         assert "Quentin" not in shown and "Zebedee" not in shown
+    finally:
+        data.close()
+
+
+def test_touching_within_half_a_sample_follows_the_librarys_verdict(tmp_path):
+    fs = 256.0
+    a = write(tmp_path / "a.mefd", ["x"], T0, 30, fs=fs, seed=8)
+    # starts 1 ms before A's last sample ends: inside half a sample (1953 us)
+    b = write(tmp_path / "b.mefd", ["x"], T0 + 30 * SEC - 1000, 30, fs=fs, seed=9)
+    try:
+        mef3io.MultiReader([str(a), str(b)]).close()
+        accepted = True
+    except ValueError:
+        accepted = False
+    if accepted:
+        open_recordings([str(a), str(b)]).close()
+    else:
+        with pytest.raises(ViewerRefusal) as err:
+            open_recordings([str(a), str(b)])
+        assert err.value.code == "overlap" and str(tmp_path) not in err.value.user_message.text
+
+
+def test_the_thread_cap_survives_a_reopen(sequential):
+    data = open_recordings([str(sequential[0])])
+    try:
+        data.set_read_threads(2)
+        data.reopen()
+        assert data._combined.n_threads == 2
+        data.set_read_threads(None)
+        assert data._combined.n_threads == 0
     finally:
         data.close()
