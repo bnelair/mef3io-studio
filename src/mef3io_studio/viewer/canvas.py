@@ -60,6 +60,9 @@ class CanvasMark:
     colour: str
     channel: str | None = None
     tip: str = ""
+    #: Edit mode: "" | "new" (a draft note, dashed) | "removed" (a stored note
+    #: the draft takes out, dotted and faint).
+    style: str = ""
 
 
 #: The export range's colour (light, dark): black or white, with a dashed edge.
@@ -565,19 +568,29 @@ class TraceCanvas(QWidget):
 
     def _paint_mark(self, p: QPainter, m: CanvasMark, end, top: float, height: float) -> None:
         colour = QColor(m.colour)
+        line = {
+            "new": Qt.PenStyle.DashLine,
+            "removed": Qt.PenStyle.DotLine,
+        }.get(m.style, Qt.PenStyle.SolidLine)
+        if m.style == "removed":
+            colour.setAlpha(150)
         x0 = self.x_of(m.time)
         if end is not None:
             x1 = self.x_of(end)
             fill = QColor(colour)
-            fill.setAlpha(46)
+            fill.setAlpha(20 if m.style == "removed" else 46)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(fill)
             p.drawRect(QRectF(x0, top, max(2.0, x1 - x0), height))
-            p.setPen(QPen(colour, 1))
+            pen = QPen(colour, 1)
+            pen.setStyle(line)
+            p.setPen(pen)
             p.drawLine(QPointF(x0, top), QPointF(x0, top + height))
             p.drawLine(QPointF(x1, top), QPointF(x1, top + height))
         else:
-            p.setPen(QPen(colour, 1.6))
+            pen = QPen(colour, 1.6)
+            pen.setStyle(line)
+            p.setPen(pen)
             p.drawLine(QPointF(x0, top), QPointF(x0, top + height))
 
     def _paint_boundaries(self, p: QPainter, plot: QRectF) -> None:

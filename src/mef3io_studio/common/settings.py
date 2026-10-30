@@ -57,6 +57,9 @@ PREFERENCES: dict[str, Preference] = {
         Preference("viewer/profile", "auto", str, ("auto", "white", "green", "dark", "contrast")),
         # The default filters as JSON (cutoffs, mains, steepness, timing).
         Preference("viewer/filters", "", str),
+        # The quick types of edit mode (keys 1-9), one label per line; "" =
+        # the defaults. Labels only, never anything about a recording.
+        Preference("viewer/quick_types", "", str),
         # Performance (0 = automatic, applies to windows opened afterwards).
         Preference("viewer/load_workers", 0, int),
         Preference("viewer/decode_threads", 0, int),

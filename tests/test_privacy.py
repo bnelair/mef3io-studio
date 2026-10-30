@@ -435,3 +435,21 @@ def test_anonymizing_never_logs_names_dates_or_the_date_key(qtbot, window, tmp_p
         assert secret not in text, secret
     for form in ("2019", "2004-02-03", str(START_UUTC), str(key), str(tmp_path)):
         assert form not in text, form
+
+
+def test_a_password_typed_in_the_save_preview_is_redacted(monkeypatch):
+    from mef3io_studio.model import annotation_save as asave
+
+    secret = "Typed-Save-Pw-7731"
+    seen = []
+
+    class Plan:
+        by_recording: dict = {}
+        count = 0
+
+    # The save job passes the app's register_identity in (model/ cannot import it).
+    asave.write_plan(object(), Plan(), {0: secret}, register=lambda *v: seen.extend(v))
+    assert secret in seen
+    registry = IdentityRegistry()
+    registry.register(secret)
+    assert registry.redact(f"pw {secret} used") == "pw [redacted] used"

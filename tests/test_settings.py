@@ -56,6 +56,7 @@ def test_preferences_are_exactly_the_reviewed_list():
         "viewer/filter_workers",
         "viewer/lookahead_pages",
         "viewer/memory_mb",
+        "viewer/quick_types",
     }
 
 

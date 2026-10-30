@@ -42,6 +42,10 @@ class Chip:
     letter: str = ""
     kind: str = ""
     channel: str | None = None
+    #: Edit mode: "" | "new" | "changed" | "removed" (see ``Mark.state``).
+    state: str = ""
+    #: What edit mode selects: the mark behind the chip.
+    mark: object = None
 
 
 class ChipsRow(QWidget):
@@ -50,6 +54,10 @@ class ChipsRow(QWidget):
     a dot. Click a chip to centre the page on it."""
 
     clicked = Signal(object)  # the chip's time (µs)
+    #: The chip that was pressed (edit mode selects it), before ``clicked``.
+    picked = Signal(object)
+    #: The chip drawn as selected (edit mode), or None.
+    selected_mark: object = None
 
     def __init__(self, palette: Palette, parent=None):
         super().__init__(parent)
@@ -107,6 +115,16 @@ class ChipsRow(QWidget):
         super().resizeEvent(event)
         self._layout()
 
+    def _is_selected(self, chip: Chip) -> bool:
+        sel, m = self.selected_mark, chip.mark
+        return (
+            sel is not None
+            and m is not None
+            and m == sel
+            and getattr(m, "state", "") == getattr(sel, "state", "")
+            and getattr(m, "uid", None) == getattr(sel, "uid", None)
+        )
+
     def chip_at(self, pos: QPointF) -> Chip | None:
         for rect, chip, _ in reversed(self.drawn):
             if rect.adjusted(-2, -2, 2, 2).contains(pos):
@@ -121,6 +139,7 @@ class ChipsRow(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         chip = self.chip_at(event.position())
         if chip is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.picked.emit(chip)
             self.clicked.emit(chip.time)
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -137,14 +156,33 @@ class ChipsRow(QWidget):
         p.setFont(self.font())
         for rect, chip, labelled in self.drawn:
             colour = QColor(chip.colour)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(colour)
+            outlined = chip.state in ("new", "changed", "removed")
+            if outlined:  # a draft: an outline and a light fill, never a stored look
+                fill = QColor(colour)
+                fill.setAlpha(40)
+                pen = QPen(colour, 1.5)
+                pen.setStyle(
+                    Qt.PenStyle.DotLine if chip.state == "removed" else Qt.PenStyle.DashLine
+                )
+                p.setPen(pen)
+                p.setBrush(fill)
+            else:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(colour)
             if labelled:
                 p.drawRoundedRect(rect, 4, 4)
-                p.setPen(readable_on(chip.colour))
+                p.setPen(QColor(pal.text) if outlined else readable_on(chip.colour))
                 p.drawText(rect, Qt.AlignmentFlag.AlignCenter, chip.label)
+                if chip.state == "removed":  # struck through
+                    mid = rect.center().y()
+                    p.setPen(QPen(QColor(pal.text), 1))
+                    p.drawLine(QPointF(rect.left() + 3, mid), QPointF(rect.right() - 3, mid))
             else:
                 p.drawEllipse(rect)
+            if self._is_selected(chip):
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(QColor(pal.selection), 2))
+                p.drawRoundedRect(rect.adjusted(-2, -2, 2, 2), 5, 5)
             if chip.end is not None and chip.end > chip.time:  # a span: a line to its end
                 x1 = min(float(self.width()), self.x_of(chip.end))
                 if x1 > rect.right():

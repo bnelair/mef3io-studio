@@ -18,6 +18,7 @@ Plain Python, no Qt.
 
 from __future__ import annotations
 
+import bisect
 import itertools
 import os
 import re
@@ -151,7 +152,11 @@ _data_ids = itertools.count(1)
 class ViewerData:
     """What the viewer reads from: built by :func:`open_recordings`."""
 
-    def __init__(self, paths, passwords, readers, combined, starts, ends, rec_channels):
+    def __init__(self, paths, passwords, readers, combined, starts, ends, rec_channels, facts=None):
+        #: Per recording (letter order): ``(encrypted, access, fingerprint)``
+        #: read at opening, or None when it could not be read. Edit mode's
+        #: save compares it with the disk before writing.
+        self._facts = list(facts) if facts is not None else [None] * len(paths)
         self._paths = list(paths)  # in recording order (letters)
         self._passwords = list(passwords)
         self._readers = list(readers)
@@ -178,6 +183,8 @@ class ViewerData:
         self.channels: tuple[str, ...] = tuple(sorted(combined.channels, key=_natural_key))
         self._info: dict[str, dict] = {}
         self._ownership: dict[str, list[tuple[int, int, int]]] = {}
+        self._hold: dict[str, tuple] = {}
+        self._any_index: dict | None = None
         self._annotations: list[Annotation] | None = None
         self._locked: tuple[int, ...] = ()
 
@@ -185,6 +192,20 @@ class ViewerData:
         """Where recording ``index`` (letter order) was opened from. A path:
         identifying, for matching with the caller's own list only."""
         return self._paths[index]
+
+    def password_of(self, index: int) -> str:
+        """The password recording ``index`` was opened with ("" = none). For
+        the save task only; never logged."""
+        return self._passwords[index]
+
+    def facts(self, index: int):
+        """``(encrypted, access, fingerprint)`` of recording ``index`` as it was
+        when opened ("access": "full", "level-1", ...), or None."""
+        return self._facts[index]
+
+    def is_archive(self, index: int) -> bool:
+        """Whether recording ``index`` is a single-file archive (.mefd.tar)."""
+        return self._paths[index].lower().rstrip("/\\").endswith(".tar")
 
     # -- identity (for register_identity, called by the job's thread) ----------
 
@@ -232,6 +253,52 @@ class ViewerData:
                 if a < t1 and b > t0:
                     found.add(i)
         return sorted(found)
+
+    def holders_at(self, channel: str | None, t: int) -> list[int]:
+        """Recordings holding data (of ``channel``, or of any channel) at the
+        instant ``t`` (a segment holds ``start <= t < end``). Metadata only
+        (the segment maps read at opening), logarithmic per call."""
+        t = int(t)
+        if channel is not None:
+            if channel not in self.channels:
+                return []
+            return self._holders(self._hold_index(channel), t)
+        found: set[int] = set()
+        if self._any_index is None:
+            per: dict[int, list[tuple[int, int]]] = {}
+            for ch in self.channels:
+                for a, b, i in self.ownership(ch):
+                    per.setdefault(i, []).append((a, b))
+            self._any_index = {}
+            for i, spans in per.items():
+                spans.sort()
+                merged: list[list[int]] = []
+                for a, b in spans:
+                    if merged and a <= merged[-1][1]:
+                        merged[-1][1] = max(merged[-1][1], b)
+                    else:
+                        merged.append([a, b])
+                self._any_index[i] = ([m[0] for m in merged], [(m[0], m[1], i) for m in merged])
+        for starts, spans in self._any_index.values():
+            found.update(self._holders((starts, spans), t))
+        return sorted(found)
+
+    def _hold_index(self, channel: str):
+        got = self._hold.get(channel)
+        if got is None:
+            spans = self.ownership(channel)
+            got = self._hold[channel] = ([s[0] for s in spans], spans)
+        return got
+
+    @staticmethod
+    def _holders(index, t: int) -> list[int]:
+        starts, spans = index
+        k = bisect.bisect_right(starts, t) - 1
+        # segments of one channel never overlap, but a window of a few
+        # neighbours keeps this right if a recorder's spans touch or jitter
+        return sorted(
+            {spans[j][2] for j in range(max(0, k - 2), k + 1) if spans[j][0] <= t < spans[j][1]}
+        )
 
     def segments_coverage(
         self, channel: str | None = None, merge_gap_us: int = COVERAGE_MERGE_US
@@ -435,7 +502,12 @@ class ViewerData:
         CONTRACT: the caller drains the scheduler first
         (``TileScheduler.drain``): reads running during a reopen fail."""
         fresh = open_recordings(self._paths, self._passwords)
-        with self._lock:
+        # What the opening task reads once (the window's thread never asks the
+        # library): read here, on the caller's thread, BEFORE the swap, so the
+        # window never sees a data object whose caches are empty.
+        for ch in fresh.channels:
+            fresh.rate(ch), fresh.units(ch), fresh.ownership(ch)
+        with self._notes_lock, self._lock:
             self.close()
             data_id, epoch, cap = self.data_id, self.epoch, self._read_threads
             self.__dict__.update(fresh.__dict__)
@@ -511,6 +583,29 @@ def _classify(exc: ValueError, readers, rec_channels, letters) -> ViewerRefusal 
             who,
         )
     return None
+
+
+def fingerprint_of(summary) -> tuple:
+    """What identifies a recording without a stored id: its channels with
+    their first and last times and sample counts."""
+    return tuple(
+        sorted(
+            (c.name, int(c.start_time), int(c.end_time), int(c.number_of_samples))
+            for c in summary.channels
+        )
+    )
+
+
+def _facts_of(path: str, password: str):
+    import mef3io
+
+    try:
+        with library_warnings_caught():
+            summary = mef3io.inspect(path, password=password)
+        enc = summary.encryption
+        return (bool(enc["encrypted"]), str(enc["access"]), fingerprint_of(summary))
+    except Exception:  # noqa: BLE001 - edit mode then refuses to save
+        return None
 
 
 def open_recordings(
@@ -590,7 +685,8 @@ def open_recordings(
                     if refusal is None:
                         raise
                     raise refusal from exc
-        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels)
+        facts = [_facts_of(p, w) for p, w in zip(paths_o, pwds_o, strict=True)]
+        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels, facts)
         opened = []  # owned by `data` now
     finally:
         for r in opened:

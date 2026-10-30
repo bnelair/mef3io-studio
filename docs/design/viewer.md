@@ -1,11 +1,13 @@
 # Design: signal viewer
 
-**Status:** specification, built in two parts. Part 1: the window (toolbars,
+**Status:** specification, built in three parts. Part 1: the window (toolbars,
 canvas, overview strip, keys, montages, filter panel and response plot, jump).
 Part 2: the recording band, boundary lines, banner, side panel, notes and
 events (read-only: chips, bands, types, stepping) and the export range
 (Copy times, the list, Send to Join or trim, and "View these recordings" in
-the joiner). Still to come: edit mode. Supersedes the "Signal viewer"
+the joiner). Part 3 (phase 2): edit mode for ADDITIONS (draft, undo, import
+and export, save by append). Still to come: changes and removals of stored
+notes as a new copy (phase 3, mef3io#163). Supersedes the "Signal viewer"
 section of [next directions](next-directions.md) and the viewer part of its
 "Annotations" section.
 
@@ -594,6 +596,9 @@ mef3io), driven by a scheduler in `workers/`.
    - filters with the response plot;
    - annotations read-only;
    - the export range with Copy times and Send to Join or trim.
-2. **Edit mode, additions:** draft, undo, import/export, save by append.
+2. **Edit mode, additions (built):** draft, undo, import/export, save by
+   append. A change to or removal of a stored note is kept in the draft and
+   shown struck through, and Save reports it as needing a new copy; nothing
+   is written for it.
 3. **Edit mode, changes and removals:** save as a new copy; after the
    mef3io transform annotation-edit feature.

@@ -508,6 +508,21 @@ class ViewController(QObject):
             time.sleep(0.01)
         return False
 
+    def abandon_all(self) -> None:
+        """Stop asking for anything: cancel every waiting and running job and
+        forget the current request. Done before the data is reopened (the
+        window then asks for its page again)."""
+        self._generation += 1
+        for job in list(self._jobs.values()):
+            job.token.cancel()
+            if job.state == "computing":
+                self._zombies.add(job)
+        self._jobs.clear()
+        self._req = None
+        self._update_needed()
+        self.scheduler.cancel_stale(self._generation + 1)
+        self._set_loading(False)
+
     # -- the strip ----------
 
     def request_strip_envelope(self, channel: str) -> None:
