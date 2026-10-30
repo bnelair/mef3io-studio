@@ -78,6 +78,18 @@ class RecordingSource(abc.ABC):
         """Check the recording for problems. Reads only. ``send`` gets
         :class:`~.progress.ByteProgress`; ``cancel`` stops it."""
 
+    @abc.abstractmethod
+    def open_viewer(
+        self,
+        paths: list[str],
+        passwords: list[str] | None = None,
+        cancel: CancelToken | None = None,
+    ):
+        """Open recordings for the signal viewer and return its data object
+        (:class:`.viewer_source.ViewerData`). One reader per recording, plus
+        a combined one for two or more; refuses, in plain words, recordings
+        that cannot share a timeline."""
+
 
 class LocalRecordingSource(RecordingSource):
     """Recordings on this computer (``.mefd`` folders or ``.mefd.tar`` files)."""
@@ -121,3 +133,13 @@ class LocalRecordingSource(RecordingSource):
 
         progress = byte_progress(send) if send is not None else None
         return check_recording(os.fspath(location), password, cancel=cancel, progress=progress)
+
+    def open_viewer(
+        self,
+        paths: list[str],
+        passwords: list[str] | None = None,
+        cancel: CancelToken | None = None,
+    ):
+        from .viewer_source import open_recordings
+
+        return open_recordings(paths, passwords, cancel=cancel)

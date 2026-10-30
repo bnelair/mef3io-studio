@@ -1,0 +1,543 @@
+"""The signal viewer's data: opening, ownership, tiles, envelope, annotations.
+
+This is the ONLY viewer module that imports mef3io (docs/design/viewer.md,
+"Data: reading, tiles, prefetch, cache"). It opens one ``mef3io.Reader`` per
+recording plus, with two or more, one ``mef3io.MultiReader`` for the combined
+reads. The per-recording Readers say which recording a segment or an
+annotation came from, which MultiReader does not.
+
+Rules: no paths, names or notes in anything that can reach a log (messages
+name recordings by letter only); names are handed out through
+:meth:`ViewerData.identity_values` for the caller (a job thread) to register
+with ``register_identity``; opens run inside ``library_warnings_caught()``;
+reads run without the process-wide quiet lock, and mef3io's warnings during
+them are counted (never logged, never shown).
+
+Plain Python, no Qt.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import threading
+import warnings
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+from .cancel import CancelToken, stopped_by_library
+from .errors import UserMessage
+from .quiet import library_warnings_caught
+
+#: Samples per tile (per channel). A tile k holds sample indices
+#: [k*TILE_SAMPLES, (k+1)*TILE_SAMPLES) of the rate's sample grid.
+TILE_SAMPLES = 65536
+
+#: Gaps up to this long between two segments of one recording are drawn as
+#: one span in the coverage (coarse) view.
+COVERAGE_MERGE_US = 1_000_000
+
+_LEVEL_ORDER = {"session": 0, "channel": 1, "segment": 2}
+
+
+# --- mef3io warnings during reads: counted, never shown ---------------------
+
+_warn_lock = threading.Lock()
+_warn_count = 0
+
+
+def _count_mef_warning() -> None:
+    global _warn_count
+    with _warn_lock:
+        _warn_count += 1
+
+
+def _install_warning_counter() -> None:
+    """Route every ``mef3io.MefWarning`` to a counter instead of the log or
+    the console. Installed once per process (re-installed if something
+    replaced the hook); the other warnings pass through untouched."""
+    import mef3io
+
+    category = mef3io.MefWarning
+    current = warnings.showwarning
+    if getattr(current, "_mef3io_studio_counter", False):
+        return
+    previous = current
+
+    def showwarning(message, cat, filename, lineno, file=None, line=None):
+        if isinstance(cat, type) and issubclass(cat, category):
+            _count_mef_warning()
+            return None
+        return previous(message, cat, filename, lineno, file, line)
+
+    showwarning._mef3io_studio_counter = True  # type: ignore[attr-defined]
+    warnings.showwarning = showwarning
+    # Make sure these warnings reach showwarning (not de-duplicated away).
+    warnings.filterwarnings("always", category=category)
+
+
+# --- plain-language refusals -------------------------------------------------
+
+
+class ViewerRefusal(ValueError):
+    """The recordings cannot be viewed together (or at all). ``user_message``
+    is the plain-language text; recordings are named by letter only."""
+
+    def __init__(self, code: str, user_message: UserMessage, letters: Sequence[str] = ()):
+        super().__init__(f"viewer refusal: {code}")
+        self.code = code
+        self.user_message = user_message
+        self.letters = tuple(letters)
+
+
+def _letter(index: int) -> str:
+    out = ""
+    n = index
+    while True:
+        out = chr(65 + n % 26) + out
+        n = n // 26 - 1
+        if n < 0:
+            return out
+
+
+def _letters_text(letters: Sequence[str]) -> str:
+    """ "Recordings A and B" (always at the start of a sentence)."""
+    if len(letters) == 1:
+        return f"Recording {letters[0]}"
+    return "Recordings " + ", ".join(letters[:-1]) + " and " + letters[-1]
+
+
+_ONE_AT_A_TIME = "You can open them one at a time instead. Nothing was changed."
+
+
+def _passwords_refusal() -> ViewerRefusal:
+    return ViewerRefusal(
+        "passwords",
+        UserMessage(
+            "These recordings need different passwords",
+            "The selected recordings are protected with different passwords, and the viewer "
+            f"can only show recordings together when they share one. {_ONE_AT_A_TIME}",
+        ),
+    )
+
+
+# --- data ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RecordingInfo:
+    index: int
+    letter: str
+    #: Index into the viewer's colour list (equal to ``index``).
+    colour: int
+    #: The recording's name. Identifying: shown only while the recording's
+    #: details are visible, never logged.
+    name: str
+    start_us: int
+    end_us: int
+    channels: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Boundary:
+    """A time where the set of recordings holding data changes."""
+
+    time_us: int
+    before: tuple[int, ...]
+    after: tuple[int, ...]
+    #: Length of the gap between the recording(s) that ended and the ones
+    #: that started (0 = they touch); None when recordings overlap in time
+    #: (side by side) or the set simply gains/loses a member.
+    gap_us: int | None
+
+
+def _natural_key(name: str):
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", name)]
+
+
+def _session_name(path: str) -> str:
+    name = Path(path).name
+    for suffix in (".mefd.tar", ".mefd"):
+        if name.lower().endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def tile_start_index(k: int) -> int:
+    return k * TILE_SAMPLES
+
+
+class ViewerData:
+    """What the viewer reads from: built by :func:`open_recordings`."""
+
+    def __init__(self, paths, passwords, readers, combined, starts, ends, rec_channels):
+        self._paths = list(paths)  # in recording order (letters)
+        self._passwords = list(passwords)
+        self._readers = list(readers)
+        self._combined = combined
+        self._multi = combined is not None and len(readers) > 1
+        self._lock = threading.RLock()
+        names = [_session_name(p) for p in self._paths]
+        self.recordings: tuple[RecordingInfo, ...] = tuple(
+            RecordingInfo(i, _letter(i), i, names[i], starts[i], ends[i], tuple(rec_channels[i]))
+            for i in range(len(readers))
+        )
+        self.timeline_start: int = min(starts)
+        self.timeline_end: int = max(ends)
+        self.channels: tuple[str, ...] = tuple(sorted(combined.channels, key=_natural_key))
+        self._info: dict[str, dict] = {}
+        self._ownership: dict[str, list[tuple[int, int, int]]] = {}
+        self._annotations: list[dict] | None = None
+        self._locked: tuple[int, ...] = ()
+        self._warn_base = _warn_count
+        #: Warnings the library gave while opening (counted, text dropped).
+        self.open_warning_count = 0
+
+    # -- identity (for register_identity, called by the job's thread) ----------
+
+    def identity_values(self) -> list[str]:
+        """Recording names: identifying, to be registered with the log filter."""
+        return [r.name for r in self.recordings if r.name]
+
+    # -- channels ----------------------------------------------------------------
+
+    def _channel_info(self, channel: str) -> dict:
+        info = self._info.get(channel)
+        if info is None:
+            info = self._info[channel] = dict(self._combined.info(channel))
+        return info
+
+    def rate(self, channel: str) -> float:
+        return float(self._channel_info(channel)["sampling_frequency"])
+
+    def units(self, channel: str) -> str:
+        return str(self._channel_info(channel).get("units_description") or "")
+
+    # -- who owns what ---------------------------------------------------------------
+
+    def ownership(self, channel: str) -> list[tuple[int, int, int]]:
+        """``(t0, t1, recording index)`` for each stored segment of a channel,
+        sorted by time (from the recordings' own segment maps: metadata only).
+        """
+        spans = self._ownership.get(channel)
+        if spans is None:
+            spans = []
+            for i, reader in enumerate(self._readers):
+                if channel not in self.recordings[i].channels:
+                    continue
+                for seg in reader.segments(channel):
+                    spans.append((int(seg["start_time"]), int(seg["end_time"]), i))
+            spans.sort()
+            self._ownership[channel] = spans
+        return list(spans)
+
+    def recordings_at(self, t0: int, t1: int, channels: Sequence[str] | None = None) -> list[int]:
+        """Recordings holding data of ``channels`` (default: any) in [t0, t1)."""
+        found: set[int] = set()
+        for ch in channels if channels is not None else self.channels:
+            for a, b, i in self.ownership(ch):
+                if a < t1 and b > t0:
+                    found.add(i)
+        return sorted(found)
+
+    def segments_coverage(
+        self, channel: str | None = None, merge_gap_us: int = COVERAGE_MERGE_US
+    ) -> list[tuple[int, int, int]]:
+        """Coarse ``(t0, t1, recording)`` spans for the overview strip: the
+        segment spans, with gaps of up to ``merge_gap_us`` inside one
+        recording closed. ``channel=None`` = any channel of the recording.
+        Metadata only."""
+        spans: list[tuple[int, int, int]] = []
+        for ch in (channel,) if channel is not None else self.channels:
+            spans.extend(self.ownership(ch))
+        merged: list[tuple[int, int, int]] = []
+        last: dict[int, int] = {}  # recording -> position in `merged`
+        for a, b, i in sorted(spans):
+            pos = last.get(i)
+            if pos is not None and a <= merged[pos][1] + merge_gap_us:
+                merged[pos] = (merged[pos][0], max(merged[pos][1], b), i)
+            else:
+                merged.append((a, b, i))
+                last[i] = len(merged) - 1
+        merged.sort()
+        return merged
+
+    def boundaries(self) -> list[Boundary]:
+        """Times where the set of recordings changes (each recording spans
+        its first to its last sample), with the gap between recordings."""
+        spans = [(r.start_us, r.end_us, r.index) for r in self.recordings]
+        points = sorted({p for a, b, _ in spans for p in (a, b)})
+
+        def before(p):
+            return tuple(sorted(i for a, b, i in spans if a < p <= b))
+
+        def after(p):
+            return tuple(sorted(i for a, b, i in spans if a <= p < b))
+
+        out: list[Boundary] = []
+        last_end: int | None = None
+        last_set: tuple[int, ...] = ()
+        for p in points:
+            was, now = before(p), after(p)
+            if was == now:
+                continue
+            if not now:
+                last_end, last_set = p, was
+                continue
+            if not was:
+                if last_end is not None:
+                    out.append(Boundary(p, last_set, now, p - last_end))
+                continue
+            gap = 0 if not set(was) & set(now) else None
+            out.append(Boundary(p, was, now, gap))
+        return out
+
+    # -- envelope ------------------------------------------------------------------------
+
+    def envelope(self, channel: str, t0: int, t1: int) -> dict:
+        """Min/max per block from the block index alone (never the samples)."""
+        return self._combined.block_envelope(channel, int(t0), int(t1))
+
+    # -- annotations -----------------------------------------------------------------------
+
+    @property
+    def annotations_locked(self) -> tuple[int, ...]:
+        """Recordings whose annotations could not be read (password without
+        full access). Valid after :meth:`annotations`."""
+        return self._locked
+
+    def annotations(self) -> list[dict]:
+        """Every record at session, channel and segment level of every
+        recording, each tagged with ``recording`` (index); sorted by time.
+        Recordings whose records are locked contribute nothing and are
+        listed in :attr:`annotations_locked`."""
+        import mef3io
+
+        if self._annotations is not None:
+            return list(self._annotations)
+        out: list[dict] = []
+        locked: list[int] = []
+        for i, reader in enumerate(self._readers):
+            try:
+                records = reader.records(level="all")
+            except mef3io.PasswordError:
+                locked.append(i)
+                continue
+            for rec in records:
+                item = dict(rec)
+                item["recording"] = i
+                out.append(item)
+        out.sort(
+            key=lambda r: (
+                r["time"],
+                r["recording"],
+                _LEVEL_ORDER.get(r.get("level"), 3),
+                r.get("channel") or "",
+            )
+        )
+        self._annotations = out
+        self._locked = tuple(locked)
+        return list(out)
+
+    # -- tiles -------------------------------------------------------------------------------
+
+    def _index_of(self, rate: float, t_us: float) -> float:
+        return (t_us - self.timeline_start) * rate / 1e6
+
+    def tile_start_time(self, rate: float, k: int) -> int:
+        """The time of the first sample of tile ``k`` (µs, rounded)."""
+        return self.timeline_start + int(round(k * TILE_SAMPLES * 1e6 / rate))
+
+    def tile_index_range(self, rate: float, t0: int, t1: int) -> tuple[int, int]:
+        """First and last tile (inclusive) holding samples of [t0, t1)."""
+        first = max(0, int(np.floor(self._index_of(rate, t0) / TILE_SAMPLES + 1e-9)))
+        last_index = max(self._index_of(rate, t1) - 1e-9, self._index_of(rate, t0))
+        last = max(first, int(np.floor(last_index / TILE_SAMPLES)))
+        return first, last
+
+    def tile_count(self, rate: float) -> int:
+        """Number of tiles from the timeline start to its end at ``rate``."""
+        return int(self._index_of(rate, self.timeline_end) // TILE_SAMPLES) + 1
+
+    def read_tile(
+        self,
+        channels: Sequence[str],
+        rate: float,
+        k: int,
+        cancel: CancelToken | None = None,
+    ) -> np.ndarray:
+        """Tile ``k`` of ``channels`` (all at ``rate``): float32
+        ``[len(channels), TILE_SAMPLES]``, NaN where no data.
+
+        The read is widened by one sample on each side and anchored at its
+        own t0; the sample of slot j has index ``k*n - 1 + j``, and the two
+        outer slots (which belong to the neighbouring tiles) are dropped.
+        """
+        names = list(channels)
+        for ch in names:
+            if abs(self.rate(ch) - rate) > 1e-9 * max(1.0, rate):
+                raise ValueError("the channels of a tile must share one sampling rate")
+        n = TILE_SAMPLES
+        t0 = self.timeline_start + int(round((k * n - 1) * 1e6 / rate))
+        t1 = self.timeline_start + int(round(((k + 1) * n + 1) * 1e6 / rate))
+        kwargs = {"dtype": "float32"}
+        if cancel is not None:
+            cancel.raise_if_cancelled()
+            kwargs["cancel"] = cancel.for_library()
+        with stopped_by_library():
+            raw = self._combined.read(names, t0, t1, **kwargs)
+        raw = np.asarray(raw, dtype=np.float32).reshape(len(names), -1)
+        out = np.full((len(names), n), np.nan, dtype=np.float32)
+        body = raw[:, 1 : 1 + n]
+        out[:, : body.shape[1]] = body
+        return out
+
+    # -- counts / lifecycle ---------------------------------------------------------------------
+
+    @property
+    def warning_count(self) -> int:
+        """mef3io warnings since this data was opened (text never kept)."""
+        return _warn_count - self._warn_base
+
+    def problems(self) -> list[int]:
+        """Recordings with unreadable parts (indexes), from ``problems()``."""
+        return [i for i, r in enumerate(self._readers) if r.problems]
+
+    def close(self) -> None:
+        with self._lock:
+            for obj in [self._combined, *self._readers]:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+
+    def reopen(self) -> None:
+        """Close and open again (after an annotation save), keeping the
+        letters, and forget what was cached."""
+        fresh = open_recordings(self._paths, self._passwords)
+        with self._lock:
+            self.close()
+            self.__dict__.update(fresh.__dict__)
+        fresh._combined = fresh._readers = None  # the state moved to self
+
+
+# --- opening -------------------------------------------------------------------------------------
+
+
+def _password_list(paths: Sequence, passwords) -> list[str]:
+    if passwords is None:
+        return [""] * len(paths)
+    if isinstance(passwords, Mapping):
+        return [str(passwords.get(os.fspath(p), passwords.get(p, "")) or "") for p in paths]
+    out = [str(p or "") for p in passwords]
+    if len(out) != len(paths):
+        out = (out + [""] * len(paths))[: len(paths)]
+    return out
+
+
+def _diagnose(readers, rec_channels, letters) -> ViewerRefusal:
+    """Say which recordings clash and why, in letters, from metadata."""
+    clash_rate: set[int] = set()
+    clash_time: set[int] = set()
+    for a in range(len(readers)):
+        for b in range(a + 1, len(readers)):
+            for ch in set(rec_channels[a]) & set(rec_channels[b]):
+                if (
+                    readers[a].info(ch)["sampling_frequency"]
+                    != readers[b].info(ch)["sampling_frequency"]
+                ):
+                    clash_rate |= {a, b}
+                    continue
+                sa = [(s["start_time"], s["end_time"]) for s in readers[a].segments(ch)]
+                sb = [(s["start_time"], s["end_time"]) for s in readers[b].segments(ch)]
+                if any(x0 < y1 and y0 < x1 for x0, x1 in sa for y0, y1 in sb):
+                    clash_time |= {a, b}
+    if clash_rate and not clash_time:
+        who = [letters[i] for i in sorted(clash_rate)]
+        return ViewerRefusal(
+            "rate",
+            UserMessage(
+                "These recordings cannot be shown together",
+                f"{_letters_text(who)} hold the same channel at different "
+                f"sampling rates, so they cannot share one timeline. {_ONE_AT_A_TIME}",
+            ),
+            who,
+        )
+    who_idx = sorted(clash_time or set(range(len(readers))))
+    who = [letters[i] for i in who_idx]
+    return ViewerRefusal(
+        "overlap",
+        UserMessage(
+            "These recordings cannot be shown together",
+            f"{_letters_text(who)} hold data of the same channel at the same "
+            f"time, so one timeline cannot show both. {_ONE_AT_A_TIME}",
+        ),
+        who,
+    )
+
+
+def open_recordings(
+    paths: Sequence,
+    passwords=None,
+    cancel: CancelToken | None = None,
+) -> ViewerData:
+    """Open recordings for the viewer: a Reader each, plus a MultiReader for
+    two or more. ``passwords`` is a list aligned with ``paths`` (or a mapping
+    from path). Raises :class:`ViewerRefusal` (plain-language) when they
+    cannot be viewed together. Runs inside ``library_warnings_caught()``."""
+    import mef3io
+
+    given = [os.fspath(p) for p in paths]
+    if not given:
+        raise ValueError("no recordings to open")
+    pwds = _password_list(given, passwords)
+    if len({p for p in pwds if p}) > 1:
+        raise _passwords_refusal()
+    shared = next((p for p in pwds if p), "")
+
+    opened: list = []
+    try:
+        with stopped_by_library(), library_warnings_caught() as caught:
+            for path, pwd in zip(given, pwds, strict=True):
+                if cancel is not None:
+                    cancel.raise_if_cancelled()
+                opened.append(mef3io.Reader(path, pwd))
+            starts, ends, rec_channels = [], [], []
+            for r in opened:
+                chans = list(r.channels)
+                infos = [r.info(c) for c in chans]
+                rec_channels.append(chans)
+                starts.append(min((int(i["start_time"]) for i in infos), default=0))
+                ends.append(max((int(i["end_time"]) for i in infos), default=0))
+            order = sorted(range(len(opened)), key=lambda i: (starts[i], i))
+            readers = [opened[i] for i in order]
+            paths_o = [given[i] for i in order]
+            pwds_o = [pwds[i] for i in order]
+            starts = [starts[i] for i in order]
+            ends = [ends[i] for i in order]
+            rec_channels = [rec_channels[i] for i in order]
+            letters = [_letter(i) for i in range(len(readers))]
+            if len(readers) == 1:
+                combined = readers[0]
+            else:
+                if cancel is not None:
+                    cancel.raise_if_cancelled()
+                try:
+                    combined = mef3io.MultiReader(paths_o, shared)
+                except ValueError:
+                    raise _diagnose(readers, rec_channels, letters) from None
+        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels)
+        data.open_warning_count = len(caught)
+        opened = []  # owned by `data` now
+    finally:
+        for r in opened:
+            try:
+                r.close()
+            except Exception:
+                pass
+    _install_warning_counter()
+    data._warn_base = _warn_count
+    return data
