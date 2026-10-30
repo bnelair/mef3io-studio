@@ -38,9 +38,11 @@ def lead_and_contact(name: str) -> tuple[str, int | None]:
     contact number (or made only of one) is its own lead with contact None.
     """
     s = name.strip()
-    tail = s.rsplit("-", 1)[1] if "-" in s else ""
-    if any(ch.isalpha() for ch in tail):
-        return name, None  # already a derivation ("F3-C3")
+    head, _, tail = s.rpartition("-")
+    # Already a derivation ("F3-C3", "Fp1-REF"): a contact before the dash and
+    # a name after it. "LH-A1" (no digit before the dash) is lead "LH-A".
+    if head[-1:].isdigit() and any(ch.isalpha() for ch in tail):
+        return name, None
     m = _PRIME_AFTER.match(s)
     if m and m.group(1).strip(" _-"):
         return m.group(1).rstrip(" _-") + "'", int(m.group(2))

@@ -92,6 +92,9 @@ def test_already_bipolar_names_stay_as_recorded():
     assert m.lead_and_contact("F3-C3") == ("F3-C3", None)
     assert m.lead_and_contact("C3-C4") == ("C3-C4", None)
     assert m.lead_and_contact("LA-3") == ("LA", 3)
+    assert m.lead_and_contact("Fp1-REF") == ("Fp1-REF", None)
+    # A dash inside a lead name is not a derivation.
+    assert m.lead_and_contact("LH-A1") == ("LH-A", 1)
     rows = m.lead_bipolar(["F3-C3", "C3-C4", "LA1", "LA2"])
     assert [r.label for r in rows] == ["F3-C3", "C3-C4", "LA1 \u2212 LA2"]
 
