@@ -284,10 +284,21 @@ Code (app shell, #2/#3):
   with ISO + offset and uUTC, `vm.safe_cell` formula escaping; point -> Note,
   with end -> EDFA, quick type = text prefix "Spike: ..."), `model/
   annotation_save.py` (the other mef3io user: appends with
-  `Writer.write_annotations` per level, trying password pairs ("", pwd) then
-  (pwd, pwd) because the library wants them that way for a new / an existing
-  notes file; stops at the first failure and reports which recordings were
-  done, so the draft drops exactly those; plain messages incl. "rescue first"
+  `Writer.write_annotations` per level; NEVER tries password pairs: mef3io
+  encrypts a notes file only when password1 is non-empty, so a protected
+  recording is written with (basic, full-access) exactly, the app holds one
+  (`ViewerData.facts`: encrypted/access/fingerprint read at open) and the
+  save preview asks for the other, both checked with `inspect` BEFORE any
+  write; an unprotected one gets no passwords. Before writing, the folder must
+  exist and match the opened fingerprint (channels, times, counts), so a Writer
+  can never create a recording at a moved path. Stops at the first failure
+  and reports the exact uids appended, so the draft drops exactly those; the
+  message lists what was added where; a torn file says "left unfinished"
+  (no app feature to fix it; the technical name is in `detail`), `.mefd.tar`
+  has no edit mode, control characters are refused everywhere,
+  a span must lie within one recording's data). Every draft mutation is refused
+  while saving (`EditMode._busy`), and `reopen()` fills the caches on the new
+  data BEFORE swapping it in).
   for a torn file). `viewer/edit_mode.py` (`window.edit`: switch, banner,
   selection, add/change/take out, import/export, save as ONE JobManager task:
   write, `scheduler.drain`, `data.reopen()`, re-read notes; `window.jobs` from

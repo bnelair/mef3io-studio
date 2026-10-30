@@ -76,10 +76,11 @@ class Spy:
     def __init__(self, win):
         self.problems: list[UserMessage] = []
         self.asked: list[str] = []
+        self.extra: dict[int, str] = {}  # the other password of a protected recording
         self.answer = "discard"  # what a window left with a draft gets at teardown
         win.edit.show_problem = self.problems.append
         win.edit.ask_unsaved = lambda what: (self.asked.append(what), self.answer)[1]
-        win.edit.ask_save = lambda plan_for: {}
+        win.edit.ask_save = lambda plan_for: ({}, self.extra)
         win.confirm = lambda *a: True
         win.ask_show = lambda indices: True
 
@@ -364,7 +365,7 @@ def test_side_by_side_recordings_ask_where_a_whole_recording_note_goes(
     combo = dialog.choice_combos[(0, 1)]
     combo.setCurrentIndex(combo.findData(0))
     assert dialog.ok.isEnabled() and dialog.choices() == {(0, 1): 0}
-    win.edit.ask_save = lambda plan_for: {(0, 1): 0}
+    win.edit.ask_save = lambda plan_for: ({(0, 1): 0}, {})
     finish_save(qtbot, win)
     assert not spy.problems
     left, right = comparable(records(a)), comparable(records(b))
@@ -550,7 +551,9 @@ def test_leaving_edit_mode_or_closing_with_a_draft_asks(ed, qtbot):
 # --- failures in plain words ------------------------------------------------------------------
 
 
-def test_a_torn_notes_file_says_to_rescue_first_and_keeps_the_draft(ed, qtbot, tmp_path):
+def test_a_torn_notes_file_says_it_must_be_fixed_without_naming_a_missing_feature(
+    ed, qtbot, tmp_path
+):
     win, spy, (a, _b) = ed
     rdat = next(Path(a).glob("*.rdat"))
     rdat.write_bytes(rdat.read_bytes() + b"\x01\x02\x03")  # an unfinished entry
@@ -559,11 +562,13 @@ def test_a_torn_notes_file_says_to_rescue_first_and_keeps_the_draft(ed, qtbot, t
     finish_save(qtbot, win)
     assert len(spy.problems) == 1
     msg = spy.problems[0]
-    assert "rescue" in msg.text.lower() and "recording A" in msg.text
+    assert "left unfinished" in msg.text and "recording A" in msg.text
+    assert "rescue" not in msg.text.lower() and "Explore" not in msg.text
+    assert "Nothing was added" in msg.text
+    assert "recover_session" in msg.detail  # the technical name only behind the details
     assert str(tmp_path) not in msg.text and "recover_session" not in msg.text
     assert not BANNED_RE.search(msg.title + " " + msg.text)
     assert win.edit.draft.dirty and not win.edit.saving  # nothing lost, can try again
-    win.canvas.invalidate()
 
 
 def open_locked(make_window, qtbot, path, pwd):
@@ -583,47 +588,258 @@ def open_locked(make_window, qtbot, path, pwd):
     return win
 
 
-def test_an_encrypted_recording_takes_new_notes_with_the_full_access_password(
-    make_window,
-    tmp_path,
-    qtbot,
+def all_bytes(path) -> bytes:
+    return b"".join(f.read_bytes() for f in sorted(Path(path).rglob("*")) if f.is_file())
+
+
+@pytest.mark.parametrize("existing", [True, False], ids=["notes file exists", "no notes file yet"])
+def test_notes_added_to_a_protected_recording_are_never_stored_as_plain_text(
+    make_window, tmp_path, qtbot, existing
 ):
-    # one level of notes exists already (session), the other (a channel) does not
     p = write(
         tmp_path / "Locked.mefd",
         password1="a",
         password2="b",
-        notes=[{"time": T0 + 5 * SEC, "type": "Note", "text": "old secret"}],
+        notes=[{"time": T0 + 5 * SEC, "type": "Note", "text": "old secret"}] if existing else (),
     )
-    win = open_locked(make_window, qtbot, p, "b")
+    win = open_locked(make_window, qtbot, p, "b")  # holds the full-access one
     spy = Spy(win)
+    spy.extra = {0: "a"}  # the basic one, typed in the preview
     turn_on(win)
-    win.edit.add(T0 + 10 * SEC, None, "Spike", "session level")
-    win.edit.add(T0 + 11 * SEC, None, "Note", "channel level", "Cz")
+    win.edit.add(T0 + 10 * SEC, None, "Spike", "findme-session-text")
+    win.edit.add(T0 + 11 * SEC, None, "Note", "findme-channel-text", "Cz")
     finish_save(qtbot, win)
     assert not spy.problems
-    got = comparable(records(p, "b"))
-    assert [c[4] for c in got] == ["old secret", "Spike: session level", "channel level"]
-    assert win.marks_loaded and len(win.marks) == 3
+    assert b"findme" not in all_bytes(p)  # the bodies are not plain text
+    got = [c[4] for c in comparable(records(p, "b"))]
+    assert got == (["old secret"] if existing else []) + [
+        "Spike: findme-session-text",
+        "findme-channel-text",
+    ]
+    assert win.marks_loaded and len(win.marks) == len(got)
     win.close()
 
 
-def test_a_first_level_password_alone_cannot_add_notes_and_says_so(
-    make_window,
-    tmp_path,
-    qtbot,
+def test_a_protected_recording_needs_both_passwords_checked_before_writing(
+    make_window, tmp_path, qtbot
 ):
     p = write(tmp_path / "Locked.mefd", password1="a", password2="b")
-    win = open_locked(make_window, qtbot, p, "a")
+    win = open_locked(make_window, qtbot, p, "a")  # holds only the basic one
     spy = Spy(win)
     turn_on(win)
     win.edit.add(T0 + 10 * SEC, None, "Spike", "x")
     snap = tree_hash(p)
+    for extra, words in (
+        ({}, "both its passwords are needed"),
+        ({0: "zzz"}, "do not both fit"),  # wrong
+        ({0: "a"}, "do not both fit"),  # the same one twice
+    ):
+        spy.extra = extra
+        spy.problems.clear()
+        finish_save(qtbot, win)
+        assert len(spy.problems) == 1 and words in spy.problems[0].text, spy.problems
+        assert "Nothing was added" in spy.problems[0].text and win.edit.draft.dirty
+        assert tree_hash(p) == snap  # byte-identical, mtimes too
+    spy.extra = {0: "b"}  # the right one
+    spy.problems.clear()
     finish_save(qtbot, win)
-    assert len(spy.problems) == 1 and "full-access password" in spy.problems[0].text
-    assert "Nothing was added" in spy.problems[0].text and win.edit.draft.dirty
-    assert tree_hash(p) == snap
+    assert not spy.problems and not win.edit.draft.dirty
+    assert [c[4] for c in comparable(records(p, "b"))] == ["Spike: x"]
+    assert b"Spike: x" not in all_bytes(p)
     win.close()
+
+
+def test_the_preview_asks_for_the_password_the_app_does_not_hold(ed, qtbot):
+    win, _spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    dialog = SavePreview(
+        lambda c: win.edit.draft.save_plan(win.data.holders_at, c),
+        win.recording_label,
+        win._rec_letter,
+        win.zone,
+        None,
+        lambda i: "basic password" if i == 0 else None,
+    )
+    qtbot.addWidget(dialog)
+    assert list(dialog.password_edits) == [0]
+    assert not dialog.ok.isEnabled()  # until it is typed
+    dialog.password_edits[0].setText("a")
+    assert dialog.ok.isEnabled() and dialog.passwords() == {0: "a"}
+    text = " ".join(w.text() for w in dialog.password_box.findChildren(type(dialog.lines)))
+    assert "both its passwords are needed" in text and "basic password" in text
+    assert not BANNED_RE.search(text)
+    plain = SavePreview(
+        lambda c: win.edit.draft.save_plan(win.data.holders_at, c),
+        win.recording_label,
+        win._rec_letter,
+        win.zone,
+    )
+    qtbot.addWidget(plain)
+    assert not plain.password_edits and plain.ok.isEnabled()
+
+
+def test_a_save_that_fails_half_way_adds_nothing_twice(ed, qtbot, monkeypatch):
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "whole one")  # session level, written first
+    win.edit.add(T0 + 31 * SEC, None, "Note", "channel one", "Cz")  # channel level, fails
+    real = mef3io.Writer.write_annotations
+
+    def flaky(self, annotations, channel=None):
+        if channel == "Cz":
+            raise mef3io.IoError("disk trouble")
+        return real(self, annotations, channel)
+
+    monkeypatch.setattr(mef3io.Writer, "write_annotations", flaky)
+    finish_save(qtbot, win)
+    assert len(spy.problems) == 1
+    text = spy.problems[0].text
+    assert "Already added" in text and "recording A: 1 note or event" in text
+    assert "Nothing was added" not in text
+    assert [i.text for i in win.edit.draft.items] == ["channel one"]  # only what failed remains
+    assert [c[4] for c in comparable(records(a)) if c[3] == T0 + 30 * SEC] == ["Spike: whole one"]
+    monkeypatch.setattr(mef3io.Writer, "write_annotations", real)
+    spy.problems.clear()
+    finish_save(qtbot, win)  # the retry
+    assert not spy.problems and not win.edit.draft.dirty
+    stored = [c[4] for c in comparable(records(a))]
+    assert stored.count("Spike: whole one") == 1 and stored.count("channel one") == 1
+
+
+def test_a_moved_or_replaced_recording_is_refused_before_anything_is_written(ed, qtbot, tmp_path):
+    win, spy, (a, b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.edit.add(T0 + 120 * SEC, None, "Spike", "y")  # recording B: fine
+    before_b = tree_hash(b)
+    moved = Path(a).with_name("Renamed.mefd")
+    Path(a).rename(moved)
+    finish_save(qtbot, win)
+    assert "not where it was opened" in spy.problems[-1].title
+    assert not Path(a).exists()  # the library did not create a new recording there
+    assert tree_hash(b) == before_b and win.edit.draft.dirty
+    # a different recording at the same place is refused too
+    write(Path(a), start=T0 + 1000 * SEC, seconds=10)
+    spy.problems.clear()
+    finish_save(qtbot, win)
+    assert "has changed" in spy.problems[-1].title and tree_hash(b) == before_b
+    assert not records(a)  # nothing was added to the stand-in
+
+
+def test_the_draft_is_locked_while_a_save_runs_and_the_gui_thread_stays_off_mef3io(
+    ed, qtbot, monkeypatch
+):
+    from mef3io_studio.model import annotation_save as asave
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    gate = threading.Event()
+    real = asave.write_plan
+
+    def slow(*a, **k):
+        gate.wait(30)
+        return real(*a, **k)
+
+    monkeypatch.setattr(asave, "write_plan", slow)
+    main = threading.main_thread()
+    on_main = []
+
+    def guard(name, real_fn):
+        def wrapped(*a, **k):
+            if threading.current_thread() is main:
+                on_main.append(name)
+            return real_fn(*a, **k)
+
+        return wrapped
+
+    for cls in (mef3io.Reader, mef3io.MultiReader):
+        for name in ("segments", "info", "read", "records", "block_envelope"):
+            if hasattr(cls, name):
+                monkeypatch.setattr(cls, name, guard(name, getattr(cls, name)))
+    assert win.edit.save()
+    assert win.edit.saving
+    draft = win.edit.draft
+    snapshot = list(draft.items)
+    at(win, T0 + 12 * SEC)
+    for k in (Qt.Key.Key_A, Qt.Key.Key_2, Qt.Key.Key_3):
+        key(win, k)
+    key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    mods = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+    key(win, Qt.Key.Key_Z, mods)
+    win.edit.ask_note = lambda editor: pytest.fail("the editor must not open")
+    assert win.edit.add(T0 + 5 * SEC, None, "Spike") is None
+    assert win.edit.open_new(T0 + 5 * SEC) is None and win.edit.edit_selected() is None
+    assert win.edit.remove_selected() is False
+    win.edit.undo(), win.edit.redo(), win.edit.discard()
+    assert win.edit.import_file("nothing.csv") is None
+    assert not win.edit.undo_button.isEnabled() and not win.notes_tab.add_button.isEnabled()
+    assert win.edit.set_on(False) is True  # refused: still on
+    assert list(draft.items) == snapshot and "Wait until" in win.status_message.text()
+    # what the window redraws meanwhile never asks the library on its own thread
+    win.refresh_privacy()
+    win._update_marks_view()
+    win._display_marks()
+    win._refresh()
+    gate.set()
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=60_000)
+    assert not spy.problems and on_main == []
+
+
+def test_reopening_has_every_cache_filled_before_the_window_can_see_it(ed):
+    win, _spy, _ = ed
+    data = win.data
+    data.reopen()
+    assert set(data._ownership) == set(data.channels)
+    assert set(data._info) == set(data.channels)
+
+
+def test_control_characters_are_refused_in_the_editor_and_the_draft(ed, qtbot):
+    win, _spy, _ = ed
+    turn_on(win)
+    editor = win.edit._make_editor("Add a note or event")
+    qtbot.addWidget(editor)
+    editor.set_values(T0 + 10 * SEC, None, "Note", "fine\ttab\nnewline", None)
+    editor._accept()
+    assert editor.result() == 1
+    for bad in ("nul\x00here", "bell\x07", "esc\x1b[0m", "del\x7f"):
+        editor.set_values(T0 + 10 * SEC, None, "Note", bad, None)
+        editor.setResult(0)
+        editor._accept()
+        assert editor.result() == 0 and "control character" in editor.error.text()
+        assert not BANNED_RE.search(editor.error.text())
+    editor.set_values(T0 + 10 * SEC, None, "Bad\x00label", "x", None)
+    editor._accept()
+    assert "control character" in editor.error.text()
+    assert win.edit.add(T0 + 10 * SEC, None, "Spike", "x\x00y") is None
+    assert "control character" in win.last_refusal and not win.edit.draft.dirty
+
+
+def test_a_recording_packed_in_a_single_file_has_no_edit_mode(make_window, pair, tmp_path, qtbot):
+    tar = Path(mef3io.archive_session(str(pair[0])))
+    assert tar.name.endswith(".mefd.tar")
+    win = make_window(tar)
+    spy = Spy(win)
+    win.edit_button.click()
+    assert not win.edit.on and not win.edit_button.isChecked() and not win.edit.banner.isVisible()
+    assert ".mefd.tar" in win.last_refusal and str(tmp_path) not in win.last_refusal
+    assert not BANNED_RE.search(win.last_refusal) and not spy.problems
+    assert "edit" not in win.features
+
+
+def test_a_choice_for_channel_notes_says_so():
+    both = lambda channel, t: [0, 1]  # noqa: E731 - a channel two recordings hold
+    d = ad.Draft()
+    d.add(T0 + SEC, None, "Spike", "", "Fp1")
+    dialog = SavePreview(
+        lambda c: d.save_plan(both, c),
+        lambda i: f"Recording {'AB'[i]}",
+        lambda i: "AB"[i],
+        __import__("datetime").timezone.utc,
+    )
+    text = dialog.choice_layout.itemAt(0).widget().text()
+    assert "for channel Fp1" in text and "whole recording" not in text
 
 
 # --- the rules --------------------------------------------------------------------------------

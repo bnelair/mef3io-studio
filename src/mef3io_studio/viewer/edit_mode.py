@@ -47,6 +47,7 @@ class SaveOutcome:
     """What the save task hands back to the window."""
 
     written: list[int]
+    uids: set
     records: list | None
     locked: tuple
     error: UserMessage | None = None
@@ -124,14 +125,34 @@ class EditMode(QObject):
         s = self.win.settings
         return ad.parse_quick_types(s.get("viewer/quick_types") if s else "")
 
+    def _busy(self) -> bool:
+        """True (and the reason in the status line) while a save runs: the
+        draft cannot change then."""
+        if self.saving:
+            self.win.status_message.setText("Wait until the notes are saved.")
+        return self.saving
+
     def set_on(self, on: bool) -> bool:
         """Turn edit mode on or off. Turning it off with an unsaved draft
         asks Save / Discard / Cancel. Returns the mode afterwards."""
         if on == self.on:
             return self.on
-        if self.saving:
-            self.win.status_message.setText("Wait until the notes are saved.")
+        if self._busy():
             return self.on
+        if on:
+            archives = [
+                i for i in range(len(self.win.data.recordings)) if self.win.data.is_archive(i)
+            ]
+            if archives:
+                who = vm.join_letters(self.win._letters_of(archives))
+                noun = "Recording" if len(archives) == 1 else "Recordings"
+                self.win.last_refusal = (
+                    f"{noun} {who} {'is' if len(archives) == 1 else 'are'} packed in a single "
+                    "file (.mefd.tar), and notes cannot be added to those. Unpack "
+                    "it first, then open it again."
+                )
+                self.win.status_message.setText(self.win.last_refusal)
+                return self.on
         if not on and self.draft.dirty:
             answer = self.ask_unsaved("leave")
             if answer == "stay":
@@ -164,8 +185,7 @@ class EditMode(QObject):
 
     def confirm_close(self) -> bool:
         """The window is closing: True when it may. Asks when a draft is unsaved."""
-        if self.saving:
-            self.win.status_message.setText("Wait until the notes are saved.")
+        if self._busy():
             return False
         if not self.draft.dirty:
             return True
@@ -189,6 +209,14 @@ class EditMode(QObject):
 
     def _sync_buttons(self) -> None:
         d = self.draft
+        w = self.win
+        for b in (
+            w.notes_tab.add_button,
+            w.notes_tab.edit_button,
+            w.notes_tab.remove_button,
+            w.notes_tab.import_button,
+        ):
+            b.setEnabled(not self.saving)
         self.undo_button.setEnabled(d.can_undo and not self.saving)
         self.redo_button.setEnabled(d.can_redo and not self.saving)
         self.save_button.setEnabled(d.dirty and not self.saving)
@@ -241,6 +269,8 @@ class EditMode(QObject):
     def add_quick(self, number: int) -> None:
         """Keys 1 to 9: the quick type. A plain note opens the editor (it
         needs words); the others are added at once, with no text."""
+        if self._busy():
+            return
         types = self.quick_types()
         if not 1 <= number <= len(types):
             return
@@ -255,12 +285,19 @@ class EditMode(QObject):
             channel: str | None = None):  # fmt: skip
         """Add to the draft; refused (with the reason in the status line) when no
         recording holds data there."""
+        if self._busy():
+            return None
         problem = self._check_values({"time": time, "end": end, "label": label, "channel": channel})
         if problem:
             self.win.last_refusal = problem
             self.win.status_message.setText(problem)
             return None
-        item = self.draft.add(time, end, label, text, channel)
+        try:
+            item = self.draft.add(time, end, label, text, channel)
+        except ValueError as exc:
+            self.win.last_refusal = str(exc)
+            self.win.status_message.setText(str(exc))
+            return None
         self.refresh()
         self.select_item(item)
         return item
@@ -289,6 +326,8 @@ class EditMode(QObject):
 
     def open_new(self, time: int | None = None, end: int | None = None, label: str = ad.PLAIN,
                  channel: str | None = None):  # fmt: skip
+        if self._busy():
+            return None
         if not self.on:
             return None
         if time is None:
@@ -298,7 +337,12 @@ class EditMode(QObject):
         values = self.ask_note(editor)
         if values is None:
             return None
-        item = self.draft.add(**values_to_add(values))
+        try:
+            item = self.draft.add(**values_to_add(values))
+        except ValueError as exc:
+            self.win.last_refusal = str(exc)
+            self.win.status_message.setText(str(exc))
+            return None
         self.refresh()
         self.select_item(item)
         return item
@@ -317,6 +361,8 @@ class EditMode(QObject):
         return m
 
     def edit_selected(self):
+        if self._busy():
+            return None
         m = self._target()
         if m is None:
             return None
@@ -347,15 +393,22 @@ class EditMode(QObject):
         if values is None:
             return None
         changes = values_to_add(values)
-        if stored is None:
-            item = self.draft.update(item.uid, **changes)
-        else:
-            item = self.draft.edit_stored(stored, **changes)
+        try:
+            if stored is None:
+                item = self.draft.update(item.uid, **changes)
+            else:
+                item = self.draft.edit_stored(stored, **changes)
+        except ValueError as exc:
+            w.last_refusal = str(exc)
+            w.status_message.setText(str(exc))
+            return None
         self.refresh()
         self.select_item(item)
         return item
 
     def remove_selected(self) -> bool:
+        if self._busy():
+            return False
         m = self._target()
         if m is None:
             return False
@@ -374,16 +427,22 @@ class EditMode(QObject):
     # -- undo / redo / discard ----------
 
     def undo(self) -> None:
+        if self._busy():
+            return
         if self.draft.undo():
             self.select(None)
             self.refresh()
 
     def redo(self) -> None:
+        if self._busy():
+            return
         if self.draft.redo():
             self.select(None)
             self.refresh()
 
     def discard(self) -> None:
+        if self._busy():
+            return
         if self.draft.dirty:
             self.draft.clear()
             self.select(None)
@@ -429,7 +488,7 @@ class EditMode(QObject):
         return ImportPreview(preview, self.win.zone, self.win).exec() == 1
 
     def _import_read(self, preview) -> None:
-        if not self.on:
+        if not self.on or self._busy():
             return
         if not self.ask_import(preview) or not preview.can_add:
             return
@@ -496,15 +555,26 @@ class EditMode(QObject):
 
     # -- saving ----------
 
-    def ask_save(self, plan_for) -> dict | None:
-        """Show what will be written and ask (replaced in tests): the
-        choices for whole-recording notes that fall where several recordings
-        hold data, or None to stop."""
+    def other_password_label(self, index: int) -> str | None:
+        """For a recording with passwords: which one the app does NOT hold
+        (it must be asked for), else None."""
+        facts = self.win.data.facts(index)
+        if facts is None or not facts[0]:
+            return None
+        return "basic password" if facts[1] == "full" else "full-access password"
+
+    def ask_save(self, plan_for):
+        """Show what will be written and ask (replaced in tests): returns
+        ``(choices, passwords)`` - the choices for whole-recording notes that
+        fall where several recordings hold data, and the other password of
+        each protected recording - or None to stop."""
         w = self.win
-        dialog = SavePreview(plan_for, w.recording_label, w._rec_letter, w.zone, w)
+        dialog = SavePreview(
+            plan_for, w.recording_label, w._rec_letter, w.zone, w, self.other_password_label
+        )
         if dialog.exec() != 1:
             return None
-        return dialog.choices()
+        return dialog.choices(), dialog.passwords()
 
     def show_problem(self, message: UserMessage) -> None:
         """Say what went wrong, in plain words (replaced in tests)."""
@@ -537,16 +607,17 @@ class EditMode(QObject):
                 )
             )
             return False
-        choices = self.ask_save(plan_for)
-        if choices is None:
+        answer = self.ask_save(plan_for)
+        if answer is None:
             return False
+        choices, passwords = answer
         plan = plan_for(choices)
         if not plan.can_save:
             return False
-        self._start_save(plan, then_off, then_close)
+        self._start_save(plan, passwords, then_off, then_close)
         return True
 
-    def _start_save(self, plan, then_off: bool, then_close: bool) -> None:
+    def _start_save(self, plan, passwords: dict, then_off: bool, then_close: bool) -> None:
         w = self.win
         data = w.data
         controller = w.controller
@@ -558,11 +629,12 @@ class EditMode(QObject):
             result = asave.write_plan(
                 data,
                 plan,
+                passwords,
                 ctx.check_cancelled,
                 lambda done, total: ctx.report(done, total, "Adding the notes and events"),
             )
             records, locked, error = None, (), result.error
-            if result.written:
+            if result.uids:
                 ctx.report(0, None, "Reading the recordings again")
                 try:
                     controller.scheduler.drain(60.0)
@@ -579,7 +651,7 @@ class EditMode(QObject):
                         records, locked = data.annotations(), tuple(data.annotations_locked)
                     except Exception:  # noqa: BLE001 - the list then says it could not be read
                         records, locked = None, ()
-            return SaveOutcome(result.written, records, locked, error, result.stopped)
+            return SaveOutcome(result.written, result.uids, records, locked, error, result.stopped)
 
         handle = self.jobs.submit("Adding notes and events", work)
         self.last_job = handle
@@ -589,9 +661,9 @@ class EditMode(QObject):
     def _saved(self, out: SaveOutcome, plan, then_off: bool, then_close: bool) -> None:
         w = self.win
         self.saving = False
-        if out.written:
-            # What was appended leaves the draft (a second save must not add it again).
-            self.draft.written({i.uid for r in out.written for i in plan.by_recording[r].items})
+        if out.uids:
+            # Exactly what was appended leaves the draft (a second save must not add it again).
+            self.draft.written(out.uids)
             w.end_data_change(out.records, out.locked)
         else:
             w.end_data_change(None, (), reopened=False)
@@ -599,18 +671,9 @@ class EditMode(QObject):
         self.refresh()
         if out.error is not None:
             self.show_problem(out.error)
-        elif out.stopped:
-            self.show_problem(
-                UserMessage(
-                    "Stopped",
-                    "The save was stopped. The recordings that were already done keep their "
-                    "new notes; the rest are still in the draft.",
-                )
-            )
         else:
-            n = sum(plan.by_recording[r].count for r in out.written)
             w.status_message.setText(
-                f"{timefmt.format_count(n, 'note or event', 'notes and events')} added."
+                f"{timefmt.format_count(len(out.uids), 'note or event', 'notes and events')} added."
             )
             if then_off:
                 self._apply_mode(False)
@@ -634,7 +697,7 @@ class EditMode(QObject):
 
     def context(self, menu, row: int, t: int) -> None:
         """Right-click entries (edit mode only)."""
-        if not self.on:
+        if not self.on or self.saving:
             return
         menu.addSeparator()
         channel = (

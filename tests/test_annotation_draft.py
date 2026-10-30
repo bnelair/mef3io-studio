@@ -249,3 +249,35 @@ def test_export_has_the_offset_and_microseconds_and_escapes_formulas():
     again = ad.read_rows(ad.to_json(rows), "json")
     assert [r.time for r in again.rows] == [T0 + 1, T0]
     assert ad.parse_time("2000-01-01T00:00:00Z") == T0 and ad.parse_time(str(T0)) == T0
+
+
+def test_a_span_must_lie_within_one_recordings_data():
+    d = ad.Draft()
+    d.add(T0 + 50 * SEC, T0 + 100 * SEC, "Spike")  # starts in A, ends in B
+    d.add(T0 + 10 * SEC, T0 + 20 * SEC, "Spike")  # inside A
+    d.add(T0 + 50 * SEC, T0 + 70 * SEC, "Spike", "", "Fp1")  # ends in the gap
+    plan = d.save_plan(SEQ)
+    assert [i.time for i in plan.by_recording[0].session] == [T0 + 10 * SEC]
+    assert len(plan.refused) == 2
+    assert all("whole span" in why for _i, why in plan.refused)
+    assert ad.route(ad.DraftItem(1, T0 + 50 * SEC, T0 + 60 * SEC, "Note"), SEQ).status == "ok"
+    assert (
+        ad.route(ad.DraftItem(1, T0 + 50 * SEC, T0 + 60 * SEC + 1, "Note"), SEQ).status == "outside"
+    )
+
+
+def test_control_characters_are_refused_in_the_draft_and_in_imports():
+    d = ad.Draft()
+    for bad in ("a\x00b", "bell\x07", "esc\x1b", "del\x7f"):
+        with pytest.raises(ValueError, match="control character"):
+            d.add(T0, None, "Note", bad)
+    d.add(T0, None, "Note", "tab\tand\nnewline is fine")
+    with pytest.raises(ValueError):
+        d.add(T0, None, "Bad\x00", "x")
+    assert len(d.items) == 1
+    csv_text = f'start,type,text\n{T0},Note,"nul\x00inside"\n{T0},Note,fine\n'
+    r = ad.read_rows(csv_text, "csv")
+    assert len(r.rows) == 1 and "control character" in r.invalid[0][1]
+    j = ad.read_rows(json.dumps([{"start": T0, "text": "x\u0007"}]), "json")
+    assert not j.rows and "control character" in j.invalid[0][1]
+    assert ad.parse_quick_types("Good\nBad\x00\nAlso") == ("Good", "Also")

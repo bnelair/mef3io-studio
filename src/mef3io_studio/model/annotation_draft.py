@@ -42,6 +42,29 @@ EXPORT_NOTE = (
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MAX_ROWS = 200_000
 
+# --- text a file can hold ------------------------------------------------------------
+
+
+def control_problem(*texts: str | None) -> str:
+    """A plain reason when a text holds a control character (NUL and the
+    other C0 controls except tab and newline, or DEL), else "". Such
+    characters would be stored in a note and break other tools."""
+    for text in texts:
+        for ch in text or "":
+            if (ord(ch) < 32 and ch not in "\t\n") or ord(ch) == 127:
+                return (
+                    "The text holds a control character (an invisible character such as a "
+                    "null or a bell). Remove it and try again."
+                )
+    return ""
+
+
+def _refuse_controls(*texts: str | None) -> None:
+    problem = control_problem(*texts)
+    if problem:
+        raise ValueError(problem)
+
+
 # --- quick types (a preference: a list of labels) ------------------------------------
 
 
@@ -51,7 +74,11 @@ def parse_quick_types(raw: str | None) -> tuple[str, ...]:
     labels: list[str] = []
     for line in (raw or "").splitlines():
         label = " ".join(line.split())
-        if label and label.casefold() not in {x.casefold() for x in labels}:
+        if (
+            label
+            and not control_problem(label)
+            and label.casefold() not in {x.casefold() for x in labels}
+        ):
             labels.append(label[:40])
     return tuple(labels[:9]) or DEFAULT_QUICK_TYPES
 
@@ -239,6 +266,7 @@ class Draft:
     ) -> DraftItem:
         if end is not None and end <= time:
             end = None
+        _refuse_controls(label, text, channel)
         self._push()
         item = DraftItem(
             self._next, int(time), None if end is None else int(end), label, text, channel,
@@ -253,6 +281,8 @@ class Draft:
         rows = list(rows)
         if not rows:
             return 0
+        for r in rows:
+            _refuse_controls(r.get("label"), r.get("text"), r.get("channel"))
         self._push()
         for r in rows:
             end = r.get("end")
@@ -269,6 +299,7 @@ class Draft:
         """Change a draft item (new, or the changed version of a stored one)."""
         item = self._items[uid]
         new = replace(item, **changes)
+        _refuse_controls(new.label, new.text, new.channel)
         if new.end is not None and new.end <= new.time:
             new = replace(new, end=None)
         self._push()
@@ -291,6 +322,7 @@ class Draft:
             recording=stored.recording,
         )
         base.update(changes)
+        _refuse_controls(base["label"], base["text"], base["channel"])
         end = base["end"]
         if end is not None and end <= base["time"]:
             base["end"] = None
@@ -348,9 +380,16 @@ def route(item: DraftItem, holders: Callable[[str | None, int], list[int]]) -> R
     several do (side by side) the caller must choose. Nothing there: refused.
     """
     found = sorted(set(holders(item.channel, item.time)))
+    where = f"channel {item.channel}" if item.channel else "any channel"
     if not found:
-        where = f"channel {item.channel}" if item.channel else "any channel"
         return Routing("outside", reason=f"No recording holds data of {where} at that time.")
+    if item.is_span:  # the whole span must lie within one recording's data
+        found = sorted(set(found) & set(holders(item.channel, item.end - 1)))
+        if not found:
+            return Routing(
+                "outside",
+                reason=f"No single recording holds data of {where} for the whole span.",
+            )
     if item.recording is not None:
         if item.recording in found:
             return Routing("ok", item.recording)
@@ -558,10 +597,15 @@ def _row_from(number: int, raw: dict, unescape: bool) -> ImportRow:
     if end is not None and end < start:
         raise ValueError("The end is before the start.")
     text = str(cell("text") or "")
+    if unescape:  # a CSV can carry Windows line ends inside a quoted cell
+        text = text.replace("\r\n", "\n")
     channel = cell("channel")
     channel = str(channel).strip() if channel is not None else None
     if unescape:
         text = _unescape(text)
+    problem = control_problem(text, str(cell("type") or ""), channel)
+    if problem:
+        raise ValueError(problem)
     return ImportRow(
         number, start, end if end and end > start else None,
         _label_of(str(cell("type") or "")), text, channel or None,

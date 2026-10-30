@@ -152,7 +152,11 @@ _data_ids = itertools.count(1)
 class ViewerData:
     """What the viewer reads from: built by :func:`open_recordings`."""
 
-    def __init__(self, paths, passwords, readers, combined, starts, ends, rec_channels):
+    def __init__(self, paths, passwords, readers, combined, starts, ends, rec_channels, facts=None):
+        #: Per recording (letter order): ``(encrypted, access, fingerprint)``
+        #: read at opening, or None when it could not be read. Edit mode's
+        #: save compares it with the disk before writing.
+        self._facts = list(facts) if facts is not None else [None] * len(paths)
         self._paths = list(paths)  # in recording order (letters)
         self._passwords = list(passwords)
         self._readers = list(readers)
@@ -193,6 +197,15 @@ class ViewerData:
         """The password recording ``index`` was opened with ("" = none). For
         the save task only; never logged."""
         return self._passwords[index]
+
+    def facts(self, index: int):
+        """``(encrypted, access, fingerprint)`` of recording ``index`` as it was
+        when opened ("access": "full", "level-1", ...), or None."""
+        return self._facts[index]
+
+    def is_archive(self, index: int) -> bool:
+        """Whether recording ``index`` is a single-file archive (.mefd.tar)."""
+        return self._paths[index].lower().rstrip("/\\").endswith(".tar")
 
     # -- identity (for register_identity, called by the job's thread) ----------
 
@@ -489,6 +502,11 @@ class ViewerData:
         CONTRACT: the caller drains the scheduler first
         (``TileScheduler.drain``): reads running during a reopen fail."""
         fresh = open_recordings(self._paths, self._passwords)
+        # What the opening task reads once (the window's thread never asks the
+        # library): read here, on the caller's thread, BEFORE the swap, so the
+        # window never sees a data object whose caches are empty.
+        for ch in fresh.channels:
+            fresh.rate(ch), fresh.units(ch), fresh.ownership(ch)
         with self._notes_lock, self._lock:
             self.close()
             data_id, epoch, cap = self.data_id, self.epoch, self._read_threads
@@ -497,10 +515,6 @@ class ViewerData:
             self._closed = False
             self._apply_read_threads()
         fresh._combined = fresh._readers = None  # the state moved to self
-        # What the opening task reads once (the window's thread never asks the
-        # library): read again here, on the caller's thread.
-        for ch in self.channels:
-            self.rate(ch), self.units(ch), self.ownership(ch)
 
 
 # --- opening -------------------------------------------------------------------------------------
@@ -569,6 +583,29 @@ def _classify(exc: ValueError, readers, rec_channels, letters) -> ViewerRefusal 
             who,
         )
     return None
+
+
+def fingerprint_of(summary) -> tuple:
+    """What identifies a recording without a stored id: its channels with
+    their first and last times and sample counts."""
+    return tuple(
+        sorted(
+            (c.name, int(c.start_time), int(c.end_time), int(c.number_of_samples))
+            for c in summary.channels
+        )
+    )
+
+
+def _facts_of(path: str, password: str):
+    import mef3io
+
+    try:
+        with library_warnings_caught():
+            summary = mef3io.inspect(path, password=password)
+        enc = summary.encryption
+        return (bool(enc["encrypted"]), str(enc["access"]), fingerprint_of(summary))
+    except Exception:  # noqa: BLE001 - edit mode then refuses to save
+        return None
 
 
 def open_recordings(
@@ -648,7 +685,8 @@ def open_recordings(
                     if refusal is None:
                         raise
                     raise refusal from exc
-        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels)
+        facts = [_facts_of(p, w) for p, w in zip(paths_o, pwds_o, strict=True)]
+        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels, facts)
         opened = []  # owned by `data` now
     finally:
         for r in opened:

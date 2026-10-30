@@ -152,6 +152,10 @@ class NoteEditor(QDialog):
         except ValueError as exc:
             self.error.setText(str(exc))
             return
+        problem = ad.control_problem(values["label"], values["text"])
+        if problem:
+            self.error.setText(problem)
+            return
         if values["end"] is not None and values["end"] <= values["time"]:
             self.error.setText("The end must be after the start.")
             return
@@ -174,9 +178,11 @@ class SavePreview(QDialog):
         letter_of: Callable[[int], str],
         zone: tzinfo,
         parent=None,
+        other_password_of: Callable[[int], str | None] | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Save the new notes and events?")
+        self._other_password_of = other_password_of or (lambda _i: None)
         self._plan_for = plan_for
         self._label_of = label_of
         self._letter_of = letter_of
@@ -190,6 +196,11 @@ class SavePreview(QDialog):
         self.choice_layout = QVBoxLayout(self.choice_box)
         self.choice_layout.setContentsMargins(0, 0, 0, 0)
         self.choice_combos: dict[tuple[int, ...], QComboBox] = {}
+        #: Recording index -> the field for the password the app does not hold.
+        self.password_edits: dict[int, QLineEdit] = {}
+        self.password_box = QWidget(self)
+        self.password_layout = QVBoxLayout(self.password_box)
+        self.password_layout.setContentsMargins(0, 0, 0, 0)
         self.warning = QLabel(SAVE_WARNING, self)
         self.warning.setWordWrap(True)
         self.warning.setObjectName("Caption")
@@ -204,7 +215,14 @@ class SavePreview(QDialog):
         self.ok.setDefault(True)
         self.stop = QPushButton("Stop", self)
         box = QVBoxLayout(self)
-        for w in (self.lines, self.choice_box, self.problems, self.warning, self.copy_note):
+        for w in (
+            self.lines,
+            self.choice_box,
+            self.password_box,
+            self.problems,
+            self.warning,
+            self.copy_note,
+        ):
             box.addWidget(w)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -215,17 +233,60 @@ class SavePreview(QDialog):
         self.ok.clicked.connect(self.accept)
         self.stop.clicked.connect(self.reject)
         self._build_choices()
+        self._build_passwords()
         self._render()
+
+    def passwords(self) -> dict[int, str]:
+        """The extra password typed for each recording that needs one."""
+        return {i: e.text() for i, e in self.password_edits.items() if e.text()}
+
+    def _build_passwords(self) -> None:
+        involved = set(self.plan.by_recording)
+        for _item, group in self.plan.ambiguous:
+            involved.update(group)
+        asked = {i: self._other_password_of(i) for i in sorted(involved)}
+        asked = {i: what for i, what in asked.items() if what}
+        if not asked:
+            self.password_box.setVisible(False)
+            return
+        intro = QLabel(
+            "To add notes to a password-protected recording, both its passwords are needed. "
+            "The app holds one of them; enter the other.",
+            self.password_box,
+        )
+        intro.setWordWrap(True)
+        self.password_layout.addWidget(intro)
+        for i, what in asked.items():
+            label = QLabel(f"{self._label_of(i)}: the {what}", self.password_box)
+            edit = QLineEdit(self.password_box)
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+            edit.textChanged.connect(lambda _t: self._render())
+            self.password_layout.addWidget(label)
+            self.password_layout.addWidget(edit)
+            self.password_edits[i] = edit
+
+    def _passwords_ready(self) -> bool:
+        return all(
+            self.password_edits[i].text()
+            for i in self.plan.by_recording
+            if i in self.password_edits
+        )
 
     def choices(self) -> dict[tuple[int, ...], int]:
         return dict(self._choices)
 
     def _build_choices(self) -> None:
         for group in self.plan.choice_groups:
-            n = sum(1 for _i, c in self.plan.ambiguous if c == group)
+            members = [it for it, c in self.plan.ambiguous if c == group]
+            n = len(members)
             who = ad_join([self._letter_of(i) for i in group])
+            names = sorted({m.channel for m in members if m.channel})
+            if names and all(m.channel for m in members):
+                kind = f"for channel {names[0]}" if len(names) == 1 else "for channels"
+            else:
+                kind = "for the whole recording"
             text = (
-                f"{n} {'note' if n == 1 else 'notes'} for the whole recording fall where "
+                f"{n} {'note' if n == 1 else 'notes'} {kind} fall where "
                 f"recordings {who} both hold data. Choose where they go:"
             )
             label = QLabel(text, self.choice_box)
@@ -283,7 +344,7 @@ class SavePreview(QDialog):
             else ""
         )
         self.copy_note.setVisible(bool(n))
-        self.ok.setEnabled(plan.can_save)
+        self.ok.setEnabled(plan.can_save and self._passwords_ready())
 
 
 def ad_join(letters: Sequence[str]) -> str:
