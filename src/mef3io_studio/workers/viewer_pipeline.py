@@ -23,27 +23,45 @@ from ..model.cancel import CancelToken
 from ..model.viewer_source import TILE_SAMPLES
 from .viewer_scheduler import ChannelGroup, group_channels
 
+#: A block's intermediate arrays (rows x samples, margins included) stay under
+#: this many samples: bigger blocks are computed in chunks of rows.
+MAX_BLOCK_SAMPLES = 16_000_000
+
 
 @dataclass
 class ViewPiece:
-    """Filtered rows of one group over one block, at a regular step."""
+    """Filtered rows of one group over one block.
 
-    values: np.ndarray  # float32 [rows, n]
-    unfiltered: np.ndarray  # bool [rows, n]: a run too short to filter
+    ``paired`` pieces are reduced to the minimum and maximum of each bin
+    (about one bin per pixel column): ``values`` holds ``(min, max)`` pairs,
+    ``t_first_us`` is the centre of the first bin and ``dt_us`` the bin
+    length. Otherwise one value per sample at a regular step."""
+
+    values: np.ndarray  # float32 [rows, n] (n = 2 * bins when paired)
+    unfiltered: np.ndarray  # bool, same shape
     t_first_us: float
     dt_us: float
+    paired: bool = False
 
     @property
     def nbytes(self) -> int:
         return int(self.values.nbytes + self.unfiltered.nbytes)
 
+    @property
+    def n_points(self) -> int:
+        return self.values.shape[1] // 2 if self.paired else self.values.shape[1]
+
     def window(self, row: int, ta: float, tb: float) -> np.ndarray:
-        """The row's samples with time in [ta, tb]."""
+        """The row's values with time in [ta, tb]."""
         lo, hi = (ta, tb) if ta <= tb else (tb, ta)
-        n = self.values.shape[1]
+        n = self.n_points
         j0 = max(0, math.ceil((lo - self.t_first_us) / self.dt_us))
         j1 = min(n, math.floor((hi - self.t_first_us) / self.dt_us) + 1)
-        return self.values[row, j0:j1] if j1 > j0 else self.values[row, :0]
+        if j1 <= j0:
+            return self.values[row, :0]
+        if self.paired:
+            return self.values[row, 2 * j0 : 2 * j1]
+        return self.values[row, j0:j1]
 
     def minmax(self, row: int, ta: float, tb: float) -> tuple[float, float] | None:
         w = self.window(row, ta, tb)
@@ -51,6 +69,30 @@ class ViewPiece:
         if w.size == 0:
             return None
         return float(w.min()), float(w.max())
+
+
+def reduce_pairs(
+    values: np.ndarray, mask: np.ndarray, t_first: float, dt: float, bins_wanted: int
+) -> ViewPiece:
+    """Reduce to (min, max) pairs when there are clearly more samples than
+    ``bins_wanted``; otherwise keep every sample."""
+    n = values.shape[1]
+    k = n // max(1, bins_wanted)
+    if k < 2:
+        return ViewPiece(values, mask, t_first, dt)
+    m = -(-n // k)
+    pad = m * k - n
+    if pad:
+        values = np.concatenate([values, np.full((values.shape[0], pad), np.nan, np.float32)], 1)
+        mask = np.concatenate([mask, np.zeros((mask.shape[0], pad), bool)], 1)
+    v3 = values.reshape(values.shape[0], m, k)
+    out = np.empty((values.shape[0], 2 * m), dtype=np.float32)
+    with np.errstate(all="ignore"):
+        out[:, 0::2] = np.fmin.reduce(v3, axis=2)
+        out[:, 1::2] = np.fmax.reduce(v3, axis=2)
+    um = mask.reshape(mask.shape[0], m, k).any(axis=2)
+    flags = np.repeat(um, 2, axis=1)
+    return ViewPiece(out, flags, t_first + (k - 1) / 2 * dt, k * dt, paired=True)
 
 
 @dataclass
@@ -161,32 +203,46 @@ def compute_piece(
     plot_px: int,
     cancel: CancelToken | None = None,
 ) -> ViewPiece:
-    """Assemble, re-reference and filter one group over one block."""
+    """Assemble, re-reference, filter and reduce one group over one block.
+    Large blocks are done in chunks of rows (bounded memory)."""
     rate = plan.rate
     i_s, i_e = sample_range(data, rate, span)
     m = margin_samples(settings, rate)
     i_a, i_b = i_s - m, i_e + m
-    n_ch = len(plan.channels)
-    x = np.full((n_ch, max(0, i_b - i_a)), np.nan, dtype=np.float32)
-    for k in tiles_needed(data, rate, span, settings):
-        if cancel is not None:
-            cancel.raise_if_cancelled()
-        tile = get_tile(k)
-        lo = max(i_a, k * TILE_SAMPLES)
-        hi = min(i_b, (k + 1) * TILE_SAMPLES)
-        if hi > lo:
-            x[:, lo - i_a : hi - i_a] = tile[:, lo - k * TILE_SAMPLES : hi - k * TILE_SAMPLES]
-    if cancel is not None:
-        cancel.raise_if_cancelled()
-    index = {name: i for i, name in enumerate(plan.channels)}
-    y = montage.apply([rows[i] for i in plan.rows], {name: x[index[name]] for name in index})
+    length = max(0, i_b - i_a)
     want, _ = out_step_for(data, rate, span, settings, plot_px)
-    keep_from, keep_to = m, m + (i_e - i_s)
-    out, mask = dsp.filter_block(y, rate, settings, keep_from, keep_to, want)
     step = dsp.effective_out_step(settings, rate, want) if not settings.is_off else 1
+    keep_from, keep_to = m, m + (i_e - i_s)
     first = -(-keep_from // step) * step
     t_first = data.timeline_start + (i_a + first) * 1e6 / rate
-    return ViewPiece(out, mask, t_first, step * 1e6 / rate)
+    dt = step * 1e6 / rate
+    my_rows = [rows[i] for i in plan.rows]
+    per_chunk = max(1, MAX_BLOCK_SAMPLES // max(1, length))
+    tiles = tiles_needed(data, rate, span, settings)
+    outs, masks = [], []
+    for a in range(0, len(my_rows), per_chunk):
+        chunk = my_rows[a : a + per_chunk]
+        names = montage.required_channels(chunk)
+        index = {name: plan.channels.index(name) for name in names}
+        x = np.full((len(names), length), np.nan, dtype=np.float32)
+        for k in tiles:
+            if cancel is not None:
+                cancel.raise_if_cancelled()
+            tile = get_tile(k)
+            lo = max(i_a, k * TILE_SAMPLES)
+            hi = min(i_b, (k + 1) * TILE_SAMPLES)
+            if hi > lo:
+                x[:, lo - i_a : hi - i_a] = tile[
+                    [index[nm] for nm in names], lo - k * TILE_SAMPLES : hi - k * TILE_SAMPLES
+                ]
+        y = montage.apply(chunk, {nm: x[j] for j, nm in enumerate(names)})
+        del x
+        out, mask = dsp.filter_block(y, rate, settings, keep_from, keep_to, want)
+        outs.append(out)
+        masks.append(mask)
+    values = np.concatenate(outs) if len(outs) > 1 else outs[0]
+    mask = np.concatenate(masks) if len(masks) > 1 else masks[0]
+    return reduce_pairs(values, mask, t_first, dt, max(1, int(1.5 * plot_px)))
 
 
 def compute_envelope(

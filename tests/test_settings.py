@@ -51,6 +51,10 @@ def test_preferences_are_exactly_the_reviewed_list():
         "viewer/spacing",
         "viewer/profile",
         "viewer/filters",
+        "viewer/load_workers",
+        "viewer/decode_threads",
+        "viewer/filter_workers",
+        "viewer/lookahead_pages",
         "viewer/memory_mb",
     }
 

@@ -100,6 +100,9 @@ class TraceCanvas(QWidget):
         self.measure_text = ""
         #: Painted traces per row, for tests: row -> number of polyline points.
         self.drawn_points: dict[int, int] = {}
+        self._shapes: dict = {}
+        self._pm_key = None
+        self._wheel_rows = 0.0
         self.setMinimumHeight(self.fontMetrics().height() * 8)
 
     # -- geometry ---------------------------------------------------------
@@ -166,6 +169,7 @@ class TraceCanvas(QWidget):
 
     def set_rows(self, rows: Sequence[DrawRow], overview: bool, multi: bool) -> None:
         self.rows = list(rows)
+        self._shapes.clear()
         self.overview = overview
         self.multi = multi
         self.invalidate()
@@ -207,6 +211,9 @@ class TraceCanvas(QWidget):
         self._paint_overlay(p)
         p.end()
 
+    def _size_key(self) -> tuple:
+        return (self.width(), self.height(), self.devicePixelRatioF())
+
     def grab_traces(self) -> QPixmap:
         """The cached trace layer, rendered now (for tests and screenshots)."""
         if self._dirty or self._pm is None:
@@ -232,6 +239,7 @@ class TraceCanvas(QWidget):
         self._paint_axis(p, plot)
         p.end()
         self._pm = pm
+        self._pm_key = self._size_key()
         self._dirty = False
 
     def _paint_grid(self, p: QPainter, plot: QRectF) -> None:
@@ -295,39 +303,42 @@ class TraceCanvas(QWidget):
 
     def _row_shape(self, row: DrawRow, w: int) -> _RowShape:
         """What to draw for a row: polylines (x in pixels from the plot's
-        left edge, y in microvolts) and gap bands (pixel ranges)."""
+        left edge, y in microvolts) and gap bands (pixel ranges). Built from
+        the pieces' prepared arrays (already about one (min, max) pair per
+        pixel), cached by (piece, row, page, width)."""
         piece = row.piece
+        key = (id(piece), row.local, self.t0, self.t1, w)
+        hit = self._shapes.get(key)
+        if hit is not None:
+            return hit
+        shape = self._build_shape(piece, row.local, w)
+        if len(self._shapes) > 256:
+            self._shapes.clear()
+        self._shapes[key] = shape
+        return shape
+
+    def _build_shape(self, piece, local: int, w: int) -> _RowShape:
         if isinstance(piece, EnvelopePiece):
-            mn, mx = envelope_columns(piece.rows[row.local], self.t0, self.t1, w)
+            mn, mx = envelope_columns(piece.rows[local], self.t0, self.t1, w)
             return _columns_shape(mn, mx, np.zeros(w, dtype=bool))
         dt = piece.dt_us
-        n = piece.values.shape[1]
+        n = piece.n_points
         j0 = max(0, int(math.floor((self.t0 - piece.t_first_us) / dt)) - 1)
         j1 = min(n, int(math.ceil((self.t1 - piece.t_first_us) / dt)) + 1)
         if j1 <= j0:
             return _RowShape([], [(0, w)])
-        y = piece.values[row.local, j0:j1].astype(np.float64)
-        um = piece.unfiltered[row.local, j0:j1]
         t = piece.t_first_us + np.arange(j0, j1) * dt
         x = (t - self.t0) / (self.t1 - self.t0) * w
+        if piece.paired:
+            lo = piece.values[local, 2 * j0 : 2 * j1 : 2].astype(np.float64)
+            hi = piece.values[local, 2 * j0 + 1 : 2 * j1 : 2].astype(np.float64)
+            um = piece.unfiltered[local, 2 * j0 : 2 * j1 : 2]
+            return _reduce_columns(x, lo, hi, um, w)
+        y = piece.values[local, j0:j1].astype(np.float64)
+        um = piece.unfiltered[local, j0:j1]
         if len(y) <= 2 * w:  # exact samples joined by straight lines
             return _exact_shape(x, y, um, dt / (self.t1 - self.t0) * w, w)
-        keep = (x >= 0) & (x < w)
-        y, um, x = y[keep], um[keep], x[keep]
-        if y.size == 0:
-            return _RowShape([], [(0, w)])
-        col = np.clip(np.floor(x).astype(np.int64), 0, w - 1)
-        edges = np.searchsorted(col, np.arange(w))
-        present = np.zeros(w, dtype=bool)
-        present[col] = True
-        edges = np.minimum(edges, y.size - 1)
-        with np.errstate(all="ignore"):
-            lo = np.fmin.reduceat(y, edges)
-            hi = np.fmax.reduceat(y, edges)
-            du = np.maximum.reduceat(um.astype(np.uint8), edges).astype(bool)
-        mn = np.where(present, lo, np.nan)
-        mx = np.where(present, hi, np.nan)
-        return _columns_shape(mn, mx, du & present)
+        return _reduce_columns(x, y, y, um, w)
 
     def _paint_gutter(self, p: QPainter, plot: QRectF) -> None:
         pal = self.palette_
@@ -561,7 +572,11 @@ class TraceCanvas(QWidget):
             frac = (event.position().x() - self.gutter) / self.plot_rect().width()
             self.wheel_zoom.emit(steps, min(1.0, max(0.0, frac)))
         elif mods & Qt.KeyboardModifier.ShiftModifier:
-            self.wheel_rows.emit(steps)
+            self._wheel_rows += steps
+            whole = int(self._wheel_rows)  # a touchpad sends many small steps
+            if whole:
+                self._wheel_rows -= whole
+                self.wheel_rows.emit(float(whole))
         else:
             self.wheel_time.emit(steps)
         event.accept()
@@ -594,6 +609,27 @@ def _columns_shape(mn, mx, dimmed) -> _RowShape:
         xs = np.repeat(np.arange(a, b) + 0.5, 2)
         segments.append((xs, ys, bool(dimmed[a:b].mean() > 0.5)))
     return _RowShape(segments, _runs(~ok))
+
+
+def _reduce_columns(x, lo, hi, um, w) -> _RowShape:
+    """Min and max per pixel column over the samples (or bins) whose x lies
+    inside the plot, reducing only the columns that hold one (so the last
+    sample is never dropped)."""
+    keep = (x >= 0) & (x < w)
+    if not keep.any():
+        return _RowShape([], [(0, w)])
+    x, lo, hi, um = x[keep], lo[keep], hi[keep], um[keep]
+    col = np.clip(np.floor(x).astype(np.int64), 0, w - 1)
+    present, starts = np.unique(col, return_index=True)
+    with np.errstate(all="ignore"):
+        mn_p = np.fmin.reduceat(lo, starts)
+        mx_p = np.fmax.reduceat(hi, starts)
+    du_p = np.maximum.reduceat(um.astype(np.uint8), starts).astype(bool)
+    mn = np.full(w, np.nan)
+    mx = np.full(w, np.nan)
+    du = np.zeros(w, dtype=bool)
+    mn[present], mx[present], du[present] = mn_p, mx_p, du_p
+    return _columns_shape(mn, mx, du)
 
 
 def _exact_shape(x, y, um, dx, w) -> _RowShape:

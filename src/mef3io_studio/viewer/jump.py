@@ -24,7 +24,7 @@ US = 1_000_000
 HELP_TEXT = (
     "You can type a time of day (14:30), a day and time (day 2 08:00), a date and time "
     "(2000-01-31 14:30), a move such as +10m, -90s or +2h, or a recording letter (B) "
-    "to go to its start."
+    "to go to its start. Press Shift+Enter for the previous occurrence of a time of day."
 )
 
 

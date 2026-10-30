@@ -12,6 +12,7 @@ right-click entries).
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Callable
 from datetime import UTC, tzinfo
@@ -75,6 +76,20 @@ def default_state(settings, timeline_start: int) -> ViewState:
     )
 
 
+def performance_from(settings) -> vv.Performance:
+    """The performance settings (0 = automatic), kept inside their ranges."""
+    if settings is None:
+        return vv.Performance()
+    perf = vv.Performance(
+        settings.get("viewer/load_workers"),
+        settings.get("viewer/decode_threads"),
+        settings.get("viewer/filter_workers"),
+        settings.get("viewer/lookahead_pages"),
+        settings.get("viewer/memory_mb"),
+    )
+    return vv.clean_performance(perf, os.cpu_count() or 1)
+
+
 class ViewerWindow(QMainWindow):
     """Shows ``data`` (a ``ViewerData``) in a window of its own."""
 
@@ -115,8 +130,10 @@ class ViewerWindow(QMainWindow):
         self._rate_of = data.rate
         self._channels = list(data.channels)
         self._rates = sorted({float(data.rate(c)) for c in self._channels}) or [256.0]
-        budget = (settings.get("viewer/memory_mb") if settings else 512) * 1024 * 1024
-        self.controller = ViewController(data, int(budget), parent=self)
+        self.perf = performance_from(settings)
+        self.controller = ViewController(data, self.perf, parent=self)
+        self._chosen: set[str] = set()
+        self._last_row: int | None = None
         self.controller.pieces_changed.connect(self._apply_pieces)
         self.controller.loading_changed.connect(lambda on: self.canvas.set_loading(on))
         self.controller.failed.connect(self._failed)
@@ -320,6 +337,11 @@ class ViewerWindow(QMainWindow):
         self.filter_panel.changed.connect(self._filters_chosen)
         self.filter_panel.response_requested.connect(self.show_response)
         self.jump_dialog.jump_requested.connect(self._jump_requested)
+        self.time_edit.returnPressed.connect(self._go_clicked)
+        self.day_box.lineEdit().returnPressed.connect(self._go_clicked)
+        self.time_edit.installEventFilter(self)
+        self.day_box.installEventFilter(self)
+        self.day_box.lineEdit().installEventFilter(self)
 
     # -- keys ----------
 
@@ -352,6 +374,16 @@ class ViewerWindow(QMainWindow):
         h["help"] = self.toggle_help
         h["export_start"] = lambda: self._export_edge("start")
         h["export_end"] = lambda: self._export_edge("end")
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and obj in (self.time_edit, self.day_box, self.day_box.lineEdit())
+        ):
+            self.canvas.setFocus()
+            return True
+        return super().eventFilter(obj, event)
 
     def press(self, action: str) -> bool:
         """Run a key-table action (as its key would). False when it is not
@@ -440,12 +472,15 @@ class ViewerWindow(QMainWindow):
         self.set_state(t0=int(anchor - frac * new))
 
     def set_timebase(self, value: float) -> None:
+        self._chosen.add("timebase")
         self.set_state(timebase=vv.nearest_step(vv.TIMEBASE_STEPS, value))
 
     def step_sensitivity(self, delta: int) -> None:
+        self._chosen.add("sensitivity")
         self.set_state(sensitivity=vv.step_value(vv.SENS_STEPS, self.state.sensitivity, delta))
 
     def step_spacing(self, delta: int) -> None:
+        self._chosen.add("spacing")
         self.set_state(spacing=vv.step_value(vv.SPACING_STEPS, self.state.spacing, delta))
 
     def go_to_boundary(self, direction: int) -> None:
@@ -521,22 +556,33 @@ class ViewerWindow(QMainWindow):
         panel.raise_()
 
     def _filters_chosen(self, settings: dsp.FilterSettings) -> None:
+        self._chosen.add("filters")
         self.set_state(filters=settings)
         if self.response_dialog is not None and self.response_dialog.isVisible():
             self.response_dialog.refresh(settings)
 
     def show_response(self) -> None:
         rate = None
-        if self._pointer_row is not None and self._pointer_row < len(self.canvas.rows):
-            rate = float(self._rate_of(self.canvas.rows[self._pointer_row].channel))
-        self.response_dialog = ResponseDialog(self.state.filters, self._rates, rate, self)
-        self.response_dialog.show()
+        row = self._last_row
+        if row is not None and row < len(self.canvas.rows):
+            rate = float(self._rate_of(self.canvas.rows[row].channel))
+        dlg = self.response_dialog
+        if dlg is None or not dlg.isVisible():
+            self.response_dialog = dlg = ResponseDialog(self.state.filters, self._rates, rate, self)
+        else:
+            dlg.refresh(self.state.filters)
+            if rate is not None:
+                dlg.set_rate(rate)
+        dlg.show()
+        dlg.raise_()
 
     def _profile_chosen(self, _i: int) -> None:
+        self._chosen.add("profile")
         self.set_state(profile=self.profile_box.currentData())
         self.canvas.setFocus()
 
     def _box_chose(self, field: str, box: QComboBox) -> None:
+        self._chosen.add(field)
         self.set_state(**{field: box.currentData()})
         self.canvas.setFocus()
 
@@ -597,6 +643,7 @@ class ViewerWindow(QMainWindow):
             self.status_message.setText(str(exc))
             return
         self.go_to(t)
+        self.canvas.setFocus()
 
     # -- the refresh ----------
 
@@ -666,6 +713,7 @@ class ViewerWindow(QMainWindow):
         if len(pieces) != len(rows):
             return
         self.canvas.set_rows(self._draw_rows(rows, pieces), self.overview(), self.multi)
+        self.canvas.set_loading(self.controller.loading)
 
     def _draw_rows(self, rows, pieces) -> list[DrawRow]:
         data = self.data
@@ -767,6 +815,8 @@ class ViewerWindow(QMainWindow):
 
     def _pointer(self, t, row) -> None:
         self._pointer_t, self._pointer_row = t, row
+        if row is not None:
+            self._last_row = row  # remembered for "Show response" after the pointer left
         self.status_time.setText("" if t is None else timefmt.format_time(t, self.zone, 3))
         text = ""
         if self.multi and t is not None and row is not None and row < len(self.canvas.rows):
@@ -862,32 +912,50 @@ class ViewerWindow(QMainWindow):
         QTimer.singleShot(0, self._refresh)
 
     def save_preferences(self) -> None:
+        """Save only what the user chose through the controls (not the
+        automatic sensitivity, not a zoom)."""
         s = self.settings
         if s is None:
             return
-        s.set("viewer/sensitivity", float(self.state.sensitivity))
-        s.set("viewer/timebase", float(self.state.timebase))
-        s.set("viewer/spacing", float(self.state.spacing))
-        s.set("viewer/profile", self.state.profile)
-        f = self.state.filters
-        s.set(
-            "viewer/filters",
-            json.dumps(
-                {
-                    "highpass_hz": f.highpass_hz, "lowpass_hz": f.lowpass_hz,
-                    "mains_hz": f.mains_hz, "mains_width": f.mains_width,
-                    "mains_harmonics": f.mains_harmonics, "order": f.order,
-                    "zero_phase": f.zero_phase,
-                }
-            ),
-        )  # fmt: skip
+        st = self.state
+        if "sensitivity" in self._chosen:
+            s.set("viewer/sensitivity", float(st.sensitivity))
+        if "spacing" in self._chosen:
+            s.set("viewer/spacing", float(st.spacing))
+        if "timebase" in self._chosen and st.timebase in vv.TIMEBASE_CLINICAL:
+            s.set("viewer/timebase", float(st.timebase))
+        if "profile" in self._chosen:
+            s.set("viewer/profile", st.profile)
+        if "filters" in self._chosen:
+            f = st.filters
+            s.set(
+                "viewer/filters",
+                json.dumps(
+                    {
+                        "highpass_hz": f.highpass_hz,
+                        "lowpass_hz": f.lowpass_hz,
+                        "mains_hz": f.mains_hz,
+                        "mains_width": f.mains_width,
+                        "mains_harmonics": f.mains_harmonics,
+                        "order": f.order,
+                        "zero_phase": f.zero_phase,
+                    }
+                ),
+            )
+
+    def _shut_down(self) -> None:
+        """Stop the scheduler, then the pools, then close the data (in that order)."""
+        try:
+            self.controller.finish_close()
+        finally:
+            self.data.close()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self._closed:
             self._closed = True
             self._debounce.stop()
             self.save_preferences()
-            self.controller.close()
-            threading.Thread(target=self.data.close, daemon=True).start()
+            self.controller.close()  # cancels at once; the stopping happens off this thread
+            threading.Thread(target=self._shut_down, daemon=True).start()
             self.closed.emit()
         super().closeEvent(event)

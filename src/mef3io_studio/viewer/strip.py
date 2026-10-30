@@ -17,7 +17,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..model import timefmt
-from ..model.viewer_view import Palette, recording_colour
+from ..model.viewer_view import STRIP_DATA, STRIP_GAP, Palette, recording_colour
 
 STRIP_HEIGHT = 32
 
@@ -37,6 +37,7 @@ class OverviewStrip(QWidget):
         self.timeline = (0, 1)
         self.coverage: list[tuple[int, int, int]] = []
         self.page = (0, 1)
+        self.multi = False
         self.envelope: np.ndarray | None = None  # [2, bins]: min, max (normalised -1..1)
         self.setToolTip("The whole timeline. Click or drag to go there.")
 
@@ -47,6 +48,7 @@ class OverviewStrip(QWidget):
     def set_timeline(self, start: int, end: int, coverage: Sequence[tuple[int, int, int]]) -> None:
         self.timeline = (start, max(end, start + 1))
         self.coverage = list(coverage)
+        self.multi = len({c[2] for c in self.coverage}) > 1
         self.update()
 
     def set_page(self, t0: int, t1: int) -> None:
@@ -71,8 +73,8 @@ class OverviewStrip(QWidget):
         p.fillRect(self.rect(), QColor(pal.background))
         bar = QRectF(0, 3, self.width(), 14)
         # gaps: hatched background over the whole timeline
-        hatch = QColor(pal.muted)
-        hatch.setAlpha(110)
+        shade = 1 if pal.dark else 0
+        hatch = QColor(STRIP_GAP[shade])
         p.fillRect(bar, QColor(pal.gap))
         p.setPen(QPen(hatch, 1))
         for x in range(-14, self.width(), 5):
@@ -81,7 +83,8 @@ class OverviewStrip(QWidget):
         for t0, t1, rec in self.coverage:
             x0, x1 = self.x_of(t0), self.x_of(t1)
             r = QRectF(x0, bar.top(), max(1.5, x1 - x0), bar.height())
-            p.fillRect(r, QColor(recording_colour(rec, dark)))
+            colour = recording_colour(rec, dark) if self.multi else STRIP_DATA[shade]
+            p.fillRect(r, QColor(colour))
         if self.envelope is not None and self.envelope.shape[1] > 1:
             n = self.envelope.shape[1]
             line = QColor(pal.background)
@@ -115,11 +118,15 @@ class OverviewStrip(QWidget):
                 last = x + tw / 2
         # the page
         x0, x1 = self.x_of(self.page[0]), self.x_of(self.page[1])
-        box = QRectF(x0, 1, max(3.0, x1 - x0), bar.bottom() + 2)
+        box = QRectF(x0, 1.5, max(4.0, x1 - x0), bar.bottom() + 1)  # taller than the bar
         fill = QColor(pal.cursor)
-        fill.setAlpha(45)
+        fill.setAlpha(60)
         p.setBrush(fill)
-        p.setPen(QPen(QColor(pal.cursor), 2))
+        p.setPen(QPen(QColor("#000000"), 4))  # dark outside, white inside, then the cursor colour
+        p.drawRect(box)
+        p.setPen(QPen(QColor("#ffffff"), 2.5))
+        p.drawRect(box)
+        p.setPen(QPen(QColor(pal.cursor), 1))
         p.drawRect(box)
         p.end()
 

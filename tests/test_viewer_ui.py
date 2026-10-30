@@ -238,6 +238,7 @@ def test_montage_switch_changes_the_row_labels(one, qtbot):
 
 
 def test_referenced_values_are_the_difference(one, qtbot):
+    one.set_timebase(120)  # a short page: every sample is kept (no min/max reduction)
     one.use_as_reference("Cz")
     settle(qtbot, one)
     row = next(r for r in one.canvas.rows if r.label == "LA3 − Cz")
@@ -426,6 +427,7 @@ def test_overview_beyond_five_minutes(make_window, tmp_path, qtbot):
 
 def test_pages_beyond_the_first_tile_are_seamless(make_window, tmp_path, qtbot):
     win = make_window(write(tmp_path / "t.mefd", ["c"], seconds=700, fs=256.0))
+    win.set_timebase(120)
     page = win.page_us()
     boundary = T0 + int(65536 / 256.0 * SEC)
     win.go_to(boundary - page // 2)

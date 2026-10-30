@@ -359,18 +359,19 @@ class TileScheduler:
         channel_groups: Sequence[ChannelGroup],
         adjacent_groups: Sequence[ChannelGroup] = (),
         generation: int = 0,
+        ahead_pages: int = 2,
     ) -> list[Request]:
-        """Ordered requests for a page: its tiles (priority 0), then 2 pages
+        """Ordered requests for a page: its tiles (priority 0), then ``ahead_pages`` (2) pages
         ahead in the direction of travel and 1 behind (priority 1), then the
         page's tiles for the adjacent channel screens (priority 2)."""
         data = self._data
         length = max(1, int(page_t1 - page_t0))
         sign = -1 if direction < 0 else 1
         if sign > 0:
-            ahead = (page_t1, page_t1 + 2 * length)
+            ahead = (page_t1, page_t1 + ahead_pages * length)
             behind = (page_t0 - length, page_t0)
         else:
-            ahead = (page_t0 - 2 * length, page_t0)
+            ahead = (page_t0 - ahead_pages * length, page_t0)
             behind = (page_t1, page_t1 + length)
         plan: list[Request] = []
         seen: set[tuple] = set()

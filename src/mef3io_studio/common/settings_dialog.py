@@ -18,13 +18,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
 )
 
 from ..model.journal import KeyUnavailable, seal, unseal
 from ..model.pipeline import default_work_folder, work_folder_problem
+from .dialogs import TechnicalDetails
 from .pages import scaled_font
 from .settings import Settings
+from .text import technical
 
 
 def work_folder(settings: Settings) -> str:
@@ -113,6 +116,7 @@ class SettingsDialog(QDialog):
         layout.addLayout(row)
         layout.addWidget(self.problem)
         layout.addWidget(self.awake)
+        self._viewer_section(layout, settings)
         layout.addWidget(buttons)
         self.awake.toggled.connect(lambda on: settings.set("anonymizer/keep_awake", bool(on)))
         self._show()
@@ -148,3 +152,57 @@ class SettingsDialog(QDialog):
         self.folder = target
         self._show()
         return True
+
+    def _viewer_section(self, layout, settings: Settings) -> None:
+        import os
+
+        cores = max(1, os.cpu_count() or 1)
+        heading = QLabel("Signal viewer", self)
+        heading.setFont(scaled_font(self, 1.1, bold=True))
+        layout.addWidget(heading)
+        self.viewer_spins: dict[str, QSpinBox] = {}
+        rows = (
+            ("viewer/load_workers", "Loading in parallel", 0, cores, 1, "Automatic"),
+            ("viewer/decode_threads", "Parts decoded at once, per read", 0, cores, 1, "Automatic"),
+            ("viewer/filter_workers", "Filtering in parallel", 0, cores, 1, "Automatic"),
+            ("viewer/lookahead_pages", "Pages loaded ahead", 0, 8, 1, None),
+            ("viewer/memory_mb", "Memory for loaded data (MB)", 0, 16384, 128, "Automatic"),
+        )
+        for key, label, lo, hi, step, special in rows:
+            spin = QSpinBox(self)
+            spin.setRange(lo, hi)
+            spin.setSingleStep(step)
+            if special:
+                spin.setSpecialValueText(special)
+            spin.setValue(settings.get(key))
+            spin.valueChanged.connect(lambda v, k=key, sp=spin: self._viewer_changed(k, v, sp))
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label, self), 1)
+            row.addWidget(spin)
+            layout.addLayout(row)
+            self.viewer_spins[key] = spin
+        note = QLabel("Changes apply to viewer windows you open afterwards.", self)
+        note.setObjectName("Muted")
+        layout.addWidget(note)
+        layout.addWidget(
+            TechnicalDetails(
+                technical(
+                    "More loading workers read more tiles at once: faster on fast disks and "
+                    "with many cores, and often on network drives, at the cost of memory. "
+                    "Decoding threads per read is mef3io's n_threads for one read; automatic "
+                    "keeps the total near the number of cores. Filtering workers is the "
+                    "compute pool size. Pages loaded ahead are read in the direction of "
+                    "travel (one page behind is always kept). Memory bounds loaded tiles and "
+                    "filtered blocks together (automatic: 512 MB, allowed 128 MB to 16 GB)."
+                ),
+                self,
+            )
+        )
+
+    def _viewer_changed(self, key: str, value: int, spin: QSpinBox) -> None:
+        if key == "viewer/memory_mb" and 0 < value < 128:
+            value = 128 if value > 64 else 0  # the lowest allowed amount is 128 MB
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+        self.settings.set(key, int(value))

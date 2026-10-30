@@ -16,15 +16,18 @@ facts - rates, units, who owns what - were read once by the opening task.)
 from __future__ import annotations
 
 import itertools
+import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import numpy as np
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
+from ..common.privacy import scrub
 from ..model import dsp, montage
 from ..model.cancel import CancelToken, JobCancelled, is_stop
-from ..model.viewer_view import aligned_block, next_block_start
+from ..model.viewer_view import Performance, aligned_block, memory_bytes, next_block_start
 from ..workers import viewer_pipeline as pipe
 from ..workers.viewer_scheduler import (
     LOOKAHEAD,
@@ -39,10 +42,11 @@ from ..workers.viewer_scheduler import (
 from .strip import envelope_bins
 
 MAX_COMPUTE = 2
+log = logging.getLogger(__name__)
 STRIP_BINS = 2000
 
 
-@dataclass
+@dataclass(eq=False)
 class _Job:
     key: tuple
     kind: str  # "samples" | "envelope"
@@ -57,6 +61,8 @@ class _Job:
     state: str = "waiting"  # waiting | computing
     token: CancelToken = field(default_factory=CancelToken)
     seq: int = 0
+    tile_numbers: list = field(default_factory=list)
+    asked_again: bool = False
 
 
 @dataclass
@@ -72,6 +78,7 @@ class _Request:
     #: plan index -> job/cache keys
     keys: dict[int, tuple] = field(default_factory=dict)
     pieces: dict[int, object] = field(default_factory=dict)
+    failed: set = field(default_factory=set)
     location: dict[int, tuple[int, int]] = field(default_factory=dict)
 
 
@@ -90,22 +97,41 @@ class ViewController(QObject):
     _error = Signal(object, object)
     _strip = Signal(object)
 
-    def __init__(self, data, budget_bytes: int, workers: int | None = None, parent=None):
+    def __init__(self, data, perf: Performance | None = None, parent=None):
         super().__init__(parent)
+        perf = perf or Performance()
+        self.perf = perf
         self.data = data
-        self.cache = TileCache(budget_bytes)
+        self.cache = TileCache(memory_bytes(perf))
         self.blocks = ViewBlockCache(self.cache)
         self.scheduler = TileScheduler(
-            data, self.cache, workers=workers, on_ready=self._on_tile, on_error=self._on_tile_error
+            data,
+            self.cache,
+            workers=perf.load_workers or None,
+            on_ready=self._on_tile,
+            on_error=self._on_tile_error,
         )
-        self._pool = ThreadPoolExecutor(MAX_COMPUTE, thread_name_prefix="viewer-compute")
+        if perf.decode_threads:
+            data.set_read_threads(perf.decode_threads)
+        self.max_compute = perf.filter_workers or MAX_COMPUTE
+        self._pool = ThreadPoolExecutor(self.max_compute, thread_name_prefix="viewer-compute")
         self._strip_pool = ThreadPoolExecutor(1, thread_name_prefix="viewer-strip")
+        #: Tiles handed over by the scheduler that a waiting job still needs
+        #: (the cache may evict, or refuse, a big one).
+        self._held: dict[tuple, np.ndarray] = {}
+        self._needed: set[tuple] = set()
+        self._held_lock = threading.Lock()
+        self._zombies: set[_Job] = set()
         self._jobs: dict[tuple, _Job] = {}
         self._seq = itertools.count()
         self._generation = 0
         self._req: _Request | None = None
         self._loading = False
         self._closed = False
+        self._watch = QTimer(self)  # a waiting job is looked at again now and then
+        self._watch.setInterval(250)
+        self._watch.timeout.connect(self._pump)
+        self._watch.start()
         self._tile.connect(self._pump)
         self._done.connect(self._on_done)
         self._error.connect(self._on_error)
@@ -113,13 +139,17 @@ class ViewController(QObject):
 
     # -- worker-thread callbacks: only emit ------------------------------------
 
-    def _on_tile(self, key, _array) -> None:
-        if not self._closed:
-            self._tile.emit(key)
+    def _on_tile(self, key, array) -> None:
+        if self._closed:
+            return
+        with self._held_lock:
+            if key in self._needed:
+                self._held[key] = array
+        self._tile.emit(key)
 
     def _on_tile_error(self, key, exc) -> None:
         if not self._closed:
-            self._error.emit(None, exc)
+            self._error.emit(key, exc)
 
     # -- requests ----------
 
@@ -150,7 +180,13 @@ class ViewController(QObject):
             settings = dsp.FilterSettings()
             plans = _envelope_plans(rows)
         else:
-            plans = pipe.plan_groups(data, rows)
+            try:
+                plans = pipe.plan_groups(data, rows)
+            except ValueError:
+                self._req = None
+                self.failed.emit("These channels cannot be shown together this way.")
+                self._set_loading(False)
+                return
         req = _Request(gen, list(rows), plans, overview, settings, span, plot_px, visible)
         for gi, plan in enumerate(plans):
             for local, ri in enumerate(plan.rows):
@@ -204,10 +240,22 @@ class ViewController(QObject):
         )
         if not req.overview:
             for k in pipe.tiles_needed(self.data, plan.rate, span, settings):
+                job.tile_numbers.append(k)
                 job.tile_keys.append(TileScheduler.key_of(plan.rate, plan.channels, k, dk))
+            with self._held_lock:  # before asking: a fast tile must be kept
+                self._needed.update(job.tile_keys)
+            for k in job.tile_numbers:
                 self.scheduler.request(plan.rate, plan.channels, k, priority, req.generation)
         self._jobs[key] = job
+        self._update_needed()
         return key
+
+    def _update_needed(self) -> None:
+        need = {k for j in self._jobs.values() for k in j.tile_keys}
+        with self._held_lock:
+            self._needed = need
+            for k in [k for k in self._held if k not in need]:
+                del self._held[k]
 
     def _drop_stale(self, gen: int, wanted: set) -> None:
         for key, job in list(self._jobs.items()):
@@ -216,9 +264,10 @@ class ViewController(QObject):
                 continue
             if job.generation < gen:
                 job.token.cancel()
-                if job.state == "waiting":
-                    del self._jobs[key]
-                # a computing job finishes (or stops) and its result is kept
+                del self._jobs[key]
+                if job.state == "computing":
+                    self._zombies.add(job)  # still running: counted until it ends
+        self._update_needed()
         self.scheduler.cancel_stale(gen)
 
     def _look_ahead(self, req: _Request, direction: int, wanted: set) -> None:
@@ -231,7 +280,12 @@ class ViewController(QObject):
         ]
         t0 = req.span[0]
         plan = self.scheduler.prefetch_plan(
-            t0, t0 + page_len, direction, groups, generation=req.generation
+            t0,
+            t0 + page_len,
+            direction,
+            groups,
+            generation=req.generation,
+            ahead_pages=self.perf.lookahead_pages,
         )
         self.scheduler.request_all(plan)
         nxt = aligned_block(
@@ -256,18 +310,36 @@ class ViewController(QObject):
         if self._closed:
             return
         inflight = sum(1 for j in self._jobs.values() if j.state == "computing")
+        inflight += len(self._zombies)
         waiting = sorted(
             (j for j in self._jobs.values() if j.state == "waiting"),
             key=lambda j: (j.priority, j.seq),
         )
         for job in waiting:
-            if inflight >= MAX_COMPUTE:
+            if inflight >= self.max_compute:
                 break
-            if all(k in self.cache for k in job.tile_keys):
-                job.state = "computing"
-                inflight += 1
-                self._pool.submit(self._compute, job)
+            missing = self._missing(job)
+            if missing:
+                if not job.asked_again and self.scheduler.pending() == 0:
+                    # a tile is neither here nor on its way (lost): ask again
+                    job.asked_again = True
+                    for k in missing:
+                        self.scheduler.request(
+                            job.plan.rate, job.plan.channels, k, job.priority, job.generation
+                        )
+                continue
+            job.state = "computing"
+            inflight += 1
+            self._pool.submit(self._compute, job)
         self._collect()
+
+    def _missing(self, job: _Job) -> list[int]:
+        out = []
+        with self._held_lock:
+            for k, key in zip(job.tile_numbers, job.tile_keys, strict=True):
+                if key not in self._held and key not in self.cache:
+                    out.append(k)
+        return out
 
     def _compute(self, job: _Job) -> None:
         data, cache = self.data, self.cache
@@ -281,8 +353,11 @@ class ViewController(QObject):
 
                 def get_tile(k: int):
                     key = TileScheduler.key_of(plan.rate, plan.channels, k, dk)
-                    tile = cache.get(key)
-                    if tile is None:  # evicted meanwhile: read it here
+                    with self._held_lock:
+                        tile = self._held.get(key)
+                    if tile is None:
+                        tile = cache.get(key)
+                    if tile is None:  # lost meanwhile: read it here
                         tile = data.read_tile(list(plan.channels), plan.rate, k, job.token)
                         cache.put(key, tile)
                     return tile
@@ -291,7 +366,7 @@ class ViewController(QObject):
                     data, get_tile, plan, job.rows, job.span, job.settings, job.plot_px, job.token
                 )
             self.cache.put(job.key, piece)
-            outcome, error = "ok", None
+            outcome, error = "ok", piece
         except BaseException as exc:  # noqa: BLE001 - a worker must survive
             outcome, error = (
                 ("stopped", None)
@@ -302,16 +377,38 @@ class ViewController(QObject):
             self._done.emit(job, (outcome, error))
 
     def _on_done(self, job, result) -> None:
+        self._zombies.discard(job)
         if self._jobs.get(job.key) is job:
             del self._jobs[job.key]
-        outcome, _error = result
+        self._update_needed()
+        outcome, error = result
+        if outcome == "ok" and self._req is not None:
+            # also when the cache refused it (a block bigger than the whole budget)
+            for gi, key in self._req.keys.items():
+                if key == job.key and gi not in self._req.pieces:
+                    self._req.pieces[gi] = error
+                    self.pieces_changed.emit()
         if outcome == "error":
-            self.failed.emit("Part of the signal could not be read. Nothing was changed.")
+            log.error("view block failed with %s: %s", type(error).__name__, scrub(str(error)))
+            self._fail_keys({job.key})
         self._pump()
 
-    def _on_error(self, _key, _exc) -> None:
+    def _on_error(self, tile_key, exc) -> None:
+        log.error("tile read failed with %s: %s", type(exc).__name__, scrub(str(exc)))
+        broken = {k for k, j in self._jobs.items() if tile_key in j.tile_keys}
+        for k in broken:
+            del self._jobs[k]
+        self._update_needed()
+        self._fail_keys(broken)
+
+    def _fail_keys(self, keys: set) -> None:
+        req = self._req
+        if req is not None:
+            for gi, k in req.keys.items():
+                if k in keys:
+                    req.failed.add(gi)
         self.failed.emit("Part of the signal could not be read. Nothing was changed.")
-        self._set_loading(False)
+        self._set_loading(self._visible_pending(req) if req else False)
 
     # -- results ----------
 
@@ -333,7 +430,7 @@ class ViewController(QObject):
         self._set_loading(self._visible_pending(req))
 
     def _visible_pending(self, req: _Request) -> bool:
-        return any(gi not in req.pieces for gi in req.keys)
+        return any(gi not in req.pieces and gi not in req.failed for gi in req.keys)
 
     def _set_loading(self, loading: bool) -> None:
         if loading != self._loading:
@@ -390,10 +487,17 @@ class ViewController(QObject):
     # -- lifecycle ----------
 
     def close(self) -> None:
+        """Mark closed and cancel at once (cheap, GUI thread); stopping the
+        scheduler and pools happens in :meth:`finish_close`."""
         self._closed = True
-        for job in self._jobs.values():
+        self._watch.stop()
+        for job in [*self._jobs.values(), *self._zombies]:
             job.token.cancel()
         self._jobs.clear()
+
+    def finish_close(self) -> None:
+        """Stop the scheduler, then the pools (waiting for running work).
+        Blocking: call from a background thread."""
         self.scheduler.close()
         self._pool.shutdown(wait=True, cancel_futures=True)
         self._strip_pool.shutdown(wait=True, cancel_futures=True)
@@ -411,4 +515,4 @@ def _envelope_plans(rows: list[montage.Row]) -> list[pipe.GroupPlan]:
     return out
 
 
-__all__ = ["ViewController", "np"]
+__all__ = ["ViewController"]

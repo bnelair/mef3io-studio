@@ -107,7 +107,9 @@ def key_text(event: QKeyEvent) -> str:
     # Printable punctuation: the typed character decides ("+", "{", "?"), the
     # modifier Shift is already part of it.
     if text and text.isprintable() and not text.isalnum() and text != " ":
-        if not mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        alt = bool(mods & Qt.KeyboardModifier.AltModifier)
+        if ctrl == alt:  # none, or Ctrl+Alt = AltGr on Windows: the produced character decides
             return QKeySequence(text).toString(QKeySequence.SequenceFormat.PortableText)
     keypad = mods & ~Qt.KeyboardModifier.KeypadModifier
     return QKeySequence(keypad.value | key).toString(QKeySequence.SequenceFormat.PortableText)

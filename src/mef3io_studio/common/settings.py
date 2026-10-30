@@ -57,7 +57,12 @@ PREFERENCES: dict[str, Preference] = {
         Preference("viewer/profile", "auto", str, ("auto", "white", "green", "dark", "contrast")),
         # The default filters as JSON (cutoffs, mains, steepness, timing).
         Preference("viewer/filters", "", str),
-        Preference("viewer/memory_mb", 512, int),
+        # Performance (0 = automatic, applies to windows opened afterwards).
+        Preference("viewer/load_workers", 0, int),
+        Preference("viewer/decode_threads", 0, int),
+        Preference("viewer/filter_workers", 0, int),
+        Preference("viewer/lookahead_pages", 2, int),
+        Preference("viewer/memory_mb", 0, int),
     )
 }
 

@@ -69,7 +69,8 @@ class _CutoffRow(QWidget):
         self.on = QCheckBox(title, self)
         self.value = QDoubleSpinBox(self)
         self.value.setDecimals(3)
-        self.value.setRange(0.001, 100000.0)
+        self.value.setRange(F_MIN, 100000.0)
+        self.value.setKeyboardTracking(False)
         self.value.setSingleStep(0.1)
         self.value.setSuffix(" Hz")
         self.value.setValue(default)
@@ -514,6 +515,10 @@ class ResponseDialog(QDialog):
             lambda t: self.readout.setText(t or "Move the pointer over the plot to read it.")
         )
         self.refresh(settings)
+
+    def set_rate(self, rate: float) -> None:
+        if rate in self.rates:
+            self.rate_box.setCurrentIndex(self.rates.index(rate))
 
     def refresh(self, settings: dsp.FilterSettings) -> None:
         self.settings = settings

@@ -201,11 +201,14 @@ PROFILES = {
 
 #: Recording colours (letter A, B, ...), for light and dark backgrounds.
 RECORDING_COLOURS_LIGHT = (
-    "#2f6feb", "#c2410c", "#15803d", "#a21caf", "#0e7490", "#b45309", "#4d7c0f", "#be123c",
+    "#15803d", "#c2410c", "#a21caf", "#b45309", "#4d7c0f", "#be123c", "#0f766e", "#854d0e",
 )  # fmt: skip
 RECORDING_COLOURS_DARK = (
-    "#7aa7ff", "#fb923c", "#4ade80", "#e879f9", "#22d3ee", "#fbbf24", "#a3e635", "#fb7185",
+    "#4ade80", "#fb923c", "#e879f9", "#fbbf24", "#a3e635", "#fb7185", "#2dd4bf", "#facc15",
 )  # fmt: skip
+#: One recording on the strip: data green, gaps red (as in the clinical viewer).
+STRIP_DATA = ("#2e9e4f", "#46c06b")
+STRIP_GAP = ("#d64545", "#ff6b6b")
 
 
 def resolve_profile(name: str, app_dark: bool) -> Palette:
@@ -240,3 +243,44 @@ def format_measure(dt_us: float, vmin: float | None, vmax: float | None, units: 
         u = display_units(units)
         parts.append(f"{vmin:.1f} to {vmax:.1f} {u} ({vmax - vmin:.1f} {u})".replace("-", "−"))
     return " · ".join(parts)
+
+
+@dataclass(frozen=True)
+class Performance:
+    """The viewer's performance settings; 0 = automatic (where it applies)."""
+
+    load_workers: int = 0
+    decode_threads: int = 0
+    filter_workers: int = 0
+    lookahead_pages: int = 2
+    memory_mb: int = 0
+
+
+PERF_LIMITS = {
+    "load_workers": (0, 64),
+    "decode_threads": (0, 64),
+    "filter_workers": (0, 64),
+    "lookahead_pages": (0, 8),
+    "memory_mb": (0, 16384),
+}
+
+
+def clean_performance(perf: Performance, cores: int) -> Performance:
+    """Values kept inside their ranges (and at most the number of cores for
+    the worker counts)."""
+    out = {}
+    for name, (lo, hi) in PERF_LIMITS.items():
+        v = int(getattr(perf, name))
+        if name.endswith(("workers", "threads")):
+            hi = max(1, cores)
+        out[name] = max(lo, min(hi, v))
+    if 0 < out["memory_mb"] < 128:
+        out["memory_mb"] = 128
+    return Performance(**out)
+
+
+DEFAULT_MEMORY_MB = 512
+
+
+def memory_bytes(perf: Performance) -> int:
+    return (perf.memory_mb or DEFAULT_MEMORY_MB) * 1024 * 1024
