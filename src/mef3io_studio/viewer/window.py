@@ -1179,7 +1179,9 @@ class ViewerWindow(QMainWindow):
 
     def _sample_step(self) -> float:
         """One sample (µs) of the channel the edges were last snapped to."""
-        ch = self._edge_channel or self._export_channel(None)
+        ch = self._edge_channel
+        if ch is None or ch not in {r.channel for r in self.canvas.rows}:
+            ch = self._export_channel(None)  # the montage changed since: use what is shown
         return 1e6 / self._rate_of(ch) if ch is not None else 1.0
 
     def snap_time(self, t: float, row: int | None = None, mode: str = "nearest") -> int:
@@ -1590,7 +1592,10 @@ class ViewerWindow(QMainWindow):
         finally:
             thread = self._notes_thread
             if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=30)  # a read of the notes must end before the data closes
+                # This runs on the shutdown thread, never the GUI thread: wait
+                # for a notes read to end, however long, so the data is never
+                # closed under it.
+                thread.join()
             self.data.close()
 
     def closeEvent(self, event) -> None:  # noqa: N802
