@@ -209,6 +209,7 @@ def test_a_failed_tile_read_fails_the_block_and_stops_the_spinner(one, qtbot, mo
     monkeypatch.setattr(one.data, "read_tile", broken)
     one.controller.cache.clear()
     one.controller._held.clear()
+    one.controller._held_bytes = 0
     one.set_state(filters=dsp.FilterSettings(1.0, 40.0), t0=T0 + 5 * SEC)
     qtbot.waitUntil(lambda: bool(failed), timeout=10_000)
     qtbot.waitUntil(lambda: not one.controller.loading, timeout=10_000)
@@ -415,3 +416,81 @@ def test_settings_dialog_has_a_signal_viewer_section(qtbot, settings):
     spins["viewer/memory_mb"].setValue(20)  # below the lowest allowed amount
     assert settings.get("viewer/lookahead_pages") == 5
     assert settings.get("viewer/memory_mb") == 0 or settings.get("viewer/memory_mb") >= 128
+
+
+# --- stuck loads, held memory, zombies, deleted controller --------------------------
+
+
+def _fake_job(ctl):
+    from types import SimpleNamespace
+
+    from mef3io_studio.viewer.controller import _Job
+
+    plan = SimpleNamespace(rate=256.0, channels=("a",))
+    return _Job(("k",), "samples", plan, [], (0, 1), None, 1, 0, 0)
+
+
+def test_a_tile_that_never_arrives_fails_the_job(one, qtbot, monkeypatch):
+    from mef3io_studio.viewer import controller as ctl_mod
+
+    ctl = one.controller
+    failed = []
+    ctl.failed.connect(failed.append)
+    monkeypatch.setattr(ctl_mod, "RETRY_AFTER", 0.05)
+    asks = []
+    monkeypatch.setattr(ctl.scheduler, "request", lambda *a, **k: asks.append(a))
+    ctl.cache.clear()
+    with ctl._held_lock:
+        ctl._held.clear()
+        ctl._held_bytes = 0
+    one.set_state(filters=dsp.FilterSettings(1.0, 40.0), t0=T0 + 12 * SEC)
+    qtbot.waitUntil(lambda: bool(failed), timeout=10_000)
+    qtbot.waitUntil(lambda: not ctl.loading, timeout=10_000)
+    assert "could not be read" in failed[0]
+
+
+def test_held_tiles_stay_under_the_cap(one):
+    ctl = one.controller
+    cap = ctl._held_cap()
+    size = max(1, int(cap // 4) + 1)  # only three fit
+    keys = [("t", i) for i in range(50)]
+    with ctl._held_lock:
+        ctl._needed = set(keys)
+    for k in keys:
+        ctl._on_tile(k, np.zeros(size, dtype=np.uint8))
+    assert ctl._held_bytes <= cap
+    assert ctl._held_bytes == sum(a.nbytes for a in ctl._held.values())
+    assert 0 < len(ctl._held) < len(keys)
+    ctl._update_needed()  # no waiting job needs them any more
+    assert not ctl._held and ctl._held_bytes == 0
+
+
+def test_a_cancelled_job_never_reads_a_tile(one, monkeypatch):
+    ctl = one.controller
+    calls = []
+    monkeypatch.setattr(one.data, "read_tile", lambda *a, **k: calls.append(a))
+    job = _fake_job(ctl)
+
+    def fake(data, get_tile, *a, **k):
+        job.token.cancel()
+        get_tile(0)
+
+    monkeypatch.setattr(pipe, "compute_piece", fake)
+    ctl._closed = True  # no signal needed
+    ctl._compute(job)
+    assert calls == []
+
+
+def test_emitting_after_the_controller_is_gone_does_not_raise(one, monkeypatch):
+    import shiboken6
+
+    from mef3io_studio.viewer.controller import ViewController
+
+    ctl = ViewController(one.data)
+    job = _fake_job(ctl)
+    monkeypatch.setattr(pipe, "compute_piece", lambda *a, **k: np.zeros(1))
+    ctl.close()
+    ctl.finish_close()
+    shiboken6.delete(ctl)
+    ctl._closed = False  # a pool thread that checked the flag just before close
+    ctl._compute(job)  # must not raise

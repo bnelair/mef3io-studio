@@ -18,6 +18,7 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -44,6 +45,13 @@ from .strip import envelope_bins
 MAX_COMPUTE = 2
 log = logging.getLogger(__name__)
 STRIP_BINS = 2000
+#: A lost tile is asked for again at most this often / this many times.
+RETRY_AFTER = 3.0
+MAX_RETRIES = 3
+#: Tiles held for waiting jobs may use this share of the cache budget.
+HELD_SHARE = 0.25
+#: ... but never less than this (a tiny budget must still let a block finish).
+HELD_FLOOR = 32 << 20
 
 
 @dataclass(eq=False)
@@ -62,7 +70,9 @@ class _Job:
     token: CancelToken = field(default_factory=CancelToken)
     seq: int = 0
     tile_numbers: list = field(default_factory=list)
-    asked_again: bool = False
+    retries: int = 0
+    last_ask: float = field(default_factory=time.monotonic)
+    arrays: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -119,6 +129,7 @@ class ViewController(QObject):
         #: Tiles handed over by the scheduler that a waiting job still needs
         #: (the cache may evict, or refuse, a big one).
         self._held: dict[tuple, np.ndarray] = {}
+        self._held_bytes = 0
         self._needed: set[tuple] = set()
         self._held_lock = threading.Lock()
         self._zombies: set[_Job] = set()
@@ -143,9 +154,15 @@ class ViewController(QObject):
         if self._closed:
             return
         with self._held_lock:
-            if key in self._needed:
-                self._held[key] = array
+            if key in self._needed and key not in self._held:
+                size = int(getattr(array, "nbytes", 0))
+                if self._held_bytes + size <= self._held_cap():
+                    self._held[key] = array
+                    self._held_bytes += size
         self._tile.emit(key)
+
+    def _held_cap(self) -> float:
+        return max(self.cache.budget * HELD_SHARE, HELD_FLOOR)
 
     def _on_tile_error(self, key, exc) -> None:
         if not self._closed:
@@ -251,11 +268,11 @@ class ViewController(QObject):
         return key
 
     def _update_needed(self) -> None:
-        need = {k for j in self._jobs.values() for k in j.tile_keys}
+        need = {k for j in self._jobs.values() if j.state == "waiting" for k in j.tile_keys}
         with self._held_lock:
             self._needed = need
             for k in [k for k in self._held if k not in need]:
-                del self._held[k]
+                self._held_bytes -= int(getattr(self._held.pop(k), "nbytes", 0))
 
     def _drop_stale(self, gen: int, wanted: set) -> None:
         for key, job in list(self._jobs.items()):
@@ -320,18 +337,39 @@ class ViewController(QObject):
                 break
             missing = self._missing(job)
             if missing:
-                if not job.asked_again and self.scheduler.pending() == 0:
+                now = time.monotonic()
+                if self.scheduler.pending() == 0 or now - job.last_ask >= RETRY_AFTER:
                     # a tile is neither here nor on its way (lost): ask again
-                    job.asked_again = True
+                    if job.retries >= MAX_RETRIES:
+                        self._give_up(job)
+                        continue
+                    job.retries += 1
+                    job.last_ask = now
                     for k in missing:
                         self.scheduler.request(
                             job.plan.rate, job.plan.channels, k, job.priority, job.generation
                         )
                 continue
+            self._take_tiles(job)
             job.state = "computing"
+            self._update_needed()
             inflight += 1
             self._pool.submit(self._compute, job)
         self._collect()
+
+    def _give_up(self, job: _Job) -> None:
+        job.token.cancel()
+        if self._jobs.get(job.key) is job:
+            del self._jobs[job.key]
+        self._update_needed()
+        self._fail_keys({job.key})
+
+    def _take_tiles(self, job: _Job) -> None:
+        """Hand the held arrays to the job; the controller lets go of them."""
+        with self._held_lock:
+            for key in job.tile_keys:
+                if key in self._held:
+                    job.arrays[key] = self._held[key]
 
     def _missing(self, job: _Job) -> list[int]:
         out = []
@@ -353,11 +391,11 @@ class ViewController(QObject):
 
                 def get_tile(k: int):
                     key = TileScheduler.key_of(plan.rate, plan.channels, k, dk)
-                    with self._held_lock:
-                        tile = self._held.get(key)
+                    tile = job.arrays.get(key)
                     if tile is None:
                         tile = cache.get(key)
                     if tile is None:  # lost meanwhile: read it here
+                        job.token.raise_if_cancelled()
                         tile = data.read_tile(list(plan.channels), plan.rate, k, job.token)
                         cache.put(key, tile)
                     return tile
@@ -365,6 +403,7 @@ class ViewController(QObject):
                 piece = pipe.compute_piece(
                     data, get_tile, plan, job.rows, job.span, job.settings, job.plot_px, job.token
                 )
+            job.arrays.clear()
             self.cache.put(job.key, piece)
             outcome, error = "ok", piece
         except BaseException as exc:  # noqa: BLE001 - a worker must survive
@@ -373,8 +412,12 @@ class ViewController(QObject):
                 if (is_stop(exc) or isinstance(exc, JobCancelled))
                 else ("error", exc)
             )
+        job.arrays.clear()
         if not self._closed:
-            self._done.emit(job, (outcome, error))
+            try:
+                self._done.emit(job, (outcome, error))
+            except RuntimeError:  # the controller is already deleted
+                pass
 
     def _on_done(self, job, result) -> None:
         self._zombies.discard(job)
