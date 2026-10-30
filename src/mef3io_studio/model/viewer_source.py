@@ -140,7 +140,7 @@ class Annotation(dict):
 
     def __repr__(self) -> str:
         return (
-            f"Record(recording={self.get('recording')}, level={self.get('level')!r}, "
+            f"Item(from={self.get('recording')}, level={self.get('level')!r}, "
             f"type={self.get('type')!r}, time={self.get('time')})"
         )
 
