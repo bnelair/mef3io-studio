@@ -113,6 +113,14 @@ PLAIN_CHECKS: dict[str, tuple[str, str]] = {
         "A stored entry size is wrong",
         "This is a small inconsistency that programs normally ignore.",
     ),
+    technical("records.encryption"): (
+        "Some notes and events are not protected like the recording",
+        "Some notes and events are stored without the recording's password "
+        "protection, so anyone can read their text. Or they are protected in a "
+        "recording that is not, so other programs cannot open them. This cannot be "
+        "fixed in place: copy the notes and events out and save them again, with the "
+        "recording's basic and full-access passwords if it has them.",
+    ),
 }
 _UNKNOWN = (
     "Something in the recording's details does not match its data",

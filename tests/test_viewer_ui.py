@@ -21,6 +21,7 @@ from mef3io_studio.model import dsp
 from mef3io_studio.model import viewer_view as vv
 from mef3io_studio.model.viewer_source import open_recordings
 from mef3io_studio.viewer import jump as jumping
+from mef3io_studio.viewer import keymap
 from mef3io_studio.viewer.keymap import KEYMAP
 from mef3io_studio.viewer.window import ViewerWindow
 
@@ -174,7 +175,8 @@ def test_sensitivity_timebase_and_spacing_steps(one):
     ):
         key(one, k, Qt.KeyboardModifier.AltModifier)
         assert one.state.timebase == want
-    mod = Qt.KeyboardModifier.ControlModifier
+    # Row spacing is Ctrl+Up/Down, Alt+Up/Down on macOS (keymap.MAC).
+    mod = Qt.KeyboardModifier.AltModifier if keymap.MAC else Qt.KeyboardModifier.ControlModifier
     key(one, Qt.Key.Key_Up, mod)
     assert one.state.spacing == 8
     key(one, Qt.Key.Key_Down, mod)

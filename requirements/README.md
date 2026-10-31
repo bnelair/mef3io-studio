@@ -4,7 +4,7 @@ Installers and CI install from these files with `pip install --require-hashes`,
 so every build uses exactly the same packages, verified by hash, on every OS.
 
 - `build.lock`: everything that goes into an installer (the app's runtime
-  dependencies, exactly pinned in `pyproject.toml`: mef3io 2.0.1, PySide6
+  dependencies, exactly pinned in `pyproject.toml`: mef3io 2.1.1, PySide6
   Essentials, platformdirs, tzdata; + PyInstaller), plus setuptools.
 - `dev.lock`: runtime dependencies + test tools, plus setuptools.
 - `tools.in`: the build backend (setuptools, pinned so
