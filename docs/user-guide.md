@@ -750,9 +750,10 @@ changes are **a draft until you save**.
   notes list, or the right-click menu (which can also add one to a single
   channel). A form asks for the time, the type, the text, and whether it
   applies to the whole recording or to one channel. Tick *It lasts until* to
-  give an end time. The keys `1` to `9` add a note of a ready-made type
-  straight away: Note, Seizure onset, Seizure end, Spike, Artifact and
-  Sleep.
+  give an end time. The keys `1` to `9` use a ready-made type: Note,
+  Seizure onset, Seizure end, Spike, Artifact and Sleep. Key `1` (Note) opens
+  the form, because a plain note needs words; the other types are added at
+  once, without text.
 - New notes are marked *(new)* in the list. **Undo** and **Redo** (Ctrl+Z,
   Ctrl+Shift+Z or Ctrl+Y) go back and forth through your changes, and
   **Discard the draft** throws them all away.
@@ -779,16 +780,18 @@ written until you choose **Add them to the recordings**.
   recording and asks for the other here.
 - When the saving ends, the viewer reads the recordings again so the new
   notes show. Anything that could not be saved stays in the draft.
-- Recordings packed into a **single file** (`.mefd.tar`) cannot get new
+- Recordings packed into a **single-file recording** (`.mefd.tar`) cannot get new
   notes; unpack the recording first (see *Pack into one file, or unpack*).
 - If you turn edit mode off or close the window with an unsaved draft, the
-  app asks whether to save, discard or stay.
+  app asks you to choose **Save**, **Discard** or **Cancel**.
 
 ### Settings for the viewer
 
 **File → Settings** has a *Signal viewer* section for big recordings and
-big screens. Each number is **Automatic** (0) unless you change it, and a
-change applies to viewer windows you open afterwards:
+big screens. The three settings for loading and filtering and the memory
+setting are **Automatic** (0) unless you change them; *Pages loaded ahead*
+starts at 2 (0 to 8). A change applies to viewer windows you open
+afterwards:
 
 - *Loading in parallel*, *Parts decoded at once, per read* and *Filtering in
   parallel*: how much the viewer does at the same time. More is faster on

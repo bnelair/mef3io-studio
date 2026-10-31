@@ -206,8 +206,8 @@ traces. It never changes a recording (unless you turn on edit mode, below).
 - **Export range:** mark a start and an end, copy the times, keep a list, or
   send the range to Join or trim.
 - **Fast on big recordings:** only what is on the screen, and a few pages
-  ahead, is read. The number of workers and the memory used can be set in
-  **File → Settings**.
+  ahead, is read. How much the viewer loads at once, and the memory it may use,
+  can be set in **File → Settings**.
 - **Private:** patient details and the text of notes follow Explore's
   setting and stay hidden until you show them.
 
@@ -453,14 +453,14 @@ choice of channels, moved dates, new names and optional password protection, plu
 Privacy check for any recording, and unattended batches into shareable
 archives) and **Join or trim** (keeping only part of a recording, or joining
 parts of several recordings into one, one after another or side by side) are
-ready to try in test version **0.1.0.dev6**, built on mef3io 2.1.1, together with the
-**signal viewer** (several recordings as one, montages, filters, notes and
-events, export ranges) and its optional **edit mode** for adding notes and events. Still to come for the first
-full release: other copies with changes (adding or removing password
-protection, cutting a recording into pieces), ordering and renaming
-recordings, viewing and editing details, and saving channel choices and
-converting in batches. Test versions are
-published on the [Releases page](https://github.com/bnelair/mef3io-studio/releases)
+ready to try in test version **0.1.0.dev6**, built on mef3io 2.1.1, together
+with the **signal viewer** (several recordings as one, montages, filters,
+notes and events, export ranges) and its optional **edit mode** for adding
+notes and events. Still to come for the first full release: other copies with
+changes (adding or removing password protection, cutting a recording into
+pieces), ordering and renaming recordings, viewing and editing details, and
+saving channel choices and converting in batches. Test versions are published
+on the [Releases page](https://github.com/bnelair/mef3io-studio/releases)
 as pre-releases; what changed in each is in
 [docs/release-notes/](docs/release-notes/). Progress is tracked in the
 [roadmap](docs/roadmap.md) and the

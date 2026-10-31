@@ -28,7 +28,8 @@ Still open: cutting one recording into several pieces in one go.
 ## Signal viewer
 
 **Built (test version 0.1.0.dev6), apart from changing stored notes:** see
-[viewer](viewer.md) and the [user guide](../user-guide.md#view-signals). It reads local recordings through
+[viewer](viewer.md) and the
+[user guide](../user-guide.md#view-signals). It reads local recordings through
 mef3io directly (Reader / MultiReader, windowed reads, block min/max from the
 index) with its own tile cache and prefetch, rather than through
 mef3io-server's `FileManager` as first planned: mef3io 2.0 now provides the
