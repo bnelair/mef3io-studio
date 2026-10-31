@@ -6,11 +6,12 @@
 [![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
 
-The app is in early development. The current test version, **0.1.0.dev5**,
-can explore recordings, make anonymized copies of them, and keep part of a
-recording or join parts of several into one; the other features below are
-still being built. See [Project status](#project-status) and the
-[release notes](docs/release-notes/0.1.0.dev5.md).
+The app is in early development. The current test version, **0.1.0.dev6**,
+can explore recordings, make anonymized copies of them, keep part of a
+recording or join parts of several into one, and show their signals in a
+viewer, where you can also add notes and events; the other features below
+are still being built. See [Project status](#project-status) and the
+[release notes](docs/release-notes/0.1.0.dev6.md).
 
 ## Getting the app
 
@@ -81,8 +82,9 @@ easier to copy and share. It is read directly; there's no need to unpack it.
 
 ## What the app does
 
-The app has three pages: **Explore**, **Anonymize** and **Join or trim**
-(the last is new in test version 0.1.0.dev5). The rest of the first
+The app has three pages: **Explore**, **Anonymize** and **Join or trim**,
+and a **signal viewer** window that opens from Explore (new in test version
+0.1.0.dev6). The rest of the first
 release is still being built (see
 [Still to come](#still-to-come-for-the-first-release)).
 
@@ -106,6 +108,8 @@ You can also:
   time with data added up;
 - **save their times as a table** (CSV) that opens in a spreadsheet and is
   exact for scripts;
+- **look at the signals** of the selected recordings in the
+  [signal viewer](#signal-viewer);
 - **pack** a recording into one file, or **unpack** it again;
 - see a **Privacy check** for any recording: every kind of detail that could
   identify the patient, and whether the anonymizer made it.
@@ -181,6 +185,42 @@ recordings in Explore and choose **Join or trim these…**.
 
 See the [user guide](docs/user-guide.md#join-or-trim-recordings).
 
+### Signal viewer
+
+Select recordings in Explore and choose **View signals** to look at their
+traces. It never changes a recording (unless you turn on edit mode, below).
+
+- **One or several recordings as one.** Their signals are shown on one time
+  line. A band above the traces shows which recording holds data where, a
+  clear line marks where one ends and the next begins, and a short message
+  says which one you are now looking at.
+- **Montages:** as recorded, against one channel you choose, or lead
+  bipolar.
+- **Filters** with cutoffs you can move continuously while the traces
+  follow, and a plot of what they keep (as a share of the signal and in
+  decibels).
+- **Clinical scales and keys:** sensitivity in µV/mm, timebase in mm/s,
+  space between rows in mm, keys for pages and seconds, a **Jump** box
+  (Ctrl+K), and a key list under `?`. Some keys differ on a Mac.
+- **Notes and events** on the traces and in a searchable list, by type.
+- **Export range:** mark a start and an end, copy the times, keep a list, or
+  send the range to Join or trim.
+- **Fast on big recordings:** only what is on the screen, and a few pages
+  ahead, is read. The number of workers and the memory used can be set in
+  **File → Settings**.
+- **Private:** patient details and the text of notes follow Explore's
+  setting and stay hidden until you show them.
+
+**Edit mode (optional, off by default):** add notes and events as a draft,
+with undo and redo, import them from or export them to a CSV or JSON file,
+and **save** them. Saving only **adds** notes to a recording: it shows what
+will be added first, asks for both passwords of a password-protected
+recording, and never rewrites what is already stored. Changing or removing
+a note that is already stored is not possible yet; it will need a new copy.
+
+See the [user guide](docs/user-guide.md#view-signals) and the
+[viewer design](docs/design/viewer.md).
+
 Everything that takes time (reading, packing, anonymizing, checking big
 recordings) runs in the background with a **progress bar** and a **Stop**
 button. The window stays usable.
@@ -218,12 +258,9 @@ anonymization, in one pass per recording.
 
 ### Next directions (to be specified later)
 
-- **Signal viewer:** scroll and zoom through the traces, with gaps and
-  notes shown, fast even on multi-TB recordings.
 - **Data coverage:** see when data exists and at what rate, per channel. The
   fastest way to spot dropouts and gaps.
-- **Notes and events:** view them on the timeline, and later create and edit
-  them.
+- **Change or remove stored notes and events,** as a new, checked copy.
 - **Export** to other formats (e.g. EDF, NWB).
 - **Remote recordings** kept on a secure server.
 
@@ -233,7 +270,7 @@ These need their own specifications before work starts; see
 ## How it fits together
 
 <p align="center">
-  <img src="docs/img/architecture.svg" alt="mef3io-studio is the user interface. File operations go through the mef3io library; viewing will go through mef3io-server, which is built on mef3io." width="640">
+  <img src="docs/img/architecture.svg" alt="mef3io-studio is the user interface. File operations go through the mef3io library; the signal viewer reads recordings through the same library; remote recordings, later, will go through mef3io-server." width="640">
 </p>
 
 **The app never edits MEF files itself.** Everything that touches a file is
@@ -241,11 +278,11 @@ done by the [mef3io](https://github.com/bnelair/mef3io) library, where it is
 tested against the reference implementations. The same operations are also
 available from Python, MATLAB and the command line, for batch work on servers.
 
-The future viewer will use
+The signal viewer reads recordings through the mef3io library too, with its
+own short-term memory of recently viewed data so scrolling stays smooth.
+Recordings kept on another computer may later be shown through
 [mef3io-server](https://github.com/bnelair/mef3io-server), which is built on
-mef3io and keeps recently viewed data ready, so scrolling stays smooth. It
-runs inside the app for files on your computer, or as a separate server for
-recordings kept elsewhere.
+mef3io.
 
 ## Privacy
 
@@ -253,7 +290,9 @@ recordings kept elsewhere.
 - **Logs never contain** patient details, recording names or folder paths, or
   original recording dates.
 - **Anonymizing, joining and trimming always write a new, checked
-  recording;** the originals are not touched. (Password changes and channel selections, still to come, will
+  recording;** the originals are not touched. **Viewing changes nothing.**
+  Only in edit mode, and only after you confirm, notes and events are added
+  to a recording; what is stored is never rewritten. (Password changes and channel selections, still to come, will
   work the same way. Renaming and editing details, also still to come, will
   change a recording in place, only after you confirm, with undo.)
 - **Notes about an unfinished batch** (so it can be continued after a crash)
@@ -325,6 +364,9 @@ src/mef3io_studio/
                 privacy check, pack/unpack)
   anonymizer/   the Anonymize wizard (recordings, channels, dates, identity,
                 passwords, output, review, run) and the resume dialog
+  joiner/       the Join or trim page
+  viewer/       the signal viewer window (traces, montages, filters, notes,
+                export range, edit mode)
 packaging/      PyInstaller spec, Inno Setup script, dmg and AppImage scripts
 ```
 
@@ -411,7 +453,9 @@ choice of channels, moved dates, new names and optional password protection, plu
 Privacy check for any recording, and unattended batches into shareable
 archives) and **Join or trim** (keeping only part of a recording, or joining
 parts of several recordings into one, one after another or side by side) are
-ready to try in test version **0.1.0.dev5**, built on mef3io 1.5.1. Still to come for the first
+ready to try in test version **0.1.0.dev6**, built on mef3io 2.1.1, together with the
+**signal viewer** (several recordings as one, montages, filters, notes and
+events, export ranges) and its optional **edit mode** for adding notes and events. Still to come for the first
 full release: other copies with changes (adding or removing password
 protection, cutting a recording into pieces), ordering and renaming
 recordings, viewing and editing details, and saving channel choices and
