@@ -1,14 +1,18 @@
 # User guide
 
-This guide describes the app after test version **0.1.0.dev4**, which has
-three pages: **Explore** (see what is in your recordings), **Anonymize**
-(make anonymized copies of them) and **Join or trim** (keep part of a
-recording, or join parts of several into one; new since 0.1.0.dev4). What is
-new in each test version is in the [release notes](release-notes/).
+This guide describes the app as of test version **0.1.0.dev6**. It has three
+pages: **Explore** (see what is in your recordings), **Anonymize** (make
+anonymized copies of them) and **Join or trim** (keep part of a recording,
+or join parts of several into one). From Explore you can also open the
+**signal viewer** to look at the traces, and add notes and events in its
+optional edit mode (new since 0.1.0.dev5). What is new in each test version
+is in the [release notes](release-notes/).
 
 Times are shown in **UTC** until you choose a time zone (see *Times and time
 zones*). The app never changes your original recordings: anonymizing,
-joining and trimming make a new recording and check it.
+joining and trimming make a new recording and check it, and the viewer only
+looks. The one exception is edit mode, which can add notes and events to a
+recording after you confirm (see *Add notes and events*).
 
 ## Explore recordings
 
@@ -439,7 +443,8 @@ use or share them").
 
 ### Settings
 
-**File → Settings** (on a Mac: mef3io-studio → Settings):
+**File → Settings** (on a Mac: mef3io-studio → Settings) also has a *Signal
+viewer* section; see *Settings for the viewer*. The batch settings are:
 
 - **Work folder:** where each copy is made and checked before it is
   archived. By default it is a folder in the app's own data area. A fast
@@ -582,6 +587,220 @@ ever cannot be removed, the result says so, and you can delete it yourself.
 The app only ever removes a temporary folder it made for that run (it leaves
 a small note inside it to recognise it); anything else is left alone.
 A recording you keep whole is used as it is, without a temporary copy.
+
+## View signals
+
+The **signal viewer** shows the traces of one recording, or of several
+recordings as if they were one. Looking never changes a recording, and only
+the part you are looking at, and a few pages around it, is read, so even
+very large recordings open quickly.
+
+### Open the viewer
+
+- In **Explore**, select one or more recordings in the list and choose
+  **View signals** (the button under the list, or the menu you get with a
+  right-click). Each time you choose it, a new viewer window opens, so you
+  can keep several open.
+- On the **Join or trim** page, **View these recordings** opens the viewer
+  with the recordings you chose there, which is a good way to decide where to
+  trim.
+
+A recording that is still being read, or that is password-protected and has
+not been opened with a password yet, cannot be viewed: open it in Explore
+first. If the chosen recordings cannot share one time line, the app says why
+and nothing opens.
+
+### Several recordings as one
+
+When you open more than one recording, they are shown on one shared time
+line, in time order, and the viewer always tells you which one you are
+looking at:
+
+- Each recording has a **letter** (A, B, ...) and a colour. A thin band above
+  the traces shows which recording holds data at each moment. Stretches
+  with no data are hatched, and where two recordings hold data at the same
+  moment they are shown side by side.
+- Where one recording ends and the next begins there is a clear line across
+  the traces, and a short message ("Now showing recording B") appears over
+  them for a few seconds. The keys `{` and `}` jump to the previous and the
+  next such line.
+- The **Recordings** tab of the side panel lists the recordings.
+
+### Moving around
+
+Everything can be done with the keys or the mouse. Press `?` in the viewer
+to see the full list of keys. The main ones:
+
+| To do this | Press |
+|---|---|
+| Next or previous page | Right and Left |
+| Half a page | Shift+Right and Shift+Left |
+| One second | Alt+Right and Alt+Left |
+| Go to the start or the end | Home and End |
+| Larger or smaller signals | Up and Down (or `+` and `-`) |
+| More or less space between rows | Ctrl+Up and Ctrl+Down (on a Mac: Alt+Up and Alt+Down) |
+| Show other channels | Shift+Up and Shift+Down, or Page Up and Page Down |
+| Choose the timebase (10, 15, 30, 60 or 120 mm/s) | Alt+1 to Alt+5 |
+| Go to a time | `G` |
+| Jump | Ctrl+K |
+| Choose channels | `C` |
+| Next montage | `B` |
+| Filters | `F` |
+
+With the mouse: the wheel moves in time, Shift+wheel moves through the
+channels, Ctrl+wheel zooms the timebase at the pointer, dragging pans, and
+a double-click puts that moment in the middle of the page. A right-click
+offers more choices for the channel or moment under the pointer.
+
+**Jump** (Ctrl+K) understands a time of day (`14:30`), a day and time (`day
+2 08:00`), a date and time (`2000-01-31 14:30`), a move from the page you
+are on (`+10m`, `-90s`, `+2h`), and a recording letter (`B`, the start of that
+recording). Shift+Enter finds the previous time of day instead of the next.
+The **Day** and time boxes in the toolbar do the same. Times are shown in
+the time zone you chose for the site (see *Times and time zones*).
+
+**Scales.** The toolbar sets the *sensitivity* (µV per millimetre; **Auto**
+chooses one that fits the signals), the *timebase* (millimetres per second)
+and the *spacing* between rows, in the usual clinical units. A list of
+colours changes the look of the traces. The viewer remembers the scales,
+colours and filters you chose for the next time.
+
+### Montages and channels
+
+The **Montage** box in the toolbar chooses how the channels are shown:
+
+- **As recorded:** each channel as it was recorded.
+- **Referenced to a channel:** a second box lets you choose the channel that
+  every other channel is shown against. You can also right-click a trace and
+  choose **Use as reference**.
+- **Lead bipolar:** each contact shown against the next contact of the same
+  lead (for example A1 against A2).
+
+**Channels** (`C`) opens a list with a search box: tick the channels to show.
+Right-clicking a trace can also hide a channel or a whole lead, or show only
+that lead.
+
+### Filters
+
+**Filters** (`F`, or the button in the toolbar, which says *No filters* until
+you use one) opens a small window:
+
+- **Slow-drift filter (high-pass)** removes very slow waves, and
+  **fast-activity filter (low-pass)** removes very fast ones. Tick it,
+  then set the cutoff by typing a number, moving the slider, or choosing one
+  of the usual values. The traces change continuously while you move it.
+- **Mains filter:** off, 50 Hz or 60 Hz, with a narrow, normal or wide
+  width, and an option to remove the harmonics too.
+- **Steepness:** gentle, standard or sharp.
+- **Timing:** *No time shift* keeps the waves where they were recorded;
+  *As the recorder shows it* shifts them slightly in time, like a recorder
+  that filters live.
+- **Show response…** draws what the filters keep at each frequency, as a
+  share of the signal or in decibels, and, for filters that shift waves in
+  time, the time shift. Move the pointer over the plot to read it. If the
+  recordings have different sampling rates, you can choose which one to
+  draw.
+- **Turn all filters off** puts everything back.
+
+If you choose settings that cannot work together (for example a slow-drift
+cutoff above the fast-activity one), the window says so and keeps the
+previous filters. Under **Technical details** there is a line naming the
+kind of filter.
+
+Filtering changes only what you see. The recording is not changed.
+
+### Notes and events
+
+The notes and events of the recordings appear as marks on the traces.
+**Notes and events** (`M`, or the button in the toolbar) opens a list in the
+side panel with the time, the recording, the type, where it applies (a
+channel or the whole recording) and the text. You can search it, show one
+type only, and click a row to go there. `[` and `]` step to the previous and
+next one. **Types** (`T`) chooses which types are shown.
+
+The text of notes can identify a patient. Like patient details in Explore,
+it is **hidden until you show it**: the viewer follows what you chose in
+Explore for each recording, and the **Show** button in the list shows it for
+one recording (Explore then shows it too). Hiding the details in Explore
+hides them in the viewer. If a recording's notes are locked behind a
+full-access password that was not given, the list says so; open the
+recording in Explore with that password.
+
+### Export a range
+
+To decide where to trim, mark the part you want. Press `S` for its start and
+`E` for its end at the pointer, or choose **Export start** and **Export
+end** in the toolbar. Drag an edge to move it, or with an edge selected press
+Left and Right to move it one sample. The **Export range** button then
+offers:
+
+- **Copy times** puts the start and end on the clipboard;
+- **Add to list** and **Show the list…** keep several ranges, which you can
+  save as a CSV or JSON file (they hold real dates, so store them with care);
+- **Send to Join or trim** opens the Join or trim page with this range;
+- **Clear the range**.
+
+### Add notes and events (edit mode)
+
+Edit mode is **off** every time you open the viewer. Turn it on with the
+**Edit mode** button in the toolbar. A banner then reminds you that your
+changes are **a draft until you save**.
+
+- **Add a note or event** at the pointer with `A`, the **Add…** button in the
+  notes list, or the right-click menu (which can also add one to a single
+  channel). A form asks for the time, the type, the text, and whether it
+  applies to the whole recording or to one channel. Tick *It lasts until* to
+  give an end time. The keys `1` to `9` use a ready-made type: Note,
+  Seizure onset, Seizure end, Spike, Artifact and Sleep. Key `1` (Note) opens
+  the form, because a plain note needs words; the other types are added at
+  once, without text.
+- New notes are marked *(new)* in the list. **Undo** and **Redo** (Ctrl+Z,
+  Ctrl+Shift+Z or Ctrl+Y) go back and forth through your changes, and
+  **Discard the draft** throws them all away.
+- **Import…** adds notes and events from a CSV or JSON file, after showing
+  you what it found. **Export…** saves the listed notes, or all of them, as
+  CSV or JSON. These files hold real dates and the text of notes, so the app
+  reminds you to store and share them with care.
+- **Change…** and **Take out** work on notes in the draft. For a note that
+  is **already stored** in a recording they only mark the change in the
+  draft: **changing or removing stored notes is not possible yet**, because
+  it would need a new copy of the recording. Those changes cannot be saved.
+
+**Save.** Choose **Save…** in the banner. The app shows how many notes and
+events will be added to each recording, and from when to when. Nothing is
+written until you choose **Add them to the recordings**.
+
+- Saving **only adds**. Notes already in the recording are never rewritten,
+  and a note you add cannot be removed from that recording afterwards, except
+  by making a new copy of it.
+- If a note for the whole recording falls where two recordings both hold
+  data, you choose which recording gets it.
+- For a **password-protected** recording the app needs **both** passwords
+  (basic and full-access). It holds one of them from when you opened the
+  recording and asks for the other here.
+- When the saving ends, the viewer reads the recordings again so the new
+  notes show. Anything that could not be saved stays in the draft.
+- A **single-file recording** (`.mefd.tar`) cannot get new notes; unpack the
+  recording first (see *Pack into one file, or unpack*).
+- If you turn edit mode off or close the window with an unsaved draft, the
+  app asks you to choose **Save**, **Discard** or **Cancel**.
+
+### Settings for the viewer
+
+**File → Settings** has a *Signal viewer* section for big recordings and
+big screens. The three settings for loading and filtering and the memory
+setting are **Automatic** (0) unless you change them; *Pages loaded ahead*
+starts at 2 (0 to 8). A change applies to viewer windows you open
+afterwards:
+
+- *Loading in parallel*, *Parts decoded at once, per read* and *Filtering in
+  parallel*: how much the viewer does at the same time. More is faster on
+  fast disks and with many cores, and often on network drives, at the cost of
+  memory.
+- *Pages loaded ahead*: how many pages in the direction you are moving are
+  read before you get there.
+- *Memory for loaded data (MB)*: how much memory the viewer may use for
+  loaded data. Automatic is 512 MB; you can choose from 128 MB to 16 GB.
 
 ## Help and reporting problems
 

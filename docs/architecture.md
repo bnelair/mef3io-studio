@@ -15,7 +15,14 @@ itself.** If the app needs something mef3io can't provide, the feature goes
 into mef3io first. It is then tested against meflib/pymef, and is available
 to scripts and the CLI too.
 
-## mef3io-server: the reading layer for viewing
+## mef3io-server: for remote recordings, later
+
+**As built (test version 0.1.0.dev6):** the signal viewer does not use
+mef3io-server. It reads local recordings through mef3io directly, with its own
+tile cache and look-ahead (`viewer/` and `model/viewer_*.py`), because mef3io
+2.0 provides the parallel decode, cancellation and index-only overview the
+server was going to supply. The rest of this section is the original plan,
+kept for **remote recordings**, which stay a later "recording source".
 
 [mef3io-server](https://github.com/bnelair/mef3io-server) already exists
 (PyPI `mef3io-server`, Docker image on GHCR) and is built directly on mef3io.
@@ -41,9 +48,9 @@ filed against mef3io-server:
 - **Reader eviction** ([mef3io-server#15](https://github.com/bnelair/mef3io-server/issues/15)): each decode worker caches one reader per path (reader_pool.py:24-34). Before a rename or any other in-place operation, the app must be able to tell the server to drop its cached readers for a path, in every worker.
 
 v0.1 (explore, including ordering, renaming and pack/unpack; metadata view and
-edit; passwords; channel presets and batch conversion; anonymize) goes
-straight to mef3io and doesn't need the server. The viewer is the first module
-that will.
+edit; passwords; channel presets and batch conversion; anonymize; the viewer)
+goes straight to mef3io and doesn't need the server. Remote recordings would
+be the first thing that does.
 
 ## Library APIs the first release depends on
 
@@ -67,8 +74,10 @@ hashed lock files).
 | Complete record parsing at every level | Explorer notes and events; anonymizer time shift | [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62) | Done |
 | Provenance region (versions and operations, no times) | Explorer History, Privacy check ("made by the anonymizer") | [#58](https://github.com/bnelair/mef3io/pull/58) | Done |
 
-The future viewer will add [#68](https://github.com/bnelair/mef3io/issues/68)
-(an index-only overview and a min/max envelope read).
+The viewer uses [#68](https://github.com/bnelair/mef3io/issues/68)
+(an index-only overview and a min/max envelope read) and mef3io's windowed
+reads, `MultiReader` for several recordings as one, and the append of notes
+and events to a recording's records (edit mode; only additions).
 
 ## Technology
 
@@ -94,6 +103,9 @@ src/mef3io_studio/
                     # archive, bundle, journal, privacy check, errors, progress
   workers/          # background tasks (QThreadPool), helper processes, GUI slices
   explorer/         # the Explore page: list, details, timelines, privacy check
+  joiner/           # the Join or trim page
+  viewer/           # the signal viewer window: traces, montages, filters,
+                    # notes, export range, edit mode
   anonymizer/       # the anonymization wizard, channel picker, resume dialog
   common/           # widgets, privacy log filter, settings, theme, activity panel
 tests/              # pytest + pytest-qt; headless in CI

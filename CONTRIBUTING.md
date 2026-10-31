@@ -2,9 +2,10 @@
 
 Thanks for your interest. mef3io-studio is the desktop app on top of the
 [mef3io](https://github.com/bnelair/mef3io) library. **The project is in early
-development:** test versions can explore recordings and make anonymized
-copies; renaming, editing details, passwords and channel presets are still
-planned. The design lives in [`docs/`](docs/) and the work in
+development:** test versions can explore recordings, make anonymized
+copies, join or trim them and show their signals in a viewer; renaming,
+editing details, passwords and channel presets are still planned. The
+design lives in [`docs/`](docs/) and the work in
 [issues](https://github.com/bnelair/mef3io-studio/issues). Comments on the
 design are among the most useful contributions right now.
 

@@ -19,16 +19,17 @@ merge are refused, never guessed at; a channel's sampling rate must be the
 same in every recording that is merged.
 
 **Built so far: Join or trim.** Saving a part of one recording, and joining
-parts of several recordings one after another in time, are built (the
-"Join or trim" page, on mef3io 1.5.1; see the
+parts of several recordings, one after another in time or side by side
+(different channels of the same period), are built (the "Join or trim" page,
+since test version 0.1.0.dev5; see the
 [user guide](../user-guide.md#join-or-trim-recordings) and `model/join.py`).
-Still open: cutting one recording into several pieces in one go, and
-joining side by side (different channels of the same period, which the
-joiner refuses as overlapping parts).
+Still open: cutting one recording into several pieces in one go.
 
 ## Signal viewer
 
-**Specified:** see [viewer](viewer.md). It reads local recordings through
+**Built (test version 0.1.0.dev6), apart from changing stored notes:** see
+[viewer](viewer.md) and the
+[user guide](../user-guide.md#view-signals). It reads local recordings through
 mef3io directly (Reader / MultiReader, windowed reads, block min/max from the
 index) with its own tile cache and prefetch, rather than through
 mef3io-server's `FileManager` as first planned: mef3io 2.0 now provides the
@@ -65,7 +66,9 @@ is the block-level one.
 
 **Goal:** see every annotation (session, channel and segment level) on the
 timeline, jump between them, then **create and edit** them. Viewing and
-editing in the viewer are specified in [viewer](viewer.md#annotations).
+adding notes and events are built in the viewer (test version 0.1.0.dev6;
+see [viewer](viewer.md#annotations)); changing or removing a stored note, as
+a new checked copy, is still to come.
 
 **Known constraints:**
 - MEF defines several record types: Note, Seiz, Epoc, EDFA, and others ([mef3io#62](https://github.com/bnelair/mef3io/issues/62)).
@@ -89,8 +92,9 @@ so scripts get it too, with the app as a front end.
 ## Remote recordings
 
 [mef3io-server](https://github.com/bnelair/mef3io-server) streams MEF 3.0 data
-over gRPC. The viewer talks to the server's `FileManager` directly for local
-files and to the gRPC client for remote ones, behind one "recording source"
+over gRPC. The viewer was first planned to talk to the server's `FileManager` for
+local files; it now reads local files through mef3io directly (see *Signal
+viewer*), and a server would be a later "recording source" behind the same
 interface, so opening a recording that lives on a server needs no separate
 viewer code. That's useful when data must not leave a secure environment.
 

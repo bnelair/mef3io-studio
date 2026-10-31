@@ -33,18 +33,18 @@ counts, CRCs) is available, but never in the way.
 5. **Anonymizer:** batch de-identification into verified copies, with the time shift and the channels chosen by the user, and unattended batches into shareable archives. See [design/anonymizer.md](design/anonymizer.md).
 6. **Installers** for Windows (`.exe`), macOS (Apple silicon and Intel) and Linux, on GitHub Releases. The app is **not** published to PyPI.
 
-**Where it stands:** test version 0.1.0.dev4 has the installers, the
-Explorer without ordering and renaming, and the Anonymizer; Join or trim
-(saving a part, joining parts of several recordings) is built after it.
+**Where it stands:** test version 0.1.0.dev6 has the installers, the
+Explorer without ordering and renaming, the Anonymizer, Join or trim (saving
+a part, joining parts of several recordings) and a signal viewer with an
+optional edit mode for adding notes and events.
 Items 2-4 and ordering and renaming are still to come; see the
 [roadmap](roadmap.md).
 
 ## Next directions (need their own specifications)
 
 - Cutting a recording into pieces, always into new checked copies ([#31](https://github.com/bnelair/mef3io-studio/issues/31); saving a part and joining parts of several recordings are built: Join or trim).
-- A signal viewer, built on mef3io-server.
+- Changing or removing stored notes and events in the viewer, as a new checked copy.
 - A data coverage view: when data exists and at what rate, per channel.
-- Annotation viewing, then editing.
 - Export to other formats.
 - Opening recordings served remotely by [mef3io-server](https://github.com/bnelair/mef3io-server).
 
