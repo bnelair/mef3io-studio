@@ -115,11 +115,11 @@ PLAIN_CHECKS: dict[str, tuple[str, str]] = {
     ),
     technical("records.encryption"): (
         "Some notes and events are not protected like the recording",
-        "In a password-protected recording, some notes and events are stored without "
-        "the password, so anyone can read their text; or, in a recording without a "
-        "password, some are password-protected and other programs cannot open them. "
-        "This cannot be fixed in place: copy the notes and events out and save them "
-        "again with both passwords.",
+        "Some notes and events are stored without the recording's password "
+        "protection, so anyone can read their text. Or they are protected in a "
+        "recording that is not, so other programs cannot open them. This cannot be "
+        "fixed in place: copy the notes and events out and save them again, with the "
+        "recording's basic and full-access passwords if it has them.",
     ),
 }
 _UNKNOWN = (
