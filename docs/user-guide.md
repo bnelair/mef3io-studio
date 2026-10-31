@@ -780,8 +780,8 @@ written until you choose **Add them to the recordings**.
   recording and asks for the other here.
 - When the saving ends, the viewer reads the recordings again so the new
   notes show. Anything that could not be saved stays in the draft.
-- Recordings packed into a **single-file recording** (`.mefd.tar`) cannot get new
-  notes; unpack the recording first (see *Pack into one file, or unpack*).
+- A **single-file recording** (`.mefd.tar`) cannot get new notes; unpack the
+  recording first (see *Pack into one file, or unpack*).
 - If you turn edit mode off or close the window with an unsaved draft, the
   app asks you to choose **Save**, **Discard** or **Cancel**.
 
