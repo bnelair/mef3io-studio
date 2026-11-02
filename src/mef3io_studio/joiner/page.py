@@ -43,7 +43,6 @@ from PySide6.QtWidgets import (
 
 from ..anonymizer.page import (
     BLOCKER_PLAN_WORDS,
-    PasswordsStep,
     RecordingsStep,
     _clear,
     _item,
@@ -57,6 +56,7 @@ from ..common.activity import JobProgressWidget
 from ..common.dialogs import TechnicalDetails
 from ..common.flow import FlowLayout
 from ..common.pages import scaled_font
+from ..common.passwords import PasswordsStep
 from ..common.theme import LIGHT, Theme
 from ..explorer.state import RecordingEntry
 from ..model import join as join_model

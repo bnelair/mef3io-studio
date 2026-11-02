@@ -560,6 +560,8 @@ class NotesPanel(QWidget):
 
 class PatientPanel(QWidget):
     reveal_changed = Signal(bool)
+    #: "Edit details (makes a new copy)…" was chosen.
+    edit_requested = Signal()
 
     FIELDS = (
         ("First name", "first_name", True),
@@ -583,10 +585,17 @@ class PatientPanel(QWidget):
         self.button = QPushButton("Show", inner)
         self.button.setCheckable(True)
         self.button.toggled.connect(self._toggled)
+        self.edit_button = QPushButton("Edit details (makes a new copy)…", inner)
+        self.edit_button.setToolTip(
+            "Change these details in a new recording. The original is not changed."
+        )
+        self.edit_button.setEnabled(False)
+        self.edit_button.clicked.connect(self.edit_requested)
         self.form = QFormLayout()
         self.form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         row = QHBoxLayout()
         row.addWidget(self.button)
+        row.addWidget(self.edit_button)
         row.addStretch(1)
         box = QVBoxLayout(inner)
         box.addWidget(self.intro)
@@ -613,6 +622,7 @@ class PatientPanel(QWidget):
             self.form.removeRow(0)
         self.values = {}
         details = entry.details
+        self.edit_button.setEnabled(details is not None and not entry.busy)
         if details is None:
             self.button.setEnabled(False)
             return

@@ -84,6 +84,7 @@ from ..workers.tasks import (
 )
 from .combined import CombinedTimelinePanel
 from .dialogs import PasswordDialog
+from .edit_details import EditDetailsDialog
 from .panels import (
     ChannelsPanel,
     CheckPanel,
@@ -498,6 +499,7 @@ class ExplorerPage(QWidget):
         self.notes = NotesPanel(self)
         self.patient = PatientPanel(self)
         self.patient.reveal_changed.connect(self._on_reveal_changed)
+        self.patient.edit_requested.connect(lambda: self.edit_details(self.current_entry()))
         self.privacy = PrivacyPanel(self)
         self.privacy.reveal_changed.connect(self._on_reveal_changed)
         self.history = HistoryPanel(self)
@@ -1312,6 +1314,10 @@ class ExplorerPage(QWidget):
         view.setEnabled(bool(self._viewable(self.selected_entries())))
         join = menu.addAction("Join or trim these…", self.join_selected)
         join.setEnabled(bool(self._joinable(self.selected_entries())))
+        edit = menu.addAction(
+            "Edit details (makes a new copy)…", lambda: self.edit_details(self.current_entry())
+        )
+        edit.setEnabled(self._editable(self.current_entry()))
         menu.addSeparator()
         menu.addAction("Remove from the list", self.remove_selected)
         menu.popup(self.table.viewport().mapToGlobal(pos))
@@ -1333,6 +1339,23 @@ class ExplorerPage(QWidget):
         entries = self._viewable(self.selected_entries())
         if entries:
             self.view_requested.emit(entries)
+
+    @staticmethod
+    def _editable(entry: RecordingEntry | None) -> bool:
+        return entry is not None and entry.outcome is not None and not entry.busy
+
+    def edit_details(self, entry: RecordingEntry | None):
+        """ "Edit details (makes a new copy)": the window that saves the
+        changes into a NEW recording (the original is never changed)."""
+        if not self._editable(entry):
+            return None
+        dialog = EditDetailsDialog(entry, self.jobs, self.zone, self)
+        dialog.reveal_requested.connect(lambda e=entry: self.refresh_entry(e))
+        dialog.open_requested.connect(self.open_and_show)
+        dialog.finished.connect(lambda _r: self._forget_dialog(dialog))
+        self._dialogs.append(dialog)
+        dialog.open()
+        return dialog
 
     def join_selected(self) -> None:
         """Open Join or trim with exactly the selected recordings (the

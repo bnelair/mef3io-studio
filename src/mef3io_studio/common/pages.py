@@ -18,6 +18,17 @@ def scaled_font(widget: QWidget, factor: float, bold: bool = False):
     return font
 
 
+def label(text: str = "", muted: bool = False, wrap: bool = True, bold: bool = False) -> QLabel:
+    """A wrapping label; ``muted`` for secondary text."""
+    widget = QLabel(text)
+    widget.setWordWrap(wrap)
+    if muted:
+        widget.setObjectName("Muted")
+    if bold:
+        widget.setFont(scaled_font(widget, 1.0, bold=True))
+    return widget
+
+
 class PlaceholderPage(QWidget):
     def __init__(self, icon_name: str, title: str, text: str, parent=None):
         super().__init__(parent)
