@@ -255,6 +255,43 @@ choose **Show** on the Patient details tab. That choice applies to that one
 recording, only until you close the app. Patient details never go into the
 app's log.
 
+### Edit details (makes a new copy)
+
+On the **Patient details** tab (or in the list's right-click menu), **Edit
+details (makes a new copy)…** opens a window where you can change:
+
+- the patient's first and last name, the patient ID, the place of the
+  recording and the recording description;
+- each channel's description, and a new reference description for it.
+
+**The original is never changed.** The new details are saved in a new
+recording next to the original (you choose its name and folder), which the
+app then compares with the original before it keeps it. If you close the
+window or stop, nothing is left behind.
+
+- **Hidden until you choose Show.** The window shows the stored details only
+  after you choose **Show the current details** (the same choice as on the
+  Patient details tab, for this recording). While they are hidden, a box you
+  leave empty keeps what is stored; once shown, emptying a box removes its
+  text.
+- **Only what you change is changed.** Boxes you do not touch keep what is
+  stored.
+- **Too long is refused, never cut.** Each box says how many characters still
+  fit (accented letters take more room). A text that does not fit stops the
+  save until you shorten it.
+- **Dates and times cannot be changed.** They are shown for reference only,
+  and the new recording keeps every time exactly as it is stored.
+- **Passwords.** The new recording has no password, or two new ones (a basic
+  and a full-access password, typed twice). The original's passwords are never
+  carried over, and the app never stores passwords. Changing details needs the
+  full-access password of a password-protected recording. Passwords protect
+  the patient details, settings and notes; they do not hide the signal, the
+  recording's name or its timing.
+- The recording's **History** then lists it as *copied with changes*.
+
+Changing a recording's details without making a copy is not possible in this
+version.
+
 ### Copy summary
 
 **Copy summary** copies a short description of the selected recordings, as

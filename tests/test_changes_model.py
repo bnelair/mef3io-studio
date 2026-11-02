@@ -323,3 +323,17 @@ def test_stop_leaves_nothing_behind(tmp_path):
     with pytest.raises(JobCancelled):
         c.make_changes(request(src, tmp_path / "x.mefd"), cancel=token)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["orig.mefd"]
+
+
+def test_transform_session_has_one_call_site():
+    """Edit details and Join or trim both copy through model/changes.py."""
+    import ast
+
+    src = Path(c.__file__).resolve().parents[1]
+    users = []
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "transform_session":
+                users.append(path.relative_to(src).as_posix())
+    assert users == ["model/changes.py"]
