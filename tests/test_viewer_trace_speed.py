@@ -82,3 +82,22 @@ def test_a_2x_screen_draws_each_trace_twice(one, monkeypatch):
     one.canvas.invalidate()
     single = _ink_all(one)
     assert echoed > 1.6 * single > 0
+
+
+def test_a_fractional_scale_does_not_re_render_on_each_paint(one, qtbot, monkeypatch):
+    """At 1.25 a canvas width of 4k + 2 gives a x.5 device width, where
+    QSize * dpr rounds up and the pixmap size truncates."""
+    for _ in range(4):
+        if one.canvas.width() % 4 == 2:
+            break
+        one.resize(one.width() + 1, one.height())
+        qtbot.wait(20)
+    assert one.canvas.width() % 4 == 2
+    monkeypatch.setattr(one.canvas, "devicePixelRatioF", lambda: 1.25)
+    renders = []
+    real = one.canvas._render
+    monkeypatch.setattr(one.canvas, "_render", lambda: (renders.append(1), real())[1])
+    one.canvas.invalidate()
+    for _ in range(3):
+        one.canvas.repaint()
+    assert len(renders) == 1

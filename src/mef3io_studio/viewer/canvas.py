@@ -259,11 +259,10 @@ class TraceCanvas(QWidget):
     # -- painting ------------------------------------------------------------
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        if (
-            self._dirty
-            or self._pm is None
-            or self._pm.size() != self.size() * self.devicePixelRatioF()
-        ):
+        # Compared by the key the pixmap was made for: at a fractional scale
+        # (1.25, 1.75) QSize * dpr rounds where the pixmap size truncates, so
+        # a size comparison re-rendered every trace on each pointer move.
+        if self._dirty or self._pm is None or self._pm_key != self._size_key():
             self._render()
         p = QPainter(self)
         p.drawPixmap(0, 0, self._pm)
