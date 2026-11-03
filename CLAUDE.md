@@ -59,7 +59,7 @@ Code (app shell, #2/#3):
   `packaging/mef3io-studio.spec` + `.github/workflows/build.yml`; every build
   must pass `mef3io-studio --self-test`. build.yml runs ONLY for releases (dispatch
   by bump-version on the release branch, a VERSION-changing push to main, a `v*`
-  tag); never on PRs or ordinary merges (shared runner and storage quota, user's
+  tag; re-dispatch it by hand after later pushes to the release branch); never on PRs or ordinary merges (shared runner and storage quota, user's
   rule; pinned by test_release_tools.py). Artifacts kept 3 days. Not on PyPI, ever. Version = `VERSION`
   (read by `_version.py`, pyproject, the spec, the installers; a test pins
   `app_version()` to it); shown in the window title, the sidebar

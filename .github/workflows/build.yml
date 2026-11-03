@@ -46,7 +46,7 @@ permissions:
 concurrency:
   # Every push to main gets its own group (its commit), so a run on main is
   # never cancelled, not even while queued: it may be the one that publishes a
-  # release. Branch and PR runs replace their own older runs.
+  # release. Runs dispatched on a release branch replace their own older runs.
   group: build-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -187,8 +187,8 @@ jobs:
           hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "$dmg"
           out="$("$RUNNER_TEMP/dmg/mef3io-studio.app/Contents/MacOS/mef3io-studio" --self-test)"
           # The app's helper process can still hold the image for a moment
-          # ("Resource busy"): retry, then force. The self-test result above
-          # is what counts.
+          # ("Resource busy"): retry, then force (a failed force still fails
+          # the step).
           for i in 1 2 3 4 5; do
             hdiutil detach "$RUNNER_TEMP/dmg" && break
             sleep 3
