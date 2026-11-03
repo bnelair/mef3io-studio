@@ -27,8 +27,6 @@ from mef3io_studio.explorer.edit_details import (
     EditDetailsDialog,
 )
 
-pytestmark = pytest.mark.usefixtures("clean_identities")
-
 NEW_BASIC, NEW_FULL = "new-basic-77", "new-full-88"
 
 
@@ -347,6 +345,11 @@ def test_closing_in_any_way_wipes_the_passwords_and_the_run(shown_window, qtbot,
     assert dialog.passwords.passwords() is None
     assert not dialog.passwords.basic.text() and not dialog.passwords.full_again.text()
     qtbot.waitUntil(lambda: not dialog._busy, timeout=60_000)
+    # The run went on without a window: it finished, and kept no password.
+    assert dialog.result is not None and dialog.result.ok
+    assert dialog.request.output_password is None and dialog._open_password == ""
+    dialog.reject()
+    assert dialog._open_password == "" and dialog.request is None and dialog._pending is None
 
 
 def test_the_run_keeps_no_password_after_saving_or_closing(shown_window, qtbot, tmp_path):

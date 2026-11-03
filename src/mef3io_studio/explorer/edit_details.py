@@ -187,6 +187,8 @@ class EditDetailsDialog(QDialog):
         self._stopped = False
         self._failure = None
         self._open_password = ""
+        self._pending: changes.ChangeRequest | None = None
+        self._closed = False
         self.setWindowTitle("Edit details (makes a new copy)")
         em = self.fontMetrics().height()
         self.setMinimumWidth(em * 40)
@@ -269,6 +271,8 @@ class EditDetailsDialog(QDialog):
         # -- messages, progress, buttons -------------------------------------------
         self.problem = _label()
         self.problem.setObjectName("Bad")
+        self.busy_note = _label("Working… you can close this window when it is done.", muted=True)
+        self.busy_note.setVisible(False)
         self.findings = QVBoxLayout()
         self.progress_slot = QVBoxLayout()
         self.result_label = _label()
@@ -310,6 +314,7 @@ class EditDetailsDialog(QDialog):
         layout.addWidget(self.intro)
         layout.addWidget(_scroll(inner), 1)
         layout.addWidget(self.problem)
+        layout.addWidget(self.busy_note)
         layout.addLayout(self.findings)
         layout.addLayout(self.progress_slot)
         layout.addWidget(self.result_label)
@@ -464,6 +469,7 @@ class EditDetailsDialog(QDialog):
         self._busy = busy
         self.inputs.setEnabled(not busy)
         self.close_buttons.setEnabled(not busy)
+        self.busy_note.setVisible(busy)
         self._update()
 
     def _clear(self, layout) -> None:
@@ -478,17 +484,19 @@ class EditDetailsDialog(QDialog):
         copy itself."""
         if self._busy or self.problem_text():
             return None
-        request = self.make_request()
+        self._closed = False
+        self._pending = self.make_request()
         self._clear(self.findings)
         self._clear(self.progress_slot)
         self._clear(self.result_details)
         self.result_label.setText("")
         self._set_busy(True)
-        handle = self.jobs.submit("Checking before saving", check_changes, request)
+        handle = self.jobs.submit("Checking before saving", check_changes, self._pending)
         generation = self._generation
 
         def checked(found) -> None:
-            if generation != self._generation:
+            request, self._pending = self._pending, None
+            if generation != self._generation or request is None:
                 return
             if found:
                 self._show_findings(found)
@@ -497,13 +505,18 @@ class EditDetailsDialog(QDialog):
             self._start(request)
 
         def failed(message) -> None:
+            self._pending = None
             self._show_findings([changes.Finding("", message)])
             self._set_busy(False)
 
         handle.succeeded.connect(checked)
         handle.failed.connect(failed)
-        handle.cancelled.connect(lambda: self._set_busy(False))
+        handle.cancelled.connect(self._check_stopped)
         return handle
+
+    def _check_stopped(self) -> None:
+        self._pending = None
+        self._set_busy(False)
 
     def _show_findings(self, found: list) -> None:
         frame = QFrame()
@@ -539,7 +552,8 @@ class EditDetailsDialog(QDialog):
         self._clear(self.progress_slot)
         self._set_busy(False)
         result = self.result
-        output = self.request.output_password if self.request else None
+        # Closed while it ran: the passwords are not kept, not even to open it.
+        output = None if self._closed or not self.request else self.request.output_password
         if self.request is not None:
             self.request = replace(self.request, output_password=None, password="")
         if self._stopped:
@@ -571,7 +585,9 @@ class EditDetailsDialog(QDialog):
         """Forget every password and the finished run (memory only)."""
         self.passwords.forget()
         self._open_password = ""
+        self._closed = True
         if not self._busy:
+            self._pending = None
             self.request = None
             self.result = None
             self.handle = None

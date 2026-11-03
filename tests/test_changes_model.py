@@ -28,8 +28,6 @@ from mef3io_studio.model.cancel import CancelToken
 from mef3io_studio.model.inspect import inspect_recording
 from mef3io_studio.model.recording import operation_words
 
-pytestmark = pytest.mark.usefixtures("clean_identities")
-
 NEW_BASIC, NEW_FULL = "new-basic-77", "new-full-88"
 
 
