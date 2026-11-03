@@ -399,6 +399,35 @@ def _join_channel(details: dict) -> str:
     )
 
 
+#: The details people can change, in everyday words (by mef3io's field name).
+DETAIL_LABELS = {
+    "subject_name_1": "The patient's first name",
+    "subject_name_2": "The patient's last name",
+    "subject_id": "The patient ID",
+    "recording_location": "The place of the recording",
+    "session_description": "The recording description",
+    "channel_descriptions": "A channel description",
+    "reference_descriptions": "A channel's reference description",
+}
+
+
+def _detail_too_long(details: dict) -> str:
+    which = DETAIL_LABELS.get(details.get("field") or "", "One of the details")
+    return (
+        f"{which} is longer than the recording can store, and the app never cuts a text "
+        f"short. {NOTHING_JOINED} Make it shorter and try again."
+    )
+
+
+def _detail_channel(details: dict) -> str:
+    channel = details.get("channel")
+    which = f" ({channel})" if channel else ""
+    return (
+        f"A description was given for a channel{which} that the new recording does not "
+        f"have. {NOTHING_JOINED} Remove that description and try again."
+    )
+
+
 def _unsafe(text: str) -> Callable[[dict], tuple[str, str]]:
     return _fixed(_JOIN_UNSAFE, f"{text} {NOTHING_JOINED} {JOIN_CHECK}")
 
@@ -435,9 +464,11 @@ JOIN_WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     technical("rename-name-mismatch"): _app_mistake("The new name was not valid."),
     technical("invalid-argument"): _app_mistake(),
     technical("metadata-unknown"): _app_mistake(),
-    technical("metadata-too-long"): _app_mistake(),
-    technical("metadata-invalid"): _app_mistake(),
-    technical("metadata-channel-unknown"): _app_mistake(),
+    technical("metadata-too-long"): _dynamic("A detail is too long", _detail_too_long),
+    technical("metadata-invalid"): _app_mistake("A detail was not valid."),
+    technical("metadata-channel-unknown"): _dynamic(
+        "A detail names a channel the recording does not have", _detail_channel
+    ),
     technical("merge-too-few"): _app_mistake("Joining needs at least two recordings."),
     technical("merge-passwords-count"): _app_mistake(),
     technical("merge-time-range"): _app_mistake(),

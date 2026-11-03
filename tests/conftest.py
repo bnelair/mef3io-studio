@@ -186,3 +186,15 @@ def multisegment_session(tmp_path_factory):
                     new_segment=True,
                 )
     return path
+
+
+@pytest.fixture(autouse=True)
+def clean_identities():
+    """Tasks register the names and passwords they handle with the process-wide
+    log filter; a test that runs them must not leave those words behind (they
+    would redact ordinary words in later tests' log lines)."""
+    from mef3io_studio.common import privacy
+
+    privacy.identities.clear()
+    yield
+    privacy.identities.clear()

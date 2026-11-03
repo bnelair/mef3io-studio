@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 from ..common.privacy import register_identity, scrub
-from ..model import anonymize, archive, awake, bundle, join, pipeline, rename_ops, times
+from ..model import anonymize, archive, awake, bundle, changes, join, pipeline, rename_ops, times
 from ..model import journal as journal_
 from ..model.cancel import JobCancelled, is_stop
 from ..model.coverage import Stopped, combine
@@ -418,6 +418,73 @@ def join_recordings(ctx: JobContext, request: join.JoinRequest) -> join.JoinResu
     if result.parts_left:
         log.warning("job %d: temporary files of a join could not be removed", ctx.job_id)
     log.info("job %d: join %s", ctx.job_id, "saved and checked" if result.ok else "not saved")
+    return result
+
+
+def _register_change_identity(request: changes.ChangeRequest) -> None:
+    """Everything a change request carries that identifies or unlocks: the
+    original's name and password, the new name and passwords, and every
+    detail text (they are patient details)."""
+    values = [recording_name(request.source), request.name, request.password]
+    if request.output_password:
+        values += list(request.output_password)
+    for value in (request.metadata or {}).values():
+        values += list(value.values()) if isinstance(value, dict) else [value]
+    register_identity(*(v for v in values if isinstance(v, str) and len(v) >= 3))
+
+
+def check_changes(ctx: JobContext, request: changes.ChangeRequest) -> list[changes.Finding]:
+    """mef3io's verdict on a copy with changes, before anything is written:
+    every reason not to start, in plain words (empty = it would start). In
+    a helper process (it opens the recording)."""
+    _register_change_identity(request)
+    ctx.report(0, None, "Checking everything before starting")
+    findings = ctx.run_isolated(changes.check_changes, request, stop_grace=STOP_GRACE_SECONDS)
+    findings = [replace(f, message=scrubbed(f.message)) for f in findings]
+    log.info("job %d: check of a copy with changes found %d problem(s)", ctx.job_id, len(findings))
+    return findings
+
+
+def make_changes(ctx: JobContext, request: changes.ChangeRequest) -> changes.ChangeResult:
+    """Make the copy with changes in a helper process, with mef3io's byte
+    progress. A refusal or failure comes back as the result's message; Stop
+    ends the helper (mef3io removes what it had started) and an unfinished
+    ``<copy>.partial`` is removed here too, in case the helper had to be
+    ended before it could tidy up."""
+    _register_change_identity(request)
+    partial_was_there = os.path.lexists(request.destination + ".partial")
+    if not partial_was_there:
+        destination = request.destination
+        ctx.add_cleanup(lambda: anonymize.remove_unfinished(destination))
+    phase = "Making the new recording, then checking it"
+    ctx.report(0, 1, phase)
+
+    def got(message) -> None:
+        if isinstance(message, ByteProgress):
+            ctx.report(message.fraction, 1, phase)
+
+    try:
+        result = ctx.run_isolated(
+            changes.make_changes, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
+        )
+    except Exception as exc:
+        if isinstance(exc, JobCancelled) or is_stop(exc):
+            raise
+        # The helper itself failed (a crash): tidy up, then say what happened.
+        if not partial_was_there:
+            anonymize.remove_unfinished(request.destination)
+        result = changes.ChangeResult(
+            request.destination, message=changes.describe_change_error(exc, request)
+        )
+    if not result.ok and not partial_was_there:
+        anonymize.remove_unfinished(request.destination)
+    if result.message is not None:
+        result = replace(result, message=scrubbed(result.message))
+    log.info(
+        "job %d: copy with changes %s",
+        ctx.job_id,
+        "saved and checked" if result.ok else "not saved",
+    )
     return result
 
 

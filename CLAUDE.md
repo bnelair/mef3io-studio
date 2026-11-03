@@ -421,3 +421,31 @@ Code (app shell, #2/#3):
   channel and leaving it out, overlap, Stop, cleanup + pre-existing folder,
   ends from blocks, reprs, password-protected parts and sources),
   tests/test_joiner_ui.py (incl. stale check and the Explore action).
+- Copy with changes (#14, #15): `model/changes.py` (Qt-free) is the ONE call
+  site of `mef3io.transform_session` / `transform.check` (a test pins it):
+  `ChangeRequest` (source, destination, source password, channels /
+  exclude_channels, `output_password` pair or None, `metadata` = ONLY the
+  changed fields, optional `time_range`/`exact`; every field `repr=False`),
+  `check_changes` (dry run, new passwords never passed), `make_changes`
+  (helper entry, errors -> `ChangeResult` with plain words, Stop raised),
+  `transform_copy` / `transform_refusals` (raw, used by Join or trim for its
+  trim and its temporary cuts), `describe_transform_error` / `refusal_message`
+  (shared by both features; words = `refusals.JOIN_WORDS`, which now has real
+  words for metadata-too-long / -channel-unknown, `DETAIL_LABELS`).
+  `changed_details` builds the minimal `metadata=` (a detail that was never
+  shown: any text is a change, empty = keep; shown: differing text, "" clears;
+  reference descriptions are never shown, any text replaces). `DETAIL_LIMITS`
+  mirrors `mef3io.transform.METADATA_FIELDS` (a test keeps them equal; bytes,
+  terminator included, so text <= limit - 1 bytes) so the window never asks the
+  library; too long = refused, never cut. Tasks `workers.tasks.check_changes`
+  / `make_changes` (helper process, byte progress, `<dst>.partial` removed on
+  Stop/crash). Window: `explorer/edit_details.py` (`EditDetailsDialog`, button
+  on the Patient details tab + list menu; details HIDDEN until Show, which sets
+  `entry.revealed` and refreshes Explore; times shown read-only with the
+  "cannot be changed" sentence; needs full-access -> basic access is refused;
+  imports no mef3io). Passwords: `common/passwords.PasswordsStep` is the one
+  form (Anonymize, Join or trim, Edit details; includes the "may not work
+  elsewhere" warning via `password_interop_issue`); output blocks are never
+  password-protected (MEF design), the text says passwords do not hide the
+  signal. NOT built: editing in place (needs mef3io `edit_metadata`, absent in
+  2.1.1) - no placeholder UI. History word for op 8: "copied with changes".

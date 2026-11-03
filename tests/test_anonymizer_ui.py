@@ -717,7 +717,9 @@ def test_identity_and_review_wording_is_plain():
 
     assert "NOT" in p.KEEP_TEXT_WARNING and "dates" in p.KEEP_TEXT_WARNING
     assert "undo the anonymization" in p.DATE_KEY_WARNING
-    assert "do not hide the signal" in p.PASSWORD_EXPLANATION
+    from mef3io_studio.common.passwords import PASSWORD_EXPLANATION
+
+    assert "do not hide the signal" in PASSWORD_EXPLANATION
 
 
 # --------------------------------------------------------------------------

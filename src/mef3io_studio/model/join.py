@@ -77,23 +77,28 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from .anonymize import (
     copy_name,
-    describe_copy_error,
-    is_disk_full,
     is_unreachable,
-    refusal_code,
     remove_unfinished,
     technical_text,
 )
 from .cancel import CancelToken, JobCancelled, is_stop, stopped_by_library
+from .changes import (
+    PLACEHOLDER_CODES,
+    ChangeRequest,
+    describe_transform_error,
+    refusal_message,
+    transform_copy,
+    transform_refusals,
+)
 from .errors import UserMessage
 from .progress import byte_progress
 from .quiet import library_warnings_caught
 from .recording import recording_name
-from .refusals import NOTHING_JOINED, REPORT, join_message_for
+from .refusals import NOTHING_JOINED, join_message_for
 from .times import read_time
 
 SECOND_US = 1_000_000
@@ -473,42 +478,13 @@ def join_technical_text(exc: BaseException, request: JoinRequest) -> str:
 
 
 def describe_join_error(exc: BaseException, request: JoinRequest) -> UserMessage:
-    """A refusal or failure in plain words: by mef3io's refusal code
-    (``JOIN_WORDS`` has every code of transform and merge), else by the
-    kind of error (the anonymizer's words, which fit any copy)."""
-    detail = join_technical_text(exc, request)
-    if is_disk_full(exc):
-        return UserMessage(
-            "The destination is full",
-            "There was not enough free space to finish the new recording. Anything the app "
-            "had started was removed and the original recordings were not changed. Free some "
-            "space or choose another folder, then try again.",
-            detail,
-        )
-    code = refusal_code(exc)
-    if code is not None:
-        message = join_message_for(code, getattr(exc, "details", None) or {}, detail)
-        if message is not None:
-            return message
-    return replace(describe_copy_error(exc), detail=detail)
+    """A refusal or failure in plain words (``changes.describe_transform_
+    error``: ``JOIN_WORDS`` has every code of transform and merge)."""
+    return describe_transform_error(exc, *_paths_and_stems(request))
 
 
 def _check_message(refusal, request: JoinRequest) -> UserMessage:
-    details = {
-        "channel": refusal.channel,
-        "field": refusal.field,
-        "inspect_code": refusal.inspect_code,
-    }
-    exc = RuntimeError(f"[{refusal.code}] {refusal.message}")
-    detail = join_technical_text(exc, request)
-    message = join_message_for(refusal.code, details, detail)
-    if message is None:
-        message = UserMessage(
-            "The new recording could not be made",
-            f"{NOTHING_JOINED} {REPORT}",
-            detail,
-        )
-    return message
+    return refusal_message(refusal, *_paths_and_stems(request))
 
 
 def _last_sample_end(reader, channel: str, stated_end: int) -> int | None:
@@ -623,16 +599,17 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
         if request.single:
             s = request.sources[0]
             span = plan.spans[s.key]
-            report = mef3io.transform.check(
-                s.source,
-                request.destination,
-                exclude_channels=list(request.exclude_channels) or None,
-                time_range=None if span.whole else span.time_range,
-                exact=True,
-                password=s.password,
-                cancel=library_cancel,
+            refusals = transform_refusals(
+                ChangeRequest(
+                    s.source,
+                    request.destination,
+                    s.password,
+                    exclude_channels=request.exclude_channels,
+                    time_range=None if span.whole else span.time_range,
+                ),
+                cancel,
             )
-            return [CheckFinding(s.key, _check_message(r, request)) for r in report.refusals[:1]]
+            return [CheckFinding(s.key, _check_message(r, request)) for r in refusals[:1]]
         placeholder = os.path.join(
             tempfile.gettempdir(), ".mef3io-studio-not-a-folder", "part.mefd"
         )
@@ -643,15 +620,11 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
                 continue
             cut = True
             s = sources[key]
-            report = mef3io.transform.check(
-                s.source,
-                placeholder,
-                time_range=span.time_range,
-                exact=True,
-                password=s.password,
-                cancel=library_cancel,
+            refusals = transform_refusals(
+                ChangeRequest(s.source, placeholder, s.password, time_range=span.time_range),
+                cancel,
+                ignore=PLACEHOLDER_CODES,
             )
-            refusals = [r for r in report.refusals if r.code not in _PLACEHOLDER_CODES]
             findings += [CheckFinding(key, _check_message(r, request)) for r in refusals[:1]]
         if findings:
             return findings
@@ -677,10 +650,6 @@ def _unique(findings: list[CheckFinding]) -> list[CheckFinding]:
             seen.add(mark)
             out.append(f)
     return out
-
-
-#: Refusals about the placeholder destination of a part not made yet.
-_PLACEHOLDER_CODES = frozenset({"dst-not-mefd", "dst-exists", "partial-exists", "dst-inside-src"})
 
 
 def _throwaway_passwords() -> tuple[str, str]:
@@ -754,16 +723,17 @@ def _run(request: JoinRequest, plan: JoinPlan, send, cancel: CancelToken):
     if request.single:
         s = request.sources[0]
         span = plan.spans[s.key]
-        return mef3io.transform_session(
-            s.source,
-            request.destination,
-            exclude_channels=exclude,
-            output_password=request.output_password,
-            time_range=None if span.whole else span.time_range,
-            exact=True,
-            password=s.password,
-            progress=progress("trim", 1, 1, 0, 1),
-            cancel=library_cancel,
+        return transform_copy(
+            ChangeRequest(
+                s.source,
+                request.destination,
+                s.password,
+                exclude_channels=request.exclude_channels,
+                output_password=request.output_password,
+                time_range=None if span.whole else span.time_range,
+            ),
+            progress("trim", 1, 1, 0, 1),
+            cancel,
         )
     to_cut = [k for k in plan.order if not plan.spans[k].whole]
     steps = len(to_cut) + 1
@@ -783,16 +753,13 @@ def _run(request: JoinRequest, plan: JoinPlan, send, cancel: CancelToken):
         cancel.raise_if_cancelled()
         n = to_cut.index(key)
         part = os.path.join(request.parts_folder, f"part-{n + 1}.mefd")
-        mef3io.transform_session(
-            s.source,
-            part,
-            time_range=span.time_range,
-            exact=True,
-            password=s.password,
+        transform_copy(
             # Protected: see the module's notes on password safety.
-            output_password=temporary,
-            progress=progress("cut", n + 1, len(to_cut), n, steps),
-            cancel=library_cancel,
+            ChangeRequest(
+                s.source, part, s.password, output_password=temporary, time_range=span.time_range
+            ),
+            progress("cut", n + 1, len(to_cut), n, steps),
+            cancel,
         )
         paths.append(part)
         passwords.append(temporary[1])
