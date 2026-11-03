@@ -21,8 +21,7 @@ from .errors import UserMessage
 from .text import technical
 
 NOTHING = "Nothing was written, and the original was not changed."
-#: The title of mef3io's "time-range-empty" refusal in a copy with changes. "Cut into
-#: pieces" recognises it to leave that piece out.
+#: The title of mef3io's "time-range-empty" refusal in a copy with changes.
 EMPTY_WINDOW_TITLE = "The chosen part holds no recording"
 CHECK = "Use Check for problems in Explore to see more, and keep a copy of the original."
 REPORT = "Try again; if it keeps happening, report it and include the technical details."

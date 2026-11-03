@@ -13,6 +13,7 @@ from test_make_new_ui import open_all, tree_hash
 from test_pieces_model import write_signal
 
 from mef3io_studio.model import pieces as P
+from mef3io_studio.model import refusals
 from mef3io_studio.pieces import PiecesDialog
 from mef3io_studio.pieces import dialog as dlg
 
@@ -309,6 +310,13 @@ def test_a_piece_in_a_gap_inside_a_stored_part_is_left_out_not_a_stop(
     dialog.pattern.setText("Cut-<number>")
     dialog.folder = str(out)
     dialog._changed()
+    # The refusal is recognised by mef3io's code, not by its wording.
+    from mef3io_studio.model.errors import UserMessage
+    from mef3io_studio.pieces.dialog import _is_empty
+
+    assert _is_empty(UserMessage("Any other words", "x", code="time-range-empty"))
+    assert not _is_empty(UserMessage(refusals.EMPTY_WINDOW_TITLE, "x", code="dst-exists"))
+    assert not _is_empty(None)
     assert dialog.start() is not None
     qtbot.waitUntil(lambda: dialog.finished_run, timeout=180_000)
     assert sorted(p.name for p in out.iterdir()) == ["Cut-01.mefd", "Cut-03.mefd"]

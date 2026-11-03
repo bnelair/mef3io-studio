@@ -26,6 +26,9 @@ class UserMessage:
     title: str
     text: str
     detail: str = ""
+    #: mef3io's stable refusal code when the message explains one (data, not
+    #: wording: a caller that must tell a case apart matches on this).
+    code: str = ""
 
 
 def _mef3io_errors():

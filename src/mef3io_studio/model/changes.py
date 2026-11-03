@@ -322,7 +322,7 @@ def refusal_message(refusal, paths: tuple[str, ...], stems: tuple[str, ...]) -> 
         message = UserMessage(
             "The new recording could not be made", f"{NOTHING_JOINED} {REPORT}", detail
         )
-    return message
+    return replace(message, code=refusal.code)
 
 
 def check_changes(request: ChangeRequest, cancel: CancelToken | None = None) -> list[Finding]:

@@ -66,10 +66,12 @@ from ..model import pieces as P
 from ..model import pipeline
 from ..model.coverage import RecordingInput
 from ..model.recording import ACCESS_OPEN
-from ..model.refusals import EMPTY_WINDOW_TITLE
 from ..model.timefmt import format_size, format_span, format_time, zone_label
 from ..workers.jobs import JobManager
 from ..workers.tasks import BatchState, data_stretches
+
+#: mef3io's refusal for a window that holds no signal.
+EMPTY_WINDOW_CODE = "time-range-empty"
 
 STEP_RECORDING, STEP_CUT, STEP_PASSWORDS, STEP_WHERE, STEP_RUN = range(5)
 STEP_TITLES = ("Recording", "Where to cut", "Passwords", "Names and folder", "Making the pieces")
@@ -87,7 +89,7 @@ PATTERN_HELP = (
 
 
 def _is_empty(message) -> bool:
-    return message is not None and message.title == EMPTY_WINDOW_TITLE
+    return message is not None and message.code == EMPTY_WINDOW_CODE
 
 
 def _number_of(item) -> str:
