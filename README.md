@@ -388,10 +388,11 @@ docker run --rm -v "$PWD":/src -w /src almalinux:9 packaging/linux/build-in-cont
 ```
 
 `.github/workflows/build.yml` builds the Windows installer, the macOS `.dmg`s
-and the Linux AppImage and tarball. It runs on every push to `main`, on pull
-requests that touch `src/`, `packaging/`, `requirements/`, the pins or
-`VERSION`, when started by hand (*Actions → Build installers → Run workflow*),
-and on `v*` tags. Each build is smoke-tested (`--self-test`, `--self-test-gui`,
+and the Linux AppImage and tarball. It runs only for releases: when the
+`bump-version` workflow opens a release PR (it starts the build on that
+branch), on a push to `main` that changes `VERSION` (merging the release PR),
+on `v*` tags, and when started by hand (*Actions → Build installers → Run
+workflow*). Ordinary PRs and merges run only the tests (`ci.yml`). Each build is smoke-tested (`--self-test`, `--self-test-gui`,
 Windows install → upgrade → uninstall, the Linux tarball on five
 distributions, an strace check that no internet socket is opened). On tags the
 installers and `SHA256SUMS` are attached to a GitHub release (a pre-release for test versions), described by
@@ -437,7 +438,10 @@ and the release tag all read it. Releasing is two steps:
      [docs/roadmap.md](docs/roadmap.md) including its Status column.
    - Have it reviewed.
 
-   Every push to that pull request builds and tests the installers again.
+   Opening the pull request builds and tests the installers once. After a
+   later push to it, start the build again by hand (*Actions → Build
+   installers → Run workflow*, on the release branch) and merge only when it
+   passes.
 
    **Merging publishes the release.** `build.yml` builds and tests every
    installer from the merged commit, then tags exactly that commit
