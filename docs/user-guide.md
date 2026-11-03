@@ -1,6 +1,6 @@
 # User guide
 
-This guide describes the app as of version **0.1.0**. It has three pages:
+This guide describes the app as of version **0.1.1**. It has three pages:
 **Explore** (see what is in your recordings), **Anonymize** (make
 anonymized copies of them) and **Join or trim** (keep part of a recording,
 or join parts of several into one). From Explore you can also rename
