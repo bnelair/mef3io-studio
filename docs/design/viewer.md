@@ -413,6 +413,14 @@ mef3io), driven by a scheduler in `workers/`.
   - One polyline per row: min/max per pixel column when there are more
     samples than pixels, otherwise the exact samples joined by straight
     lines.
+  - Traces use a pen one device pixel wide (cosmetic, width 1): Qt's fast
+    line path. Any wider pen (1.2 px, or 1 px on a 2x screen) is stroked
+    as an outline, about 100x slower; with it, 64 channels took 2-4 s per
+    move. On a 2x screen each trace is drawn twice, one device pixel
+    apart, to keep the line weight. Polylines are built from numpy in one
+    step (QPolygonF's stream form), not one point at a time. Measured on
+    64 channels at 2 kHz: about 0.1 s per move at 1x and 2x. Pinned by
+    `tests/test_viewer_trace_speed.py` (points exact, pen, ink on screen).
   - Gaps are shaded bands. Overlay items (cursor, selection, export range,
     boundaries, chips) go on a separate layer, so moving the pointer never
     repaints traces.

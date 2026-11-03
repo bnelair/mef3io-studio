@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, tzinfo
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QDataStream, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -70,7 +70,26 @@ EDGE_GRAB_PX = 5
 
 
 def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
-    return QPolygonF([QPointF(float(x), float(y)) for x, y in zip(xs, ys, strict=True)])
+    """Built in one step from QPolygonF's stream form (a big-endian point
+    count, then x, y as big-endian doubles): about 40x faster than one
+    QPointF per point, which cost ~11 ms per row."""
+    n = len(xs)
+    pts = np.empty((n, 2), dtype=">f8")
+    pts[:, 0] = xs
+    pts[:, 1] = ys
+    poly = QPolygonF()
+    QDataStream(QByteArray(np.array([n], dtype=">u4").tobytes() + pts.tobytes())) >> poly
+    return poly
+
+
+def _trace_pen(colour: str) -> QPen:
+    """One device pixel wide at any screen scale. Qt draws such a line on a
+    fast path; any wider pen (1.2 px, or 1 px on a 2x screen) is stroked as
+    an outline, about 100x slower, which made each page take seconds. On a
+    2x screen the trace is drawn twice instead (``_paint_gaps_and_traces``)."""
+    pen = QPen(QColor(colour), 1)
+    pen.setCosmetic(True)
+    return pen
 
 
 class TraceCanvas(QWidget):
@@ -327,10 +346,14 @@ class TraceCanvas(QWidget):
         first = self.row_offset
         last = min(len(self.rows), first + self.visible_rows() + 1)
         w = max(1, int(plot.width()))
-        pen = QPen(QColor(pal.trace), 1.2)
-        dim = QPen(QColor(pal.trace_dim), 1.2)
+        pen = _trace_pen(pal.trace)
+        dim = _trace_pen(pal.trace_dim)
         px_uv = self.px_per_mm / max(1e-9, self.sens)
         half = self.row_height / 2
+        # On a 2x screen a one-device-pixel line is a hairline: draw it again
+        # one device pixel down and right (still the fast path, ~1 ms a row).
+        dpr = p.device().devicePixelRatioF()
+        echo = 1.0 / dpr if dpr >= 1.5 else 0.0
         for i in range(first, last):
             row = self.rows[i]
             yc = self.row_y(i)
@@ -348,7 +371,10 @@ class TraceCanvas(QWidget):
             for xs, ys, seg_dim in shape.segments:
                 ys = np.clip(yc - ys * px_uv, yc - limit, yc + limit)
                 p.setPen(dim if seg_dim else pen)
-                p.drawPolyline(_polygon(plot.left() + xs, ys))
+                poly = _polygon(plot.left() + xs, ys)
+                p.drawPolyline(poly)
+                if echo:
+                    p.drawPolyline(poly.translated(echo, echo))
                 total += xs.size
             self.drawn_points[i] = total
 
