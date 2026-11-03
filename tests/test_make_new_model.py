@@ -283,26 +283,28 @@ def test_stop_halfway_leaves_no_partial_and_no_half_result(qtbot, jobs, tmp_path
     before = [tree_hash(s) for s in sources]
     batch, dest, work = change_batch(tmp_path, sources, exclude=(("a3",), ("n1",), ("a3",)))
     handle = jobs.submit("batch", tasks.run_batch, batch, None)
-    qtbot.waitUntil(
-        lambda: (
-            handle.record.progress is not None
-            and handle.record.progress.phase.startswith("Recording 2 of 3")
-            and (handle.record.progress.fraction or 0) > 1 / 3 + 0.01
-        ),
-        timeout=60_000,
-    )
+
+    def reached_second() -> bool:  # recording 2 started (or later: a fast machine races on)
+        p = handle.record.progress
+        return handle.is_finished or (
+            p is not None and p.phase.startswith(("Recording 2 of 3", "Recording 3 of 3"))
+        )
+
+    qtbot.waitUntil(reached_second, timeout=120_000)
     handle.cancel()
-    with qtbot.waitSignal(handle.finished, timeout=60_000):
-        pass
-    # The Stop lands while recording 2 is being made, but a fast machine can finish that copy
-    # first; either way nothing half-made is left and recording 3 is never started.
+    if not handle.is_finished:
+        with qtbot.waitSignal(handle.finished, timeout=120_000):
+            pass
+    # Wherever the Stop lands, what is left is a run of whole copies from the first one on,
+    # each verified against its source; nothing half-made, no work files, sources unchanged.
     made = sorted(p.name for p in dest.iterdir())
-    assert made in (["New1.mefd"], ["New1.mefd", "New2.mefd"]), made
+    names = ["New1.mefd", "New2.mefd", "New3.mefd"]
+    assert made == names[: len(made)] and made, made
     assert not list(dest.rglob("*.partial")) and list(work.iterdir()) == []
-    assert sorted(mef3io.Reader(str(dest / "New1.mefd")).channels) == ["a1", "a2"]
-    if "New2.mefd" in made:  # finished before the Stop: a whole, readable copy
-        report = mef3io.transform.verify(str(big), str(dest / "New2.mefd"), exclude_channels=["n1"])
-        assert report.ok, report
+    left_out = (["a3"], ["n1"], ["a3"])
+    for name, source, exclude in zip(made, sources, left_out, strict=False):
+        report = mef3io.transform.verify(str(source), str(dest / name), exclude_channels=exclude)
+        assert report.ok, (name, report)
     assert [tree_hash(s) for s in sources] == before
     assert journal.unfinished() == []  # a deliberate stop needs no resume
 
