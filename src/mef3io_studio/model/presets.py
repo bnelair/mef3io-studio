@@ -47,6 +47,11 @@ class PresetError(ValueError):
     """A preset or a preset file that cannot be used, in plain words."""
 
 
+class StoreBusy(OSError):
+    """The store file exists but could not be read or written right now
+    (permissions, a full drive). It is left exactly as it is."""
+
+
 @dataclass(frozen=True)
 class ChannelPreset:
     """A named channel choice. ``exclude``: the names are the channels to
@@ -246,13 +251,15 @@ class PresetStore:
                 sealed = json.load(handle)["sealed"]
         except FileNotFoundError:
             return True, []
-        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        except OSError as exc:
+            # Cannot be read NOW (permissions, a drive): not "damaged".
+            raise StoreBusy("The saved choices cannot be read right now.") from exc
+        except (ValueError, KeyError, TypeError, RecursionError):
             return False, []
         if not isinstance(sealed, str):
             return False, []
-        value = unseal(sealed)
         try:
-            return True, _from_json(value)
+            return True, _from_json(unseal(sealed))
         except (PresetError, RecursionError):
             return False, []
 
@@ -266,10 +273,15 @@ class PresetStore:
 
     def _move_aside(self) -> None:
         n = 1
-        while os.path.lexists(f"{self.path}.unreadable-{n}"):
-            n += 1
-        aside = f"{self.path}.unreadable-{n}"
-        os.replace(self.path, aside)
+        while True:
+            aside = f"{self.path}.unreadable-{n}"
+            try:
+                os.link(self.path, aside)  # fails if the name is taken: never overwrites
+            except FileExistsError:
+                n += 1
+                continue
+            break
+        os.unlink(self.path)
         self.moved_aside = os.path.basename(aside)
 
     def save(self, presets: Sequence[ChannelPreset]) -> None:

@@ -347,3 +347,35 @@ def test_the_missing_column_follows_the_choice_on_screen(shown_window, qtbot, tm
     assert dialog.applied is None and dialog.rows()[1].missing == ()
     assert dialog.preview.item(1, 3).text() == ""
     dialog.reject()
+
+
+def test_store_write_problems_are_said_not_raised(shown_window, qtbot, tmp_path, monkeypatch):
+    entries = open_all(qtbot, shown_window, [write_plain(tmp_path / "a.mefd")])
+    dialog = make_dialog(qtbot, shown_window, entries, tmp_path)
+    dialog.next()
+    dialog.store.add(presets.make_preset("Mine", ["a1"]))
+    dialog._fill_presets("Mine")
+
+    def full(*_a, **_k):
+        raise OSError(28, "no space")
+
+    monkeypatch.setattr(presets.PresetStore, "save", full)
+    assert "could not be read or written" in dialog.save_preset("X")
+    assert dialog.delete_preset("Mine") is False
+    path = tmp_path / "in.json"
+    path.write_text(presets.export_text([presets.make_preset("S", ["a"])]), encoding="utf-8")
+    assert "could not be read or written" in dialog.import_presets(str(path))
+    monkeypatch.undo()
+    assert dialog.store.names() == ["Mine"]
+    dialog.reject()
+
+
+def test_export_of_an_unreadable_store_exports_nothing(shown_window, qtbot, tmp_path):
+    entries = open_all(qtbot, shown_window, [write_plain(tmp_path / "a.mefd")])
+    dialog = make_dialog(qtbot, shown_window, entries, tmp_path)
+    dialog.store.add(presets.make_preset("Mine", ["a1"]))
+    Path(dialog.store.path).write_text("garbage", encoding="utf-8")
+    target = tmp_path / "out.json"
+    assert "cannot be read, so nothing was exported" in dialog.export_presets(str(target))
+    assert not target.exists()
+    dialog.reject()

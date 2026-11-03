@@ -86,6 +86,11 @@ INTRO = (
     "changed."
 )
 NEEDS_FULL_ACCESS = "needs its full-access password: open it in Explore with that password first"
+STORE_PROBLEM = (
+    "The saved choices could not be read or written. Nothing was changed. Check that the "
+    "app's data folder is available and has room, then try again."
+)
+UNREADABLE_STORE = "The saved choices cannot be read, so nothing was exported. Nothing was changed."
 SHARE_NOTE = (
     "A saved-choices file holds channel names. Channel names can identify a patient, so share "
     "it only where you would share the recordings."
@@ -142,6 +147,7 @@ class MakeNewDialog(QDialog):
         self.applied: presets.ChannelPreset | None = None
         self._applying = False
         self.key_problem = False
+        self.last_problem = ""
         self.batch: pipeline.Batch | None = None
         self.results: dict[str, anonymize.CopyResult] = {}
         self.leftovers: list[anonymize.Leftover] = []
@@ -322,12 +328,19 @@ class MakeNewDialog(QDialog):
         """Every access to the saved choices goes through here: when the
         app's sealing key cannot be read, say so plainly (nothing is lost or
         replaced) and give ``default``."""
+        self.last_problem = ""
         try:
             return call()
         except journal_.KeyUnavailable:
+            self.last_problem = journal_.KEY_PROBLEM
             self.preset_note.setText(journal_.KEY_PROBLEM)
             self.preset_note.setVisible(True)
             self.key_problem = True
+            return default
+        except OSError:
+            self.last_problem = STORE_PROBLEM
+            self.preset_note.setText(STORE_PROBLEM)
+            self.preset_note.setVisible(True)
             return default
 
     def _aside_note(self) -> str:
@@ -408,7 +421,8 @@ class MakeNewDialog(QDialog):
             return self._aside_note()
 
         try:
-            return self._guarded(save, journal_.KEY_PROBLEM)
+            result = self._guarded(save, None)
+            return self.last_problem if result is None else result
         except presets.PresetError as exc:
             return str(exc)
 
@@ -419,9 +433,9 @@ class MakeNewDialog(QDialog):
 
     def export_presets(self, path: str) -> str:
         """Write all saved choices to a file the person chose. "" or why not."""
-        found = self._guarded(self.store.load, None)
+        found = self._guarded(lambda: None if self.store.unreadable else self.store.load(), None)
         if found is None:
-            return journal_.KEY_PROBLEM
+            return self.last_problem or UNREADABLE_STORE
         try:
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(presets.export_text(found))
@@ -445,7 +459,7 @@ class MakeNewDialog(QDialog):
         except presets.PresetError as exc:
             return str(exc)
         if added is None:
-            return journal_.KEY_PROBLEM
+            return self.last_problem
         self._fill_presets(added[0] if added else "")
         return self._aside_note()
 

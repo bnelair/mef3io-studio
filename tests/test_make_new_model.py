@@ -466,3 +466,28 @@ def test_a_failed_save_leaves_no_temporary_file(tmp_path, monkeypatch):
 def test_a_stop_just_after_a_change_item_finished_does_not_say_not_made():
     assert "may be complete" in tasks.MAYBE_COMPLETE.title.lower()
     assert "not made" not in tasks.MAYBE_COMPLETE.title.lower()
+
+
+def test_aside_names_are_never_overwritten_and_a_busy_read_is_not_damage(tmp_path, monkeypatch):
+    store = presets.PresetStore(str(tmp_path))
+    store.add(presets.make_preset("Mine", ["a"]))
+    taken = tmp_path / "presets.json.unreadable-1"
+    taken.write_text("another instance's copy", encoding="utf-8")
+    Path(store.path).write_text("garbage", encoding="utf-8")
+    store.add(presets.make_preset("New", ["b"]))
+    assert store.moved_aside == "presets.json.unreadable-2"
+    assert taken.read_text(encoding="utf-8") == "another instance's copy"
+    assert (tmp_path / "presets.json.unreadable-2").read_text(encoding="utf-8") == "garbage"
+    # A read that fails right now (permissions) is not damage: nothing moves.
+    real_open = open
+
+    def denied(path, *a, **k):
+        if str(path) == store.path:
+            raise PermissionError(13, "denied")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", denied)
+    with pytest.raises(OSError):
+        store.add(presets.make_preset("More", ["c"]))
+    monkeypatch.undo()
+    assert store.names() == ["New"] and not (tmp_path / "presets.json.unreadable-3").exists()
