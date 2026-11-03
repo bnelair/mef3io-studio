@@ -516,3 +516,11 @@ Code (app shell, #2/#3):
   `makenew.name_problems`. Not built: cut marks dragged on the timeline (times
   are typed), channel choice, archive outputs. Tests: tests/test_pieces_model.py
   (plan incl. DST, left-out, exact samples, Stop), tests/test_pieces_ui.py.
+  A resumed batch of pieces opens in Make new recordings (the journal is all
+  change items); `with_originals` stores the whole recording's name and dates
+  on each piece, which only the anonymize report uses. Plan speed: `Stretches`
+  (prefix sums + bisect, a run counts through its last sample's time), the
+  dialog caches the plan per change; `data_stretches` hands over the parts'
+  OWN stretches (the Explorer's are merged across gaps under 1.5 sample
+  periods, and a piece inside such a gap would be refused by mef3io). A day's
+  midnight that does not exist (clock jumps at 00:00) is the jump instant.

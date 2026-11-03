@@ -128,6 +128,10 @@ class PiecesDialog(BatchRunMixin, QDialog):
         self.verified = True
         self._runs_key = ""
         self._runs_handle = None
+        self.runs_problem = ""
+        self._stretches = P.Stretches(())
+        self._runs_version = 0
+        self._plan_cache: tuple | None = None
         self.at_times: list[int] = []
         self.setWindowTitle("Cut into pieces")
         em = self.fontMetrics().height()
@@ -188,12 +192,27 @@ class PiecesDialog(BatchRunMixin, QDialog):
             self.recording_list.addItem(item)
         if self.recording_list.count():
             self.recording_list.setCurrentRow(0)
-        self.recording_list.currentRowChanged.connect(lambda _row: self._changed())
+        self.recording_list.currentRowChanged.connect(self._recording_changed)
         layout = QVBoxLayout(page)
         layout.addWidget(_label("Which recording?", bold=True))
         layout.addWidget(_label("Choose the recording to cut into pieces.", muted=True))
         layout.addWidget(self.recording_list, 1)
         return page
+
+    def _recording_changed(self, _row: int = 0) -> None:
+        """Another recording: what was typed and found for the old one is
+        not kept."""
+        entry = self.chosen()
+        if entry is not None and entry.key != self._runs_key:
+            if self._runs_handle is not None:
+                self._runs_handle.cancel()
+                self._runs_handle = None
+            self._runs_key = ""
+            self.runs = None
+            self.runs_problem = ""
+            self._runs_version += 1
+            self.at_times = []
+        self._changed()
 
     def chosen(self) -> RecordingEntry | None:
         item = self.recording_list.currentItem()
@@ -288,13 +307,24 @@ class PiecesDialog(BatchRunMixin, QDialog):
         )
 
     def plan(self) -> P.PiecePlan:
+        """The pieces for the current choice, worked out once per change
+        (the window asks several times per change)."""
         entry = self.chosen()
         if entry is None:
             return P.PiecePlan(problem=CHOOSE_ONE)
+        if self.runs_problem:
+            return P.PiecePlan(problem=self.runs_problem)
         if self.runs is None:
             return P.PiecePlan(problem=READING)
+        key = (entry.key, self._runs_version, self.choice(), self.zone, self.verified)
+        if self._plan_cache is not None and self._plan_cache[0] == key:
+            return self._plan_cache[1]
         total = sum(c.bytes for c in entry.details.channels)
-        return P.plan_pieces(self.runs, total, self.choice(), self.zone, verified=self.verified)
+        plan = P.plan_pieces(
+            self._stretches, total, self.choice(), self.zone, verified=self.verified
+        )
+        self._plan_cache = (key, plan)
+        return plan
 
     def _cut_changed(self, *_args) -> None:
         self._changed()
@@ -407,6 +437,7 @@ class PiecesDialog(BatchRunMixin, QDialog):
             return
         self._runs_key = entry.key
         self.runs = None
+        self.runs_problem = ""
         item = RecordingInput(entry.key, entry.name, entry.details)
         handle = self.jobs.submit("Finding where the recording has data", data_stretches, item)
         self._runs_handle = handle
@@ -415,9 +446,19 @@ class PiecesDialog(BatchRunMixin, QDialog):
         def done(found) -> None:
             if self._runs_key == key:
                 self.runs, self.verified = found
+                self._stretches = P.Stretches(self.runs)
+                self._runs_version += 1
+                self._changed()
+
+        def failed(message) -> None:
+            if self._runs_key == key:
+                self._runs_key = ""  # (going back and on tries again)
+                self.runs_problem = f"{message.title}. {message.text}"
+                self._runs_version += 1
                 self._changed()
 
         handle.succeeded.connect(done)
+        handle.failed.connect(failed)
 
     def back(self) -> None:
         if self.step in (STEP_CUT, STEP_PASSWORDS, STEP_WHERE) and not self._busy:
@@ -444,7 +485,11 @@ class PiecesDialog(BatchRunMixin, QDialog):
             if plan.problem or source is None:
                 return plan.problem or CHOOSE_ONE
             problems = makenew_model.name_problems(
-                P.piece_sources(source, plan), self.new_names(), self.folder
+                P.piece_sources(source, plan),
+                self.new_names(),
+                self.folder,
+                "Piece",
+                "Pieces",
             )
             return problems[0] if problems else ""
         return ""

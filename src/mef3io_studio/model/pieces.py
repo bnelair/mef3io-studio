@@ -25,6 +25,7 @@ and times identify).
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta, tzinfo
@@ -114,7 +115,14 @@ ONE_PIECE = "That would give a single piece: the whole recording. Choose a short
 
 
 def _midnight(day, zone: tzinfo) -> int:
-    return from_local(datetime(day.year, day.month, day.day), zone)
+    """The first instant of ``day`` in ``zone``. Where clocks jump over
+    midnight (some zones change at 00:00) that is the first instant that
+    exists, which ``from_local`` (fold 0) gives: the instant of the jump."""
+    t = from_local(datetime(day.year, day.month, day.day), zone)
+    # Never earlier than the day, whatever the zone database does.
+    if to_datetime(t, zone).date() < day:
+        t += HOUR_US
+    return t
 
 
 def cut_times(first: int, last: int, choice: Choice, zone: tzinfo = UTC) -> list[int] | str:
@@ -160,19 +168,54 @@ def cut_times(first: int, last: int, choice: Choice, zone: tzinfo = UTC) -> list
 # The pieces
 
 
-def _holds_data(runs: Sequence[tuple[int, int]], a: int, b: int) -> bool:
-    """Any stretch with data inside ``[a, b)``. A stretch ``[s, e)`` ends
-    where its last sample ends, so one that ends at ``a`` is not inside; a
-    single sample (``s == e``) is."""
-    return any(s < b and (e > a or (s == e and s >= a)) for s, e in runs)
+class Stretches:
+    """The stretches with data, sorted and not overlapping, with prefix sums
+    so a piece is looked up in O(log n) instead of scanned (a multi-day
+    recording has thousands of stretches and a plan has hundreds of pieces).
+    A stretch ``[s, e]`` includes its last sample's time (a writer may state
+    the end as that time), and ``s == e`` is a single sample."""
 
+    def __init__(self, runs: Sequence[tuple[int, int]]):
+        merged: list[list[int]] = []
+        for s, e in sorted((int(s), max(int(s), int(e))) for s, e in runs):
+            if merged and s <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        self.starts = [s for s, _ in merged]
+        self.ends = [e for _, e in merged]
+        self.before = [0]
+        for s, e in merged:
+            self.before.append(self.before[-1] + (e - s))
 
-def _data_inside(runs: Sequence[tuple[int, int]], a: int, b: int) -> int:
-    return sum(max(0, min(e, b) - max(s, a)) for s, e in runs)
+    def __bool__(self) -> bool:
+        return bool(self.starts)
+
+    @property
+    def first(self) -> int:
+        return self.starts[0]
+
+    @property
+    def last(self) -> int:
+        return self.ends[-1]
+
+    def holds_data(self, a: int, b: int) -> bool:
+        """Any stretch with data inside ``[a, b)``."""
+        i = bisect_left(self.ends, a)  # the first stretch ending at or after a
+        return i < len(self.starts) and self.starts[i] < b
+
+    def _upto(self, x: int) -> int:
+        i = bisect_right(self.starts, x) - 1
+        if i < 0:
+            return 0
+        return self.before[i] + min(x, self.ends[i]) - self.starts[i]
+
+    def data_inside(self, a: int, b: int) -> int:
+        return max(0, self._upto(b) - self._upto(a))
 
 
 def plan_pieces(
-    runs: Sequence[tuple[int, int]],
+    runs: Sequence[tuple[int, int]] | Stretches,
     channel_bytes: int,
     choice: Choice,
     zone: tzinfo = UTC,
@@ -185,15 +228,15 @@ def plan_pieces(
     Pure: nothing is read."""
     if not verified:
         return PiecePlan(problem=NO_TIMES)
-    runs = sorted(runs)
-    if not runs:
+    stretches = runs if isinstance(runs, Stretches) else Stretches(runs)
+    if not stretches:
         return PiecePlan(problem="This recording has no data to cut.")
-    first, last = runs[0][0], max(e for _s, e in runs)
+    first, last = stretches.first, stretches.last
     cuts = cut_times(first, last, choice, zone)
     if isinstance(cuts, str):
         return PiecePlan(problem=cuts)
     edges = [first, *cuts, last]
-    total_data = _data_inside(runs, first, last) or 1
+    total_data = stretches.data_inside(first, last) or 1
     pieces: list[Piece] = []
     left_out = 0
     for i, (a, b) in enumerate(zip(edges, edges[1:], strict=False)):
@@ -202,10 +245,10 @@ def plan_pieces(
         last_piece = i == len(edges) - 2
         stop = b + END_MARGIN_US if last_piece else b
         window = (a - END_MARGIN_US if i == 0 else a, stop)
-        if not _holds_data(runs, a, stop):
+        if not stretches.holds_data(a, stop):
             left_out += 1
             continue
-        data = _data_inside(runs, a, stop)
+        data = stretches.data_inside(a, stop)
         share = data / total_data
         pieces.append(
             Piece(

@@ -180,3 +180,102 @@ def test_a_recording_with_unconfirmed_times_is_not_offered(shown_window, qtbot, 
     assert P.plan_pieces([(T0, T0 + 10 * SECOND)], 1, P.Choice(), verified=False).problem == (
         P.NO_TIMES
     )
+
+
+def test_a_failed_search_for_data_is_shown_not_waited_for(
+    shown_window, qtbot, tmp_path, monkeypatch
+):
+    def broken(ctx, item):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(dlg, "data_stretches", broken)
+    entries = open_all(qtbot, shown_window, [write_signal_session(tmp_path / "a.mefd")])
+    dialog = make_dialog(qtbot, shown_window, entries)
+    dialog.next()
+    qtbot.waitUntil(lambda: dialog.runs_problem != "", timeout=30_000)
+    assert dialog.problem.text() == dialog.runs_problem
+    assert "Finding out" not in dialog.problem.text() and not dialog.next_button.isEnabled()
+    dialog.reject()
+
+
+def test_another_recording_starts_clean(shown_window, qtbot, tmp_path):
+    entries = open_all(
+        qtbot,
+        shown_window,
+        [write_signal_session(tmp_path / "a.mefd"), write_signal_session(tmp_path / "b.mefd")],
+    )
+    dialog = make_dialog(qtbot, shown_window, entries)
+    reach_cut_step(qtbot, dialog)
+    dialog.at_input.set_us(T0 + 30 * SECOND, dialog.zone)
+    dialog.add_time()
+    assert dialog.at_times
+    dialog.back()
+    dialog.recording_list.setCurrentRow(1)
+    assert dialog.at_times == [] and dialog.runs is None
+    dialog.next()
+    qtbot.waitUntil(lambda: dialog.runs is not None, timeout=30_000)
+    assert dialog.at_times == [] and dialog.at_list.count() == 0
+    dialog.reject()
+
+
+def test_the_plan_is_worked_out_once_per_change(shown_window, qtbot, tmp_path, monkeypatch):
+    entries = open_all(qtbot, shown_window, [write_signal_session(tmp_path / "a.mefd")])
+    dialog = make_dialog(qtbot, shown_window, entries)
+    reach_cut_step(qtbot, dialog)
+    calls = []
+    real = P.plan_pieces
+    monkeypatch.setattr(P, "plan_pieces", lambda *a, **k: calls.append(1) or real(*a, **k))
+    dialog.at_input.set_us(T0 + 30 * SECOND, dialog.zone)
+    dialog.add_time()
+    assert len(calls) == 1
+    dialog.blocker()
+    dialog.new_names()
+    dialog._changed()
+    assert len(calls) == 1
+    dialog.every.setValue(2)
+    dialog.mode_every.setChecked(True)  # a change of choice: one more
+    assert len(calls) >= 2
+    before = len(calls)
+    dialog._changed()
+    dialog.blocker()
+    assert len(calls) == before
+    dialog.reject()
+
+
+def test_a_gap_shorter_than_the_explorers_merge_does_not_make_a_piece_look_full(
+    shown_window, qtbot, tmp_path
+):
+    from mef3io_studio.model.coverage import RecordingInput, recording_coverage
+    from mef3io_studio.workers.tasks import data_stretches
+
+    fs = 256.0
+    period = int(1e6 / fs)
+    path = tmp_path / "tiny.mefd"
+    n = 2560
+    with mef3io.Writer(str(path), overwrite=True, units="uV") as w:
+        w.write("a1", np.arange(n, dtype=float), T0, fs)
+        second = T0 + int(n * 1e6 / fs) + int(1.2 * period)  # a gap of 1.2 periods
+        w.write("a1", np.arange(n, dtype=float), second, fs, new_segment=True)
+    entries = open_all(qtbot, shown_window, [path])
+    item = RecordingInput(entries[0].key, entries[0].name, entries[0].details)
+    assert len(recording_coverage(item).runs) == 1  # the Explorer joins them
+    runs, verified = data_stretches(None, item)
+    assert verified and len(runs) == 2
+    cuts = (runs[0][1] + 1000, runs[0][1] + 2000)
+    plan = P.plan_pieces(runs, 1, P.Choice(P.AT, at=cuts))
+    assert plan.left_out == 1 and len(plan.pieces) == 2
+
+
+def test_piece_name_problems_say_piece(shown_window, qtbot, tmp_path):
+    entries = open_all(qtbot, shown_window, [write_signal_session(tmp_path / "a.mefd")])
+    dialog = make_dialog(qtbot, shown_window, entries)
+    reach_cut_step(qtbot, dialog)
+    for s in (30, 60):
+        dialog.at_input.set_us(T0 + s * SECOND, dialog.zone)
+        dialog.add_time()
+    dialog.next()
+    dialog.next()
+    dialog.folder = str(tmp_path)
+    dialog.pattern.setText("same-<date>")
+    assert dialog.problem.text().startswith("Pieces 1 and 2 of 3")
+    dialog.reject()

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import mef3io
 import numpy as np
+import pytest
 from explorer_sessions import SECOND, T0, write_large
 from test_make_new_model import (  # noqa: F401 - the fixture clears the journals
     _no_journals,
@@ -92,12 +93,15 @@ def test_typed_times_are_sorted_each_once_and_only_inside():
 def test_pieces_with_no_data_are_left_out_and_said_so():
     runs = [(T0, T0 + HOUR), (T0 + 5 * HOUR, T0 + 6 * HOUR)]
     plan = P.plan_pieces(runs, 2_000_000, P.Choice(P.EVERY, 1, P.HOURS, aligned=False))
-    assert [(p.start - T0) // HOUR for p in plan.pieces] == [0, 5]
-    assert plan.left_out == 4  # hours 1..4
-    assert "4 pieces would hold no data" in P.describe_left_out(plan.left_out)
+    # (a stretch counts through its last sample's time, so the piece starting
+    # where the first one ends is kept: a writer may state the end that way)
+    assert [(p.start - T0) // HOUR for p in plan.pieces] == [0, 1, 5]
+    assert plan.left_out == 3  # hours 2..4
+    assert "3 pieces would hold no data" in P.describe_left_out(plan.left_out)
+    assert "4 pieces would hold no data" in P.describe_left_out(4)
     assert "1 piece would hold no data" in P.describe_left_out(1)
     assert P.describe_left_out(0) == ""
-    assert [p.number for p in plan.pieces] == [1, 2]  # numbered among those made
+    assert [p.number for p in plan.pieces] == [1, 2, 3]  # numbered among those made
 
 
 def test_problems_are_said_in_plain_words():
@@ -120,18 +124,20 @@ def test_names_come_from_a_pattern_and_must_differ():
     assert any("same name" in f for f in found)
 
 
-def write_signal(path: Path, seconds: int = 90, fs: float = 256.0) -> np.ndarray:
+def write_signal(path: Path, seconds: int = 90, fs: float = 256.0, start: int = T0) -> np.ndarray:
     rng = np.random.default_rng(3)
     data = rng.integers(-5000, 5000, int(seconds * fs)).astype(float)
     with mef3io.Writer(str(path), overwrite=True, units="uV") as w:
-        w.write("a1", data, T0, fs)
-        w.write("a2", data[::-1].copy(), T0, fs)
+        w.write("a1", data, start, fs)
+        w.write("a2", data[::-1].copy(), start, fs)
     return data
 
 
-def batch_for(tmp_path, source: Path, choice: P.Choice, pattern="Piece-<number>", password=None):
+def batch_for(
+    tmp_path, source: Path, choice: P.Choice, pattern="Piece-<number>", password=None, runs=None
+):
     found = mef3io.time_range(str(source))
-    runs = [(int(found.start_uutc), int(found.end_uutc))]
+    runs = runs or [(int(found.start_uutc), int(found.end_uutc))]
     total = sum(f.stat().st_size for f in source.rglob("*.tdat"))
     plan = P.plan_pieces(runs, total, choice)
     src = mk.Source(
@@ -236,3 +242,97 @@ def test_the_pieces_are_change_items_with_their_window_and_no_password(tmp_path)
 
 def test_utc_is_the_default_zone():
     assert resolve_zone("") is UTC
+
+
+def test_a_stretch_includes_its_last_sample_time():
+    s = P.Stretches([(100, 200)])
+    assert s.holds_data(200, 300)  # the last sample may sit exactly at 200
+    assert not s.holds_data(201, 300) and not s.holds_data(0, 100)
+    assert s.holds_data(0, 101) and s.holds_data(150, 160)
+    point = P.Stretches([(50, 50)])
+    assert point.holds_data(50, 51) and point.holds_data(0, 51) and not point.holds_data(51, 90)
+
+
+def test_the_lookup_agrees_with_a_plain_scan_on_many_stretches():
+    rng = np.random.default_rng(5)
+    edges = np.sort(rng.integers(0, 10**9, 4000))
+    runs = [(int(a), int(b)) for a, b in zip(edges[::2], edges[1::2], strict=True)]
+    s = P.Stretches(runs)
+    for _ in range(300):
+        a, b = sorted(int(x) for x in rng.integers(-10, 10**9 + 10, 2))
+        if a == b:
+            continue
+        brute_data = sum(max(0, min(e, b) - max(st, a)) for st, e in runs)
+        brute_holds = any(st < b and e >= a for st, e in runs)
+        assert s.data_inside(a, b) == brute_data
+        assert s.holds_data(a, b) == brute_holds
+    # A plan over thousands of stretches and hundreds of pieces is the same call.
+    plan = P.plan_pieces(s, 10**9, P.Choice(P.EVERY, 10_000_000, P.HOURS, aligned=False))
+    assert plan.problem or plan.pieces
+
+
+@pytest.mark.parametrize(
+    ("zone", "day"),
+    [("America/Sao_Paulo", (2018, 11, 4)), ("America/Havana", (2019, 3, 10))],
+)
+def test_a_midnight_that_does_not_exist_is_the_first_instant_of_the_day(zone, day):
+    import datetime as dt
+
+    z = resolve_zone(zone)
+    start = from_local(dt.datetime(*day, 12, 0), z) - 24 * HOUR
+    end = start + 3 * 24 * HOUR
+    plan = P.plan_pieces([(start, end)], 1, P.Choice(P.EVERY, 1, P.DAYS, True), z)
+    starts = [P.to_datetime(p.start, z) for p in plan.pieces]
+    jump = [d for d in starts if d.date() == dt.date(*day)]
+    assert len(jump) == 1
+    # No instant of the day before belongs to the day; the cut is the jump itself.
+    cut = jump[0]
+    assert cut.hour == 1 and cut.minute == 0
+    assert all(a.start < b.start for a, b in zip(plan.pieces, plan.pieces[1:], strict=False))
+
+
+def write_gappy_signal(path: Path, fs: float = 256.0) -> np.ndarray:
+    rng = np.random.default_rng(11)
+    first = rng.integers(-5000, 5000, int(30 * fs)).astype(float)
+    second = rng.integers(-5000, 5000, int(30 * fs)).astype(float)
+    with mef3io.Writer(str(path), overwrite=True, units="uV") as w:
+        w.write("a1", first, T0, fs)
+        w.write("a1", second, T0 + 60 * SECOND, fs)
+        w.write("a2", first, T0, fs)
+        w.write("a2", second, T0 + 60 * SECOND, fs)
+    return np.concatenate([first, second])
+
+
+def test_pieces_of_a_recording_with_a_gap_hold_every_sample_once(qtbot, jobs, tmp_path):
+    source = tmp_path / "Gap.mefd"
+    data = write_gappy_signal(source)
+    runs = [(T0, T0 + 30 * SECOND), (T0 + 60 * SECOND, T0 + 90 * SECOND)]
+    # Two cuts inside the gap (the piece between holds nothing) and one in the data.
+    cuts = (T0 + 15 * SECOND, T0 + 40 * SECOND, T0 + 50 * SECOND, T0 + 75 * SECOND)
+    plan, batch, dest, work = batch_for(tmp_path, source, P.Choice(P.AT, at=cuts), runs=runs)
+    assert len(plan.pieces) == 4 and plan.left_out == 1
+    handle, published = run(qtbot, jobs, batch)
+    assert all(r.ok for r in results(published).values()) and len(results(published)) == 4
+    joined = np.concatenate(
+        [
+            np.asarray(mef3io.Reader(str(dest / f"Piece-0{n}.mefd")).read("a1"), dtype=float)
+            for n in range(1, 5)
+        ]
+    )
+    assert np.array_equal(joined[~np.isnan(joined)], data)
+
+
+def test_the_first_and_last_pieces_of_a_day_cut_are_partial(qtbot, jobs, tmp_path):
+    source = tmp_path / "Midnight.mefd"
+    start = T0 + 24 * HOUR - 30 * SECOND  # 23:59:30 UTC
+    data = write_signal(source, seconds=90, start=start)
+    plan, batch, dest, work = batch_for(tmp_path, source, P.Choice(P.EVERY, 1, P.DAYS, True))
+    assert [round(p.seconds) for p in plan.pieces] == [30, 60]
+    handle, published = run(qtbot, jobs, batch)
+    assert all(r.ok for r in results(published).values()) and len(results(published)) == 2
+    parts = [
+        np.asarray(mef3io.Reader(str(dest / f"Piece-0{n}.mefd")).read("a1"), dtype=float)
+        for n in (1, 2)
+    ]
+    assert [len(x) for x in parts] == [30 * 256, 60 * 256]
+    assert np.array_equal(np.concatenate(parts), data)
