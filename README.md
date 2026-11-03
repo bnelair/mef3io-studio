@@ -2,16 +2,18 @@
 
 **A desktop app for exploring, organizing, protecting and anonymizing MEF 3.0 recordings, with no programming needed.**
 
-[![Latest release](https://img.shields.io/github/v/release/bnelair/mef3io-studio?include_prereleases&label=latest%20test%20version)](https://github.com/bnelair/mef3io-studio/releases)
+[![Latest release](https://img.shields.io/github/v/release/bnelair/mef3io-studio?label=latest%20version)](https://github.com/bnelair/mef3io-studio/releases)
 [![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
 
-The app is in early development. The current test version, **0.1.0.dev6**,
-can explore recordings, make anonymized copies of them, keep part of a
-recording or join parts of several into one, and show their signals in a
-viewer, where you can also add notes and events; the other features below
-are still being built. See [Project status](#project-status) and the
-[release notes](docs/release-notes/0.1.0.dev6.md).
+**0.1.0 is the first full release.** The app is still early, so expect rough
+edges and tell us about them. It can explore recordings, make anonymized
+copies, keep part of a recording or join parts of several into one, show
+their signals in a viewer (where you can also add notes and events), rename
+recordings safely, change their details into a new copy, give new copies
+passwords, and make new recordings from many at once with a saved choice of
+channels. See [Project status](#project-status) and the
+[release notes](docs/release-notes/0.1.0.md).
 
 ## Getting the app
 
@@ -83,16 +85,14 @@ easier to copy and share. It is read directly; there's no need to unpack it.
 ## What the app does
 
 The app has three pages: **Explore**, **Anonymize** and **Join or trim**,
-and a **signal viewer** window that opens from Explore (new in test version
-0.1.0.dev6). The rest of the first
-release is still being built (see
-[Still to come](#still-to-come-for-the-first-release)).
+and a **signal viewer** window that opens from Explore. Renaming, editing
+details and making new recordings from many at once start from Explore.
 
 <p align="center">
   <img src="docs/img/screenshots/explorer-overview-light.png" alt="The Explore page: a list of recordings sorted by start time, and the details of the selected one." width="760">
 </p>
 
-### Explore (in the test version)
+### Explore
 
 Open one or many recordings and see what's in them, without loading any
 signal:
@@ -121,7 +121,7 @@ After that, local times are correct across daylight-saving changes.
 Reading big recordings shows real progress, and **Stop** stops the work
 straight away. See the [user guide](docs/user-guide.md#explore-recordings).
 
-### Anonymize (in the test version)
+### Anonymize
 
 Make **anonymized copies** of one or many recordings: the patient details
 are removed and every date and time is moved by the same amount. **The
@@ -225,26 +225,32 @@ Everything that takes time (reading, packing, anonymizing, checking big
 recordings) runs in the background with a **progress bar** and a **Stop**
 button. The window stays usable.
 
-### Still to come for the first release
+### Rename, edit details, passwords and new recordings in bulk
 
-**Order and rename.** Got a folder of recordings whose names are long random
-codes? See them sorted by when they were recorded, then rename them safely:
-- **preview** every change first;
-- name clashes are caught before anything happens;
-- **undo** whole renames.
+These start from Explore and always leave the original as it is, except
+renaming, which changes the name after you confirm.
+
+**Rename in time order.** See a folder of recordings sorted by when they
+were recorded, then rename them safely:
+- build names from a pattern or type them, and **preview** every name first;
+- name clashes and names that are not allowed are caught before anything
+  happens;
+- **undo** the last rename (while the app stays open).
 
 A recording's name is stored in several places, including inside its files.
-mef3io will change all of them together, so other MEF software still finds
-everything, notes included. For a password-protected recording the app will
-ask for the password first, because part of the name is stored in the locked
-details; without it, the rename is not done.
+The app changes all of them together, so other MEF software still finds
+everything, notes included. A password-protected recording needs its password
+first.
 
-**View and edit details.** See, and correct, the descriptive information
-stored with a recording: patient details, recording location, descriptions.
-Edit one recording or many at once, with a preview and undo. **Recording
-times can never be edited**; they only change through anonymization.
+**Edit details (makes a new copy).** Correct the descriptive information
+stored with a recording: patient names and ID, place, recording description,
+channel descriptions. The result is a new recording that is checked against
+the original. **Recording times can never be edited**; they only change
+through anonymization.
 
-**Add or remove passwords.** Save a copy with new passwords, or without any.
+**Passwords for new copies.** Every new copy (anonymized, joined or trimmed,
+edited, or made in bulk) can have no password or two new ones. Passwords are
+never changed in place, and the app never stores them.
 - In files written by common tools, MEF passwords lock the **patient
   details, settings and notes**.
 - **They don't hide the signal, the recording's name, or its timing.** Some
@@ -252,9 +258,10 @@ times can never be edited**; they only change through anonymization.
   given.
 - The app explains this before you rely on it.
 
-**Save channel choices and convert in batches.** Save a choice of channels,
-and apply it to many recordings at once, combined with passwords and
-anonymization, in one pass per recording.
+**Make new recordings.** Save a choice of channels under a name (and share
+it as a small file), then apply it to many recordings at once, together with
+details and new passwords, in one unattended batch with Stop and continue
+after a crash.
 
 ### Next directions (to be specified later)
 
@@ -289,12 +296,11 @@ mef3io.
 - **Nothing leaves your computer.** The app makes no network connections.
 - **Logs never contain** patient details, recording names or folder paths, or
   original recording dates.
-- **Anonymizing, joining and trimming always write a new, checked
-  recording;** the originals are not touched. **Viewing changes nothing.**
-  Only in edit mode, and only after you confirm, notes and events are added
-  to a recording; what is stored is never rewritten. (Password changes and channel selections, still to come, will
-  work the same way. Renaming and editing details, also still to come, will
-  change a recording in place, only after you confirm, with undo.)
+- **Anonymizing, joining, trimming, editing details, changing passwords and
+  choosing channels always write a new, checked recording;** the originals are
+  not touched. **Viewing changes nothing.** Only two things change a recording
+  in place, and only after you confirm: renaming (with undo), and, in edit
+  mode, adding notes and events; what is stored is never rewritten.
 - **Notes about an unfinished batch** (so it can be continued after a crash)
   are kept in the app's own data folder, sealed, with no names or dates in
   clear, and removed when the batch is finished or discarded. Passwords are
@@ -447,23 +453,16 @@ point to a commit on `main`.
 
 ## Project status
 
-mef3io-studio is in **early development**. The app, its installers, the
-**Explore** page and the **Anonymize** wizard (anonymized copies with a
-choice of channels, moved dates, new names and optional password protection, plus a
-Privacy check for any recording, and unattended batches into shareable
-archives) and **Join or trim** (keeping only part of a recording, or joining
-parts of several recordings into one, one after another or side by side) are
-ready to try in test version **0.1.0.dev6**, built on mef3io 2.1.1, together
-with the **signal viewer** (several recordings as one, montages, filters,
-notes and events, export ranges) and its optional **edit mode** for adding
-notes and events. Still to come for the first full release: other copies with
-changes (adding or removing password protection, cutting a recording into
-pieces), ordering and renaming recordings, viewing and editing details, and
-saving channel choices and converting in batches. Test versions are published
-on the [Releases page](https://github.com/bnelair/mef3io-studio/releases)
-as pre-releases; what changed in each is in
-[docs/release-notes/](docs/release-notes/). Progress is tracked in the
-[roadmap](docs/roadmap.md) and the
+mef3io-studio is an **early** app: **0.1.0 is the first full release**, built
+on mef3io 2.1.1. It has the installers; **Explore**; **Anonymize**;
+**Join or trim**; the **signal viewer** with its optional edit mode for adding
+notes and events; **rename** in time order with undo; **edit details** into a
+new copy; **passwords** on every new copy; and **Make new recordings** with
+saved channel choices. Not built yet: changing or removing stored notes,
+changes in place, and cutting a recording into pieces. Releases are published
+on the [Releases page](https://github.com/bnelair/mef3io-studio/releases);
+what changed in each is in [docs/release-notes/](docs/release-notes/).
+Progress is tracked in the [roadmap](docs/roadmap.md) and the
 [tracking issue](https://github.com/bnelair/mef3io-studio/issues/1).
 
 ## License

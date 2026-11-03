@@ -3,10 +3,11 @@
 Desktop app (PySide6) for exploring, organizing, protecting and anonymizing
 MEF 3.0 recordings, built
 on the mef3io library (github.com/bnelair/mef3io). Status: early development;
-test version 0.1.0.dev5 = Join or trim (#31); dev6 (upcoming) = signal
-viewer + edit mode (additions only, append-only save), on mef3io 2.1.1
-(metadata edit in place, cutting into
-pieces still to come; "Make new recordings" = saved channel choices + batch, #16; ordering/renaming = the Rename window, #12). Design in
+0.1.0 = first full release (after dev1-dev6; dev5 Join or trim #31, dev6 signal
+viewer + edit mode, additions only), on mef3io 2.1.1: Rename window (#12,
+undo until close), Edit details copy (#14), shared password choice (#15),
+"Make new recordings" with saved channel choices (#16). Still to come:
+metadata edit in place, change/remove stored notes, cutting into pieces. Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
 Hard rules:
