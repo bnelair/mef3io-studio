@@ -267,11 +267,15 @@ def pack_or_unpack(
     return result
 
 
-def _register_copy_identity(requests: list[anonymize.CopyRequest]) -> None:
+def _register_copy_identity(requests: list[anonymize.CopyRequest | changes.ChangeRequest]) -> None:
     """Everything a copy request carries that identifies or unlocks: the
-    original's name and password, the new names and passwords."""
+    original's name and password, the new names and passwords (and, for a
+    copy with changes, the new details)."""
     values: list[str] = []
     for r in requests:
+        if isinstance(r, changes.ChangeRequest):
+            _register_change_identity(r)
+            continue
         values += [recording_name(r.source), r.name, r.pseudonym, r.password]
         if r.output_password:
             values += list(r.output_password)
@@ -604,11 +608,26 @@ def preflight_batch(
     # mef3io's own pre-flight (it writes nothing): the copy where it really
     # goes on a new batch; on a resume, everything but the destination
     # (results already there are the user's choice, asked separately).
-    names = ctx.run_isolated(
-        anonymize.check_names_many if journal is not None else anonymize.check_copies,
-        [replace(r, output_password=None) for r in requests],
-        stop_grace=STOP_GRACE_SECONDS,
-    )
+    names = {}
+    anonymized = [r for r in requests if not isinstance(r, changes.ChangeRequest)]
+    changed = [r for r in requests if isinstance(r, changes.ChangeRequest)]
+    if anonymized:
+        names.update(
+            ctx.run_isolated(
+                anonymize.check_names_many if journal is not None else anonymize.check_copies,
+                [replace(r, output_password=None) for r in anonymized],
+                stop_grace=STOP_GRACE_SECONDS,
+            )
+        )
+    if changed:
+        names.update(
+            ctx.run_isolated(
+                changes.check_changes_many,
+                [replace(r, output_password=None) for r in changed],
+                ignore=changes.PLACEHOLDER_CODES if journal is not None else (),
+                stop_grace=STOP_GRACE_SECONDS,
+            )
+        )
     names = {k: scrubbed(v) for k, v in names.items()}
     existing = []
     ours: dict[int, bool] = {}
@@ -906,6 +925,8 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
     """One recording through every step. Returns its CopyResult."""
     kept = kept if kept is not None else set()
     request = item.request
+    change = isinstance(request, changes.ChangeRequest)
+    verb = "Making the new recording" if change else "Anonymizing"
     head = f"Recording {n + 1} of {total}"
     weights = (1.0, 0.0) if batch.output == pipeline.FOLDERS else (0.5, 0.5)
 
@@ -924,14 +945,22 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
     # 1. Anonymize (into the work folder, or straight to the destination).
     def got(message) -> None:
         if isinstance(message, ByteProgress):
-            report(weights[0] * message.fraction, "Anonymizing")
+            report(weights[0] * message.fraction, verb)
 
-    report(0, "Anonymizing")
+    report(0, verb)
     there_before = os.path.lexists(request.destination)
     try:
-        result = ctx.run_isolated(
-            anonymize.make_copy, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
-        )
+        if change:
+            result = changes.copy_result_of(
+                request,
+                ctx.run_isolated(
+                    changes.make_changes, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
+                ),
+            )
+        else:
+            result = ctx.run_isolated(
+                anonymize.make_copy, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
+            )
     except Exception as exc:
         stop = isinstance(exc, JobCancelled) or is_stop(exc)
         if stop and not item.work and _appeared(request.destination, there_before):
@@ -958,7 +987,7 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
         retry = _retryable(exc)
         if not retry:
             journal.mark(n, journal_.FAILED)
-        return _fail(ctx, item, anonymize.describe_copy_error(exc, request), retry)
+        return _fail(ctx, item, _described(exc, request), retry)
     if not result.ok:
         if item.work:
             pipeline.remove_work_copy(item.work)
@@ -1041,7 +1070,7 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
         if not retry:
             journal.mark(n, journal_.FAILED)
         log.warning("job %d: an archive step failed (%s)", ctx.job_id, type(exc).__name__)
-        return _fail(ctx, item, anonymize.describe_copy_error(exc, request), retry)
+        return _fail(ctx, item, _described(exc, request), retry)
 
     # 4. The archive matches the checked copy byte for byte: the copy goes.
     report(1.0, "Tidying up")
@@ -1062,6 +1091,13 @@ APPEARED = UserMessage(
     "made. The original was not changed. Move or rename that folder, then make this copy "
     "again.",
 )
+
+
+def _described(exc: BaseException, request) -> UserMessage:
+    """An error of either kind of copy in plain words."""
+    if isinstance(request, changes.ChangeRequest):
+        return changes.describe_change_error(exc, request)
+    return anonymize.describe_copy_error(exc, request)
 
 
 def _appeared(destination: str, there_before: bool) -> bool:

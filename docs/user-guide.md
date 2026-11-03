@@ -292,6 +292,65 @@ window or stop, nothing is left behind.
 Changing a recording's details without making a copy is not possible in this
 version.
 
+### Make new recordings
+
+**Make new recordings…** (the right-click menu of the list, or **File → Make
+new recordings from the selected…**) makes a new recording from each selected recording, with the same changes in
+all of them. Use it, for example, to keep only `LA1`–`LA8` and `RA1`–`RA8` of
+40 recordings, or to put the same place and description into a whole study.
+**The originals are never changed.** Every new recording is saved and checked
+against its original before it gets its name. A recording that needs a
+password must be opened in Explore with its full-access password first.
+
+The window goes through five steps:
+
+1. **Recordings.** Tick the recordings to make new ones from.
+2. **Channels.** Click boxes to leave channels out (the same picker as in
+   Anonymize: groups by electrode, Shift+click for a range, a filter, undo).
+   Under the picker, a table shows for each recording how many channels it
+   keeps and leaves out, and which channels of a saved choice it does not
+   have. A missing channel is only shown, never an error. A recording that
+   would keep **no** channel blocks the step: choose other channels or leave
+   that recording out.
+3. **Details (optional).** Tick the box to type a place, patient details or a
+   recording description. The text goes into every new recording and
+   replaces what each one has; a box you leave empty keeps what each
+   recording has. A text that is too long is refused, never cut.
+4. **Passwords (optional).** None, or two new passwords for all the new
+   recordings. The originals' passwords are never carried over, and the app
+   never stores passwords.
+5. **Names and folder.** Keep each name and add a text after it, or give a
+   new name and a number (`Study-001`, `Study-002`…), then choose the folder.
+   The window lists the names before anything is made, and says if a name is
+   already taken. If nothing would change (no channel left out, no detail, no
+   password), the new recordings would only be copies, and the window asks
+   you to change something first.
+
+**Check and make the new recordings** then checks everything that can be
+checked in advance (every original opens, the names are free, there is room)
+and makes the recordings one after another, even for hours, with a progress
+bar and **Stop**. If you stop, a recording that was not finished is removed
+completely and the ones already made stay. If the app or the computer stops in
+the middle, the next start offers to continue the batch (you type the
+passwords again; nothing is made twice).
+
+#### Saved channel choices
+
+- **Save this choice…** stores the channels you kept (or, if you tick the box
+  below it, the channels you left out) under a name. **Use this saved choice**
+  sets the picker to it for the recordings you chose; matching is by channel
+  name, exactly or ignoring capital letters (tick the box).
+- **Share…** saves all your saved choices in a small file for a colleague;
+  **Add shared choices…** adds the ones in such a file (a name already in use
+  gets "(2)"; nothing is replaced). Channel names can identify a patient, so
+  share the file only where you would share the recordings.
+- Saved choices are kept in the app's own private data folder, scrambled with
+  a key that stays on this computer, never next to your recordings and never
+  in the log.
+
+Cutting and joining are not part of this window: use **Join or trim**. Cutting
+one recording into several pieces is not available yet.
+
 ### Copy summary
 
 **Copy summary** copies a short description of the selected recordings, as

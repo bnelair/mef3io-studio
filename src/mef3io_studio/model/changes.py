@@ -31,6 +31,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
 from .anonymize import (
+    CopyResult,
     copy_name,
     describe_copy_error,
     is_disk_full,
@@ -84,6 +85,8 @@ class ChangeRequest:
     #: blocks to the window.
     time_range: tuple[int, int] | None = field(default=None, repr=False)
     exact: bool = True
+    #: An opaque id of the recording, for a batch (``model.pipeline``).
+    key: str = ""
 
     @property
     def name(self) -> str:
@@ -345,6 +348,26 @@ def _unique(findings: list[Finding]) -> list[Finding]:
     return out
 
 
+def check_changes_many(
+    requests: list[ChangeRequest],
+    cancel: CancelToken | None = None,
+    ignore: Iterable[str] = (),
+) -> dict[str, UserMessage | None]:
+    """:func:`check_changes` for every request of a batch, in one helper
+    process: ``{key: None (it would start) or the first reason in plain
+    words}``. ``ignore``: refusal codes to leave out (a resume leaves out
+    the destination's, results already there are the user's choice)."""
+    cancel = cancel or CancelToken()
+    out: dict[str, UserMessage | None] = {}
+    for request in requests:
+        cancel.raise_if_cancelled()
+        paths, stems = _paths_and_stems(request)
+        with stopped_by_library(), library_warnings_caught():
+            refusals = transform_refusals(replace(request, output_password=None), cancel, ignore)
+        out[request.key] = refusal_message(refusals[0], paths, stems) if refusals else None
+    return out
+
+
 def make_changes(
     request: ChangeRequest,
     send: Callable[[ByteProgress], object] | None = None,
@@ -371,6 +394,22 @@ def make_changes(
             retryable=is_unreachable(exc),
         )
     return result_of(request, report)
+
+
+def copy_result_of(request: ChangeRequest, result: ChangeResult) -> CopyResult:
+    """A finished copy as the batch runner's result type (one runner for
+    both kinds of copy)."""
+    return CopyResult(
+        request.key,
+        result.destination,
+        ok=result.ok,
+        message=result.message,
+        channels_kept=result.channels_kept,
+        channels_excluded=result.channels_excluded,
+        notes=result.notes,
+        bytes_written=result.bytes_written,
+        retryable=result.retryable,
+    )
 
 
 def result_of(request: ChangeRequest, report) -> ChangeResult:

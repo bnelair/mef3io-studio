@@ -297,6 +297,12 @@ def _build_main_window_class():
             )
             file_menu.addAction(self.scan_action)
             file_menu.addSeparator()
+            self.make_new_action = QAction("&Make new recordings from the selected…", self)
+            self.make_new_action.triggered.connect(
+                lambda: self._in_explorer(self.explorer.make_new_selected)
+            )
+            file_menu.addAction(self.make_new_action)
+            file_menu.addSeparator()
             self.settings_action = QAction("Settings…", self)
             self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
             self.settings_action.triggered.connect(self.show_settings)
@@ -475,7 +481,7 @@ def _build_main_window_class():
             choice = self.ask(
                 "Continue the batch?",
                 f"Continue the batch: {journal.done} of {journal.total} done.",
-                "A batch of anonymized copies was interrupted. Continuing checks everything "
+                "A batch of copies was interrupted. Continuing checks everything "
                 "again first, then makes the rest. Discarding removes its unfinished work; "
                 "copies already saved stay. Until you choose, a sealed note about the batch "
                 "stays in the app's own data folder (no names or dates in clear).",
@@ -542,6 +548,13 @@ def _build_main_window_class():
             by_source = {
                 items[n]["request"]["source"]: password for n, password in passwords.items()
             }
+            if all(i.get("kind") == pipeline.KIND_CHANGE for i in items):
+                # A batch of new recordings (not anonymized copies): its own window.
+                self.module_list.setCurrentRow(self.module_keys.index("explorer"))
+                dialog = self.explorer.make_new_selected(resume=True)
+                return dialog.resume(
+                    journal, lambda source: by_source.get(source, ""), output, self.ask_existing
+                )
             self.module_list.setCurrentRow(self.module_keys.index("anonymizer"))
             return self.anonymizer.resume(
                 journal, lambda source: by_source.get(source, ""), output, self.ask_existing

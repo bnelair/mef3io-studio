@@ -69,7 +69,7 @@ hashed lock files).
 | `transform_session(..., time_range=, exact=True)` and `transform.check(...)`: a cut copy (one recording trimmed, or each part to join), with channel subsets and new passwords; refusal codes `transform.REFUSAL_CODES` | Join or trim (`model/join.py`) | [#73](https://github.com/bnelair/mef3io/issues/73), [#103](https://github.com/bnelair/mef3io/issues/103) | In use (mef3io 1.5) |
 | `merge_sessions(...)` and `merge.check(...)`: several recordings into one, checked against every source; `merge.REFUSAL_CODES` | Join or trim (`model/join.py`) | [#103](https://github.com/bnelair/mef3io/issues/103) | In use (mef3io 1.5) |
 | `time_range(...)`: first and last time from a few small files | Join or trim (turning "the first hour" into times, time order) | [#72](https://github.com/bnelair/mef3io/issues/72) | In use (mef3io 1.5) |
-| `transform_session(...)` for password changes, channel presets and batch; `edit_metadata` in place (never times) | Passwords, channel presets and batch, metadata edit | [#73](https://github.com/bnelair/mef3io/issues/73) | Planned (the in-place `edit_metadata` is not built) |
+| `transform_session(...)` for password changes, channel presets and batch | Passwords, Edit details, Make new recordings (`model/changes.py`, `model/makenew.py`, `model/presets.py`) | [#73](https://github.com/bnelair/mef3io/issues/73) | In use (mef3io 1.5); the in-place `edit_metadata` (never times) is not built |
 | `rename_session(...)` (folder, session-level annotation files and stored names, as one journaled operation), `fix_name_drift(...)`, `rename_archive(...)`, `name_drift(...)`, `operation_marker(...)` and `RenameReport.undo()` | Rename window (`model/rename.py`, `model/rename_ops.py`, `explorer/rename.py`) | [#72](https://github.com/bnelair/mef3io/issues/72) | In use (mef3io 1.5, app 0.1.0) |
 | Complete record parsing at every level | Explorer notes and events; anonymizer time shift | [#60](https://github.com/bnelair/mef3io/issues/60), [#61](https://github.com/bnelair/mef3io/issues/61), [#62](https://github.com/bnelair/mef3io/issues/62) | Done |
 | Provenance region (versions and operations, no times) | Explorer History, Privacy check ("made by the anonymizer") | [#58](https://github.com/bnelair/mef3io/pull/58) | Done |
@@ -107,6 +107,7 @@ src/mef3io_studio/
   viewer/           # the signal viewer window: traces, montages, filters,
                     # notes, export range, edit mode
   anonymizer/       # the anonymization wizard, channel picker, resume dialog
+  makenew/          # "Make new recordings": saved channel choices + batch
   common/           # widgets, privacy log filter, settings, theme, activity panel
 tests/              # pytest + pytest-qt; headless in CI
 ```
