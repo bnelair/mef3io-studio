@@ -7,6 +7,7 @@ mef3io while the viewer runs."""
 from __future__ import annotations
 
 import threading
+import traceback
 
 import mef3io
 import numpy as np
@@ -405,12 +406,27 @@ def test_shift_drag_measures_time_frequency_and_amplitude(one, qtbot):
     assert c.measure_text == ""
 
 
-def test_pointer_status_and_overlay_do_not_redraw_the_traces(one):
+def test_pointer_status_and_overlay_do_not_redraw_the_traces(one, qtbot, monkeypatch):
     c = one.canvas
+    # Everything that arrives after the first page (the notes load on their
+    # own) has landed, so only the pointer move itself can redraw.
+    qtbot.waitUntil(lambda: one.marks_loaded, timeout=10_000)
+    qtbot.wait(100)
     pm = c.grab_traces()
+    renders = []
+    real = c._render
+
+    def render():  # why the trace layer was rebuilt, for the failure message
+        stack = [f"{f.name}:{f.lineno}" for f in traceback.extract_stack()[-8:-1]]
+        renders.append((c._dirty, c._pm_key, c._size_key(), stack))
+        real()
+
+    monkeypatch.setattr(c, "_render", render)
     QTest.mouseMove(c, QPoint(c.gutter + 50, 30))
+    qtbot.wait(50)
     assert one.status_time.text().startswith("2000-01-01 00:00:0")
-    assert c.grab_traces() is pm  # same cached layer: the pointer repaints the overlay only
+    # same cached layer: the pointer repaints the overlay only
+    assert not renders and c.grab_traces() is pm, renders
 
 
 def test_overview_beyond_five_minutes(make_window, tmp_path, qtbot):
