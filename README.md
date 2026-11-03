@@ -455,11 +455,11 @@ point to a commit on `main`.
 
 mef3io-studio is an **early** app: **0.1.0 is the first full release**, built
 on mef3io 2.1.1. It has the installers; **Explore**; **Anonymize**;
-**Join or trim**; the **signal viewer** with its optional edit mode for adding
+**Join or trim** and **Cut into pieces**; the **signal viewer** with its optional edit mode for adding
 notes and events; **rename** in time order with undo; **edit details** into a
 new copy; **passwords** on every new copy; and **Make new recordings** with
 saved channel choices. Not built yet: changing or removing stored notes,
-changes in place, and cutting a recording into pieces. Releases are published
+changes in place. Releases are published
 on the [Releases page](https://github.com/bnelair/mef3io-studio/releases);
 what changed in each is in [docs/release-notes/](docs/release-notes/).
 Progress is tracked in the [roadmap](docs/roadmap.md) and the
