@@ -1,17 +1,19 @@
 # User guide
 
-This guide describes the app as of test version **0.1.0.dev6**. It has three
-pages: **Explore** (see what is in your recordings), **Anonymize** (make
+This guide describes the app as of version **0.1.0**. It has three pages:
+**Explore** (see what is in your recordings), **Anonymize** (make
 anonymized copies of them) and **Join or trim** (keep part of a recording,
-or join parts of several into one). From Explore you can also open the
-**signal viewer** to look at the traces, and add notes and events in its
-optional edit mode (new since 0.1.0.dev5). What is new in each test version
-is in the [release notes](release-notes/).
+or join parts of several into one). From Explore you can also rename
+recordings, edit their details into a new copy, make new recordings from
+many at once, and open the **signal viewer** to look at the traces, where an
+optional edit mode adds notes and events. What is new in each version is in
+the [release notes](release-notes/).
 
 Times are shown in **UTC** until you choose a time zone (see *Times and time
-zones*). The app never changes your original recordings: anonymizing,
-joining and trimming make a new recording and check it, and the viewer only
-looks. The one exception is edit mode, which can add notes and events to a
+zones*). The app never changes your original recordings: anonymizing, joining,
+trimming, editing details and making new recordings make a new recording and
+check it, and the viewer only looks. The exceptions are renaming (see
+*Rename recordings*) and edit mode, which can add notes and events to a
 recording after you confirm (see *Add notes and events*).
 
 ## Explore recordings
@@ -952,8 +954,8 @@ afterwards:
 ## Help and reporting problems
 
 - **Which version you have** is shown in the window's title and at the
-  bottom of the list of pages on the left. A "test version" is an early
-  build for trying out new features.
+  bottom of the list of pages on the left. A version with "dev" in its number is a
+  test version; 0.1.0 and later are full releases (still early).
 - **Help → Get the latest version** shows where new versions are published
   ([the Releases page on GitHub](https://github.com/bnelair/mef3io-studio/releases)),
   with a button that opens it in your web browser. Download the installer

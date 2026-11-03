@@ -4,7 +4,7 @@ Tracked on GitHub: [tracking issue](https://github.com/bnelair/mef3io-studio/iss
 here, and [mef3io#71](https://github.com/bnelair/mef3io/issues/71) for the
 library side. The library work always lands in mef3io **before** the app uses it.
 
-## v0.1: explore, organize, protect and anonymize
+## v0.1: explore, organize, protect and anonymize (done: released as 0.1.0)
 
 Shipped **only as installers** (Windows `.exe`, macOS, Linux) on GitHub Releases. Not on PyPI.
 
@@ -20,11 +20,11 @@ Shipped **only as installers** (Windows `.exe`, macOS, Linux) on GitHub Releases
 | 7 | studio | **Anonymizer** wizard ([#5](https://github.com/bnelair/mef3io-studio/issues/5)) | Wizard, unattended batch (folders, per-recording archives, one batch archive; resume after a crash) and Privacy check built, on mef3io 1.4.0 (test versions 0.1.0.dev2 and dev3) and 1.5.1 (0.1.0.dev4); the deferred items are listed in [design/anonymizer.md](design/anonymizer.md#as-built-wizard-for-010dev2) |
 | 7b | studio | **Join or trim** ([#31](https://github.com/bnelair/mef3io-studio/issues/31)): keep part of a recording, or join parts of several into one new recording, on mef3io 1.5.1 (`time_range`, `transform_session` with a time window, `merge_sessions`) | Built, in test version 0.1.0.dev5 (also side by side, and from the Explore selection); cutting one recording into several pieces is still to come |
 | 7c | studio | **Signal viewer** ([design/viewer.md](design/viewer.md)): one or several recordings as one, montages, filters with a frequency-response plot, notes and events, export ranges, on mef3io 2.1.1; **edit mode** for adding notes and events (draft, undo, import and export, save by appending) | Built, in test version 0.1.0.dev6; changing or removing stored notes (as a new copy) is still to come |
-| 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release | Started (user guide for Explore, Anonymize, Join or trim and the viewer) |
+| 8 | studio | User guide with screenshots ([#6](https://github.com/bnelair/mef3io-studio/issues/6)); v0.1 release | Done: user guide for every page; **0.1.0 released** (first full release). Screenshots cover Explore and Anonymize only; the other pages have none yet |
 
-## Test versions
+## Versions
 
-Published as GitHub pre-releases; what changed in each is in
+Test versions are published as GitHub pre-releases, full releases as the latest release; what changed in each is in
 [release-notes/](release-notes/).
 
 | Version | mef3io | What testers get |
@@ -35,6 +35,7 @@ Published as GitHub pre-releases; what changed in each is in
 | 0.1.0.dev4 | 1.5.1 | Runs on mef3io 1.5.1; plain words for its new reasons to refuse a copy; History shows recordings renamed or copied with changes ([notes](release-notes/0.1.0.dev4.md)) |
 | 0.1.0.dev5 | 1.5.1 | **Join or trim**: keep part of a recording, or join parts of several into one (one after another or side by side), from its own page or the Explore selection ([notes](release-notes/0.1.0.dev5.md)) |
 | 0.1.0.dev6 | 2.1.1 | **Signal viewer**: several recordings shown as one with clear recording boundaries, montages, adjustable filters with a frequency-response plot, notes and events, export ranges; optional **edit mode** to add notes and events; runs on mef3io 2.1.1 ([notes](release-notes/0.1.0.dev6.md)) |
+| 0.1.0 | 2.1.1 | **First full release** (no longer a test version): rename recordings safely in time order with undo, **Edit details** (makes a new copy), password choices on every new copy, saved channel choices and **Make new recordings** in one batch ([notes](release-notes/0.1.0.md)) |
 
 ## Next directions (each needs a specification first)
 

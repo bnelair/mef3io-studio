@@ -10,7 +10,7 @@ and data managers. Their questions are practical:
 - *What's in this recording?* Channels, how long it is, when it starts, whether there are gaps, whether it's encrypted, whether it's intact.
 - *Which of these folders with random-code names is which?* Order them by time, and give them meaningful names without breaking anything.
 - *Can I share it?* Remove the patient details and the real dates, consistently across every recording of a subject, without breaking the files.
-- *Can I look at it?* Later: scroll through the signal and its annotations.
+- *Can I look at it?* Yes: scroll through the signal and its annotations.
 
 mef3io-studio answers those questions in a desktop app that runs on Windows,
 macOS and Linux.
@@ -33,11 +33,12 @@ counts, CRCs) is available, but never in the way.
 5. **Anonymizer:** batch de-identification into verified copies, with the time shift and the channels chosen by the user, and unattended batches into shareable archives. See [design/anonymizer.md](design/anonymizer.md).
 6. **Installers** for Windows (`.exe`), macOS (Apple silicon and Intel) and Linux, on GitHub Releases. The app is **not** published to PyPI.
 
-**Where it stands:** test version 0.1.0.dev6 has the installers, the
-Explorer without ordering and renaming, the Anonymizer, Join or trim (saving
-a part, joining parts of several recordings) and a signal viewer with an
-optional edit mode for adding notes and events.
-Items 2-4 and ordering and renaming are still to come; see the
+**Where it stands:** version 0.1.0, the first full release, has everything
+above: the installers, the Explorer with ordering and safe renaming, edit
+details (into a new copy), passwords for new copies, saved channel choices
+with batch conversion, the Anonymizer, Join or trim and a signal viewer with
+an optional edit mode for adding notes and events. Editing in place, changing
+stored notes and cutting into pieces are still to come; see the
 [roadmap](roadmap.md).
 
 ## Next directions (need their own specifications)
