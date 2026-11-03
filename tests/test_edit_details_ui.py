@@ -27,6 +27,8 @@ from mef3io_studio.explorer.edit_details import (
     EditDetailsDialog,
 )
 
+pytestmark = pytest.mark.usefixtures("clean_identities")
+
 NEW_BASIC, NEW_FULL = "new-basic-77", "new-full-88"
 
 
