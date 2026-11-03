@@ -332,7 +332,8 @@ and makes the recordings one after another, even for hours, with a progress
 bar and **Stop**. If you stop, a recording that was not finished is removed
 completely and the ones already made stay. If the app or the computer stops in
 the middle, the next start offers to continue the batch (you type the
-passwords again; nothing is made twice).
+passwords again; recordings that were already finished are skipped, and one that
+was being made is made again from the start).
 
 #### Saved channel choices
 

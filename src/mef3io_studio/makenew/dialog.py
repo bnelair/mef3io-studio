@@ -23,6 +23,7 @@ Plain wording (docs/ui-language.md).
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 
 from PySide6.QtCore import Qt, Signal
@@ -139,6 +140,8 @@ class MakeNewDialog(QDialog):
         self.selection = ChannelSelection({})
         self._selection_keys: tuple[str, ...] = ()
         self.applied: presets.ChannelPreset | None = None
+        self._applying = False
+        self.key_problem = False
         self.batch: pipeline.Batch | None = None
         self.results: dict[str, anonymize.CopyResult] = {}
         self.leftovers: list[anonymize.Leftover] = []
@@ -260,6 +263,7 @@ class MakeNewDialog(QDialog):
         self.import_button = QPushButton("Add shared choices…", page)
         self.import_button.clicked.connect(self._ask_import_presets)
         self.ignore_case = QCheckBox("Ignore capital letters when matching names", page)
+        self.ignore_case.toggled.connect(lambda _on: self._ignore_case_toggled())
         self.save_left_out = QCheckBox("Save the channels left out instead of the ones kept", page)
         self.preset_note = _label()
         self.preset_note.setObjectName("Caution")
@@ -274,7 +278,7 @@ class MakeNewDialog(QDialog):
         more.addWidget(self.import_button)
         more.addStretch(1)
         self.picker = ChannelPicker(page)
-        self.picker.changed.connect(self._changed)
+        self.picker.changed.connect(self._picker_edited)
         self.preview = QTableWidget(0, 4, page)
         self.preview.setHorizontalHeaderLabels(
             ["Recording", "Keeps", "Leaves out", "Channels it does not have"]
@@ -314,8 +318,30 @@ class MakeNewDialog(QDialog):
         self.applied = None
         self.picker.set_selection(self.selection, len(keys), notice)
 
+    def _guarded(self, call, default):
+        """Every access to the saved choices goes through here: when the
+        app's sealing key cannot be read, say so plainly (nothing is lost or
+        replaced) and give ``default``."""
+        try:
+            return call()
+        except journal_.KeyUnavailable:
+            self.preset_note.setText(journal_.KEY_PROBLEM)
+            self.preset_note.setVisible(True)
+            self.key_problem = True
+            return default
+
+    def _aside_note(self) -> str:
+        """ "" or the plain notice that an unreadable store was set aside."""
+        if not self.store.moved_aside:
+            return ""
+        return (
+            "The file of saved choices could not be read, so it was set aside (not deleted) "
+            f"as {self.store.moved_aside} in the app's own data folder, and a new one was "
+            "started."
+        )
+
     def _fill_presets(self, select: str = "") -> None:
-        names = self.store.names()
+        names = self._guarded(self.store.names, [])
         self.preset_combo.clear()
         self.preset_combo.addItems(names)
         if select in names:
@@ -323,16 +349,24 @@ class MakeNewDialog(QDialog):
         have = bool(names)
         for widget in (self.preset_combo, self.apply_button, self.delete_button, self.share_button):
             widget.setEnabled(have)
+        self.save_button.setEnabled(not self.key_problem)
+        self.import_button.setEnabled(not self.key_problem)
 
     def apply_preset(self, name: str) -> tuple[str, ...]:
         """Set the picker to a saved choice. Returns the channels of it that
         none of the chosen recordings has (also shown, never an error)."""
-        preset = self.store.get(name)
+        preset = self._guarded(lambda: self.store.get(name), None)
         if preset is None or not self._selection_keys:
             return ()
-        none_has = presets.apply_to_selection(preset, self.selection, self.ignore_case.isChecked())
+        self._applying = True
+        try:
+            none_has = presets.apply_to_selection(
+                preset, self.selection, self.ignore_case.isChecked()
+            )
+            self.picker.set_selection(self.selection, len(self._selection_keys))
+        finally:
+            self._applying = False
         self.applied = preset
-        self.picker.set_selection(self.selection, len(self._selection_keys))
         self.preset_note.setText(
             f"{format_count(len(none_has), 'channel')} of this saved choice "
             f"{'is' if len(none_has) == 1 else 'are'} in none of the chosen recordings: "
@@ -344,30 +378,53 @@ class MakeNewDialog(QDialog):
         self._changed()
         return none_has
 
+    def _picker_edited(self) -> None:
+        """A hand edit of the picker ends "this saved choice is applied"
+        (the missing-channels column would describe a choice no longer
+        shown)."""
+        if not self._applying:
+            self.applied = None
+        self._changed()
+
+    def _ignore_case_toggled(self) -> None:
+        if self.applied is not None:
+            self.apply_preset(self.applied.name)
+        else:
+            self._changed()
+
     def save_preset(self, name: str) -> str:
-        """Save the picker's choice under ``name``. Returns "" or why not."""
+        """Save the picker's choice under ``name``. Returns "" or a plain
+        message (why not, or a notice)."""
         try:
             preset = presets.preset_from_selection(
                 name, self.selection, self.save_left_out.isChecked()
             )
-            self.store.add(preset)
         except presets.PresetError as exc:
             return str(exc)
-        except journal_.KeyUnavailable:
-            return journal_.KEY_PROBLEM
-        self._fill_presets(preset.name)
-        return ""
+
+        def save() -> str:
+            self.store.add(preset)
+            self._fill_presets(preset.name)
+            return self._aside_note()
+
+        try:
+            return self._guarded(save, journal_.KEY_PROBLEM)
+        except presets.PresetError as exc:
+            return str(exc)
 
     def delete_preset(self, name: str) -> bool:
-        removed = self.store.remove(name)
+        removed = self._guarded(lambda: self.store.remove(name), False)
         self._fill_presets()
         return removed
 
     def export_presets(self, path: str) -> str:
         """Write all saved choices to a file the person chose. "" or why not."""
+        found = self._guarded(self.store.load, None)
+        if found is None:
+            return journal_.KEY_PROBLEM
         try:
             with open(path, "w", encoding="utf-8") as handle:
-                handle.write(presets.export_text(self.store.load()))
+                handle.write(presets.export_text(found))
         except OSError:
             return "The file could not be written. Choose another place."
         return ""
@@ -375,15 +432,22 @@ class MakeNewDialog(QDialog):
     def import_presets(self, path: str) -> str:
         """Add the saved choices of a shared file. "" or why not."""
         try:
+            if os.path.getsize(path) > presets.MAX_FILE_BYTES:
+                return "This file is too large to be a file of saved choices."
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
-            added = self.store.import_text(text)
         except OSError:
             return "The file could not be read."
+        except ValueError:
+            return "This file does not hold saved channel choices."
+        try:
+            added = self._guarded(lambda: self.store.import_text(text), None)
         except presets.PresetError as exc:
             return str(exc)
+        if added is None:
+            return journal_.KEY_PROBLEM
         self._fill_presets(added[0] if added else "")
-        return ""
+        return self._aside_note()
 
     def _ask_save_preset(self) -> None:
         name, ok = QInputDialog.getText(self, "Save this choice", "Name of the saved choice:")

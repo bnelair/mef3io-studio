@@ -280,3 +280,70 @@ def test_an_interrupted_batch_of_new_recordings_continues_in_this_window(
         assert journal.unfinished() == []
     finally:
         pending.delete()
+
+
+def test_shared_files_that_are_not_text_or_too_big_are_refused(shown_window, qtbot, tmp_path):
+    entries = open_all(qtbot, shown_window, [write_plain(tmp_path / "a.mefd")])
+    dialog = make_dialog(qtbot, shown_window, entries, tmp_path)
+    binary = tmp_path / "binary.json"
+    binary.write_bytes(b"\xff\xfe\x00\x80 not utf-8 \xc3\x28")
+    assert "does not hold saved channel choices" in dialog.import_presets(str(binary))
+    big = tmp_path / "big.json"
+    big.write_bytes(b" " * (presets.MAX_FILE_BYTES + 1))
+    assert "too large" in dialog.import_presets(str(big))
+    deep = tmp_path / "deep.json"
+    deep.write_text("[" * 300_000, encoding="utf-8")
+    assert "does not hold" in dialog.import_presets(str(deep))
+    assert dialog.store.names() == []
+    dialog.reject()
+
+
+def test_an_unavailable_key_is_said_plainly_everywhere(shown_window, qtbot, tmp_path, monkeypatch):
+    from mef3io_studio.model import journal
+
+    store = presets.PresetStore(str(tmp_path / "store"))
+    store.add(presets.make_preset("Mine", ["a1"]))
+    before = Path(store.path).read_bytes()
+
+    def no_key():
+        raise journal.KeyUnavailable("no key")
+
+    monkeypatch.setattr(journal, "_key", no_key)
+    entries = open_all(qtbot, shown_window, [write_plain(tmp_path / "a.mefd")])
+    dialog = MakeNewDialog(entries, shown_window.jobs, store=store, parent=shown_window)
+    qtbot.addWidget(dialog)  # (the constructor read the store: no crash)
+    assert dialog.key_problem and journal.KEY_PROBLEM in dialog.preset_note.text()
+    dialog.next()
+    assert dialog.save_preset("X") == journal.KEY_PROBLEM
+    assert dialog.apply_preset("Mine") == ()
+    assert dialog.delete_preset("Mine") is False
+    assert dialog.export_presets(str(tmp_path / "e.json")) == journal.KEY_PROBLEM
+    path = tmp_path / "in.json"
+    path.write_text(presets.export_text([presets.make_preset("S", ["a"])]), encoding="utf-8")
+    assert dialog.import_presets(str(path)) == journal.KEY_PROBLEM
+    assert Path(store.path).read_bytes() == before  # nothing replaced
+    dialog.reject()
+
+
+def test_the_missing_column_follows_the_choice_on_screen(shown_window, qtbot, tmp_path):
+    entries = open_all(
+        qtbot,
+        shown_window,
+        [
+            write_plain(tmp_path / "full.mefd"),
+            write_plain(tmp_path / "short.mefd", channels=("a1", "a2"), notes=False),
+        ],
+    )
+    dialog = make_dialog(qtbot, shown_window, entries, tmp_path)
+    dialog.store.add(presets.make_preset("Up", ["A1", "A3"]))
+    dialog._fill_presets("Up")
+    dialog.next()
+    dialog.apply_preset("Up")  # exact: no channel matches
+    assert dialog.applied is not None and dialog.rows()[0].kept == ()
+    dialog.ignore_case.setChecked(True)  # re-applied
+    assert dialog.rows()[0].kept == ("a1", "a3") and dialog.rows()[1].missing == ("A3",)
+    assert dialog.preview.item(1, 3).text() == "A3"
+    dialog.picker.click("a1", False)  # a hand edit: no longer "that saved choice"
+    assert dialog.applied is None and dialog.rows()[1].missing == ()
+    assert dialog.preview.item(1, 3).text() == ""
+    dialog.reject()

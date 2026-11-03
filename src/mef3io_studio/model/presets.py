@@ -39,6 +39,8 @@ MAX_NAME_CHARS = 80
 MAX_CHANNEL_CHARS = 256
 MAX_CHANNELS = 5000
 MAX_PRESETS = 500
+#: A shared file is a few KB; refuse anything near this before reading it.
+MAX_FILE_BYTES = 1024 * 1024
 
 
 class PresetError(ValueError):
@@ -60,6 +62,8 @@ def name_problem(name: str, existing: Iterable[str] = ()) -> str | None:
     text = name.strip()
     if not text:
         return "Give the saved choice a name."
+    if not text.isprintable():
+        return "Use only letters, digits, spaces and punctuation in the name."
     if len(text) > MAX_NAME_CHARS:
         return f"Use at most {MAX_NAME_CHARS} characters for the name."
     if text.casefold() in {e.casefold() for e in existing}:
@@ -197,7 +201,10 @@ def _from_json(value: object) -> list[ChannelPreset]:
         channels = item.get("channels")
         if not isinstance(channels, list):
             raise PresetError("A saved choice in this file is damaged.")
-        out.append(make_preset(item["name"], channels, bool(item.get("exclude", False))))
+        exclude = item.get("exclude", False)
+        if not isinstance(exclude, bool):
+            raise PresetError("A saved choice in this file is damaged.")
+        out.append(make_preset(item["name"], channels, exclude))
     return out
 
 
@@ -214,39 +221,78 @@ def _unique(name: str, taken: Iterable[str]) -> str:
 class PresetStore:
     """The presets, in one sealed file in the app's data folder. ``folder``
     is only for tests; the app uses the per-user data folder. A file that
-    cannot be read back (another key, changed) reads as empty and is left as
-    it is; ``model.journal.KeyUnavailable`` propagates (nothing is replaced
-    without the key)."""
+    cannot be read back (another key, changed) reads as empty, but is NEVER
+    overwritten: the next save moves it aside (``presets.json.unreadable-N``,
+    never deleted) and :attr:`moved_aside` says so. ``model.journal.
+    KeyUnavailable`` propagates (nothing is replaced without the key).
+
+    Two app instances saving at the same moment can lose one of the changes
+    (last writer wins, each write is atomic); nothing else is ever lost."""
 
     def __init__(self, folder: str | None = None):
         self._folder = folder
+        #: Set by a save that had to move an unreadable store aside: the new
+        #: name of that file (for the notice), else "".
+        self.moved_aside = ""
 
     @property
     def path(self) -> str:
         return os.path.join(self._folder or data_dir(), STORE_FILE)
 
-    def load(self) -> list[ChannelPreset]:
+    def _read(self) -> tuple[bool, list[ChannelPreset]]:
+        """(readable, presets). A missing file is readable and empty."""
         try:
             with open(self.path, encoding="utf-8") as handle:
                 sealed = json.load(handle)["sealed"]
-        except (OSError, ValueError, KeyError, TypeError):
-            return []
+        except FileNotFoundError:
+            return True, []
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            return False, []
+        if not isinstance(sealed, str):
+            return False, []
         value = unseal(sealed)
         try:
-            return _from_json(value)
-        except PresetError:
-            return []
+            return True, _from_json(value)
+        except (PresetError, RecursionError):
+            return False, []
+
+    def load(self) -> list[ChannelPreset]:
+        return self._read()[1]
+
+    @property
+    def unreadable(self) -> bool:
+        """The file is there but cannot be read back."""
+        return not self._read()[0]
+
+    def _move_aside(self) -> None:
+        n = 1
+        while os.path.lexists(f"{self.path}.unreadable-{n}"):
+            n += 1
+        aside = f"{self.path}.unreadable-{n}"
+        os.replace(self.path, aside)
+        self.moved_aside = os.path.basename(aside)
 
     def save(self, presets: Sequence[ChannelPreset]) -> None:
         folder = os.path.dirname(self.path)
         os.makedirs(folder, mode=0o700, exist_ok=True)
+        self.moved_aside = ""
+        sealed = seal(_to_json(presets))  # (KeyUnavailable before anything moves)
+        if os.path.lexists(self.path) and self.unreadable:
+            self._move_aside()
         temporary = f"{self.path}.{secrets.token_hex(4)}.tmp"
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with open(fd, "w", encoding="utf-8") as handle:
-            json.dump({"sealed": seal(_to_json(presets))}, handle)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self.path)
+        try:
+            with open(fd, "w", encoding="utf-8") as handle:
+                json.dump({"sealed": sealed}, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
 
     def names(self) -> list[str]:
         return [p.name for p in self.load()]
@@ -295,6 +341,9 @@ class PresetStore:
         added = []
         for p in incoming:
             name = _unique(p.name, [q.name for q in presets])
+            problem = name_problem(name)
+            if problem:
+                raise PresetError(problem)
             presets.append(ChannelPreset(name, p.channels, p.exclude))
             added.append(name)
         self.save(presets)
@@ -315,7 +364,7 @@ def parse_export(text: str) -> list[ChannelPreset]:
     """The presets of an exported file (raises :class:`PresetError`)."""
     try:
         value = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise PresetError("This file does not hold saved channel choices.") from None
     if isinstance(value, dict) and value.get("kind", FILE_KIND) != FILE_KIND:
         raise PresetError("This file does not hold saved channel choices.")

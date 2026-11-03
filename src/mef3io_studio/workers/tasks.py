@@ -976,7 +976,13 @@ def _one(ctx, batch, item, n, total, writer, journal, check_password, kept=None)
                     )
                 )
             else:
-                ctx.publish(_fail(ctx, item, APPEARED))
+                ctx.publish(
+                    _fail(
+                        ctx,
+                        item,
+                        MAYBE_COMPLETE if isinstance(request, changes.ChangeRequest) else APPEARED,
+                    )
+                )
             raise
         if not anonymize.remove_unfinished(request.destination):
             ctx.publish(anonymize.Leftover(request.key, request.destination + ".partial"))
@@ -1090,6 +1096,14 @@ APPEARED = UserMessage(
     "is not this batch's copy, so it was left exactly as it is, and this recording was not "
     "made. The original was not changed. Move or rename that folder, then make this copy "
     "again.",
+)
+
+
+MAYBE_COMPLETE = UserMessage(
+    "The new recording may be complete",
+    "Stop came just as this new recording was being finished, and the app cannot tell "
+    "whether it was checked. It was left exactly as it is. Open it in Explore and check it "
+    "before you use it, or move it away and make it again. The original was not changed.",
 )
 
 

@@ -391,3 +391,78 @@ def test_no_password_channel_name_or_detail_reaches_the_log(qtbot, jobs, tmp_pat
     assert "batch of 2 finished" in text
     for secret in (*PW, *SECRET_CHANNELS, PLACE, str(tmp_path), "New1", "rec0"):
         assert secret not in text, secret
+
+
+# --------------------------------------------------------------------------
+# Review round 1: hostile or damaged files, and a store that cannot be read
+
+
+def test_hostile_shared_files_are_refused_not_crashes():
+    for text in ("[" * 200_000, '{"presets":' * 50_000, "\x00", ""):
+        with pytest.raises(presets.PresetError):
+            presets.parse_export(text)
+    bad_flag = '{"presets": [{"name": "x", "channels": ["a"], "exclude": "false"}]}'
+    with pytest.raises(presets.PresetError):
+        presets.parse_export(bad_flag)  # bool("false") would be True
+    ok = '{"presets": [{"name": "x", "channels": ["a"], "exclude": false}]}'
+    assert presets.parse_export(ok)[0].exclude is False
+
+
+def test_names_must_be_printable_and_imported_names_fit(tmp_path):
+    assert presets.name_problem("bad\x07name") is not None
+    assert presets.name_problem("line\nbreak") is not None
+    with pytest.raises(presets.PresetError):
+        presets.parse_export('{"presets": [{"name": "a\\u0000b", "channels": ["a"]}]}')
+    store = presets.PresetStore(str(tmp_path))
+    long_name = "n" * presets.MAX_NAME_CHARS
+    store.add(presets.make_preset(long_name, ["a"]))
+    text = presets.export_text([presets.make_preset(long_name, ["b"])])
+    with pytest.raises(presets.PresetError):  # "(2)" would not fit
+        store.import_text(text)
+    assert store.names() == [long_name]
+
+
+def test_an_unreadable_store_is_set_aside_never_overwritten(tmp_path):
+    store = presets.PresetStore(str(tmp_path))
+    store.add(presets.make_preset("Mine", ["Zq1"]))
+    original = Path(store.path).read_text(encoding="utf-8")
+    for damaged in (
+        '{"sealed": 5}',  # not a string
+        '{"sealed": "AAAA"}',  # not ours / changed
+        "not json at all",
+        '{"nothing": 1}',
+    ):
+        Path(store.path).write_text(damaged, encoding="utf-8")
+        assert store.load() == [] and store.unreadable
+        store.add(presets.make_preset("New", ["Zq2"]))
+        assert store.moved_aside.startswith("presets.json.unreadable-")
+        assert (tmp_path / store.moved_aside).read_text(encoding="utf-8") == damaged
+        assert store.names() == ["New"] and not store.unreadable
+        store.remove("New")
+    # A healthy store is never moved; a missing one is not "unreadable".
+    Path(store.path).write_text(original, encoding="utf-8")
+    store.add(presets.make_preset("More", ["Zq3"]))
+    assert store.moved_aside == "" and len(store.names()) == 2
+    os.unlink(store.path)
+    assert not store.unreadable and store.load() == []
+    assert len(list(tmp_path.glob("presets.json.unreadable-*"))) == 4  # nothing deleted
+
+
+def test_a_failed_save_leaves_no_temporary_file(tmp_path, monkeypatch):
+    store = presets.PresetStore(str(tmp_path))
+    store.add(presets.make_preset("Keep", ["a"]))
+
+    def boom(*_a):
+        raise OSError("disk")
+
+    monkeypatch.setattr(presets.os, "replace", boom)
+    with pytest.raises(OSError):
+        store.add(presets.make_preset("Other", ["b"]))
+    monkeypatch.undo()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["presets.json"]
+    assert store.names() == ["Keep"]
+
+
+def test_a_stop_just_after_a_change_item_finished_does_not_say_not_made():
+    assert "may be complete" in tasks.MAYBE_COMPLETE.title.lower()
+    assert "not made" not in tasks.MAYBE_COMPLETE.title.lower()
