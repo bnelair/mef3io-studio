@@ -198,6 +198,8 @@ def check_template(template: str) -> None:
             continue
         if field_name not in TEMPLATE_FIELDS or conversion or "{" in (spec or ""):
             raise BadTemplate(field_name)
+        if re.search(r"\d{4,}", spec or ""):  # a width or precision that would build a huge name
+            raise BadTemplate("width")
 
 
 def name_from_template(
@@ -220,10 +222,10 @@ def name_from_template(
     used = {f for _l, f, _s, _c in string.Formatter().parse(template)}
     if ("start" in used and start_us is None) or ("index" in used and index is None):
         return NameProblem.NO_START
-    start = to_datetime(start_us, zone) if start_us is not None else None
     try:
+        start = to_datetime(start_us, zone) if start_us is not None else None
         return template.format(start=start, index=index, name=old_name).strip()
-    except (ValueError, KeyError, IndexError, TypeError, OverflowError):
+    except (ValueError, KeyError, IndexError, TypeError, OverflowError, MemoryError):
         return NameProblem.BAD_TEMPLATE
 
 

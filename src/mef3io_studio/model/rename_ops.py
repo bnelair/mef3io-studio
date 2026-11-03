@@ -29,6 +29,7 @@ Plain Python, no Qt.
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -37,7 +38,9 @@ from .cancel import CancelToken, is_stop, stopped_by_library
 from .errors import UserMessage, describe_error
 from .journal import data_dir
 from .quiet import library_warnings_caught
-from .rename import RECENT_SECONDS, RowState, list_folder_keys
+from .recording import recording_name
+from .rename import RECENT_SECONDS, RowState, list_folder_keys, name_key
+from .rename import blocked_reason as rn_blocked
 from .text import technical
 
 BACKUP_FOLDER = "renames"
@@ -54,10 +57,17 @@ def backup_dir() -> str:
 # -- looking before renaming ------------------------------------------------------------
 
 
+def _part_order(name: str) -> tuple[int, str]:
+    """Newest-part order: by the number after the last '-' (so part 10
+    follows part 9, whatever the digits' width), else by name."""
+    found = re.search(r"-(\d+)(?:\.[^.-]*)?$", name)
+    return (int(found.group(1)) if found else -1, name)
+
+
 def newest_files(location: str):
     """``(relative path with "/", absolute path)`` of the files where a
     recorder writes: the recording's top level, each channel folder's own
-    files, and the files of the LAST part folder of each channel (by name).
+    files, and the files of the NEWEST part folder of each channel (highest number).
     Found by depth alone, never by file name, so it reads no recording
     format and costs a few files per channel, never the data."""
     try:
@@ -78,7 +88,7 @@ def newest_files(location: str):
         parts = [e for e in inside if e.is_dir()]
         if not parts:
             continue
-        last = parts[-1]
+        last = max(parts, key=lambda e: _part_order(e.name))
         try:
             files = list(os.scandir(last.path))
         except OSError:
@@ -184,7 +194,9 @@ def read_state(
 NOTHING_CHANGED = "Nothing was lost."
 
 
-def describe_rename_error(exc: BaseException, packed: bool = False) -> UserMessage:
+def describe_rename_error(
+    exc: BaseException, packed: bool = False, case_only: bool = False
+) -> UserMessage:
     """A rename's failure in plain words (what happened, what it means for
     the recording, what to do). The library's text goes only into the
     technical details."""
@@ -215,6 +227,14 @@ def describe_rename_error(exc: BaseException, packed: bool = False) -> UserMessa
             "next to it, or a rename by another program was left unfinished. Nothing was "
             "renamed. Wait until that is done and try again; if it stays, Check for "
             "problems may say more.",
+            detail,
+        )
+    if case_only and isinstance(exc, mef3io.IoError):
+        return UserMessage(
+            "Only the capital letters changed",
+            "This drive treats capital and small letters as the same, so it cannot change "
+            "only the capitals of a name in one step. Nothing was changed. Rename the "
+            "recording to a different name first, then to the one you want.",
             detail,
         )
     if isinstance(exc, mef3io.IoError):
@@ -279,9 +299,28 @@ class ItemResult:
         return self.message is None
 
 
+def _check_still_quiet(job: RenameJob) -> None:
+    """Right before the rename (the window looked minutes ago): refuse a
+    recording written to since. A recording whose own rename was left
+    unfinished is not refused for the files that rename touched."""
+    import mef3io
+
+    if job.settle_only:
+        return
+    if not job.packed and mef3io.operation_marker(job.location) is not None:
+        return
+    if recently_written(job.location):
+        raise RecentlyWritten()
+
+
+class RecentlyWritten(Exception):
+    """Something wrote to the recording after the window looked."""
+
+
 def _one(job: RenameJob, folder: str) -> ItemResult:
     import mef3io
 
+    _check_still_quiet(job)
     if job.packed:
         done = mef3io.rename_archive(job.location, job.new_name)
         step = UndoStep(
@@ -323,8 +362,9 @@ def run_renames(
 ) -> list[ItemResult]:
     """Rename the recordings in the order given, one after the other. A
     recording that cannot be renamed gets its message and the rest go on;
-    a stop is checked between recordings (a rename in progress is finished,
-    never cut off). Each result is also passed to ``send`` as soon as it is
+    a stop is checked between recordings (a rename in progress is finished
+    unless the app is forced to stop; the next rename of that recording rolls
+    it back). Each result is also passed to ``send`` as soon as it is
     known, so a stop does not lose what was already done."""
     results: list[ItemResult] = []
     with library_warnings_caught(), stopped_by_library():
@@ -336,7 +376,18 @@ def run_renames(
             except Exception as exc:  # noqa: BLE001 - reported on the row
                 if is_stop(exc):
                     raise
-                results.append(ItemResult(job.key, "", (), describe_rename_error(exc, job.packed)))
+                if isinstance(exc, RecentlyWritten):
+                    message = UserMessage(
+                        "Not renamed: it was just written to",
+                        rn_blocked(RowState(recently_written=True)) + " Nothing was changed.",
+                    )
+                else:
+                    message = describe_rename_error(
+                        exc,
+                        job.packed,
+                        case_only=name_key(job.new_name) == name_key(recording_name(job.location)),
+                    )
+                results.append(ItemResult(job.key, "", (), message))
             if send is not None:
                 send(results[-1])
     return results
@@ -349,33 +400,39 @@ def undo_steps(
     import mef3io
 
     location = steps[-1].new_path if steps else ""
+    left = list(steps)  # the steps still to undo, oldest first
     with library_warnings_caught(), stopped_by_library():
         try:
-            for step in reversed(steps):
+            while left:
                 if cancel is not None:
                     cancel.raise_if_cancelled()
+                step = left[-1]
                 if step.kind == "archive":
                     done = mef3io.rename_archive(step.new_path, step.old_name)
                     location = done.new_path
                 else:
                     report = step.report.undo(password=password, backup_dir=folder)
                     location = report.new_path
+                left.pop()
         except Exception as exc:  # noqa: BLE001 - reported
             if is_stop(exc):
                 raise
             packed = bool(steps) and steps[0].kind == "archive"
-            return ItemResult("", location, (), describe_rename_error(exc, packed))
+            # What is already undone stays undone; a retry starts at the rest.
+            return ItemResult("", location, tuple(left), describe_rename_error(exc, packed))
     return ItemResult("", location, ())
 
 
 @dataclass(frozen=True)
 class UndoUnit:
-    """One recording's steps to undo, with the password it needs (memory
-    only)."""
+    """One recording's steps to undo (memory only). The password is NOT
+    kept after a rename: ``protected`` says it must be asked for again, and
+    ``password`` is filled in only for the one call that undoes."""
 
     key: str = field(repr=False)
     steps: tuple[UndoStep, ...] = field(repr=False)
     password: str = field(default="", repr=False)
+    protected: bool = False
 
 
 def undo_many(
@@ -390,7 +447,31 @@ def undo_many(
         if cancel is not None and cancel.cancelled:
             break
         done = undo_steps(unit.steps, unit.password, folder, cancel)
-        out.append(ItemResult(unit.key, done.new_location, (), done.message, notes=done.notes))
+        out.append(
+            ItemResult(unit.key, done.new_location, done.steps, done.message, notes=done.notes)
+        )
         if send is not None:
             send(out[-1])
     return out
+
+
+def renamed_to(job: RenameJob) -> str:
+    """Where the recording is now if a forced stop came after its rename
+    but before the answer reached us, else "". A recording that still
+    carries an unfinished operation's marker is NOT renamed (the next rename
+    rolls it back), so it gives ""."""
+    import mef3io
+
+    suffix = ".mefd.tar" if job.packed else ".mefd"
+    folder = os.path.dirname(os.path.abspath(job.location))
+    target = os.path.join(folder, job.new_name + suffix)
+    if job.settle_only or not os.path.lexists(target) or os.path.lexists(job.location):
+        return ""
+    if not job.packed:
+        with library_warnings_caught():
+            try:
+                if mef3io.operation_marker(target) is not None:
+                    return ""
+            except Exception:  # noqa: BLE001 - cannot tell: do not claim it
+                return ""
+    return target

@@ -1310,8 +1310,9 @@ class ExplorerPage(QWidget):
             self.jobs,
             self._renamable(self.selected_entries()),
             self.zone,
-            in_use=set(self.in_use_keys()),
+            in_use=self.in_use_keys,
             undo=self._last_rename,
+            listed=lambda: {e.key for e in self.model.entries},
             parent=self,
         )
         dialog.relocated.connect(self._relocate)

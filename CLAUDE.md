@@ -331,7 +331,7 @@ Code (app shell, #2/#3):
   `recently_written` = newest part of each channel + top level, `skip` = the
   files our own rename left); `run_renames` (one helper, results sent one by
   one so a Stop keeps what was done; Stop is checked between recordings, a
-  rename is never cut off; `RenameOutcome.unreported` = renamed at the
+  rename is finished unless the app is forced to stop (the next rename of that recording rolls it back); `RenameOutcome.unreported` = renamed at the
   instant of the stop, no undo); `RenameJob(fix_drift_first | settle_only)`:
   drift fix = `fix_name_drift` first (undo reverses in order), unfinished
   rename = the next call rolls it back (`put_back`); `UndoStep` keeps mef3io's

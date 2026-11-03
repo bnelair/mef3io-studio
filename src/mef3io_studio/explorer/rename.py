@@ -26,7 +26,8 @@ Names and paths are never logged. Plain wording (docs/ui-language.md).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, tzinfo
 
 from PySide6.QtCore import Qt, Signal
@@ -121,14 +122,19 @@ class RenameDialog(QDialog):
         jobs: JobManager,
         entries: list[RecordingEntry],
         zone: tzinfo = UTC,
-        in_use: set[str] | None = None,
+        in_use: Callable[[], set[str]] | None = None,
         undo: RenameBatch | None = None,
+        listed: Callable[[], set[str]] | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self.jobs = jobs
         self.zone = zone
-        self.in_use = in_use or set()
+        #: Which recordings are open in a signal viewer RIGHT NOW (asked again
+        #: at every confirmation), and which are still in the list.
+        self._in_use_now = in_use or (lambda: set())
+        self._listed = listed
+        self.in_use = set(self._in_use_now())
         self.setWindowTitle("Rename recordings")
         em = self.fontMetrics().height()
         self.setMinimumWidth(em * 44)
@@ -461,9 +467,21 @@ class RenameDialog(QDialog):
         dialog = PasswordDialog(name, wrong=wrong, parent=self)
         return dialog.password() if dialog.exec() else ""
 
+    def _refresh_in_use(self) -> bool:
+        """Ask again which recordings a viewer shows; False (and the list
+        marked) when one of the rows to rename is now in use."""
+        now = set(self._in_use_now())
+        for r in self.rows:
+            r.state = replace(r.state, in_use=r.entry.key in now)
+        self.in_use = now
+        self._recheck()
+        if not self._ready:
+            self.status.setText("Not renamed: see the notes in the list.")
+        return self._ready
+
     def start(self) -> None:
         """Rename (after the confirmation). The rows must be ready."""
-        if self.busy or not self._ready:
+        if self.busy or self._done or not self._refresh_in_use():
             return
         wanted = self._jobs_wanted()
         count = len([1 for _r, s in wanted if not s])
@@ -482,6 +500,8 @@ class RenameDialog(QDialog):
         if any(r.packed for r, _s in wanted):
             more += " " + rn.ARCHIVE_NOTE
         if not self.confirm(text, more):
+            return
+        if not self._refresh_in_use():  # a viewer may have been opened meanwhile
             return
         order = {self.rows[i_].entry.key: pos for pos, i_ in enumerate(self._order_rows(wanted))}
         jobs = []
@@ -540,9 +560,13 @@ class RenameDialog(QDialog):
                 if item.new_location:
                     moved.append((item.key, item.new_location))
                 if item.steps:
+                    protected = bool(row.entry.password) or bool(
+                        row.entry.details is not None and row.entry.details.password_protected
+                    )
+                    # The password is NOT kept: undo asks for it again.
                     units.append(
                         ops.UndoUnit(
-                            location_key(item.new_location), item.steps, row.entry.password
+                            location_key(item.new_location), item.steps, "", protected=protected
                         )
                     )
             else:
@@ -575,12 +599,38 @@ class RenameDialog(QDialog):
         self._enable()
 
     # -- undo ------------------------------------------------------------------------
+    def _usable_units(self) -> list[ops.UndoUnit] | None:
+        """The units that can be undone now. Units whose recording is no
+        longer in the list are dropped from the batch; None (with the reason
+        shown) when one is open in a signal viewer."""
+        units = list(self.batch.units)
+        if self._listed is not None:
+            listed = set(self._listed())
+            kept = [u for u in units if u.key in listed]
+            if len(kept) != len(units):
+                units = kept
+                self.batch = RenameBatch(tuple(kept)) if kept else None
+                self.renamed.emit(self.batch)
+        open_now = set(self._in_use_now())
+        if any(u.key in open_now for u in units):
+            self.status.setText(
+                "Not undone: a recording is open in a signal viewer. Close that window first."
+            )
+            return None
+        return units
+
     def start_undo(self) -> None:
         """Undo the last rename: look first, ask, then do it."""
         if self.busy or not self.batch:
             return
+        units = self._usable_units()
+        if not units:
+            if units is not None:
+                self.status.setText("Nothing left to undo: the recordings are no longer listed.")
+            self._enable()
+            return
         requests = []
-        for unit in self.batch.units:
+        for unit in units:
             skip = {}
             last = unit.steps[-1]
             report = last.report
@@ -597,60 +647,71 @@ class RenameDialog(QDialog):
 
     def _undo_looked(self, result) -> None:
         states, _folders = result
-        blocked = [
-            u
-            for u in self.batch.units
-            if states.get(u.key) is not None and states[u.key].recently_written
-        ]
         self.busy = ""
         self._enable()
+        units = self._usable_units()
+        if not units:
+            return
+        blocked = [
+            u for u in units if states.get(u.key) is not None and states[u.key].recently_written
+        ]
         if blocked:
             self.status.setText(
                 "Not undone: a recording was written to in the last few minutes. Wait until "
                 "the writing is finished, then try again."
             )
             return
-        count = len(self.batch.units)
+        count = len(units)
         if not self.confirm(
             f"Put {_plural(count, 'recording')} back to the old name?",
             "Only the names are changed back, in every place they are kept. Anything added "
             "to the recordings since is kept.",
         ):
             return
-        units = []
-        for u in self.batch.units:
-            password = u.password
-            if self._needs_undo_password(u) and not password:
-                password = self.ask_password("this recording", False)
-            units.append(ops.UndoUnit(u.key, u.steps, password))
+        if (units := self._usable_units()) is None or not units:  # a viewer opened meanwhile
+            return
+        todo, skipped = [], 0
+        for u in units:
+            password = ""
+            if u.protected:
+                password = self.ask_password(recording_name(u.steps[-1].new_path), False)
+                if not password:
+                    skipped += 1
+                    continue
+            todo.append(ops.UndoUnit(u.key, u.steps, password, u.protected))
+        if not todo:
+            self.status.setText("Not undone: the password is needed.")
+            return
         self.busy = "undoing"
         self._enable()
         self.status.setText("Undoing…")
-        handle = self.jobs.submit("Undoing the rename", undo_renames, units)
+        handle = self.jobs.submit("Undoing the rename", undo_renames, todo)
         handle.succeeded.connect(self._undone)
         handle.failed.connect(self._failed)
         self._handles.append(handle)
         self._current = handle
 
-    def _needs_undo_password(self, unit: ops.UndoUnit) -> bool:
-        row = next((r for r in self.rows if r.entry.key == unit.key), None)
-        return bool(row is not None and self._needs_password(row.entry))
-
     def _undone(self, result) -> None:
         results, stopped = result
         self.busy = ""
         moved, failed = [], []
-        left = []
-        done_keys = set()
+        by_key = {u.key: u for u in (self.batch.units if self.batch else ())}
         for item in results:
+            unit = by_key.get(item.key)
             if item.ok:
                 moved.append((item.key, item.new_location))
-                done_keys.add(item.key)
-            else:
-                failed.append(item)
-        for unit in self.batch.units:
-            if unit.key not in done_keys:
-                left.append(unit)
+                by_key.pop(item.key, None)
+                continue
+            failed.append(item)
+            if unit is not None and item.steps:
+                # Part of it was undone: keep only the steps still to do,
+                # under the recording's present place.
+                by_key.pop(item.key, None)
+                if item.new_location and item.new_location != unit.steps[-1].new_path:
+                    moved.append((item.key, item.new_location))
+                key = location_key(item.new_location) if item.new_location else item.key
+                by_key[key] = ops.UndoUnit(key, item.steps, "", unit.protected)
+        left = list(by_key.values())
         self.batch = RenameBatch(tuple(left)) if left else None
         text = f"{_plural(len(moved), 'recording')} put back to the old name."
         if failed:
@@ -660,7 +721,7 @@ class RenameDialog(QDialog):
         self.status.setText(text)
         if moved:
             self.relocated.emit(moved)
-            self.renamed.emit(self.batch)
+        self.renamed.emit(self.batch)
         if failed:
             self._show(failed[0].message)
         self._enable()

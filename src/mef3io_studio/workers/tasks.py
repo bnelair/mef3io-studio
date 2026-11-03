@@ -1107,7 +1107,9 @@ def rename_recordings(ctx: JobContext, jobs: list[rename_ops.RenameJob]) -> Rena
             raise
         reported = {r.key for r in got}
         late = tuple(
-            (j.key, _renamed_to(j)) for j in jobs if j.key not in reported and _renamed_to(j)
+            (j.key, target)
+            for j in jobs
+            if j.key not in reported and (target := rename_ops.renamed_to(j))
         )
         log.info("job %d: stopped after %d of %d rename(s)", ctx.job_id, len(got), total)
         return RenameOutcome(tuple(_scrubbed_results(got)), True, late)
@@ -1115,19 +1117,15 @@ def rename_recordings(ctx: JobContext, jobs: list[rename_ops.RenameJob]) -> Rena
     return RenameOutcome(tuple(_scrubbed_results(results)))
 
 
-def _renamed_to(job: rename_ops.RenameJob) -> str:
-    """Where the recording is now if the stop came after its rename but
-    before the answer reached us, else ""."""
-    suffix = ".mefd.tar" if job.packed else ".mefd"
-    folder = os.path.dirname(os.path.abspath(job.location))
-    target = os.path.join(folder, job.new_name + suffix)
-    if not job.settle_only and os.path.lexists(target) and not os.path.lexists(job.location):
-        return target
-    return ""
-
-
 def _scrubbed_results(results) -> list[rename_ops.ItemResult]:
-    return [replace(r, message=scrubbed(r.message)) for r in results]
+    return [
+        replace(
+            r,
+            message=scrubbed(r.message),
+            notes=tuple(anonymize.collapse_placeholders(scrub(n)) for n in r.notes),
+        )
+        for r in results
+    ]
 
 
 def undo_renames(
