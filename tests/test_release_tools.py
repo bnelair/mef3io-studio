@@ -93,3 +93,18 @@ def test_current_version_has_written_release_notes():
 def test_workflows_share_the_stub_marker():
     build = (ROOT / ".github" / "workflows" / "build.yml").read_text()
     assert bump.STUB_MARKER in build
+
+
+def test_installers_are_built_only_for_releases():
+    """Runner time and artifact storage are shared quotas: build.yml never
+    runs on PRs, and on main only for a push that changes VERSION."""
+    text = (ROOT / ".github" / "workflows" / "build.yml").read_text()
+    block = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+    assert block == (
+        "  workflow_dispatch:\n"
+        "  push:\n"
+        "    branches: [main]\n"
+        '    tags: ["v*"]\n'
+        "    paths:\n"
+        '      - "VERSION"'
+    )
