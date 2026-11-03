@@ -394,7 +394,7 @@ requests that touch `src/`, `packaging/`, `requirements/`, the pins or
 and on `v*` tags. Each build is smoke-tested (`--self-test`, `--self-test-gui`,
 Windows install → upgrade → uninstall, the Linux tarball on five
 distributions, an strace check that no internet socket is opened). On tags the
-installers and `SHA256SUMS` are attached to a GitHub pre-release, described by
+installers and `SHA256SUMS` are attached to a GitHub release (a pre-release for test versions), described by
 `docs/release-notes/<version>.md` when that file exists.
 
 Every bundle carries a `THIRD_PARTY_LICENSES` folder. Qt is used under the
