@@ -66,6 +66,7 @@ from ..model import pieces as P
 from ..model import pipeline
 from ..model.coverage import RecordingInput
 from ..model.recording import ACCESS_OPEN
+from ..model.refusals import EMPTY_WINDOW_TITLE
 from ..model.timefmt import format_size, format_span, format_time, zone_label
 from ..workers.jobs import JobManager
 from ..workers.tasks import BatchState, data_stretches
@@ -83,6 +84,18 @@ FOLDER_FIRST = "Choose a folder that exists."
 PATTERN_HELP = (
     "<name> is the recording's name, <number> is 01, 02, … and <date> is the day the piece starts."
 )
+
+
+def _is_empty(message) -> bool:
+    return message is not None and message.title == EMPTY_WINDOW_TITLE
+
+
+def _number_of(item) -> str:
+    return item.request.key.rsplit("#", 1)[-1]
+
+
+def _keys(items) -> set[str]:
+    return {i.request.key for i in items}
 
 
 class PiecesDialog(BatchRunMixin, QDialog):
@@ -519,6 +532,34 @@ class PiecesDialog(BatchRunMixin, QDialog):
         self.next_button.setEnabled(not text)
         self.start_button.setEnabled(not text and not self._busy)
         self.close_button.setEnabled(not self._busy)
+
+    def _checked(self, batch: pipeline.Batch, verdict: dict) -> None:
+        """As the shared check, except that a piece mef3io finds to hold no
+        signal (a gap inside a stored part, which the stretches cannot show)
+        is left out, not a reason to stop the whole batch. The other pieces
+        keep their names and numbers."""
+        names = verdict.get("names", {})
+        empty = [i for i in batch.items if _is_empty(names.get(i.request.key))]
+        if not empty:
+            return super()._checked(batch, verdict)
+        kept = tuple(i for i in batch.items if i not in empty)
+        notes = [
+            f"Piece {_number_of(i)} holds no signal (a gap in the recording) and is left out."
+            for i in empty
+        ]
+        if not kept:
+            self._clear(self.progress_slot)
+            self._preflight_problems = ["Nothing was made yet. " + n for n in notes]
+            self._preflight_problems.append("Every piece is empty. Choose other cuts.")
+            self._set_busy(False)
+            self.go(STEP_WHERE)
+            return None
+        verdict = {**verdict, "names": {k: v for k, v in names.items() if k not in _keys(empty)}}
+        super()._checked(replace(batch, items=kept), verdict)
+        if self.step == STEP_RUN:
+            for note in notes:
+                self.messages.addWidget(_label(note))
+        return None
 
     # -- the batch -----------------------------------------------------------------------
     def make_batch(self) -> pipeline.Batch:

@@ -279,3 +279,46 @@ def test_piece_name_problems_say_piece(shown_window, qtbot, tmp_path):
     dialog.pattern.setText("same-<date>")
     assert dialog.problem.text().startswith("Pieces 1 and 2 of 3")
     dialog.reject()
+
+
+def test_a_piece_in_a_gap_inside_a_stored_part_is_left_out_not_a_stop(
+    shown_window, qtbot, tmp_path
+):
+    """The Explorer's stretches cannot see a gap between blocks of ONE stored
+    part; mef3io refuses a piece cut there ("no recording"). That piece is
+    left out with a note, the others are made, nothing is half-made."""
+    rng = np.random.default_rng(2)
+    data = rng.integers(-5000, 5000, 90 * 256).astype(float)
+    data[30 * 256 : 60 * 256] = np.nan
+    source = tmp_path / "Hole.mefd"
+    with mef3io.Writer(str(source), overwrite=True, units="uV") as w:
+        w.write("a1", data, T0, 256.0)
+    out = tmp_path / "out"
+    out.mkdir()
+    before = tree_hash(source)
+    entries = open_all(qtbot, shown_window, [source])
+    dialog = make_dialog(qtbot, shown_window, entries)
+    reach_cut_step(qtbot, dialog)
+    assert len(dialog.runs) == 1  # one stored part: the plan sees no gap
+    for s in (40, 50):
+        dialog.at_input.set_us(T0 + s * SECOND, dialog.zone)
+        dialog.add_time()
+    assert len(dialog.plan().pieces) == 3
+    dialog.next()
+    dialog.next()
+    dialog.pattern.setText("Cut-<number>")
+    dialog.folder = str(out)
+    dialog._changed()
+    assert dialog.start() is not None
+    qtbot.waitUntil(lambda: dialog.finished_run, timeout=180_000)
+    assert sorted(p.name for p in out.iterdir()) == ["Cut-01.mefd", "Cut-03.mefd"]
+    assert len(dialog.batch.items) == 2
+    texts = [
+        dialog.messages.itemAt(i).widget().text()
+        for i in range(dialog.messages.count())
+        if hasattr(dialog.messages.itemAt(i).widget(), "text")
+    ]
+    assert "Piece 2 holds no signal (a gap in the recording) and is left out." in texts
+    assert dialog.summary.text() == "Finished: 2 of 2 pieces saved and checked."
+    assert not list(out.rglob("*.partial")) and tree_hash(source) == before
+    dialog.reject()

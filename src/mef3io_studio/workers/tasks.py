@@ -195,6 +195,8 @@ def data_stretches(ctx: JobContext, item) -> tuple[tuple[tuple[int, int], ...], 
     starts, ends = [], []
     for channel in details.channels:
         for part in channel.parts:
+            # part.end: mef3io states where the last sample ENDS (exclusive); a foreign
+            # writer may state the last sample's own time, which Stretches also accepts.
             starts.append(part.start)
             ends.append(max(part.end, part.start))
     s, e = merge_intervals(starts, ends, 0)

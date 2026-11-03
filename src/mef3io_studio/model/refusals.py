@@ -21,6 +21,9 @@ from .errors import UserMessage
 from .text import technical
 
 NOTHING = "Nothing was written, and the original was not changed."
+#: The title of mef3io's "time-range-empty" refusal in a copy with changes. "Cut into
+#: pieces" recognises it to leave that piece out.
+EMPTY_WINDOW_TITLE = "The chosen part holds no recording"
 CHECK = "Use Check for problems in Explore to see more, and keep a copy of the original."
 REPORT = "Try again; if it keeps happening, report it and include the technical details."
 
@@ -587,7 +590,7 @@ JOIN_WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
         f"{NOTHING_JOINED} Go back to the channel step and keep at least one channel.",
     ),
     technical("time-range-empty"): _fixed(
-        "The chosen part holds no recording",
+        EMPTY_WINDOW_TITLE,
         f"There is no recorded signal in the part chosen to keep. {NOTHING_JOINED} Choose "
         "another part.",
     ),
