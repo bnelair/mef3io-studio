@@ -237,7 +237,6 @@ def test_layout_runs_in_short_slices(page, qtbot, tmp_path, monkeypatch):
     events (see workers/slices.py), and a newer request drops an older one."""
     from mef3io_studio.workers import slices
 
-    _settle_garbage()
     longest = []
     real = slices.SlicedRunner._slice
 
@@ -250,6 +249,10 @@ def test_layout_runs_in_short_slices(page, qtbot, tmp_path, monkeypatch):
     page.model.add(_synthetic(60, channels=8, parts=200))
     page._refresh_body()
     page.show_combined(True)
+    # After building the data, not before: ~100,000 fresh objects make the
+    # next full collection (which can fire inside any slice) take ~50-100 ms,
+    # and that pass is the garbage collector's, not the layout's.
+    _settle_garbage()
     page._layout_dirty = True
     page._start_layout()  # starts again at once: the first one is dropped
     wait_layout(qtbot, page, 60, timeout=120_000)
