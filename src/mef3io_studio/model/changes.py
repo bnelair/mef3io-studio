@@ -146,7 +146,7 @@ def fits(value: str, field_name: str) -> bool:
 def remaining(value: str, field_name: str) -> int:
     """How many more bytes ``value`` may take (negative = too long)."""
     limit = DETAIL_LIMITS[field_name]
-    return limit - 1 - len(value.encode("utf-8"))
+    return limit - 1 - len(value.encode("utf-8", errors="surrogatepass"))
 
 
 def changed_details(

@@ -308,3 +308,97 @@ def test_the_window_never_imports_mef3io():
         elif isinstance(node, ast.ImportFrom) and node.module:
             names = [node.module]
         assert not any(n.split(".")[0] == "mef3io" for n in names)
+
+
+def fill_pair(dialog):
+    dialog.passwords.both.setChecked(True)
+    for field, text in (
+        (dialog.passwords.basic, NEW_BASIC),
+        (dialog.passwords.basic_again, NEW_BASIC),
+        (dialog.passwords.full, NEW_FULL),
+        (dialog.passwords.full_again, NEW_FULL),
+    ):
+        field.setText(text)
+
+
+def test_a_lone_surrogate_is_counted_and_left_for_mef3io_to_refuse(shown_window, qtbot, tmp_path):
+    from mef3io_studio.model import changes
+
+    assert changes.remaining("\ud800", "subject_id") == 127 - 3
+    entry = open_entry(qtbot, shown_window, write_plain(tmp_path / "a.mefd"))
+    dialog = open_dialog(qtbot, shown_window, entry)
+    dialog.boxes["subject_id"].set_text("\ud800")
+    assert dialog.boxes["subject_id"].room.text()  # no exception in the slot
+
+
+def test_closing_in_any_way_wipes_the_passwords_and_the_run(shown_window, qtbot, tmp_path):
+    entry = open_entry(qtbot, shown_window, write_plain(tmp_path / "a.mefd"))
+    dialog = open_dialog(qtbot, shown_window, entry)
+    dialog.boxes["recording_location"].set_text("x")
+    fill_pair(dialog)
+    dialog.name.setText("w")
+    dialog.folder = str(tmp_path)
+    dialog._update()
+    dialog.check_and_save()  # busy: checking
+    assert dialog._busy
+    dialog.close()
+    assert dialog.passwords.passwords() is None
+    assert not dialog.passwords.basic.text() and not dialog.passwords.full_again.text()
+    qtbot.waitUntil(lambda: not dialog._busy, timeout=60_000)
+
+
+def test_the_run_keeps_no_password_after_saving_or_closing(shown_window, qtbot, tmp_path):
+    entry = open_entry(qtbot, shown_window, write_plain(tmp_path / "a.mefd"))
+    dialog = open_dialog(qtbot, shown_window, entry)
+    dialog.boxes["recording_location"].set_text("x")
+    fill_pair(dialog)
+    dialog.name.setText("w")
+    dialog.folder = str(tmp_path)
+    dialog._update()
+    finish(qtbot, dialog)
+    assert dialog.result.ok and dialog.request.output_password is None
+    opened = []
+    dialog.open_requested.connect(lambda p, pw: opened.append(pw))
+    dialog.open_button.click()
+    assert opened == [NEW_FULL]
+    dialog.open_button.click()
+    assert opened == [NEW_FULL, ""]
+    dialog.reject()
+    assert dialog.request is None and dialog.result is None and dialog.handle is None
+
+
+def test_stop_during_the_copy_leaves_nothing(shown_window, qtbot, tmp_path):
+    src = write_plain(tmp_path / "a.mefd")
+    entry = open_entry(qtbot, shown_window, src)
+    dialog = open_dialog(qtbot, shown_window, entry)
+    dialog.boxes["recording_location"].set_text("x")
+    dialog.name.setText("stopped")
+    dialog.folder = str(tmp_path)
+    dialog._update()
+    dialog.check_and_save()
+    qtbot.waitUntil(lambda: dialog.handle is not None, timeout=60_000)
+    dialog.stop()
+    qtbot.waitUntil(lambda: not dialog._busy, timeout=60_000)
+    assert dialog._stopped and dialog.result is None
+    assert "Stopped" in dialog.result_label.text()
+    assert not (tmp_path / "stopped.mefd").exists()
+    assert not (tmp_path / "stopped.mefd.partial").exists()
+
+
+def test_a_check_that_fails_as_a_task_is_shown(shown_window, qtbot, tmp_path, monkeypatch):
+    from mef3io_studio.explorer import edit_details
+
+    def broken(ctx, request):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(edit_details, "check_changes", broken)
+    entry = open_entry(qtbot, shown_window, write_plain(tmp_path / "a.mefd"))
+    dialog = open_dialog(qtbot, shown_window, entry)
+    dialog.boxes["recording_location"].set_text("x")
+    dialog.name.setText("f")
+    dialog.folder = str(tmp_path)
+    dialog._update()
+    dialog.check_and_save()
+    qtbot.waitUntil(lambda: dialog.findings.count() > 0 and not dialog._busy, timeout=30_000)
+    assert dialog.result is None and dialog.save_button.isEnabled()
+    assert not (tmp_path / "f.mefd").exists()

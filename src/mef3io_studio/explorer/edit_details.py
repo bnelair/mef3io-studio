@@ -12,6 +12,7 @@ the copy run as tasks in a helper process.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import tzinfo
 
 from PySide6.QtCore import Qt, Signal
@@ -185,6 +186,7 @@ class EditDetailsDialog(QDialog):
         self._busy = False
         self._stopped = False
         self._failure = None
+        self._open_password = ""
         self.setWindowTitle("Edit details (makes a new copy)")
         em = self.fontMetrics().height()
         self.setMinimumWidth(em * 40)
@@ -537,6 +539,9 @@ class EditDetailsDialog(QDialog):
         self._clear(self.progress_slot)
         self._set_busy(False)
         result = self.result
+        output = self.request.output_password if self.request else None
+        if self.request is not None:
+            self.request = replace(self.request, output_password=None, password="")
         if self._stopped:
             self.result_label.setText(
                 "Stopped. Nothing half-made was left behind, and the original was not changed."
@@ -546,6 +551,7 @@ class EditDetailsDialog(QDialog):
                 "The new recording was saved and checked against the original, which was "
                 "not changed."
             )
+            self._open_password = output[1] if output else ""
             self.open_button.setVisible(True)
             self.save_button.setEnabled(False)
         else:
@@ -558,11 +564,27 @@ class EditDetailsDialog(QDialog):
     def _open_result(self) -> None:
         if self.request is None or self.result is None or not self.result.ok:
             return
-        output = self.request.output_password
-        self.open_requested.emit(self.request.destination, output[1] if output else "")
+        password, self._open_password = self._open_password, ""
+        self.open_requested.emit(self.request.destination, password)
+
+    def _wipe(self) -> None:
+        """Forget every password and the finished run (memory only)."""
+        self.passwords.forget()
+        self._open_password = ""
+        if not self._busy:
+            self.request = None
+            self.result = None
+            self.handle = None
+
+    def done(self, result) -> None:
+        self._wipe()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._wipe()
+        super().closeEvent(event)
 
     def reject(self) -> None:
         if self._busy:
             return
-        self.passwords.forget()
         super().reject()

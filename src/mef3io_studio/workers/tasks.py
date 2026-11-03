@@ -430,7 +430,7 @@ def _register_change_identity(request: changes.ChangeRequest) -> None:
         values += list(request.output_password)
     for value in (request.metadata or {}).values():
         values += list(value.values()) if isinstance(value, dict) else [value]
-    register_identity(*(v for v in values if isinstance(v, str) and v))
+    register_identity(*(v for v in values if isinstance(v, str) and len(v) >= 3))
 
 
 def check_changes(ctx: JobContext, request: changes.ChangeRequest) -> list[changes.Finding]:
