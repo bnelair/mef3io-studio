@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -39,7 +40,7 @@ from .errors import UserMessage, describe_error
 from .journal import data_dir
 from .quiet import library_warnings_caught
 from .recording import recording_name
-from .rename import RECENT_SECONDS, RowState, list_folder_keys, name_key
+from .rename import RECENT_SECONDS, RowState, list_folder_keys
 from .rename import blocked_reason as rn_blocked
 from .text import technical
 
@@ -299,6 +300,14 @@ class ItemResult:
         return self.message is None
 
 
+def _only_capitals(new: str, old: str) -> bool:
+    """The names differ in capital letters only (same letters after Unicode
+    normalisation, different as typed). A change that is only composed vs
+    decomposed accents does not count."""
+    a, b = unicodedata.normalize("NFC", new), unicodedata.normalize("NFC", old)
+    return a != b and a.casefold() == b.casefold()
+
+
 def _check_still_quiet(job: RenameJob) -> None:
     """Right before the rename (the window looked minutes ago): refuse a
     recording written to since. A recording whose own rename was left
@@ -385,7 +394,7 @@ def run_renames(
                     message = describe_rename_error(
                         exc,
                         job.packed,
-                        case_only=name_key(job.new_name) == name_key(recording_name(job.location)),
+                        case_only=_only_capitals(job.new_name, recording_name(job.location)),
                     )
                 results.append(ItemResult(job.key, "", (), message))
             if send is not None:
@@ -416,7 +425,20 @@ def undo_steps(
                 left.pop()
         except Exception as exc:  # noqa: BLE001 - reported
             if is_stop(exc):
-                raise
+                if len(left) == len(steps):
+                    raise
+                # Stopped between two steps: say what is left, so a retry
+                # does not undo a step twice.
+                return ItemResult(
+                    "",
+                    location,
+                    tuple(left),
+                    UserMessage(
+                        "The undo was stopped part way",
+                        "The undo was stopped between two steps. What was already undone "
+                        "stays undone. Undo again to finish; nothing was lost.",
+                    ),
+                )
             packed = bool(steps) and steps[0].kind == "archive"
             # What is already undone stays undone; a retry starts at the rest.
             return ItemResult("", location, tuple(left), describe_rename_error(exc, packed))
@@ -453,6 +475,24 @@ def undo_many(
         if send is not None:
             send(out[-1])
     return out
+
+
+def left_unfinished(job: RenameJob) -> bool:
+    """The recording sits at the new name but still carries an unfinished
+    operation's marker: the rename was interrupted (see :func:`renamed_to`)."""
+    import mef3io
+
+    if job.packed or job.settle_only:
+        return False
+    suffix = ".mefd"
+    target = os.path.join(os.path.dirname(os.path.abspath(job.location)), job.new_name + suffix)
+    if not os.path.lexists(target) or os.path.lexists(job.location):
+        return False
+    with library_warnings_caught():
+        try:
+            return mef3io.operation_marker(target) is not None
+        except Exception:  # noqa: BLE001
+            return False
 
 
 def renamed_to(job: RenameJob) -> str:

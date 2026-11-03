@@ -364,3 +364,68 @@ def test_the_newest_part_is_found_by_number(tmp_path):
     assert {rel for rel, _ in ops.newest_files(str(tmp_path / "r.mefd"))} == {
         "ch.timd/ch-10.segd/f"
     }
+
+
+# -- round 2 ------------------------------------------------------------------------------------
+
+
+def test_a_stop_between_the_two_undo_steps_keeps_only_what_is_left(tmp_path):
+    from mef3io_studio.model.cancel import CancelToken
+
+    src = age(write_plain(tmp_path / "old.mefd"))
+    os.rename(src, tmp_path / "other.mefd")
+    other = tmp_path / "other.mefd"
+    folder = str(tmp_path / "bk")
+    (result,) = ops.run_renames(
+        [ops.RenameJob("k", str(other), "final", fix_drift_first=True)], folder
+    )
+    token = CancelToken()
+
+    class Trip:
+        """Cancelled after the first step is done."""
+
+        def __init__(self):
+            self.calls = 0
+
+        @property
+        def cancelled(self):
+            return token.cancelled
+
+        def raise_if_cancelled(self):
+            self.calls += 1
+            if self.calls == 2:
+                token.cancel()
+            token.raise_if_cancelled()
+
+    partial = ops.undo_steps(result.steps, "", folder, Trip())
+    assert not partial.ok and [s.kind for s in partial.steps] == ["drift"]
+    assert partial.new_location == str(other)
+    retry = ops.undo_steps(partial.steps, "", folder)
+    assert retry.ok and set(mef3io.name_drift(other).stored_names) == {"old"}
+    # Stopped before anything was undone: it is a plain stop.
+    token2 = CancelToken()
+    token2.cancel()
+    age(other)
+    (again,) = ops.run_renames([ops.RenameJob("k", str(other), "z", fix_drift_first=True)], folder)
+    assert again.ok
+    with pytest.raises(JobCancelled):
+        ops.undo_steps(again.steps, "", folder, token2)
+
+
+def test_only_capitals_is_not_claimed_for_a_change_of_accent_form():
+    composed = "café"
+    assert ops._only_capitals("DAY", "day")
+    assert not ops._only_capitals(unicodedata.normalize("NFD", composed), composed)
+    assert not ops._only_capitals("day", "day")
+
+
+def test_a_rename_the_stop_interrupted_is_told_plainly(tmp_path, monkeypatch):
+    c = age(write_plain(tmp_path / "c.mefd"))
+    monkeypatch.setattr(mef3io, "operation_marker", lambda p: {"id": "x"})
+
+    def run(fn, args, on_message):
+        ops.run_renames(list(args[0]), args[1])
+        raise JobCancelled()
+
+    outcome = tasks.rename_recordings(_Ctx(run), [ops.RenameJob("c", str(c), "c2")])
+    assert outcome.unreported == () and outcome.unfinished == 1

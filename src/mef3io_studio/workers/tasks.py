@@ -1079,6 +1079,8 @@ class RenameOutcome:
     #: result did not come back: (key, new location). They cannot be undone
     #: from here.
     unreported: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    #: Recordings the stop interrupted mid-rename (the next rename puts them back).
+    unfinished: int = 0
 
 
 def rename_recordings(ctx: JobContext, jobs: list[rename_ops.RenameJob]) -> RenameOutcome:
@@ -1112,7 +1114,8 @@ def rename_recordings(ctx: JobContext, jobs: list[rename_ops.RenameJob]) -> Rena
             if j.key not in reported and (target := rename_ops.renamed_to(j))
         )
         log.info("job %d: stopped after %d of %d rename(s)", ctx.job_id, len(got), total)
-        return RenameOutcome(tuple(_scrubbed_results(got)), True, late)
+        unfinished = sum(1 for j in jobs if j.key not in reported and rename_ops.left_unfinished(j))
+        return RenameOutcome(tuple(_scrubbed_results(got)), True, late, unfinished)
     log.info("job %d: %d of %d rename(s) done", ctx.job_id, sum(r.ok for r in results), total)
     return RenameOutcome(tuple(_scrubbed_results(results)))
 

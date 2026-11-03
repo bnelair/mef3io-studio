@@ -149,6 +149,7 @@ class RenameDialog(QDialog):
         self._done = False
         self._blocked_rows: set[int] = set()
         self._current = None
+        self._skipped = 0
         self._handles: list = []
         #: Asks "are you sure"; replaced in tests.
         self.confirm = self._ask_confirmation
@@ -579,6 +580,11 @@ class RenameDialog(QDialog):
             text += f" {_plural(len(failed), 'recording')} could not be renamed (see the list)."
         if outcome.stopped:
             text += " Stopped: what was already renamed stays renamed."
+        if outcome.unfinished:
+            text += (
+                " One recording was interrupted by the stop. Nothing is lost: the next "
+                "rename of it puts it back the way it was."
+            )
         if outcome.unreported:
             text += " One recording was renamed just as you stopped; it cannot be undone from here."
         if any(item.put_back for item in outcome.results):
@@ -682,6 +688,7 @@ class RenameDialog(QDialog):
         if not todo:
             self.status.setText("Not undone: the password is needed.")
             return
+        self._skipped = skipped
         self.busy = "undoing"
         self._enable()
         self.status.setText("Undoing…")
@@ -718,6 +725,9 @@ class RenameDialog(QDialog):
             text += f" {_plural(len(failed), 'recording')} could not be put back."
         if stopped:
             text += " Stopped: the rest is still renamed."
+        if self._skipped:
+            text += f" {_plural(self._skipped, 'recording')} left because no password was given."
+            self._skipped = 0
         self.status.setText(text)
         if moved:
             self.relocated.emit(moved)
