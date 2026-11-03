@@ -276,6 +276,56 @@ opposite. You choose where the new copy goes:
 
 If you stop the task, the unfinished copy is removed.
 
+### Rename recordings
+
+**Rename…** (under the list, and in the right-click menu) gives the selected
+recordings new names. A recording's name is kept in several places: its
+folder, the notes that belong to the whole recording, and inside every file.
+The app changes all of them together, so other programs still find the notes.
+The signals, the notes and the times are not touched.
+
+1. The window first **looks** at the recordings (in the background): their
+   start times, whether the name kept inside still matches the folder, and
+   whether anything has written to them in the last few minutes.
+2. The recordings are listed **in time order**. A recording whose start time
+   is not confirmed (password-protected, or an older way of hiding the date)
+   is listed after the others, marked *Not confirmed*, and cannot get a name
+   from its start time.
+3. **Type a name** into the list, or **fill the names in from a pattern**:
+   `{start:%Y-%m-%d_%H%M%S}` is the start time (in the time zone you chose,
+   otherwise UTC), `{index:03d}` the number in time order, `{name}` the
+   current name. Names that are not allowed are marked, with the reason: too
+   long (at most 250 letters and signs for a folder, 246 for a single file),
+   a sign Windows does not allow, a name Windows keeps for itself, a name
+   already taken in the folder (capital letters do not count as different), two
+   recordings getting the same name, or two recordings swapping names. A
+   name is never cut short for you.
+4. **Rename…** asks you to confirm (the answer is never "yes" by default).
+   Each recording is renamed on its own; if one cannot be, it says why and
+   the others go on. If the app stops in the middle, the recording is put back
+   the way it was the next time you rename it.
+5. **Undo the last rename…** puts the old names back. It is a rename like
+   the first, with the same checks and a confirmation, and password-protected
+   recordings ask for their password again. Anything added to the recordings
+   in between is kept. Undo is available while the app stays open.
+
+Good to know:
+
+- **Passwords.** A password-protected recording needs its password (the
+  basic one is enough): unlock it in Explore first.
+- **Names out of step.** If another program renamed only the folder, the app
+  says so and offers to put the name kept inside in step first.
+- **Not while it is being written.** A recording written to in the last few
+  minutes, with a copy being made next to it, or open in a signal viewer, is
+  not renamed. A recorder that is idle but still holds a recording open cannot
+  be detected, so make sure nothing uses it.
+- **Single-file recordings (`.mefd.tar`)** are renamed as a file. Inside the
+  file the recording keeps its old name; unpack it, rename the folder and pack
+  it again to change that too.
+- **Dates in names.** Names built from dates show when the recording was made,
+  and passwords do not hide names or timing. Anonymize first if the recordings
+  are meant to be shared.
+
 ## Anonymize recordings
 
 The **Anonymize** page makes **anonymized copies** of recordings: the patient

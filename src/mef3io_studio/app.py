@@ -207,6 +207,7 @@ def _build_main_window_class():
             self.explorer.view_requested.connect(self.view_signals)
             self.joiner.view_requested.connect(self.view_signals)
             self.explorer.details_visibility_changed.connect(self._viewers_follow_privacy)
+            self.explorer.in_use_keys = self._keys_in_viewers
             #: Open signal viewer windows.
             self.viewers: list = []
             self._tray = None
@@ -589,6 +590,16 @@ def _build_main_window_class():
                 on_revealed=self.explorer.refresh_entry,
                 on_join=self.join_window_in_joiner,
             )
+
+        def _keys_in_viewers(self) -> set[str]:
+            """The recordings open in a signal viewer (they must not be renamed)."""
+            from .model.recording import location_key
+
+            return {
+                location_key(v.data.location_of(i))
+                for v in self.viewers
+                for i in range(len(v.data.recordings))
+            }
 
         def _viewers_follow_privacy(self) -> None:
             for viewer in list(self.viewers):

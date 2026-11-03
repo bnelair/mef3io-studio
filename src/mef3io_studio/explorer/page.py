@@ -94,6 +94,7 @@ from .panels import (
     TimelinePanel,
 )
 from .privacy import PrivacyPanel
+from .rename import RenameDialog
 from .state import RecordingEntry
 from .table import COL_START, EntryRole, RecordingSortProxy, RecordingTableModel
 
@@ -374,6 +375,12 @@ class ExplorerPage(QWidget):
         self._dialogs: list = []
         #: The progress of each running check, by recording.
         self._check_progress: dict[str, JobProgressWidget] = {}
+        #: Keys of the recordings open elsewhere (signal viewers); set by the
+        #: main window. A recording open there is not renamed.
+        self.in_use_keys = lambda: set()
+        #: The last rename that can still be undone (memory only).
+        self._last_rename = None
+        self._rename_dialogs: list = []
         self.setAcceptDrops(True)
         em = self.fontMetrics().height()
 
@@ -450,6 +457,11 @@ class ExplorerPage(QWidget):
             "Keep part of the selected recordings, or join them into one new recording"
         )
         self.join_button.clicked.connect(self.join_selected)
+        self.rename_button = QPushButton("Rename…", self)
+        self.rename_button.setToolTip(
+            "Give the selected recordings new names, in every place the name is kept"
+        )
+        self.rename_button.clicked.connect(self.rename_selected)
         self.remove_button = QPushButton("Remove from the list", self)
         self.remove_button.setToolTip("Only removes it from this list; nothing is deleted")
         self.remove_button.clicked.connect(self.remove_selected)
@@ -462,6 +474,7 @@ class ExplorerPage(QWidget):
         actions.addWidget(self.pack_button)
         actions.addWidget(self.view_button)
         actions.addWidget(self.join_button)
+        actions.addWidget(self.rename_button)
         actions.addWidget(self.remove_button)
 
         list_box = _ListBox(self.table, actions, self)
@@ -663,6 +676,9 @@ class ExplorerPage(QWidget):
         )
         self.join_button.setEnabled(bool(self._joinable(selected)))
         self.view_button.setEnabled(bool(self._viewable(selected)))
+        self.rename_button.setEnabled(
+            bool(self._renamable(selected)) or self._last_rename is not None
+        )
         can_pack = current is not None and current.details is not None and not current.busy
         self.pack_button.setEnabled(can_pack)
         if current is not None and current.outcome is not None and current.outcome.packed:
@@ -1281,6 +1297,65 @@ class ExplorerPage(QWidget):
         return handle
 
     # ------------------------------------------------------------------
+    # Rename
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _renamable(entries: list[RecordingEntry]) -> list[RecordingEntry]:
+        return [e for e in entries if e.outcome is not None and not e.busy]
+
+    def rename_selected(self) -> RenameDialog:
+        """The Rename window for the selected recordings (it also offers to
+        undo the last rename)."""
+        dialog = RenameDialog(
+            self.jobs,
+            self._renamable(self.selected_entries()),
+            self.zone,
+            in_use=set(self.in_use_keys()),
+            undo=self._last_rename,
+            parent=self,
+        )
+        dialog.relocated.connect(self._relocate)
+        dialog.renamed.connect(self._remember_rename)
+        dialog.finished.connect(lambda _r: self._forget_rename_dialog(dialog))
+        self._rename_dialogs.append(dialog)
+        dialog.open()
+        return dialog
+
+    def _forget_rename_dialog(self, dialog) -> None:
+        if dialog in self._rename_dialogs:
+            self._rename_dialogs.remove(dialog)
+        dialog.deleteLater()
+
+    def _remember_rename(self, batch) -> None:
+        self._last_rename = batch or None
+        self._update_actions()
+
+    def _relocate(self, moved: list) -> None:
+        """Recordings that now have another name: take the old rows out and
+        read them again at the new place (same password, same Show choice)."""
+        new = []
+        for key, location in moved:
+            old = self.model.entry_for(key)
+            if old is None:
+                continue
+            self.model.remove([old])
+            new.append(
+                RecordingEntry(
+                    location=os.path.abspath(location),
+                    busy="Reading…",
+                    password=old.password,
+                    revealed=old.revealed,
+                )
+            )
+        if new:
+            self.model.add(new)
+            self._refresh_body()
+            self.select_entry(new[0])
+            self._submit_open(new, prompt=False)
+            self.status.emit("Renamed." if len(new) == 1 else f"Renamed {len(new)} recordings.")
+        self._schedule_layout()
+
+    # ------------------------------------------------------------------
     # Removing
     # ------------------------------------------------------------------
     def remove_selected(self) -> None:
@@ -1312,6 +1387,8 @@ class ExplorerPage(QWidget):
         view.setEnabled(bool(self._viewable(self.selected_entries())))
         join = menu.addAction("Join or trim these…", self.join_selected)
         join.setEnabled(bool(self._joinable(self.selected_entries())))
+        rename = menu.addAction("Rename…", self.rename_selected)
+        rename.setEnabled(bool(self._renamable(self.selected_entries())))
         menu.addSeparator()
         menu.addAction("Remove from the list", self.remove_selected)
         menu.popup(self.table.viewport().mapToGlobal(pos))
