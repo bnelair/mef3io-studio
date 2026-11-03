@@ -52,7 +52,13 @@ def new_names(sources: Sequence[Source], naming: str, text: str) -> list[str]:
     return [f"{s.name}{text}" for s in sources]
 
 
-def name_problems(sources: Sequence[Source], names: Sequence[str], folder: str) -> list[str]:
+def name_problems(
+    sources: Sequence[Source],
+    names: Sequence[str],
+    folder: str,
+    unit: str = "Recording",
+    units: str = "Recordings",
+) -> list[str]:
     """Why these names and this folder cannot be used (plain words; the
     first problem of each recording, then the shared ones). Checks names,
     duplicates, the folder and names already taken; free space is checked
@@ -63,12 +69,12 @@ def name_problems(sources: Sequence[Source], names: Sequence[str], folder: str) 
     for n, name in enumerate(names):
         found = name_problem(name)
         if found:
-            out.append(f"Recording {n + 1} of {total}: {found}")
+            out.append(f"{unit} {n + 1} of {total}: {found}")
             continue
         folded = name.casefold()
         if folded in seen:
             out.append(
-                f"Recordings {seen[folded] + 1} and {n + 1} of {total} would get the same name."
+                f"{units} {seen[folded] + 1} and {n + 1} of {total} would get the same name."
             )
         seen.setdefault(folded, n)
     if not folder or not os.path.isdir(folder):
@@ -84,12 +90,12 @@ def name_problems(sources: Sequence[Source], names: Sequence[str], folder: str) 
         destination = destination_for(folder, name)
         if os.path.lexists(destination):
             out.append(
-                f"Recording {n + 1} of {total}: a file or folder with the new name is already "
+                f"{unit} {n + 1} of {total}: a file or folder with the new name is already "
                 "in the chosen folder."
             )
         elif os.path.lexists(destination + ".partial"):
             out.append(
-                f"Recording {n + 1} of {total}: an unfinished copy left by an earlier run is in "
+                f"{unit} {n + 1} of {total}: an unfinished copy left by an earlier run is in "
                 "the way. If nothing else is running, delete it, or choose another name."
             )
     return out

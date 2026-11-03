@@ -7,7 +7,8 @@ on the mef3io library (github.com/bnelair/mef3io). Status: early development;
 viewer + edit mode, additions only), on mef3io 2.1.1: Rename window (#12,
 undo until close), Edit details copy (#14), shared password choice (#15),
 "Make new recordings" with saved channel choices (#16). Still to come:
-metadata edit in place, change/remove stored notes, cutting into pieces. Design in
+metadata edit in place, change/remove stored notes. Cutting into pieces is built
+(#31, "Cut into pieces" below). Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
 Hard rules:
@@ -46,8 +47,8 @@ Hard rules:
 - v0.1 scope = explore (incl. order/rename, pack/unpack), metadata view/edit,
   passwords, channel presets + batch conversion, anonymize; installers only
   (no PyPI).
-  Save a part + join (#31) is built ("Join or trim", below); cutting into
-  pieces, viewer (spec: docs/design/viewer.md; local reads through mef3io), coverage view, annotations, export,
+  Save a part + join (#31) is built ("Join or trim", below), and so is cutting
+  into pieces ("Cut into pieces", below); viewer (spec: docs/design/viewer.md; local reads through mef3io), coverage view, annotations, export,
   remote access are NEXT DIRECTIONS needing their own specs.
 
 Code (app shell, #2/#3):
@@ -483,7 +484,43 @@ Code (app shell, #2/#3):
   `edit_details.DetailBox`/`SESSION_FIELDS`. Passwords: `PasswordsStep`; the
   form is emptied when the batch starts, the window keeps none (the copies'
   full-access one only for "Show them in Explore"). NOT built: cut+merge in
-  the same pass (Join or trim stays its own page), cutting into pieces
-  (mef3io#103), archive/bundle outputs in the window.
+  the same pass (Join or trim stays its own page), archive/bundle outputs in the
+  window. Cutting into pieces is built (mef3io#103 is released): its own
+  window, below.
   Tests: tests/test_make_new_model.py (presets, kinds, Stop, crash+resume,
   log), tests/test_make_new_ui.py.
+- Cut into pieces (#31, section 2): `model/pieces.py` (Qt-free plan) +
+  `pieces/dialog.py` `PiecesDialog` (Explore list menu "Cut into pieces…" and
+  File menu; steps recording -> where to cut -> passwords -> names/folder ->
+  run). ONE recording becomes N `changes.ChangeRequest`s (`time_range=` the
+  piece's window, `exact=True`, all channels) in `pipeline.BatchItem` kind
+  "change": NO second runner. The run half of the window is
+  `makenew/run.py` `BatchRunMixin` (moved out of `MakeNewDialog`, which uses it
+  too; class constants `NOUN`/`UNIT`/`ONE`/`STEP_*` word it), so check-before-
+  start, Stop (nothing half-made), space/name checks, journal and the check of
+  every piece against its original are shared; an interrupted batch of pieces
+  is continued through `app.continue_batch` -> `MakeNewDialog.resume` like any
+  all-change journal. Plan: `Choice` = every N hours|days (`aligned` = from
+  midnight in the site zone, so "1 day" is one piece per calendar day and a
+  clock-change day is 23/25 h; `from_local`) or `AT` typed times (sorted, each
+  once, only strictly inside the recording). Pieces are `[start, end)`; a
+  sample at a cut belongs to the piece starting there, so the pieces hold every
+  sample once (test: concatenated reads == the source). The first window starts
+  and the last ends 1 s outside the data (a writer that states the end a sample
+  early must not lose the last sample). Where data is comes from
+  `coverage.recording_coverage(...).runs` in a task (`tasks.data_stretches`; no
+  file read, GUI thread does no work); a piece touching no run is LEFT OUT and
+  counted (`describe_left_out`); numbering is among pieces made. Names: pattern
+  with `<name>`, `<number>` (01.., wider if needed), `<date>` (start day in the
+  site zone); it must hold `<number>` or `<date>`; clashes use
+  `makenew.name_problems`. Not built: cut marks dragged on the timeline (times
+  are typed), channel choice, archive outputs. Tests: tests/test_pieces_model.py
+  (plan incl. DST, left-out, exact samples, Stop), tests/test_pieces_ui.py.
+  A resumed batch of pieces opens in Make new recordings (the journal is all
+  change items); `with_originals` stores the whole recording's name and dates
+  on each piece, which only the anonymize report uses. Plan speed: `Stretches`
+  (prefix sums + bisect, a run counts through its last sample's time), the
+  dialog caches the plan per change; `data_stretches` hands over the parts'
+  OWN stretches (the Explorer's are merged across gaps under 1.5 sample
+  periods, and a piece inside such a gap would be refused by mef3io). A day's
+  midnight that does not exist (clock jumps at 00:00) is the jump instant.

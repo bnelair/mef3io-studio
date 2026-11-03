@@ -18,7 +18,7 @@ from ..common.privacy import register_identity, scrub
 from ..model import anonymize, archive, awake, bundle, changes, join, pipeline, rename_ops, times
 from ..model import journal as journal_
 from ..model.cancel import JobCancelled, is_stop
-from ..model.coverage import Stopped, combine
+from ..model.coverage import Stopped, combine, merge_intervals
 from ..model.errors import HelperCrashed, UserMessage, describe_error
 from ..model.export import LEVEL_PARTS, ExportItem, part_rows, recording_table, write_csv
 from ..model.problems import CheckReport
@@ -180,6 +180,27 @@ def _pacer(work: float = 0.002, rest: float = 0.001):
             last[0] = time.perf_counter()
 
     return pause
+
+
+def data_stretches(ctx: JobContext, item) -> tuple[tuple[tuple[int, int], ...], bool]:
+    """Where a recording has data, from what the Explorer already holds (no
+    file is read): ``(stretches [start, end] in microseconds, times
+    confirmed)``. For "Cut into pieces". The stretches are the parts' own,
+    merged only where they touch or overlap: the Explorer's stretches are
+    merged across gaps shorter than 1.5 sample periods, and a piece inside
+    such a gap would look as if it held data, then be refused by mef3io."""
+    details = item.details
+    if details is None:
+        return (), False
+    starts, ends = [], []
+    for channel in details.channels:
+        for part in channel.parts:
+            # part.end: mef3io states where the last sample ENDS (exclusive); a foreign
+            # writer may state the last sample's own time, which Stretches also accepts.
+            starts.append(part.start)
+            ends.append(max(part.end, part.start))
+    s, e = merge_intervals(starts, ends, 0)
+    return tuple(zip(s.tolist(), e.tolist(), strict=True)), bool(details.times_verified)
 
 
 def export_times(ctx: JobContext, items: list[ExportItem], zone, level: str, path: str) -> int:

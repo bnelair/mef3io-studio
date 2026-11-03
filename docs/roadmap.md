@@ -39,7 +39,7 @@ Test versions are published as GitHub pre-releases, full releases as the latest 
 
 ## Next directions (each needs a specification first)
 
-- **Cut a recording into pieces** (for example one per day) ([#31](https://github.com/bnelair/mef3io-studio/issues/31); library side [mef3io#103](https://github.com/bnelair/mef3io/issues/103)). Saving a part and joining parts of several recordings are built (**Join or trim**, step 7b above). Every result is a new, checked copy.
+- **Cutting a recording into pieces** (for example one per day) is built ([#31](https://github.com/bnelair/mef3io-studio/issues/31), on mef3io 2.1.1): every N hours or days, or at times you give, each piece a new, checked copy. Still to come there: placing cut marks by dragging on the timeline, and choosing channels for the pieces. Saving a part and joining parts of several recordings are built too (**Join or trim**, step 7b above).
 - **Change or remove stored notes and events** in the viewer, as a new checked copy (the viewer itself, with edit mode for adding notes and events, is built: step 7c above; specified in [design/viewer.md](design/viewer.md)).
 - **Data coverage view:** when data exists and at what rate, per channel, from the block index (mef3io [#68](https://github.com/bnelair/mef3io/issues/68), [mef3io-server#13](https://github.com/bnelair/mef3io-server/issues/13)).
 - **Export** to other formats.

@@ -351,8 +351,43 @@ was being made is made again from the start).
   a key that stays on this computer, never next to your recordings and never
   in the log.
 
-Cutting and joining are not part of this window: use **Join or trim**. Cutting
-one recording into several pieces is not available yet.
+Cutting and joining are not part of this window: use **Join or trim** to keep
+a part or join recordings, and **Cut into pieces** (next section) to cut one
+recording into several.
+
+### Cut into pieces
+
+Cut one recording into several new recordings, for example one per day. Select
+the recording in the list and choose **Cut into pieces…** (right-click menu, or
+the File menu). The original is never changed: each piece is saved as a new
+recording and checked against the original, one after another, like in **Make
+new recordings**.
+
+1. **Recording.** Choose the recording. Only recordings whose dates and times
+   are confirmed can be cut.
+2. **Where to cut.** Either **Every** so many hours or days, or **At the times
+   I give**: type a date and time and choose **Add this time**, as many as you
+   like (the times are in the time zone you chose for Explore). With **Start
+   each piece at midnight in the site time zone** ticked, "every 1 day" gives
+   one piece per calendar day; a day when the clocks change is 23 or 25 hours
+   long. The list below shows every piece with its start, end, length and about
+   how big it will be. A piece that would hold no data (it falls in a gap of the
+   recording) is left out, and the page says how many. Every moment of the
+   recording lands in exactly one piece.
+3. **Passwords.** None, or two new passwords for all the pieces.
+4. **Names and folder.** The name is a pattern: `<name>` is the recording's
+   name, `<number>` is 01, 02, … and `<date>` is the day the piece starts. It
+   must contain `<number>` or `<date>`, so each piece gets its own name. The
+   names are listed as you type. If the recording's name contains the patient's
+   name, leave `<name>` out. A name already in the folder is never replaced.
+5. **Making the pieces.** The app checks everything first, then makes the
+   pieces one after another. **Stop** ends it cleanly: the pieces already
+   finished stay, nothing half-made is left behind, and the original is
+   untouched. If the app or the computer stops in the middle, the next start
+   offers to continue.
+
+Placing cut marks by dragging on the timeline, and choosing channels, are not
+available yet; use **Make new recordings** on a piece to leave channels out.
 
 ### Copy summary
 

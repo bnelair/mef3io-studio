@@ -1396,6 +1396,8 @@ class ExplorerPage(QWidget):
         edit.setEnabled(self._editable(self.current_entry()))
         make_new = menu.addAction("Make new recordings…", self.make_new_selected)
         make_new.setEnabled(bool(self._makeable(self.selected_entries())))
+        cut = menu.addAction("Cut into pieces…", self.cut_into_pieces_selected)
+        cut.setEnabled(bool(self._cuttable(self.selected_entries())))
         rename = menu.addAction("Rename…", self.rename_selected)
         rename.setEnabled(bool(self._renamable(self.selected_entries())))
         menu.addSeparator()
@@ -1453,6 +1455,34 @@ class ExplorerPage(QWidget):
             self.status.emit("Select recordings to make new ones from.")
             return None
         dialog = MakeNewDialog(entries, self.jobs, parent=self)
+        dialog.open_requested.connect(
+            lambda paths, password: self.open_paths(paths, interactive=False, password=password)
+        )
+        dialog.finished.connect(lambda _r: self._forget_dialog(dialog))
+        self._dialogs.append(dialog)
+        dialog.open()
+        return dialog
+
+    @staticmethod
+    def _cuttable(entries: list[RecordingEntry]) -> list[RecordingEntry]:
+        """Recordings that can be cut by time: copyable, with data and
+        times that are confirmed."""
+        return [
+            e
+            for e in entries
+            if e.copyable and e.details.start is not None and e.details.times_verified
+        ]
+
+    def cut_into_pieces_selected(self):
+        """ "Cut into pieces…": one of the selected recordings cut into
+        several new, checked recordings (one unattended batch)."""
+        from ..pieces import PiecesDialog
+
+        entries = self._cuttable(self.selected_entries())
+        if not entries:
+            self.status.emit("Select a recording to cut into pieces.")
+            return None
+        dialog = PiecesDialog(entries, self.jobs, self.zone, parent=self)
         dialog.open_requested.connect(
             lambda paths, password: self.open_paths(paths, interactive=False, password=password)
         )

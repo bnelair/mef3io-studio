@@ -302,6 +302,11 @@ def _build_main_window_class():
                 lambda: self._in_explorer(self.explorer.make_new_selected)
             )
             file_menu.addAction(self.make_new_action)
+            self.cut_action = QAction("&Cut the selected recording into pieces…", self)
+            self.cut_action.triggered.connect(
+                lambda: self._in_explorer(self.explorer.cut_into_pieces_selected)
+            )
+            file_menu.addAction(self.cut_action)
             file_menu.addSeparator()
             self.settings_action = QAction("Settings…", self)
             self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
