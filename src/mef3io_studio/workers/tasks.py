@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 from ..common.privacy import register_identity, scrub
-from ..model import anonymize, archive, awake, bundle, changes, join, pipeline
+from ..model import anonymize, archive, awake, bundle, changes, join, pipeline, rename_ops, times
 from ..model import journal as journal_
 from ..model.cancel import JobCancelled, is_stop
 from ..model.coverage import Stopped, combine
@@ -1094,3 +1094,144 @@ MISMATCH = UserMessage(
 
 def self_check(ctx: JobContext) -> SelfTestResult:
     return run_self_test(report=ctx.report, cancel=ctx.cancel_token, run=ctx.run_isolated)
+
+
+# -- ordering and renaming (#12) -------------------------------------------------------
+
+
+def read_recording_times(
+    ctx: JobContext, requests: list[tuple[str, str, str]]
+) -> dict[str, object]:
+    """The first and last time of each ``(key, location, password)``, read
+    from a few small files per channel (never a block table or signal), in
+    a helper process: ``{key: RecordingTime or UserMessage}``."""
+    register_identity(*(v for _k, _l, p in requests for v in [p] if v))
+    phase = "Reading the start times"
+    ctx.report(0, len(requests), phase)
+
+    def got(progress) -> None:
+        ctx.report(progress[0], progress[1], phase)
+
+    found = ctx.run_isolated(
+        times.read_times, list(requests), on_message=got, stop_grace=STOP_GRACE_SECONDS
+    )
+    return {
+        k: v if isinstance(v, times.RecordingTime) else describe_error(v) for k, v in found.items()
+    }
+
+
+def check_rename_state(
+    ctx: JobContext, requests: list[rename_ops.StateRequest]
+) -> dict[str, object]:
+    """Before a rename: is each recording's stored name in step with its
+    folder, was a rename left unfinished, was it written to a moment ago
+    (``{key: RowState}``). Reads each file's first 1 KB; in a helper."""
+    phase = "Looking at the recordings"
+    ctx.report(0, len(requests), phase)
+
+    def got(progress) -> None:
+        ctx.report(progress[0], progress[1], phase)
+
+    return ctx.run_isolated(
+        rename_ops.read_state, list(requests), on_message=got, stop_grace=STOP_GRACE_SECONDS
+    )
+
+
+@dataclass(frozen=True)
+class RenameOutcome:
+    results: tuple[rename_ops.ItemResult, ...] = ()
+    #: Stopped before every recording was done.
+    stopped: bool = False
+    #: Recordings that were renamed at the moment of the stop, but whose
+    #: result did not come back: (key, new location). They cannot be undone
+    #: from here.
+    unreported: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    #: Recordings the stop interrupted mid-rename (the next rename puts them back).
+    unfinished: int = 0
+
+
+def rename_recordings(ctx: JobContext, jobs: list[rename_ops.RenameJob]) -> RenameOutcome:
+    """Rename the recordings in the order given, in ONE helper process.
+    mef3io's recovery notes go to the app's own folder. Stop is honoured
+    between recordings; what was done stays done and is reported."""
+    register_identity(
+        *(v for j in jobs for v in (j.new_name, recording_name(j.location), j.password) if v)
+    )
+    phase = "Renaming"
+    total = len(jobs)
+    ctx.report(0, total, phase)
+    got: list[rename_ops.ItemResult] = []
+
+    def message(item) -> None:
+        got.append(item)
+        ctx.report(len(got), total, phase)
+
+    folder = rename_ops.backup_dir()
+    try:
+        results = ctx.run_isolated(
+            rename_ops.run_renames, jobs, folder, on_message=message, stop_grace=STOP_GRACE_SECONDS
+        )
+    except Exception as exc:
+        if not (isinstance(exc, JobCancelled) or is_stop(exc)):
+            raise
+        reported = {r.key for r in got}
+        late = tuple(
+            (j.key, target)
+            for j in jobs
+            if j.key not in reported and (target := rename_ops.renamed_to(j))
+        )
+        log.info("job %d: stopped after %d of %d rename(s)", ctx.job_id, len(got), total)
+        unfinished = sum(1 for j in jobs if j.key not in reported and rename_ops.left_unfinished(j))
+        return RenameOutcome(tuple(_scrubbed_results(got)), True, late, unfinished)
+    log.info("job %d: %d of %d rename(s) done", ctx.job_id, sum(r.ok for r in results), total)
+    return RenameOutcome(tuple(_scrubbed_results(results)))
+
+
+def _scrubbed_results(results) -> list[rename_ops.ItemResult]:
+    return [
+        replace(
+            r,
+            message=scrubbed(r.message),
+            notes=tuple(anonymize.collapse_placeholders(scrub(n)) for n in r.notes),
+        )
+        for r in results
+    ]
+
+
+def undo_renames(
+    ctx: JobContext, units: list[rename_ops.UndoUnit]
+) -> tuple[list[rename_ops.ItemResult], bool]:
+    """Undo renames (a logical inverse; see :mod:`..model.rename_ops`).
+    Returns ``(results, stopped)``; what was undone before a stop stays
+    undone."""
+    register_identity(
+        *(v for u in units for v in [u.password, *(s.old_name for s in u.steps)] if v)
+    )
+    phase = "Undoing the rename"
+    ctx.report(0, len(units), phase)
+    got: list[rename_ops.ItemResult] = []
+
+    def message(item) -> None:
+        got.append(item)
+        ctx.report(len(got), len(units), phase)
+
+    try:
+        results = ctx.run_isolated(
+            rename_ops.undo_many,
+            units,
+            rename_ops.backup_dir(),
+            on_message=message,
+            stop_grace=STOP_GRACE_SECONDS,
+        )
+        stopped = False
+    except Exception as exc:
+        if not (isinstance(exc, JobCancelled) or is_stop(exc)):
+            raise
+        results, stopped = got, True
+    log.info(
+        "job %d: undo of %d recording(s) %s",
+        ctx.job_id,
+        len(results),
+        "stopped" if stopped else "done",
+    )
+    return _scrubbed_results(results), stopped

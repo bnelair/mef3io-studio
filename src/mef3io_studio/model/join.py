@@ -99,6 +99,7 @@ from .progress import byte_progress
 from .quiet import library_warnings_caught
 from .recording import recording_name
 from .refusals import NOTHING_JOINED, join_message_for
+from .times import read_time
 
 SECOND_US = 1_000_000
 
@@ -517,24 +518,24 @@ def read_layouts(
     for s in request.sources:
         cancel.raise_if_cancelled()
         try:
-            found = mef3io.time_range(s.source, s.password, cancel=cancel.for_library())
-            if not found.offset_known:
+            found = read_time(s.source, s.password, cancel)
+            if not found.verified:
                 # Password-protected, and the full-access password was not
                 # given: its times cannot be confirmed (nor the part cut).
                 findings.append(CheckFinding(s.key, join_message_for("password-required", {})))
                 continue
             reader = mef3io.Reader(s.source, password=s.password, warn_declarations=False)
             channels = tuple(reader.channels)
-            ends = [_last_sample_end(reader, c, found.end_uutc) for c in channels]
+            ends = [_last_sample_end(reader, c, found.end) for c in channels]
             ends = [e for e in ends if e is not None]
-            end = max(ends) if ends else int(found.end_uutc)
+            end = max(ends) if ends else int(found.end)
             del reader
         except Exception as exc:
             if is_stop(exc):
                 raise
             findings.append(CheckFinding(s.key, describe_join_error(exc, request)))
             continue
-        layouts[s.key] = Layout(int(found.start_uutc), end, channels)
+        layouts[s.key] = Layout(int(found.start), end, channels)
     return layouts, findings
 
 

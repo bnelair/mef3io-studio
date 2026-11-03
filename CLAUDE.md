@@ -5,8 +5,8 @@ MEF 3.0 recordings, built
 on the mef3io library (github.com/bnelair/mef3io). Status: early development;
 test version 0.1.0.dev5 = Join or trim (#31); dev6 (upcoming) = signal
 viewer + edit mode (additions only, append-only save), on mef3io 2.1.1
-(ordering/renaming, metadata edit, passwords, channel presets, cutting into
-pieces still to come). Design in
+(metadata edit, passwords, channel presets, cutting into
+pieces still to come; ordering/renaming = the Rename window, #12). Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
 Hard rules:
@@ -314,6 +314,39 @@ Code (app shell, #2/#3):
   call mef3io after it); a stored note of a hidden recording cannot be
   edited (it would show its text); export waits for details to be shown.
   Tests: tests/test_annotation_draft.py, tests/test_viewer_edit.py.
+- Rename + time order (#12): `model/times.py` is the ONE helper over
+  `mef3io.time_range` (`read_time`/`read_times`/`order_by_time`; join's
+  `read_layouts` uses it too): `verified` = `offset_known`, and unverified
+  recordings are returned SEPARATELY, never placed in the absolute order and
+  never given `{start}`/`{index}` names. `model/rename.py` (pure, no mef3io):
+  name rules (250 bytes UTF-8, 246 for `.mefd.tar`, NFD length on macOS,
+  illegal signs, Windows device names, trailing dot/blank), `plan_renames`
+  (collisions by NFC+casefold, against the folder listing the state task
+  returns, chains ordered, swaps/cycles REFUSED, Windows path length),
+  patterns (`check_template` allows only start/index/name), `RowState`
+  + `blocked_reason`. `model/rename_ops.py` (helper process): `backup_dir()`
+  = ONE folder `<app data>/renames` (mef3io finds an interrupted operation's
+  journal again by it; a shared folder is safe, it only touches journals of
+  the same parent+folder name); `read_state` (name_drift, operation_marker,
+  `recently_written` = newest part of each channel + top level, `skip` = the
+  files our own rename left); `run_renames` (one helper, results sent one by
+  one so a Stop keeps what was done; Stop is checked between recordings, a
+  rename is finished unless the app is forced to stop (the next rename of that recording rolls it back); `RenameOutcome.unreported` = renamed at the
+  instant of the stop, no undo); `RenameJob(fix_drift_first | settle_only)`:
+  drift fix = `fix_name_drift` first (undo reverses in order), unfinished
+  rename = the next call rolls it back (`put_back`); `UndoStep` keeps mef3io's
+  `RenameReport` in MEMORY only (undo = `report.undo`, logical, asks the
+  password again; archive undo = `rename_archive` back). Undo lasts until the
+  app closes (not persisted). `explorer/rename.py` `RenameDialog` (preview in
+  time order, pattern, notes column, confirmation WITHOUT a default Yes via
+  `confirm`, `ask_password` replaceable in tests); the page relocates entries
+  by re-opening them at the new place (same password and Show choice);
+  `ExplorerPage.in_use_keys` (set by the main window) keeps recordings open in
+  a viewer out. Words are in model/ (`rename.problem_text`,
+  `rename_ops.describe_rename_error`, no names or paths; a drifted recording
+  has its own message). Tests: tests/test_rename_model.py,
+  tests/test_rename_ui.py (use `age()`/utime: a fresh synthetic recording is
+  "written a moment ago"; tests run with `PYTHONPATH=src` from a worktree).
 - Join or trim (#31): `model/join.py` (Qt-free) + `joiner/page.py` (a wizard
   like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
   `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,
