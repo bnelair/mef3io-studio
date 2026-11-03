@@ -48,6 +48,14 @@ from .anonymize import (
     CopyRequest,
     inside_any_recording,
 )
+from .changes import ChangeRequest
+
+#: What one item of a batch is: an anonymized copy (``CopyRequest``) or a
+#: copy with changes (``changes.ChangeRequest``: other channels, other
+#: details, new passwords). ONE batch runner, journal and resume for both.
+KIND_ANONYMIZE = "anonymize"
+KIND_CHANGE = "change"
+KINDS = (KIND_ANONYMIZE, KIND_CHANGE)
 
 FOLDERS = "folders"
 ARCHIVES = "archives"
@@ -179,8 +187,8 @@ def probe(sources: list[tuple[str, str]], outputs: list[tuple[str, str]], cancel
         elif details.access == ACCESS_BASIC:
             found.append(
                 {
-                    "problem": "the password only gives basic access; anonymizing needs the "
-                    "full-access password."
+                    "problem": "the password only gives basic access; making a new recording "
+                    "needs the full-access password."
                 }
             )
         else:
@@ -202,6 +210,8 @@ def result_check(item: BatchItem, path: str | None = None) -> dict:
     """What :func:`made_by_this_batch` needs to recognise this item's result
     (passwords included: in memory and in the helper only)."""
     r = item.request
+    if item.kind == KIND_CHANGE:
+        return {"kind": KIND_CHANGE, "path": path or item.final}
     return {
         "path": path or item.final,
         "source": r.source,
@@ -440,6 +450,13 @@ def made_by_this_batch(checks: list[dict], cancel=None) -> list[bool]:
     for c in checks:
         if cancel is not None:
             cancel.raise_if_cancelled()
+        if c.get("kind") == KIND_CHANGE:
+            # A copy with changes leaves no mark that tells it from another
+            # one made with the same choices: a name alone proves nothing,
+            # so such a result is never called ours (it is kept or reported,
+            # never removed).
+            out.append(False)
+            continue
         source = inspect_recording(
             c["source"], c.get("source_password", ""), cancel=cancel, detect_legacy=False
         ).details
@@ -485,7 +502,7 @@ def free_bytes(folder: str) -> int | None:
 class BatchItem:
     """One recording of the batch."""
 
-    request: CopyRequest = field(repr=False)
+    request: CopyRequest | ChangeRequest = field(repr=False)
     #: Where the delivered result goes: the ``.mefd`` folder, the
     #: ``.mefd.tar``, or (bundle) the bundle's path.
     final: str = field(repr=False)
@@ -496,6 +513,7 @@ class BatchItem:
     original_name: str = field(default="", repr=False)
     original_start: int = field(default=0, repr=False)
     original_end: int = field(default=0, repr=False)
+    kind: str = KIND_ANONYMIZE
 
 
 @dataclass(frozen=True)
@@ -510,7 +528,7 @@ class Batch:
 
 def plan_batch(
     output: str,
-    requests: list[CopyRequest],
+    requests: list[CopyRequest | ChangeRequest],
     destination: str,
     work_folder: str,
     estimates: dict[str, int],
@@ -545,6 +563,7 @@ def plan_batch(
                 original_name=original[0],
                 original_start=int(original[1]),
                 original_end=int(original[2]),
+                kind=KIND_CHANGE if isinstance(r, ChangeRequest) else KIND_ANONYMIZE,
             )
         )
     return Batch(
@@ -617,6 +636,7 @@ def to_payload(batch: Batch, bundle_temporary: str = "", bundle_offset: int = 0)
         r["protected"] = r.pop("output_password") is not None
         items.append(
             {
+                "kind": i.kind,
                 "request": r,
                 "final": i.final,
                 "work": i.work,
@@ -647,20 +667,37 @@ def from_payload(
     items = []
     for raw in payload["items"]:
         r = dict(raw["request"])
+        kind = raw.get("kind", KIND_ANONYMIZE)
         needs = r.pop("needs_password", False)
         protected = r.pop("protected", False)
-        request = CopyRequest(
-            key=r["key"],
-            source=r["source"],
-            destination=r["destination"],
-            shift_us=int(r["shift_us"]),
-            pseudonym=r.get("pseudonym", ""),
-            clear=tuple(r.get("clear", ())),
-            text=r.get("text", "drop"),
-            password=password_for(r["source"]) if needs else "",
-            output_password=output_password if protected else None,
-            exclude_channels=tuple(r.get("exclude_channels", ())),
-        )
+        password = password_for(r["source"]) if needs else ""
+        output = output_password if protected else None
+        if kind == KIND_CHANGE:
+            request = ChangeRequest(
+                r["source"],
+                r["destination"],
+                password=password,
+                channels=tuple(r["channels"]) if r.get("channels") else None,
+                exclude_channels=tuple(r.get("exclude_channels", ())),
+                output_password=output,
+                metadata=r.get("metadata") or None,
+                time_range=tuple(r["time_range"]) if r.get("time_range") else None,
+                exact=bool(r.get("exact", True)),
+                key=r.get("key", ""),
+            )
+        else:
+            request = CopyRequest(
+                key=r["key"],
+                source=r["source"],
+                destination=r["destination"],
+                shift_us=int(r["shift_us"]),
+                pseudonym=r.get("pseudonym", ""),
+                clear=tuple(r.get("clear", ())),
+                text=r.get("text", "drop"),
+                password=password,
+                output_password=output,
+                exclude_channels=tuple(r.get("exclude_channels", ())),
+            )
         name, start, end = originals.get(request.key, ("", 0, 0))
         items.append(
             BatchItem(
@@ -671,6 +708,7 @@ def from_payload(
                 original_name=name,
                 original_start=int(start),
                 original_end=int(end),
+                kind=kind,
             )
         )
     return Batch(

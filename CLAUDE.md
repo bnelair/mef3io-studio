@@ -5,8 +5,8 @@ MEF 3.0 recordings, built
 on the mef3io library (github.com/bnelair/mef3io). Status: early development;
 test version 0.1.0.dev5 = Join or trim (#31); dev6 (upcoming) = signal
 viewer + edit mode (additions only, append-only save), on mef3io 2.1.1
-(metadata edit, passwords, channel presets, cutting into
-pieces still to come; ordering/renaming = the Rename window, #12). Design in
+(metadata edit in place, cutting into
+pieces still to come; "Make new recordings" = saved channel choices + batch, #16; ordering/renaming = the Rename window, #12). Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
 Hard rules:
@@ -449,3 +449,40 @@ Code (app shell, #2/#3):
   password-protected (MEF design), the text says passwords do not hide the
   signal. NOT built: editing in place (needs mef3io `edit_metadata`, absent in
   2.1.1) - no placeholder UI. History word for op 8: "copied with changes".
+- Make new recordings (#16): ONE window for the same changes in many
+  recordings (`makenew/dialog.py` `MakeNewDialog`, Explore button + list menu
+  "Make new recordings…", steps recordings -> channels -> details ->
+  passwords -> names/folder -> run). It adds NO runner: each recording is a
+  `changes.ChangeRequest` (now with an opaque `key`) in a `pipeline.BatchItem`
+  whose `kind` is `KIND_CHANGE` (`KIND_ANONYMIZE` = the anonymizer's);
+  `plan_batch` derives the kind from the request type, `to_payload`/
+  `from_payload` carry it (journal items without `kind` = anonymize), and
+  `tasks.run_batch/_one/preflight_batch` dispatch on it (changes.make_changes
+  / `check_changes_many` / `describe_change_error`; `copy_result_of` turns a
+  ChangeResult into the runner's CopyResult), so journal, resume, Stop,
+  progress, space and name checks are shared. A change item's result is never
+  "ours" (`made_by_this_batch` -> False, `_is_this_copy` -> False): a result
+  found at the destination on resume is kept (unconfirmed) or the resume is
+  refused, never removed. The UI offers FOLDERS output only (the runner also
+  takes archives). `app.continue_batch` routes an all-change journal to
+  `explorer.make_new_selected(resume=True)` -> `MakeNewDialog.resume`.
+  Qt-free logic: `model/makenew.py` (`Source`, `new_names`, `name_problems`,
+  `rows` = what the choice does per recording, `requests_for` sends each
+  recording's LEFT-OUT channels as `exclude_channels`, `details_from`,
+  `estimates_for`, `nothing_to_do` = would be a plain copy -> blocked) and
+  `model/presets.py` (`ChannelPreset` = name + kept or left-out names;
+  `match_recording`/`apply_to_selection` reuse `ChannelSelection`, exact or
+  ignoring case, channels a recording lacks are SHOWN not refused, a
+  recording left with none is blocked; `PresetStore` = ONE sealed
+  `presets.json` in the app-data dir, `model.journal.seal`, 0600, atomic;
+  export/import = a plain JSON file the person chooses, with a warning that
+  names can identify). Channel names are never logged or put in settings.
+  Details: the five session fields only (typed once, replace in every new
+  recording, empty = keep; no per-channel descriptions in a batch); reuses
+  `edit_details.DetailBox`/`SESSION_FIELDS`. Passwords: `PasswordsStep`; the
+  form is emptied when the batch starts, the window keeps none (the copies'
+  full-access one only for "Show them in Explore"). NOT built: cut+merge in
+  the same pass (Join or trim stays its own page), cutting into pieces
+  (mef3io#103), archive/bundle outputs in the window.
+  Tests: tests/test_make_new_model.py (presets, kinds, Stop, crash+resume,
+  log), tests/test_make_new_ui.py.

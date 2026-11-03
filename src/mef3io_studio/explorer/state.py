@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from ..model.errors import UserMessage
 from ..model.problems import CheckReport
-from ..model.recording import InspectOutcome, location_key, recording_name
+from ..model.recording import ACCESS_FULL, ACCESS_OPEN, InspectOutcome, location_key, recording_name
 
 
 @dataclass(eq=False)
@@ -46,3 +46,16 @@ class RecordingEntry:
     @property
     def needs_password(self) -> bool:
         return self.outcome is not None and self.outcome.needs_password
+
+    @property
+    def copyable(self) -> bool:
+        """It can be the source of a new recording with changes: read, not
+        busy, with channels, and opened with its full-access password (or
+        not password-protected)."""
+        details = self.details
+        return (
+            details is not None
+            and not self.busy
+            and bool(details.channels)
+            and details.access in (ACCESS_FULL, ACCESS_OPEN)
+        )

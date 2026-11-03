@@ -1394,6 +1394,8 @@ class ExplorerPage(QWidget):
             "Edit details (makes a new copy)…", lambda: self.edit_details(self.current_entry())
         )
         edit.setEnabled(self._editable(self.current_entry()))
+        make_new = menu.addAction("Make new recordings…", self.make_new_selected)
+        make_new.setEnabled(bool(self._makeable(self.selected_entries())))
         rename = menu.addAction("Rename…", self.rename_selected)
         rename.setEnabled(bool(self._renamable(self.selected_entries())))
         menu.addSeparator()
@@ -1430,6 +1432,30 @@ class ExplorerPage(QWidget):
         dialog = EditDetailsDialog(entry, self.jobs, self.zone, self)
         dialog.reveal_requested.connect(lambda e=entry: self.refresh_entry(e))
         dialog.open_requested.connect(self.open_and_show)
+        dialog.finished.connect(lambda _r: self._forget_dialog(dialog))
+        self._dialogs.append(dialog)
+        dialog.open()
+        return dialog
+
+    @staticmethod
+    def _makeable(entries: list[RecordingEntry]) -> list[RecordingEntry]:
+        return [e for e in entries if e.copyable]
+
+    def make_new_selected(self, resume: bool = False):
+        """ "Make new recordings…": the same changes in the selected
+        recordings, each saved as a new, checked recording (one unattended
+        batch). Also File > Make new recordings…; with no recording listed
+        it only serves a resume."""
+        from ..makenew import MakeNewDialog  # (it builds on the anonymizer's picker)
+
+        entries = [] if resume else self._makeable(self.selected_entries())
+        if not entries and not resume:
+            self.status.emit("Select recordings to make new ones from.")
+            return None
+        dialog = MakeNewDialog(entries, self.jobs, parent=self)
+        dialog.open_requested.connect(
+            lambda paths, password: self.open_paths(paths, interactive=False, password=password)
+        )
         dialog.finished.connect(lambda _r: self._forget_dialog(dialog))
         self._dialogs.append(dialog)
         dialog.open()
