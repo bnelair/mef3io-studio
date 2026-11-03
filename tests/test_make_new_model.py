@@ -294,9 +294,15 @@ def test_stop_halfway_leaves_no_partial_and_no_half_result(qtbot, jobs, tmp_path
     handle.cancel()
     with qtbot.waitSignal(handle.finished, timeout=60_000):
         pass
-    assert sorted(p.name for p in dest.iterdir()) == ["New1.mefd"]  # only the finished one
+    # The Stop lands while recording 2 is being made, but a fast machine can finish that copy
+    # first; either way nothing half-made is left and recording 3 is never started.
+    made = sorted(p.name for p in dest.iterdir())
+    assert made in (["New1.mefd"], ["New1.mefd", "New2.mefd"]), made
     assert not list(dest.rglob("*.partial")) and list(work.iterdir()) == []
     assert sorted(mef3io.Reader(str(dest / "New1.mefd")).channels) == ["a1", "a2"]
+    if "New2.mefd" in made:  # finished before the Stop: a whole, readable copy
+        report = mef3io.transform.verify(str(big), str(dest / "New2.mefd"), exclude_channels=["n1"])
+        assert report.ok, report
     assert [tree_hash(s) for s in sources] == before
     assert journal.unfinished() == []  # a deliberate stop needs no resume
 
