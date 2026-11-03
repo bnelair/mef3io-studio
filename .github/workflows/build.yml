@@ -27,19 +27,17 @@ name: Build installers
 # TODO(signing): nothing is code-signed yet (certificates undecided, #3). The
 # hooks are marked "TODO(signing)" below and in packaging/.
 
+# Runs ONLY for releases, never for ordinary PRs or merges (runner time and
+# artifact storage are shared quotas): `bump-version` dispatches it on the
+# release branch (re-dispatch by hand after later pushes there), and the
+# merge of the release PR (a push to main that changes VERSION) or a `v*`
+# tag publishes. Tests run in ci.yml.
 on:
   workflow_dispatch:
   push:
     branches: [main]
     tags: ["v*"]
-  pull_request:
     paths:
-      - "src/**"
-      - "packaging/**"
-      - "requirements/**"
-      - "scripts/render_icons.py"
-      - ".github/workflows/build.yml"
-      - "pyproject.toml"
       - "VERSION"
 
 permissions:
@@ -135,7 +133,6 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           Compress-Archive -Path dist\mef3io-studio -DestinationPath "dist\mef3io-studio-$version-windows-x64-portable.zip"
       - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request'   # only a release run reads the installers
         with:
           retention-days: 3
           name: mef3io-studio-windows-x64
@@ -189,11 +186,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dmg"
           hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "$dmg"
           out="$("$RUNNER_TEMP/dmg/mef3io-studio.app/Contents/MacOS/mef3io-studio" --self-test)"
-          hdiutil detach "$RUNNER_TEMP/dmg"
+          # The app's helper process can still hold the image for a moment
+          # ("Resource busy"): retry, then force. The self-test result above
+          # is what counts.
+          for i in 1 2 3 4 5; do
+            hdiutil detach "$RUNNER_TEMP/dmg" && break
+            sleep 3
+            [ "$i" = 5 ] && hdiutil detach -force "$RUNNER_TEMP/dmg"
+          done
           echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
       - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request'   # only a release run reads the installers
         with:
           retention-days: 3
           name: mef3io-studio-macos-${{ matrix.arch }}
@@ -236,18 +239,8 @@ jobs:
         run: |
           out="$(dist/*.AppImage --appimage-extract-and-run --self-test)"; echo "$out"
           echo "$out" | grep -q "^mef3io-studio self-test OK"
-      # Artifact storage is a shared quota: a PR keeps only the tarball, for one day (the distro
-      # checks below are its only reader); other runs keep both for 3 days (the release job reads
-      # them in the same run).
+      # Kept 3 days: the release job reads them in the same run.
       - uses: actions/upload-artifact@v7
-        if: github.event_name == 'pull_request'
-        with:
-          retention-days: 1
-          name: mef3io-studio-linux-x86_64
-          path: dist/*.tar.gz
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request'
         with:
           retention-days: 3
           name: mef3io-studio-linux-x86_64
