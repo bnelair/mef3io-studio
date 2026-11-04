@@ -24,6 +24,7 @@ from datetime import UTC, datetime, tzinfo
 from PySide6.QtCore import QDate, QDateTime, QRectF, QSize, Qt, QTime, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDateTimeEdit,
     QFileDialog,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QRadioButton,
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
@@ -43,6 +45,9 @@ from PySide6.QtWidgets import (
 
 from ..anonymizer.page import (
     BLOCKER_PLAN_WORDS,
+    Choice,
+    DatesStep,
+    DetailsAndTextBox,
     RecordingsStep,
     _clear,
     _item,
@@ -73,6 +78,7 @@ from ..model.join import (
     KEEP_LAST,
     KEEP_WHOLE,
     SECOND_US,
+    Anonymous,
     JoinPlan,
     JoinRequest,
     JoinResult,
@@ -102,8 +108,8 @@ REFRESH_DELAY_MS = 150
 # Channels come before "What to keep": two parts that overlap in time are
 # fine when they share no kept channel, so the overlap rule needs the
 # channel choice.
-STEPS = ("Recordings", "Channels", "What to keep", "New recording", "Save")
-STEP_RECORDINGS, STEP_CHANNELS, STEP_KEEP, STEP_NEW, STEP_RUN = range(len(STEPS))
+STEPS = ("Recordings", "Channels", "What to keep", "Privacy", "New recording", "Save")
+STEP_RECORDINGS, STEP_CHANNELS, STEP_KEEP, STEP_PRIVACY, STEP_NEW, STEP_RUN = range(len(STEPS))
 
 #: The "Keep" choices, in the order the list shows them.
 KEEP_LABELS = (
@@ -133,6 +139,31 @@ HOW_IT_WORKS = (
     "removed at the end, also when you stop or something goes wrong. The originals are "
     "never changed."
 )
+
+HOW_IT_WORKS_ANONYMOUS = (
+    "The part of each recording that you keep is made anonymous as it is read from the "
+    "original, and saved in a hidden temporary folder next to the new recording: a copy "
+    "with the patient's details is never written. The parts are then joined into the new "
+    "recording, which is checked. The temporary folder is always removed at the end, also "
+    "when you stop or something goes wrong. The originals are never changed."
+)
+
+PRIVACY_KEEP = "Keep the patient details (as in the originals)"
+PRIVACY_ANONYMOUS = "Make it anonymous"
+DATES_KEEP = "Keep the real dates"
+DATES_MOVE = "Move every date by the same number of whole days (recommended)"
+DATES_KEEP_WARNING = (
+    "The real dates stay in the new recording: it still shows when the patient was recorded."
+)
+
+FILE_NOTE = (
+    "The new recording is made and packed in a hidden temporary folder next to the file, "
+    "compared with what it was packed from, and only then given its name. For a moment the "
+    "chosen drive needs room for about twice the size of what you keep."
+)
+
+SAVE_FOLDER = "A folder (.mefd), as the originals"
+SAVE_FILE = "One file (.mefd.tar), which this app opens directly"
 
 WHY_NOT_USABLE = {
     "busy": "Still being read…",
@@ -543,6 +574,164 @@ def zone_words(zone: tzinfo) -> str:
 # Step 4: the new recording
 
 
+class PrivacyStep(QWidget):
+    """Keep the patient details, or make the new recording anonymous: the
+    Anonymize page's own choices for ONE copy (its dates step and its
+    clear-and-text box are used here), with no separate pseudonym table:
+    there is one new recording, named on the next step."""
+
+    changed = Signal()
+
+    def __init__(self, page: JoinerPage):
+        super().__init__(page)
+        self.page = page
+        #: What ``DatesStep`` reads: the chosen recordings, as the Anonymize
+        #: page's ``Choice`` objects.
+        self.choices: list[Choice] = []
+        self.keep_details = QRadioButton(PRIVACY_KEEP)
+        self.anonymous = QRadioButton(PRIVACY_ANONYMOUS)
+        self.keep_details.setChecked(True)
+        group = QButtonGroup(self)
+        for b in (self.keep_details, self.anonymous):
+            group.addButton(b)
+            b.toggled.connect(self._update)
+        intro = _label(
+            "Choose whether the new recording still says who the patient is. An anonymous "
+            "recording is made straight from the originals: a copy with the patient's "
+            "details is never written to your computer.",
+            muted=True,
+        )
+        self.dates_keep = QRadioButton(DATES_KEEP)
+        self.dates_move = QRadioButton(DATES_MOVE)
+        self.dates_move.setChecked(True)
+        dates_group = QButtonGroup(self)
+        for b in (self.dates_keep, self.dates_move):
+            dates_group.addButton(b)
+            b.toggled.connect(self._update)
+        self.dates_warning = _label(DATES_KEEP_WARNING)
+        self.dates_warning.setObjectName("Bad")
+        self.dates = DatesStep(self, single=True)
+        self.dates.changed.connect(self._update)
+        self.pseudonym = QLineEdit()
+        self.pseudonym.setPlaceholderText("The same as the name of the new recording")
+        self.pseudonym.textChanged.connect(self._update)
+        self.details = DetailsAndTextBox(self)
+        self.details.changed.connect(self._update)
+        self.span_note = _label(muted=True)
+        self.problem = _label()
+        self.problem.setObjectName("Bad")
+        form = QFormLayout()
+        form.addRow("Pseudonym (stored as the patient's code):", self.pseudonym)
+        self.options = QWidget()
+        inner = QVBoxLayout(self.options)
+        inner.setContentsMargins(int(self.fontMetrics().height()), 0, 0, 0)
+        inner.addWidget(_label("Dates", bold=True))
+        inner.addWidget(self.dates_keep)
+        inner.addWidget(self.dates_warning)
+        inner.addWidget(self.dates_move)
+        inner.addWidget(self.dates)
+        inner.addWidget(self.span_note)
+        inner.addWidget(_label("Name", bold=True))
+        inner.addLayout(form)
+        inner.addWidget(self.details)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(intro)
+        layout.addWidget(self.keep_details)
+        layout.addWidget(self.anonymous)
+        layout.addWidget(self.options)
+        layout.addWidget(self.problem)
+        layout.addStretch(1)
+        self._update()
+
+    @property
+    def zone(self) -> tzinfo:
+        return self.page.zone
+
+    def is_anonymous(self) -> bool:
+        return self.anonymous.isChecked()
+
+    def set_recordings(self) -> None:
+        self.choices = [Choice(r.entry) for r in self.page.keep.rows]
+        self.dates.set_recordings(self.choices)
+        self._update()
+
+    def shift_us(self) -> int | None:
+        """How far every time is moved; None = the dates are kept."""
+        if self.dates_keep.isChecked():
+            return None
+        plan = self.dates.plan
+        planned = plan.recordings[0] if plan is not None and plan.recordings else None
+        return planned.shift_us if planned is not None else None
+
+    def choice(self) -> Anonymous | None:
+        if not self.is_anonymous():
+            return None
+        return Anonymous(
+            shift_us=self.shift_us(),
+            pseudonym=self.pseudonym.text().strip(),
+            clear=self.details.clear(),
+            text=self.details.text(),
+        )
+
+    def problem_text(self) -> str:
+        if not self.is_anonymous():
+            return ""
+        if self.dates_move.isChecked() and not self.dates.ok:
+            return "Fix what is listed above first."
+        pseudonym = self.pseudonym.text().strip()
+        if pseudonym:
+            found = name_problem(pseudonym)
+            if found:
+                return f"Pseudonym: {found}"
+        return ""
+
+    def _refresh_note(self) -> None:
+        text = ""
+        if self.is_anonymous() and self.page.keep.rows:
+            plan = plan_join(
+                self.page.keep.sources(),
+                self.page.keep.layouts(),
+                excluded=self.page.selection.excluded,
+                changes=True,
+            )
+            if plan.ok and plan.spans:
+                start = min(s.start for s in plan.spans.values())
+                end = max(s.end for s in plan.spans.values())
+                shift = self.shift_us()
+                if self.dates_move.isChecked() and shift is None:
+                    text = ""
+                elif shift is None:
+                    text = (
+                        "The new recording will run from "
+                        f"{format_time(start, self.zone)} to {format_time(end, self.zone)}."
+                    )
+                else:
+                    text = (
+                        "The new recording will run from "
+                        f"{format_time(start + shift, UTC)} to {format_time(end + shift, UTC)} "
+                        "(UTC)."
+                    )
+        self.span_note.setText(text)
+        self.span_note.setVisible(bool(text))
+
+    def _update(self, *_args) -> None:
+        anonymous = self.is_anonymous()
+        self.options.setVisible(anonymous)
+        moving = anonymous and self.dates_move.isChecked()
+        self.dates.setVisible(moving)
+        self.dates_warning.setVisible(anonymous and self.dates_keep.isChecked())
+        self._refresh_note()
+        text = self.problem_text()
+        self.problem.setText(text)
+        self.problem.setVisible(bool(text))
+        self.changed.emit()
+
+    def reset(self) -> None:
+        self.keep_details.setChecked(True)
+        self.pseudonym.clear()
+
+
 class NewRecordingStep(QWidget):
     changed = Signal()
 
@@ -555,12 +744,22 @@ class NewRecordingStep(QWidget):
         self.folder_label = _label(muted=True)
         self.folder_button = QPushButton("Choose the folder…")
         self.folder_button.clicked.connect(self._choose_folder)
+        self._auto_name = ""
+        self.save_folder = QRadioButton(SAVE_FOLDER)
+        self.save_file = QRadioButton(SAVE_FILE)
+        self.save_folder.setChecked(True)
+        save_group = QButtonGroup(self)
+        for b in (self.save_folder, self.save_file):
+            save_group.addButton(b)
+            b.toggled.connect(self._update)
+        self.file_note = _label(FILE_NOTE, muted=True)
         form = QFormLayout()
         form.addRow("Name of the new recording:", self.name)
         folder_row = QHBoxLayout()
         folder_row.addWidget(self.folder_label, 1)
         folder_row.addWidget(self.folder_button)
         form.addRow("Saved in:", folder_row)
+        form.addRow("Save as:", self._stack(self.save_folder, self.save_file))
         self.passwords = PasswordsStep(
             self,
             what="the new recording",
@@ -577,6 +776,7 @@ class NewRecordingStep(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(form)
+        layout.addWidget(self.file_note)
         layout.addWidget(_label("Password protection", bold=True))
         layout.addWidget(self.protected_note)
         layout.addWidget(self.passwords)
@@ -585,23 +785,43 @@ class NewRecordingStep(QWidget):
         layout.addLayout(self.findings)
         layout.addStretch(1)
 
+    @staticmethod
+    def _stack(*widgets) -> QWidget:
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        for w in widgets:
+            layout.addWidget(w)
+        return box
+
+    @property
+    def one_file(self) -> bool:
+        return self.save_file.isChecked()
+
     def prepare(self) -> None:
         """Fill in a name and folder the first time (from the first
-        recording), and say what applies to these recordings."""
+        recording), and say what applies to these recordings. An anonymous
+        recording is never given a name made from an original's name."""
         rows = self.page.keep.rows
         if not rows:
             return
         first = rows[0].entry
+        anonymous = self.page.privacy.is_anonymous()
         if not self.folder:
             self.folder = os.path.dirname(first.location)
-        if not self.name.text():
-            suffix = "joined" if len(rows) > 1 else "part"
-            self.name.setText(f"{first.name}-{suffix}")
+        if anonymous:
+            auto = "SUBJ-001"
+        else:
+            auto = f"{first.name}-{'joined' if len(rows) > 1 else 'part'}"
+        if not self.name.text() or self.name.text() == self._auto_name:
+            self._auto_name = auto
+            self.name.setText(auto)
         self.protected_note.setVisible(
             any(r.entry.details.password_protected for r in rows)
             and not self.passwords.both.isChecked()
         )
-        self.how.setVisible(len(rows) > 1)
+        self.how.setText(HOW_IT_WORKS_ANONYMOUS if anonymous else HOW_IT_WORKS)
+        self.how.setVisible(len(rows) > 1 or anonymous)
         self.set_findings([])
         self._update()
 
@@ -614,7 +834,10 @@ class NewRecordingStep(QWidget):
             self._update()
 
     def destination(self) -> str:
-        return destination_for(self.folder, self.name.text().strip())
+        name = self.name.text().strip()
+        if self.one_file:
+            return os.path.join(self.folder, f"{name}.mefd.tar")
+        return destination_for(self.folder, name)
 
     def problem_text(self) -> str:
         name = self.name.text()
@@ -626,7 +849,7 @@ class NewRecordingStep(QWidget):
         dst = self.destination()
         if os.path.lexists(dst):
             return "A file or folder with that name is already in the chosen folder."
-        if os.path.lexists(dst + ".partial"):
+        if not self.one_file and os.path.lexists(dst + ".partial"):
             return (
                 "A folder ending in .partial, left by an earlier run that did not finish, is "
                 "in the way. If nothing else is running, delete it, or choose another name."
@@ -653,6 +876,7 @@ class NewRecordingStep(QWidget):
             any(r.entry.details.password_protected for r in self.page.keep.rows)
             and not self.passwords.both.isChecked()
         )
+        self.file_note.setVisible(self.one_file)
         text = self.problem_text()
         self.problem.setText(text)
         self.problem.setVisible(bool(text))
@@ -712,7 +936,7 @@ class RunStep(QWidget):
         self.open_button.setVisible(shown)
         self.folder_button.setVisible(shown)
 
-    def start(self, handle, several: bool) -> None:
+    def start(self, handle, several: bool, anonymous: bool = False) -> None:
         _clear(self.progress_slot)
         _clear(self.details_slot)
         self.result.setText("")
@@ -720,6 +944,8 @@ class RunStep(QWidget):
         self.heading.setText(
             "Joining the recordings…" if several else "Saving the part of the recording…"
         )
+        if anonymous:
+            self.heading.setText("Making the anonymous recording…")
         self.progress = JobProgressWidget(handle, self)
         self.progress_slot.addWidget(self.progress)
 
@@ -739,9 +965,14 @@ class RunStep(QWidget):
         elif result is not None and result.ok:
             self.heading.setText("Saved and checked")
             kept = format_count(len(result.channels_kept), "channel")
+            how = ""
+            if result.anonymous:
+                how += " It is anonymous: the patient's details were cleared as it was made."
+            if result.one_file:
+                how += " It was saved as one file, which this app opens directly."
             self.result.setText(
                 f"The new recording was saved with {kept} and checked against the originals, "
-                "which were not changed." + left
+                f"which were not changed.{how}" + left
             )
             self.show_buttons(True)
         else:
@@ -827,12 +1058,20 @@ class JoinerPage(QWidget):
         self.recordings = JoinRecordingsStep(self)
         self.keep = KeepStep(self)
         self.picker = ChannelPicker(self)
+        self.privacy = PrivacyStep(self)
         self.new = NewRecordingStep(self)
         self.run_step = RunStep(self)
         self.stack = QStackedWidget(self)
-        for widget in (self.recordings, self.picker, self.keep, self.new, self.run_step):
+        for widget in (
+            self.recordings,
+            self.picker,
+            self.keep,
+            self.privacy,
+            self.new,
+            self.run_step,
+        ):
             self.stack.addWidget(widget)
-        for step in (self.recordings, self.keep, self.picker, self.new):
+        for step in (self.recordings, self.keep, self.picker, self.privacy, self.new):
             step.changed.connect(self._inputs_changed)
         self.keep.preview.set_theme(self.theme)
 
@@ -877,6 +1116,7 @@ class JoinerPage(QWidget):
         self.zone = resolve_zone(name)
         self._zone_name = name
         if self._built:
+            self.privacy.dates.set_zone_name(name)
             self.recordings.refresh()
             self.keep.set_zone()
 
@@ -958,6 +1198,8 @@ class JoinerPage(QWidget):
         elif step == STEP_KEEP:
             self._prepare_channels()
             self.keep.recompute()
+        elif step == STEP_PRIVACY:
+            self.privacy.set_recordings()
         elif step == STEP_NEW:
             self.new.prepare()
         passwords = self.new.passwords
@@ -975,8 +1217,13 @@ class JoinerPage(QWidget):
         self.picker.set_selection(self.selection, len(entries), notice)
 
     def has_changes(self) -> bool:
-        """A channel is left out, or new passwords are chosen."""
-        return bool(self.selection.excluded) or self.new.passwords.both.isChecked()
+        """A channel is left out, new passwords are chosen, or the new
+        recording is made anonymous."""
+        return (
+            bool(self.selection.excluded)
+            or self.new.passwords.both.isChecked()
+            or self.privacy.is_anonymous()
+        )
 
     def _blocker_text(self) -> str:
         step = self.step
@@ -986,6 +1233,8 @@ class JoinerPage(QWidget):
             return "" if self.keep.ok else "Fix what is listed above first."
         if step == STEP_CHANNELS:
             return "" if self.selection.can_continue else "Keep at least one channel."
+        if step == STEP_PRIVACY:
+            return self.privacy.problem_text()
         if step == STEP_NEW:
             if self._checking():
                 return "Checking everything before starting…"
@@ -1045,6 +1294,8 @@ class JoinerPage(QWidget):
             self.new.destination(),
             exclude_channels=self.selection.excluded,
             output_password=output,
+            anonymous=self.privacy.choice(),
+            one_file=self.new.one_file,
         )
 
     def _names(self) -> dict[str, str]:
@@ -1095,6 +1346,8 @@ class JoinerPage(QWidget):
         self._stopped = False
         several = len(request.sources) > 1
         title = "Joining recordings" if several else "Saving part of a recording"
+        if request.anonymous is not None:
+            title = "Making an anonymous recording"
         handle = self.jobs.submit(title, join_recordings, request)
         self.handle = handle
         handle.succeeded.connect(self._on_result)
@@ -1102,7 +1355,7 @@ class JoinerPage(QWidget):
         handle.failed.connect(self._on_failed)
         handle.finished.connect(self._on_finished)
         self.go(STEP_RUN)
-        self.run_step.start(handle, several)
+        self.run_step.start(handle, several, request.anonymous is not None)
         return handle
 
     def stop(self) -> None:
@@ -1126,6 +1379,8 @@ class JoinerPage(QWidget):
             text = "Joining stopped: nothing was saved."
         elif self.result is not None and self.result.ok:
             text = "The new recording was saved and checked."
+            if self.result.anonymous:
+                text = "The anonymous recording was saved and checked."
         else:
             text = "The new recording could not be made."
         self.status.emit(text)
@@ -1212,6 +1467,9 @@ class JoinerPage(QWidget):
         self.new.passwords.forget()
         self.new.passwords.cleared_once = False
         self.new.name.clear()
+        self.new._auto_name = ""
+        self.new.save_folder.setChecked(True)
+        self.privacy.reset()
         self._selection_keys = ()
         self.keep.set_recordings([])
         self.keep.viewer_note.setVisible(False)

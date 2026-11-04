@@ -355,8 +355,8 @@ Code (app shell, #2/#3):
   like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
   `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,
   `channel_selection_for` and `ChannelPicker`; built on first use). Steps:
-  Recordings, CHANNELS, What to keep, New recording, Save (channels BEFORE
-  keep: the overlap rule needs the left-out channels). Keep = whole |
+  Recordings, CHANNELS, What to keep, PRIVACY, New recording, Save (channels
+  BEFORE keep: the overlap rule needs the left-out channels). Keep = whole |
   first(d) | last(d) | between(t0, t1) -> `resolve_keep` -> `Span`
   `[start, end)`; a window reaching the recording's end goes to mef3io as
   `end + 1` (`Span.to_end`). END CONVENTION: a recording's end is where its
@@ -424,7 +424,31 @@ Code (app shell, #2/#3):
   samples via Reader, three-way, single trim, side by side incl. shared
   channel and leaving it out, overlap, Stop, cleanup + pre-existing folder,
   ends from blocks, reprs, password-protected parts and sources),
-  tests/test_joiner_ui.py (incl. stale check and the Explore action).
+  tests/test_joiner_ui.py (incl. stale check and the Explore action),
+  tests/test_join_anonymous.py (anonymous + one file, Stop at every stage,
+  free space). ANONYMOUS + ONE FILE: `JoinRequest.anonymous`
+  (`join.Anonymous`: shift_us or None = keep dates, pseudonym, clear, text; the
+  place for a future "notes and events: keep / leave out") and `.one_file`
+  (destination ends `.mefd.tar`). The whole pipeline is ONE function,
+  `join.run(request, plan, sizing, send, cancel)`, so a later single-pass
+  mef3io call replaces only it. Order (verified): each source ->
+  `anonymize_session(time_range=, exact=True, exclude_channels=, one shift,
+  one pseudonym)` into `<parts>/parts/part-N.mefd` (no throw-away password:
+  they hold no patient details; NO copy with details is ever written) ->
+  `merge_sessions` (accepts anonymous parts: cleared patient fields are equal;
+  session name = destination stem; History keeps `anonymize`) -> parts folder
+  removed -> one file: `archive.run_in_helper` + `finish` from the hidden folder
+  (`packed.mefd.tar` inside it, so Stop/tidy remove everything with it). The
+  check (`check_join`) runs `anonymize.check` per source with the NEW NAME as the
+  copy name (patient details in the name are refused) and `merge.check` of the
+  originals minus `merge-identity-differs` for cleared fields. Free space
+  (`join.sizing`/`space_problem`, `pipeline.MARGIN`) for the worst moment is
+  checked in the check and again at the start. Progress: stages weighted by
+  bytes (`JoinProgress.step/steps/weight`), stage names in `progress_phase`.
+  `PrivacyStep` reuses `DatesStep(single=True)` and `DetailsAndTextBox`
+  (extracted from the Anonymize page's IdentityStep). Known mef3io 2.1.1 limit,
+  also without this feature: a trimmed part with notes joined to another
+  recording fails the library's own check (provenance_UUID).
 - Copy with changes (#14, #15): `model/changes.py` (Qt-free) is the ONE call
   site of `mef3io.transform_session` / `transform.check` (a test pins it):
   `ChangeRequest` (source, destination, source password, channels /

@@ -23,6 +23,15 @@ parts of several recordings, one after another in time or side by side
 (different channels of the same period), are built (the "Join or trim" page,
 since test version 0.1.0.dev5; see the
 [user guide](../user-guide.md#join-or-trim-recordings) and `model/join.py`).
+Join or trim can also make the new recording **anonymous** (a "Privacy" step
+that reuses the Anonymize page's dates step and clear-and-text box) and save
+it as **one file** (`.mefd.tar`): `model/join.run` is the one pipeline (each
+source anonymized, cut and without the left-out channels straight from the
+original into the hidden parts folder next to the result; `merge_sessions` of
+the anonymous parts, whose cleared patient fields are equal; parts removed;
+pack, compare, name), so a later single-pass mef3io call replaces only that
+function. Room is left for a "notes and events: keep / leave out" option
+(`join.Anonymous`) once the library has it.
 Still open: cutting one recording into several pieces in one go.
 
 ## Signal viewer
