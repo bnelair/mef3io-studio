@@ -222,10 +222,21 @@ def test_a_failed_tile_read_fails_the_block_and_stops_the_spinner(one, qtbot, mo
     qtbot.waitUntil(lambda: bool(failed), timeout=10_000)
     qtbot.waitUntil(lambda: not one.controller.loading, timeout=10_000)
     assert "could not be read" in failed[0]
+    # The disk comes back only after every read started without it has ended
+    # (on a slow runner some are still running here; one ending after the
+    # restore would fail the new page's block, which is not what this pins).
+    qtbot.waitUntil(lambda: one.controller.scheduler.pending() == 0, timeout=10_000)
+    n_failed = len(failed)
     monkeypatch.setattr(one.data, "read_tile", real)
     one.set_state(t0=T0 + 20 * SEC)
     settle(qtbot, one)
-    assert all(r.piece is not None for r in one.canvas.rows)
+    req = one.controller._req
+    empty = [r.label for r in one.canvas.rows if r.piece is None]
+    assert not empty, (
+        f"rows without data {empty}; failed blocks {sorted(req.failed) if req else None}; "
+        f"pending reads {one.controller.scheduler.pending()}; "
+        f"failures after the restore {failed[n_failed:]}"
+    )
 
 
 def test_a_tile_the_cache_refuses_still_reaches_the_block(one, qtbot):
