@@ -392,6 +392,10 @@ def test_a_failure_in_the_packing_leaves_nothing_behind(tmp_path, monkeypatch):
     "bad",
     [
         "A",  # an original's name
+        "a",  # other case
+        " A ",  # spaces around it
+        "A.mefd",  # typed with the folder ending
+        "A.mefd.tar",  # typed with the one-file ending
         PATIENT_ID,
         FIRST,
         SITE,
@@ -435,3 +439,27 @@ def test_one_file_alone_counts_as_a_change(tmp_path):
     result = j.make_joined(request)
     assert result.ok, result.message
     assert os.listdir(out) == ["x.mefd.tar"]
+
+
+def _zero_channel_request(tmp_path, anonymous):
+    # B has only b9, and b9 is left out: B would keep no channel at all.
+    a = write(tmp_path / "A.mefd", T0, channels=("a1", "a2"), notes=False)
+    b = write(tmp_path / "B.mefd", T0 + 3 * HOUR, channels=("b9",), notes=False)
+    out = tmp_path / "out"
+    out.mkdir()
+    request = request_for(a, b, out / "SUBJ-020.mefd", anonymous, exclude=("b9",))
+    return request, out
+
+
+@pytest.mark.parametrize("anonymous", [None, j.Anonymous(shift_us=SHIFT)])
+def test_a_recording_left_with_no_channel_is_refused_plainly(tmp_path, anonymous):
+    # Anonymous or not, the same plain refusal up front; nothing is written.
+    request, out = _zero_channel_request(tmp_path, anonymous)
+    findings = j.check_join(request)
+    assert findings
+    assert "Every channel" in findings[0].message.detail or "Every channel" in str(findings[0].message)
+    assert findings[0].key == str(tmp_path / "B.mefd")
+    result = j.make_joined(request)
+    assert not result.ok
+    assert os.listdir(out) == []
+    assert not leftovers(tmp_path)

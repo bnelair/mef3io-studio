@@ -1311,7 +1311,26 @@ class JoinerPage(QWidget):
         run itself."""
         if not self._still_readable():
             return None
-        request = self.make_request()
+        try:
+            request = self.make_request()
+        except ValueError:
+            # A choice on the privacy step is incomplete (for instance the
+            # dates are to be moved but there is no plan): say so, start
+            # nothing. Never let it vanish in the slot.
+            self.new.set_findings(
+                [
+                    join_model.CheckFinding(
+                        None,
+                        join_model.UserMessage(
+                            "The dates are not ready",
+                            "The dates are to be moved, but there is no plan for it yet. "
+                            "Go back to the privacy step and check the dates. Nothing was "
+                            "changed.",
+                        ),
+                    )
+                ]
+            )
+            return None
         self.new.set_findings([])
         handle = self.jobs.submit("Checking before joining", check_join, request)
         self.check_handle = handle

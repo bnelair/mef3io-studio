@@ -437,3 +437,22 @@ def test_moving_the_dates_without_a_plan_never_keeps_the_real_dates(window_page,
     privacy.dates.plan = None  # no plan at all
     with pytest.raises(ValueError):
         privacy.choice()
+
+
+def test_an_incomplete_date_plan_is_told_to_the_user_not_swallowed(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_with_notes(tmp_path / "A.mefd", T0)
+    b = write_with_notes(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page)
+    page.next()
+    page.privacy.anonymous.setChecked(True)
+    page.privacy.dates_move.setChecked(True)
+    page.privacy.dates.plan = None
+    page.go(STEP_NEW)
+    page.new.name.setText("joined")
+    before = sorted(p.name for p in tmp_path.rglob("*"))
+    assert page.check_and_save() is None
+    assert page.new.findings.count() == 1
+    assert page.handle is None
+    assert sorted(p.name for p in tmp_path.rglob("*")) == before

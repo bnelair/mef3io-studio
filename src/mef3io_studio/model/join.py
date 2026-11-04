@@ -748,15 +748,28 @@ def _anonymous_refusal_message(refusal, request: JoinRequest) -> UserMessage:
     return message_for(refusal.code, details, detail) or refusal_message(refusal, paths, stems)
 
 
+def _bare_name(value: str) -> str:
+    """A name compared without case, spaces or a typed ``.mefd`` /
+    ``.mefd.tar`` ending (however many were typed)."""
+    text = value.strip().casefold()
+    while True:
+        for ending in (".mefd.tar", ".mefd"):
+            if text.endswith(ending):
+                text = text[: -len(ending)].strip()
+                break
+        else:
+            return text
+
+
 def _original_name_findings(request: JoinRequest) -> list[CheckFinding]:
     """An anonymous recording is not named like an original (the name would
     give the original away). The message does not repeat the name."""
     if request.anonymous is None:
         return []
-    originals = {s.name.casefold() for s in request.sources}
+    originals = {_bare_name(s.name) for s in request.sources}
     out = []
     for what, value in (("name", request.name), ("code", request.anonymous.pseudonym)):
-        if value and value.strip().casefold() in originals:
+        if value and _bare_name(value) in originals:
             out.append(
                 CheckFinding(
                     None,
