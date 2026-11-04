@@ -104,7 +104,7 @@ class ViewController(QObject):
 
     _tile = Signal(object)
     _done = Signal(object, object)  # (job, (outcome, error))
-    _error = Signal(object, object)
+    _error = Signal(object, object, object)  # (tile key, error, generation when it failed)
     _strip = Signal(object)
 
     def __init__(self, data, perf: Performance | None = None, parent=None):
@@ -166,7 +166,9 @@ class ViewController(QObject):
 
     def _on_tile_error(self, key, exc) -> None:
         if not self._closed:
-            self._error.emit(key, exc)
+            # The newest page asked for when the read failed: the error reaches
+            # the UI thread later, maybe after newer pages asked again.
+            self._error.emit(key, exc, self._generation)
 
     # -- requests ----------
 
@@ -436,9 +438,26 @@ class ViewController(QObject):
             self._fail_keys({job.key})
         self._pump()
 
-    def _on_error(self, tile_key, exc) -> None:
+    def _on_error(self, tile_key, exc, generation: int) -> None:
+        """A tile read failed. The blocks waiting for it that were asked for
+        no later than the failure fail; a block asked for (or asked again)
+        after it gets a fresh read of the tile instead, so a page made after
+        a brief read error (a drive that came back) is not left empty. A
+        fresh read that fails again fails it then."""
         log.error("tile read failed with %s: %s", type(exc).__name__, scrub(str(exc)))
-        broken = {k for k, j in self._jobs.items() if tile_key in j.tile_keys}
+        broken = set()
+        for k, j in self._jobs.items():
+            if tile_key not in j.tile_keys:
+                continue
+            if j.generation > generation:
+                if j.state != "waiting" or tile_key in j.arrays:
+                    continue  # it already has the tile
+                tile = j.tile_numbers[j.tile_keys.index(tile_key)]
+                self.scheduler.request(j.plan.rate, j.plan.channels, tile, j.priority, j.generation)
+            else:
+                broken.add(k)
+        if not broken:
+            return
         for k in broken:
             del self._jobs[k]
         self._update_needed()

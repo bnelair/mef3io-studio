@@ -224,6 +224,52 @@ def test_a_failing_read_reports_and_the_worker_survives():
         sched.close()
 
 
+def test_a_read_that_fails_after_a_newer_view_joined_it_is_read_again():
+    """A read started while the disk was gone, joined by a newer view while
+    it ran, then failing after the disk came back: the newer view gets the
+    tile (read once more), not the old failure. A second failure is still
+    reported."""
+    gate = threading.Event()
+
+    class Flaky(FakeData):
+        fail = True
+
+        def read_tile(self, channels, rate, k, cancel=None):
+            if self.fail:
+                with self.lock:
+                    self.order.append((tuple(channels), k))
+                self.started.set()
+                gate.wait(5)
+                raise OSError("disk went away")
+            return super().read_tile(channels, rate, k, cancel)
+
+    data = Flaky()
+    errors, ready = [], []
+    sched = TileScheduler(
+        data,
+        TileCache(),
+        workers=1,
+        on_ready=lambda k, a: ready.append(k),
+        on_error=lambda k, e: errors.append(k),
+    )
+    try:
+        key = sched.request(256.0, ("a",), 0, generation=1)
+        assert data.started.wait(5)
+        assert sched.request(256.0, ("a",), 0, generation=2) == key  # joins the running read
+        data.fail = False  # the disk is back...
+        gate.set()  # ...and the old read fails now
+        assert sched.wait_idle(10)
+        assert errors == [] and ready == [key]
+
+        # Nobody newer asked meanwhile: a failure is reported as before.
+        data.fail, data.started = True, threading.Event()
+        other = sched.request(256.0, ("b",), 0, generation=3)
+        assert sched.wait_idle(10)
+        assert errors == [other]
+    finally:
+        sched.close()
+
+
 def test_default_worker_count_is_bounded():
     from mef3io_studio.workers.viewer_scheduler import default_workers
 

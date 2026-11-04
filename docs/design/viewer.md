@@ -394,6 +394,14 @@ mef3io), driven by a scheduler in `workers/`.
     below.
   - A jump or a direction change cancels stale look-ahead through mef3io's
     `CancelToken`.
+  - A newer page that needs a tile already being read joins that read. If
+    the read then fails, it is read once more for the newer page instead
+    (the failure may predate it, for example a disk that came back); a
+    second failure is reported. Without this, a page could stay empty after
+    a brief read error until the next move.
+  - A read error reaches the window later than it happened. It fails only
+    the blocks asked for no later than the failure; a block asked for after
+    it gets a fresh read of that tile instead.
   - Filtering and min/max-per-pixel decimation run in the same workers, so
     the UI thread receives ready-to-draw arrays.
 - **Cache:**

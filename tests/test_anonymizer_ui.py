@@ -9,6 +9,7 @@ The app is pinned to mef3io 1.4.0, whose ``anonymize_session`` and
 from __future__ import annotations
 
 import ast
+import hashlib
 import time
 from pathlib import Path
 
@@ -165,10 +166,31 @@ def test_recordings_that_cannot_be_anonymized_cannot_be_ticked(window_page, qtbo
 # Step 2: the 256-channel picker
 
 
+@pytest.fixture(scope="module")
+def source_256(tmp_path_factory):
+    """Written once for the module: the picker tests only read it (they tick
+    channels and never run a copy), and writing 256 channels took ~3 s per
+    test locally, ~10 s on Windows CI. Checked unchanged afterwards, so a
+    test that starts writing to it fails here instead of leaking into the
+    next one."""
+    src = write_many_channels(tmp_path_factory.mktemp("picker") / "big.mefd")
+
+    def snapshot():
+        return {
+            p.relative_to(src): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(src.rglob("*"))
+            if p.is_file()
+        }
+
+    before = snapshot()
+    yield src
+    assert snapshot() == before, "a picker test changed the shared recording"
+
+
 @pytest.fixture
-def picker_256(window_page, qtbot, tmp_path):
+def picker_256(window_page, qtbot, source_256):
     window, page = window_page
-    src = write_many_channels(tmp_path / "big.mefd")
+    src = source_256
     open_in_explorer(qtbot, window, [src])
     go_to_channels(page)
     return page

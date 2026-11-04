@@ -222,10 +222,74 @@ def test_a_failed_tile_read_fails_the_block_and_stops_the_spinner(one, qtbot, mo
     qtbot.waitUntil(lambda: bool(failed), timeout=10_000)
     qtbot.waitUntil(lambda: not one.controller.loading, timeout=10_000)
     assert "could not be read" in failed[0]
+    # The disk comes back only after every read started without it has ended
+    # (on a slow runner some are still running here; one ending after the
+    # restore would fail the new page's block, which is not what this pins).
+    qtbot.waitUntil(lambda: one.controller.scheduler.pending() == 0, timeout=10_000)
+    n_failed = len(failed)
     monkeypatch.setattr(one.data, "read_tile", real)
     one.set_state(t0=T0 + 20 * SEC)
     settle(qtbot, one)
+    req = one.controller._req
+    empty = [r.label for r in one.canvas.rows if r.piece is None]
+    assert not empty, (
+        f"rows without data {empty}; failed blocks {sorted(req.failed) if req else None}; "
+        f"pending reads {one.controller.scheduler.pending()}; "
+        f"failures after the restore {failed[n_failed:]}"
+    )
+
+
+def test_an_old_read_error_does_not_empty_a_newer_page(one, qtbot, monkeypatch):
+    """A tile error reaches the UI thread after a newer page asked for the
+    same tile (a drive that dropped out and came back): that page gets a
+    fresh read, not the old failure."""
+    failed = []
+    one.controller.failed.connect(failed.append)
+    gate = threading.Event()
+    real = one.data.read_tile
+
+    def held(*a, **k):
+        gate.wait(10)
+        return real(*a, **k)
+
+    monkeypatch.setattr(one.data, "read_tile", held)
+    one.controller.cache.clear()
+    one.controller._held.clear()
+    one.controller._held_bytes = 0
+    one.set_state(t0=T0 + 45 * SEC)  # beyond the look-ahead: nothing cached
+    ctl = one.controller
+    job = next(j for j in ctl._jobs.values() if j.tile_keys and j.generation == ctl._generation)
+    ctl._on_error(job.tile_keys[0], OSError("disk went away"), ctl._generation - 1)
+    assert job.key in ctl._jobs and failed == []
+    gate.set()
+    settle(qtbot, one)
+    assert failed == []
     assert all(r.piece is not None for r in one.canvas.rows)
+
+
+def test_a_read_error_fails_the_pages_asked_for_before_it(one, qtbot, monkeypatch):
+    """The converse: an error marked with the page's own generation (the
+    read failed after that page asked) fails it, and says so."""
+    failed = []
+    one.controller.failed.connect(failed.append)
+    gate = threading.Event()
+    real = one.data.read_tile
+
+    def held(*a, **k):
+        gate.wait(10)
+        return real(*a, **k)
+
+    monkeypatch.setattr(one.data, "read_tile", held)
+    one.controller.cache.clear()
+    one.controller._held.clear()
+    one.controller._held_bytes = 0
+    one.set_state(t0=T0 + 45 * SEC)
+    ctl = one.controller
+    job = next(j for j in ctl._jobs.values() if j.tile_keys and j.generation == ctl._generation)
+    ctl._on_error(job.tile_keys[0], OSError("disk went away"), ctl._generation)
+    assert job.key not in ctl._jobs
+    assert failed and "could not be read" in failed[0]
+    gate.set()
 
 
 def test_a_tile_the_cache_refuses_still_reaches_the_block(one, qtbot):
