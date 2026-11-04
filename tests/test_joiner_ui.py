@@ -55,6 +55,21 @@ def choose_all(page, leave_out=()):
         page.picker.click(name, False)
     page.next()
     assert page.step == STEP_KEEP
+    wait_for_map(page)
+
+
+def wait_for_map(page, seconds=60):
+    """The map is worked out in short slices; Next stays disabled in the
+    window mode until it has arrived."""
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    end = time.monotonic() + seconds
+    while not page.keep.layout_ready and time.monotonic() < end:
+        QApplication.processEvents()
+        time.sleep(0.005)
+    assert page.keep.layout_ready
 
 
 def test_the_page_is_in_the_navigation(window):

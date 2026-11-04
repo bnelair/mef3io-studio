@@ -143,7 +143,9 @@ def test_keyboard_picks_a_line_and_nudges_it(trim_map, qtbot):
     v0 = trim_map.v0
     QTest.keyClick(trim_map, Qt.Key.Key_Left)
     assert trim_map.v0 != v0
-    assert "arrow" in trim_map.accessibleName()
+    assert (
+        "arrow" in trim_map.accessibleDescription() and "Home" in trim_map.accessibleDescription()
+    )
 
 
 def test_zoom_still_works_and_a_line_can_be_placed_finely(trim_map):
@@ -432,3 +434,128 @@ def test_window_join_end_to_end_output_is_the_window_within_the_data(window_page
     assert (found.start_uutc, found.end_uutc) == (start, end)
     for p in (a, b, c):
         assert p.exists()
+
+
+# -- review round 1 ----------------------------------------------------------------------
+
+
+def run_check(qtbot, page, tmp_path):
+    """On to the last step, name it, press Check and save, return the texts
+    of what stops it."""
+    from PySide6.QtWidgets import QLabel
+
+    page.next()  # privacy
+    page.next()  # new recording
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    page.new.folder = str(out)
+    page.new.name.setText("windowed")
+    before = sorted(p.name for p in tmp_path.rglob("*"))
+    check = page.next()
+    with qtbot.waitSignal(check.finished, timeout=120_000):
+        pass
+    assert page.step != 5 and page.handle is None
+    assert sorted(p.name for p in tmp_path.rglob("*")) == before  # nothing written
+    texts = []
+    for i in range(page.new.findings.count()):
+        texts += [lb.text() for lb in page.new.findings.itemAt(i).widget().findChildren(QLabel)]
+    return texts
+
+
+def test_a_nan_gap_inside_a_part_is_refused_by_name_before_writing(window_page, qtbot, tmp_path):
+    window, page = window_page
+    # G is ONE part with a stretch of NaN (no data) inside it; the window falls in that stretch.
+    gappy = tmp_path / "G.mefd"
+    with mef3io.Writer(str(gappy), overwrite=True, metadata=metadata()) as w:
+        v = np.arange(7200, dtype=float)
+        v[2400:4800] = np.nan  # 20 to 40 minutes
+        w.write("a1", v, T0, 2.0)
+    other = write(tmp_path / "O.mefd", T0, seconds=3600, channels=("b1",))
+    open_in_explorer(qtbot, window, [gappy, other])
+    choose_all(page)
+    keep = page.keep
+    keep.set_window(T0 + 25 * 60 * SECOND, T0 + 35 * 60 * SECOND)
+    assert "G" in [r.entry.name for r in keep.rows] and keep.ok  # the map cannot know
+    texts = run_check(qtbot, page, tmp_path)
+    assert any(t.startswith("G: ") and "no recorded signal" in t for t in texts), texts
+
+
+def test_data_only_in_a_channel_left_out_is_no_data(window_page, qtbot, tmp_path):
+    window, page = window_page
+    both = tmp_path / "G.mefd"
+    with mef3io.Writer(str(both), overwrite=True, metadata=metadata()) as w:
+        w.write("a1", np.arange(3600, dtype=float), T0, 2.0)  # first 30 minutes
+        w.write("a2", np.arange(7200, dtype=float), T0, 2.0)  # the whole hour
+    other = write(tmp_path / "O.mefd", T0, seconds=3600, channels=("b1",))
+    open_in_explorer(qtbot, window, [both, other])
+    choose_all(page, leave_out=("a2",))
+    keep = page.keep
+    keep.set_window(T0 + 40 * 60 * SECOND, T0 + 50 * 60 * SECOND)
+    texts = run_check(qtbot, page, tmp_path)
+    assert any(t.startswith("G: ") and "no recorded signal" in t for t in texts), texts
+
+
+def test_next_waits_for_the_map_in_window_mode(window_page, qtbot, tmp_path):
+    from test_joiner_ui import wait_for_map
+
+    window, page = window_page
+    two_recordings(qtbot, window, tmp_path)
+    page.go(0)
+    page.recordings.set_ticked([e.key for e in page.recordings.rows])
+    page.next()
+    page.next()
+    assert page.step == STEP_KEEP
+    keep = page.keep
+    assert keep.mode == MODE_WINDOW and not keep.layout_ready
+    assert not keep.ok and not page.next_button.isEnabled()
+    assert "map is still being worked out" in keep.problems.text()
+    wait_for_map(page)
+    assert keep.ok and page.next_button.isEnabled() and not keep.problems.isVisibleTo(keep)
+
+
+def test_switching_modes_back_and_forth_keeps_the_window_and_no_stale_state(
+    window_page, qtbot, tmp_path
+):
+    window, page = window_page
+    two_recordings(qtbot, window, tmp_path)
+    choose_all(page)
+    keep = page.keep
+    start, end = T0 + 3 * HOUR + 600 * SECOND, T0 + 4 * HOUR
+    keep.set_window(start, end)
+    assert keep.left_out and [r.entry.name for r in keep.rows] == ["B"]
+    # To "choose for each": nothing left out, nothing from the window in the request.
+    keep.mode_each.setChecked(True)
+    assert keep.mode == MODE_EACH and not keep.left_out and not keep.map.left_out
+    assert keep.window == (start, end)  # kept for the way back
+    assert [r.entry.name for r in keep.rows] == ["A", "B"]
+    assert all(s.keep.how == KEEP_WHOLE for s in page.make_request().sources)
+    assert not keep.map.lines_enabled
+    # And back: the same window, applied again.
+    keep.mode_window.setChecked(True)
+    assert keep.mode == MODE_WINDOW and keep.window == (start, end)
+    assert [r.entry.name for r in keep.rows] == ["B"] and keep.map.left_out
+    assert page.make_request().sources[0].keep.start_us == start
+    assert keep.date_edit[START].text() == format_utc_us(start)
+    # Touching one recording's choice leaves the window mode; its old window is not applied.
+    keep.all_rows[1].how.setCurrentIndex(1)
+    assert keep.mode == MODE_EACH and not keep.left_out
+    assert keep.window == (start, end)
+
+
+def test_utc_text_for_early_and_negative_times():
+    from datetime import UTC, datetime, timedelta
+
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    for y in (1, 9, 99, 999, 1000, 1969, 1970, 9999):
+        moment = datetime(y, 6, 7, 8, 9, 10, 123456, tzinfo=UTC)
+        us = (moment - epoch) // timedelta(microseconds=1)
+        text = format_utc_us(us)
+        assert text == f"{y:04d}-06-07 08:09:10.123456"
+        assert parse_utc_text(text) == us
+    assert format_utc_us(-1) == "1969-12-31 23:59:59.999999"
+    assert parse_utc_text("1969-12-31 23:59:59.999999") == -1
+    assert format_utc_us(-1_000_000) == "1969-12-31 23:59:59.000000"
+    # Out of the calendar's years 1 to 9999: said, not raised.
+    assert format_utc_us(10**20) == "not a valid time"
+    assert format_utc_us(-(10**20)) == "not a valid time"
+    assert parse_utc_text("0000-01-01") is None

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
@@ -360,6 +361,7 @@ class KeepRow(QWidget):
 MODE_WINDOW = "window"
 MODE_EACH = "each"
 LEFT_OUT_TEXT = "Left out: no data between Start and End"
+WAIT_FOR_MAP = "Wait a moment: the map is still being worked out."
 NO_DATA_IN_WINDOW = (
     "No recording has data between Start and End. Move the lines so that they enclose some."
 )
@@ -428,7 +430,10 @@ class KeepStep(QWidget):
         self.map_buttons = FlowLayout()
         self.fit_button = QToolButton()
         self.fit_button.setText("Show everything")
-        self.fit_button.setToolTip("Show the whole time span of the recordings (Home key)")
+        self.fit_button.setToolTip(
+            "Show the whole time span of the recordings. The Home key does the same, unless "
+            "the Start or End line is picked: then it moves that line to the first moment."
+        )
         self.zoom_in_button = QToolButton()
         self.zoom_in_button.setText("Zoom in")
         self.zoom_in_button.setToolTip("Or turn the mouse wheel over the map")
@@ -488,7 +493,10 @@ class KeepStep(QWidget):
         self._layout_runner = SlicedRunner(self)
         self._layout_runner.done.connect(self._on_layout_done)
 
-        layout = QVBoxLayout(self)
+        # Everything sits in a scroll area, so that on a small window the map,
+        # the Start and End fields and the table can all still be reached.
+        body = QWidget()
+        layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(
             _label(
@@ -507,9 +515,17 @@ class KeepStep(QWidget):
         layout.addWidget(self.map, 2)
         layout.addLayout(self.map_buttons)
         layout.addWidget(self.window_box)
+        self.table.setMinimumHeight(round(self.fontMetrics().height() * 9))
         layout.addWidget(self.table, 1)
         layout.addWidget(self.summary)
         layout.addWidget(self.problems)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(body)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
     # -- the recordings ----------------------------------------------------------------
     @property
@@ -573,6 +589,12 @@ class KeepStep(QWidget):
         self.map.set_theme(theme)
 
     # -- the map ----------------------------------------------------------------------------
+    @property
+    def layout_ready(self) -> bool:
+        """The map (and so the stretches with data) is worked out for the
+        recordings on this page."""
+        return self._layout_keys == tuple(sorted(r.entry.key for r in self.all_rows))
+
     def _start_layout(self, entries: list[RecordingEntry]) -> None:
         items = [RecordingInput(e.key, e.name, e.details) for e in entries]
         cache = self._coverage_cache
@@ -593,6 +615,7 @@ class KeepStep(QWidget):
         self._coverage_cache = cache
         self._runs = {r.key: r.runs for r in layout.rows if r.has_data}
         refit = keys != self._layout_keys
+        was_ready = self.layout_ready
         self._layout_keys = keys
         self.map.set_layout(layout, refit=refit)
         self.map.set_zone(self.page.zone)
@@ -600,7 +623,7 @@ class KeepStep(QWidget):
         # check that is running must not be spoilt by the map arriving).
         before = self.left_out
         self._apply_window()
-        if self.left_out != before:
+        if self.left_out != before or not was_ready:
             self.recompute()
 
     def _map_moved(self, start: int, end: int) -> None:
@@ -806,7 +829,9 @@ class KeepStep(QWidget):
             else ""
         )
         words = list(dict.fromkeys(problem_text(p, names) for p in self.plan.problems))
-        if self.mode == MODE_WINDOW and self.all_rows and not self.rows:
+        if self.mode == MODE_WINDOW and self.all_rows and not self.layout_ready:
+            words = [WAIT_FOR_MAP]
+        elif self.mode == MODE_WINDOW and self.all_rows and not self.rows:
             words = [NO_DATA_IN_WINDOW]
         self.problems.setText("\n".join(words))
         self.problems.setVisible(bool(words))
@@ -814,7 +839,8 @@ class KeepStep(QWidget):
 
     @property
     def ok(self) -> bool:
-        return bool(self.rows) and self.plan.ok
+        waiting = self.mode == MODE_WINDOW and not self.layout_ready
+        return bool(self.rows) and self.plan.ok and not waiting
 
 
 def zone_words(zone: tzinfo) -> str:

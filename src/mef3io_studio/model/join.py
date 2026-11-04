@@ -893,10 +893,20 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
             if span.whole:
                 continue
             cut = True
+            # With the channels left out of the new recording: data only in
+            # those channels is no data (the library then refuses the part as
+            # empty, before anything is written). A recording left with no
+            # channel at all is the merge check's business, not the cut's.
             refusals = transform_refusals(
-                ChangeRequest(s.source, placeholder, s.password, time_range=span.time_range),
+                ChangeRequest(
+                    s.source,
+                    placeholder,
+                    s.password,
+                    exclude_channels=tuple(_excluded_for(request, key, layouts) or ()),
+                    time_range=span.time_range,
+                ),
                 cancel,
-                ignore=PLACEHOLDER_CODES,
+                ignore=frozenset(PLACEHOLDER_CODES) | {"no-channels-left"},
             )
             findings += [CheckFinding(key, _check_message(r, request)) for r in refusals[:1]]
         if findings:

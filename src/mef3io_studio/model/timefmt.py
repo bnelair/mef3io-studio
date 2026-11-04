@@ -84,8 +84,18 @@ def format_time(us: int | None, zone: tzinfo = UTC, seconds_decimals: int = 0) -
 
 def format_utc_us(us: int) -> str:
     """ "2026-11-04 13:05:22.123456": a UTC time to the microsecond, exact
-    (the zone is named beside the field, not repeated in it)."""
-    return to_datetime(us, UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    (the zone is named beside the field, not repeated in it). The year always
+    has four digits ("0999-..."), written here and not by ``strftime`` (which
+    does not pad it everywhere); a time outside years 1 to 9999 is "not a
+    valid time", as in :func:`format_time`."""
+    try:
+        m = to_datetime(us, UTC)
+    except (OverflowError, ValueError, OSError):
+        return "not a valid time"
+    return (
+        f"{m.year:04d}-{m.month:02d}-{m.day:02d} "
+        f"{m.hour:02d}:{m.minute:02d}:{m.second:02d}.{m.microsecond:06d}"
+    )
 
 
 _UTC_TEXT = re.compile(

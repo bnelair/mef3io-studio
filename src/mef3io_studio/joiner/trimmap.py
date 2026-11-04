@@ -31,9 +31,12 @@ GRAB_PIXELS = 7
 SNAP_PIXELS = 4
 ONE_SECOND = 1_000_000
 
-HELP = (
-    "Map of when each recording has data. Press S or E to pick the Start or End line, "
-    "then the left and right arrow keys to move it."
+HELP = "Map of when each recording has data, with a Start line and an End line."
+KEYBOARD_HELP = (
+    "Press S or E to pick the Start or End line, then the left and right arrow keys to move "
+    "it by one pixel (Shift: ten pixels, Ctrl: one second). Home and End put the picked line "
+    "at the first or last moment, Escape lets go of it. Without a picked line, the arrow keys "
+    "move the view, plus and minus zoom, and Home shows everything."
 )
 
 
@@ -60,6 +63,7 @@ class TrimMapWidget(CombinedTimelineWidget):
         self.active: str | None = None
         self._line_drag: str | None = None
         self.setAccessibleName(HELP)
+        self.setAccessibleDescription(KEYBOARD_HELP)
         self.setToolTip("")
 
     # -- geometry: more room above the rows for the line labels ----------------
@@ -117,7 +121,7 @@ class TrimMapWidget(CombinedTimelineWidget):
         self.window_moved.emit(self.start, self.end)
         return True
 
-    def _snapped(self, which: str, x: float) -> int:
+    def _snapped(self, x: float) -> int:
         """The time under pixel ``x``; at the first or last moment of the
         recordings when within a few pixels of it."""
         t = self.time_at(x)
@@ -160,7 +164,7 @@ class TrimMapWidget(CombinedTimelineWidget):
         pos = event.position()
         if self._line_drag is not None:
             if event.buttons() & Qt.MouseButton.LeftButton:
-                self.move_line(self._line_drag, self._snapped(self._line_drag, pos.x()))
+                self.move_line(self._line_drag, self._snapped(pos.x()))
             event.accept()
             return
         if self._drag is None:
@@ -234,21 +238,20 @@ class TrimMapWidget(CombinedTimelineWidget):
         first = self.scrollbar.value()
         shade = QColor(theme.surface)
         shade.setAlphaF(0.72)
-        painter.setClipRect(QRectF(0, axis, self.width(), self.height() - axis))
+        clip = QRectF(0, axis, self.width(), self.height() - axis)
+        painter.setClipRect(clip)
+        notes: list[tuple[QRectF, str]] = []
         for n, row in enumerate(layout.rows[first : first + self.visible_rows() + 1]):
             y = axis + n * row_h
-            band = QRectF(0, y, plot.right(), row_h)
+            # The shading starts at the plot: the recording's name in the
+            # gutter keeps its full contrast.
             if row.key in self.left_out:
-                painter.fillRect(band, shade)
-                painter.setPen(QColor(theme.text))
-                painter.drawText(
-                    QRectF(plot.left() + em * 0.3, y, plot.width() - em * 0.6, row_h),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    self.fontMetrics().elidedText(
+                painter.fillRect(QRectF(plot.left(), y, plot.width(), row_h), shade)
+                notes.append(
+                    (
+                        QRectF(plot.left() + em * 0.3, y, plot.width() - em * 0.6, row_h),
                         self.left_out[row.key],
-                        Qt.TextElideMode.ElideRight,
-                        int(plot.width() - em * 0.6),
-                    ),
+                    )
                 )
                 continue
             if row.key not in self.kept:
@@ -270,6 +273,29 @@ class TrimMapWidget(CombinedTimelineWidget):
         if self.lines_enabled:
             for which, t in ((START, self.start), (END, self.end)):
                 self._paint_line(painter, which, t, em, axis, plot)
+        # The words come last, on a backing of the surface colour, so that a
+        # line crossing a left-out row never runs through them.
+        painter.setClipRect(clip)
+        fm = self.fontMetrics()
+        backing = QColor(theme.surface)
+        for rect, words in notes:
+            text = fm.elidedText(words, Qt.TextElideMode.ElideRight, int(rect.width()))
+            box = QRectF(
+                rect.left() - em * 0.2,
+                rect.center().y() - fm.height() * 0.6,
+                fm.horizontalAdvance(text) + em * 0.4,
+                fm.height() * 1.2,
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(backing)
+            painter.drawRoundedRect(box, 3, 3)
+            painter.setPen(QColor(theme.text))
+            painter.drawText(
+                rect,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                text,
+            )
+        painter.setClipping(False)
         painter.end()
 
     def _paint_line(self, painter, which, t, em, axis, plot) -> None:
