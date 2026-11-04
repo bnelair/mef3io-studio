@@ -589,7 +589,11 @@ class RecordingsStep(QWidget):
 class DatesStep(QWidget):
     changed = Signal()
 
-    def __init__(self, page: AnonymizerPage):
+    def __init__(self, page: AnonymizerPage, single: bool = False):
+        """``single``: ONE new recording is made from all of them (Join or
+        trim), so they keep their order and spacing: the choice between
+        "one shift" and "same moment" and the reference recording (always the
+        earliest) are not shown. ``page`` needs ``choices`` and ``zone``."""
         super().__init__(page)
         self.page = page
         self.plan: ShiftPlan | None = None
@@ -627,7 +631,8 @@ class DatesStep(QWidget):
         self.reference = QComboBox()
         self.reference.setToolTip("The recording that gets the new date; the others follow it")
         form = QFormLayout()
-        form.addRow("Copies:", self._stack(self.relative, self.aligned))
+        copies = self._stack(self.relative, self.aligned)
+        form.addRow("Copies:", copies)
         form.addRow("Time of day:", self._stack(self.keep_local, self.keep_utc, self.set_time))
         form.addRow("Recording site's time zone:", self.zone)
         form.addRow("New date of the reference:", self.new_date)
@@ -641,6 +646,9 @@ class DatesStep(QWidget):
         )
         form.addRow("", reference_help)
         form.addRow("", self.weekday)
+        if single:
+            for hidden in (copies, self.reference, reference_help):
+                form.setRowVisible(hidden, False)
         self.refusals = _label()
         self.refusals.setObjectName("Bad")
         self.preview = _table(("Recording", "Original start", "New start", "New end", "Notes"))
@@ -745,6 +753,72 @@ class DatesStep(QWidget):
         )
 
 
+class DetailsAndTextBox(QWidget):
+    """What an anonymous copy clears (patient names and ID, location,
+    descriptions) and what happens to the text of notes and events. Used by
+    the Identity step here and by Join or trim's Privacy step."""
+
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.clear_patient = QCheckBox("Patient names and ID")
+        self.clear_location = QCheckBox("Recording location")
+        self.clear_descriptions = QCheckBox("Recording, channel and reference descriptions")
+        for box in (self.clear_patient, self.clear_location, self.clear_descriptions):
+            box.setChecked(True)
+            box.toggled.connect(self._on_changed)
+        self.text_drop = QRadioButton("Remove the text (the notes and their times stay)")
+        self.text_keep = QRadioButton("Keep the text")
+        self.text_drop.setChecked(True)
+        group = QButtonGroup(self)
+        group.addButton(self.text_drop)
+        group.addButton(self.text_keep)
+        self.text_keep.toggled.connect(self._on_changed)
+        self.keep_warning = _label(KEEP_TEXT_WARNING)
+        self.keep_warning.setObjectName("Bad")
+        self.clear_warning = _label(
+            "Details you do not clear stay in the copies and can identify the patient."
+        )
+        self.clear_warning.setObjectName("Bad")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(_label("Details to clear in the copies:", bold=True))
+        for box in (self.clear_patient, self.clear_location, self.clear_descriptions):
+            layout.addWidget(box)
+        layout.addWidget(self.clear_warning)
+        layout.addWidget(_label("Text of notes and events:", bold=True))
+        layout.addWidget(self.text_drop)
+        layout.addWidget(self.text_keep)
+        layout.addWidget(self.keep_warning)
+        self._on_changed()
+
+    def _on_changed(self, *_args) -> None:
+        self.keep_warning.setVisible(self.text_keep.isChecked())
+        self.clear_warning.setVisible(not all(self.clear_choices_bools()))
+        self.changed.emit()
+
+    def clear_choices_bools(self) -> tuple[bool, bool, bool]:
+        return (
+            self.clear_patient.isChecked(),
+            self.clear_location.isChecked(),
+            self.clear_descriptions.isChecked(),
+        )
+
+    def clear(self) -> tuple[str, ...]:
+        out = []
+        if self.clear_patient.isChecked():
+            out.append(CLEAR_PATIENT)
+        if self.clear_location.isChecked():
+            out.append(CLEAR_LOCATION)
+        if self.clear_descriptions.isChecked():
+            out.append(CLEAR_DESCRIPTIONS)
+        return tuple(out)
+
+    def text(self) -> str:
+        return TEXT_KEEP if self.text_keep.isChecked() else TEXT_DROP
+
+
 class IdentityStep(QWidget):
     changed = Signal()
 
@@ -765,25 +839,17 @@ class IdentityStep(QWidget):
             & ~QAbstractItemView.EditTrigger.CurrentChanged
         )
         self.table.itemChanged.connect(self._on_item_changed)
-        self.clear_patient = QCheckBox("Patient names and ID")
-        self.clear_location = QCheckBox("Recording location")
-        self.clear_descriptions = QCheckBox("Recording, channel and reference descriptions")
-        for box in (self.clear_patient, self.clear_location, self.clear_descriptions):
-            box.setChecked(True)
-            box.toggled.connect(self._on_changed)
-        self.text_drop = QRadioButton("Remove the text (the notes and their times stay)")
-        self.text_keep = QRadioButton("Keep the text")
-        self.text_drop.setChecked(True)
-        group = QButtonGroup(self)
-        group.addButton(self.text_drop)
-        group.addButton(self.text_keep)
-        self.text_keep.toggled.connect(self._on_changed)
-        self.keep_warning = _label(KEEP_TEXT_WARNING)
-        self.keep_warning.setObjectName("Bad")
-        self.clear_warning = _label(
-            "Details you do not clear stay in the copies and can identify the patient."
-        )
-        self.clear_warning.setObjectName("Bad")
+        # What to clear and what happens to note text: one widget, shared
+        # with Join or trim's "Privacy" step.
+        self.details = DetailsAndTextBox(self)
+        self.details.changed.connect(self._on_changed)
+        self.clear_patient = self.details.clear_patient
+        self.clear_location = self.details.clear_location
+        self.clear_descriptions = self.details.clear_descriptions
+        self.text_drop = self.details.text_drop
+        self.text_keep = self.details.text_keep
+        self.keep_warning = self.details.keep_warning
+        self.clear_warning = self.details.clear_warning
         self.problems = _label()
         self.problems.setObjectName("Bad")
         layout = QVBoxLayout(self)
@@ -791,14 +857,7 @@ class IdentityStep(QWidget):
         layout.addWidget(intro)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.problems)
-        layout.addWidget(_label("Details to clear in the copies:", bold=True))
-        for box in (self.clear_patient, self.clear_location, self.clear_descriptions):
-            layout.addWidget(box)
-        layout.addWidget(self.clear_warning)
-        layout.addWidget(_label("Text of notes and events:", bold=True))
-        layout.addWidget(self.text_drop)
-        layout.addWidget(self.text_keep)
-        layout.addWidget(self.keep_warning)
+        layout.addWidget(self.details)
         self._on_changed()
 
     def set_recordings(self, choices: list[Choice]) -> None:
@@ -837,31 +896,18 @@ class IdentityStep(QWidget):
         self.changed.emit()
 
     def _on_changed(self, *_args) -> None:
-        self.keep_warning.setVisible(self.text_keep.isChecked())
-        self.clear_warning.setVisible(not all(self.clear_choices_bools()))
         for c in self.page.choices:
             c.names_message = None
         self.changed.emit()
 
     def clear_choices_bools(self) -> tuple[bool, bool, bool]:
-        return (
-            self.clear_patient.isChecked(),
-            self.clear_location.isChecked(),
-            self.clear_descriptions.isChecked(),
-        )
+        return self.details.clear_choices_bools()
 
     def clear(self) -> tuple[str, ...]:
-        out = []
-        if self.clear_patient.isChecked():
-            out.append(CLEAR_PATIENT)
-        if self.clear_location.isChecked():
-            out.append(CLEAR_LOCATION)
-        if self.clear_descriptions.isChecked():
-            out.append(CLEAR_DESCRIPTIONS)
-        return tuple(out)
+        return self.details.clear()
 
     def text(self) -> str:
-        return TEXT_KEEP if self.text_keep.isChecked() else TEXT_DROP
+        return self.details.text()
 
     def local_problems(self) -> list[str]:
         """Problems the app finds without asking mef3io: empty names,

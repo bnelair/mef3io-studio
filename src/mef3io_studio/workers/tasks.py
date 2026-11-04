@@ -390,6 +390,8 @@ def _register_join_identity(request: join.JoinRequest) -> None:
         values += [s.name, s.password]
     if request.output_password:
         values += list(request.output_password)
+    if request.anonymous is not None:
+        values.append(request.anonymous.pseudonym)
     register_identity(*(v for v in values if v))
 
 

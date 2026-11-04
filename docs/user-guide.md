@@ -716,7 +716,11 @@ recordings chosen.
    with the full-access password).
 2. **Channels.** Every channel of every chosen recording is kept unless you
    leave it out (the same channel list as on the Anonymize page). The new
-   recording holds every channel you keep, from all the recordings.
+   recording holds every channel you keep, from all the recordings. This is
+   the same for an anonymous recording: a channel you leave out is left out
+   of every recording that has it, and the recordings do not need to have the
+   same channels. (A channel that none of the chosen recordings has is
+   refused.)
 3. **What to keep.** The recordings are listed **in time order**, with their
    start and end in your time zone. For each, choose what to keep:
    - **The whole recording**;
@@ -739,15 +743,37 @@ recordings chosen.
    because some recording programs write the time of the last sample itself
    as the end, which is one sample earlier. "The last hour" is therefore
    exactly the last hour of signal, whichever program made the recording.
-4. **New recording.** Type its name and choose the folder (by default the
-   folder of the first recording). Choose **No password** or protect it with
+4. **Privacy.** Choose **Keep the patient details (as in the originals)**
+   (the default) or **Make it anonymous**. Anonymous shows the Anonymize
+   page's choices for one recording: **Keep the real dates**, or **Move
+   every date by the same number of whole days** (the same dates step as the
+   Anonymize page; all the chosen recordings move together, so their order
+   and spacing stay as they were, and the step says when the new recording
+   will start and end); a **pseudonym** (stored as the patient's code; empty
+   means the new recording's name); which details to clear; and whether the
+   text of notes and events is **removed** or **kept** (kept text still has
+   the names the app knows taken out, but dates, ages and other people's
+   names are not found: read it before sharing). The default name of an
+   anonymous recording is `SUBJ-001`, never made from an original's name.
+   The new name and pseudonym may not contain the patient's names, ID or
+   location, or an original's name; that is checked before anything is
+   written.
+5. **New recording.** Type its name and choose the folder (by default the
+   folder of the first recording). Under **Save as**, choose **A folder
+   (.mefd)** or **One file (.mefd.tar), which this app opens directly**. The
+   file is made in the hidden temporary folder, compared with what it was
+   packed from, and only then given its name; a file or folder with that name
+   is never replaced. Choose **No password** or protect it with
    **two new passwords**; the originals' passwords are not carried over, and
    if any original is password-protected the step reminds you that the new
    recording will not be unless you choose passwords here. Trimming one
    recording and keeping all of it, with no channel left out and no new
    passwords, would only make an exact copy, so it is refused.
-5. **Check and save.** First everything is checked, without writing
-   anything: that each kept part holds signal, that no two parts share a
+6. **Check and save.** First everything is checked, without writing
+   anything: that there is enough free space on the drive of the chosen
+   folder for the busiest moment (about twice the size of what you keep when
+   several recordings are joined, or when the result is one file; the message
+   says how much), that each kept part holds signal, that no two parts share a
    channel at the same time, that the channels have the same sampling rate
    in every recording, that the recordings are of the same patient (their
    patient details match), the passwords, and that the name is free. While
@@ -758,6 +784,19 @@ recordings chosen.
    step. Then the new recording is made, with one progress bar for all of it
    and a **Stop** button, and it is **checked against the originals** before
    it gets its name. At the end, **Open it in Explore** shows it there.
+
+**Anonymous and one file in one go.** Each kept part is made anonymous as it
+is read from its original (trimmed, without the channels you left out, with
+one date move and one pseudonym for all), and saved in the hidden temporary
+folder next to the new recording. The parts are then joined, the temporary
+parts are removed at once, and for one file the joined recording is packed,
+compared with what it was packed from and given its name. So no copy with the
+patient's details is ever written. Each original (which may be on a network
+drive) is read once to make its kept part and once more to check that part
+against it; the joining and the packing then work only on the temporary copies,
+not on the originals. The
+progress bar covers all of it. The new recording's **History** (in Explore)
+says it was made by the anonymizer.
 
 **How joining works, and the temporary folder.** When several recordings are
 joined and some are trimmed, the kept part of each trimmed one is first saved

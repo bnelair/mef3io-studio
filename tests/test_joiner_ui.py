@@ -10,7 +10,7 @@ import mef3io
 import numpy as np
 import pytest
 from explorer_sessions import metadata
-from PySide6.QtCore import QItemSelectionModel
+from PySide6.QtCore import QDate, QItemSelectionModel
 from test_anonymizer_ui import open_in_explorer
 
 from mef3io_studio.joiner.page import (
@@ -19,6 +19,7 @@ from mef3io_studio.joiner.page import (
     STEP_CHANNELS,
     STEP_KEEP,
     STEP_NEW,
+    STEP_PRIVACY,
     STEP_RECORDINGS,
     STEP_RUN,
 )
@@ -125,6 +126,8 @@ def test_join_two_recordings_end_to_end(window_page, qtbot, tmp_path):
     page.keep.rows[1].set_how(KEEP_FIRST)
     page.keep.rows[1].duration.set_seconds(1800)
     page.next()
+    assert page.step == STEP_PRIVACY
+    page.next()
     assert page.step == STEP_NEW
     out = tmp_path / "out"
     out.mkdir()
@@ -162,6 +165,8 @@ def test_a_refusal_is_shown_before_anything_is_written(window_page, qtbot, tmp_p
     open_in_explorer(qtbot, window, [a, b])
     choose_all(page)
     page.next()
+    assert page.step == STEP_PRIVACY
+    page.next()
     assert page.step == STEP_NEW
     page.new.name.setText("joined")
     before = sorted(p.name for p in tmp_path.rglob("*"))
@@ -180,10 +185,13 @@ def test_one_recording_kept_whole_needs_a_change(window_page, qtbot, tmp_path):
     choose_all(page)
     assert page.keep.ok
     page.next()
+    assert page.step == STEP_PRIVACY
+    page.next()
     assert page.step == STEP_NEW
     assert page.new.name.text() == "A-part"
     assert "Nothing would change" in page.new.problem_text()
     assert not page.next_button.isEnabled()
+    page.back()
     page.back()
     page.back()
     assert page.step == STEP_CHANNELS
@@ -212,6 +220,8 @@ def test_side_by_side_recordings_join_unless_they_share_a_kept_channel(
     assert keep.ok and not any(r[4] for r in keep.preview.rows)
     assert len(keep.preview.rows) == 2
     page.next()
+    assert page.step == STEP_PRIVACY
+    page.next()
     assert page.step == STEP_NEW and page.next_button.isEnabled()
 
 
@@ -221,6 +231,7 @@ def test_a_check_that_finishes_after_a_change_starts_nothing(window_page, qtbot,
     b = write(tmp_path / "B.mefd", T0 + 3 * HOUR)
     open_in_explorer(qtbot, window, [a, b])
     choose_all(page)
+    page.next()
     page.next()
     page.new.name.setText("joined")
     check = page.next()
@@ -271,3 +282,177 @@ def test_join_or_trim_these_from_explore(window_page, qtbot, tmp_path):
     assert page.step == STEP_CHANNELS
     page.next()
     assert [r.entry.name for r in page.keep.rows] == ["A", "B"]
+
+
+def write_with_notes(path, start, seconds=2 * 3600, fs=2.0, channels=("a1", "a2", "a3")):
+    from explorer_sessions import LAST
+
+    n = int(seconds * fs)
+    with mef3io.Writer(str(path), overwrite=True, metadata=metadata()) as w:
+        for name in channels:
+            w.write(name, np.arange(n, dtype=float), start, fs)
+        w.write_annotations([{"time": start + 10_000_000, "text": f"{LAST} moved"}])
+    return path
+
+
+def test_privacy_step_choices_and_names(window_page, qtbot, tmp_path):
+    from explorer_sessions import FIRST
+
+    window, page = window_page
+    a = write_with_notes(tmp_path / "A.mefd", T0)
+    b = write_with_notes(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page)
+    page.next()
+    assert page.step == STEP_PRIVACY
+    privacy = page.privacy
+    # Today's behaviour is the default: nothing about anonymizing is shown.
+    assert privacy.keep_details.isChecked() and privacy.choice() is None
+    assert not privacy.options.isVisibleTo(page)
+    assert page.new.one_file is False
+    privacy.anonymous.setChecked(True)
+    assert privacy.options.isVisibleTo(page)
+    # The Anonymize page's own widgets, for ONE new recording: no choice
+    # between "one shift" and "same moment", no reference recording.
+    assert not privacy.dates.aligned.isVisibleTo(page)
+    privacy.dates.keep_utc.setChecked(True)
+    # The default new date is the recordings' own date: a shift of nothing.
+    assert not privacy.dates.ok and privacy.problem_text()
+    privacy.dates.new_date.setDate(QDate(1990, 1, 1))
+    assert privacy.dates.ok and privacy.shift_us() % 86_400_000_000 == 0
+    assert not privacy.problem_text()
+    choice = privacy.choice()
+    assert choice.text == "drop" and set(choice.clear) == {"subject", "location", "descriptions"}
+    privacy.details.text_keep.setChecked(True)
+    assert privacy.choice().text == "keep"
+    assert privacy.details.keep_warning.isVisibleTo(page)
+    privacy.dates_keep.setChecked(True)
+    assert privacy.choice().shift_us is None
+    assert privacy.dates_warning.isVisibleTo(page) and not privacy.dates.isVisibleTo(page)
+    # The default name of an anonymous recording says nothing about the
+    # originals; one the user typed is kept.
+    page.next()
+    assert page.step == STEP_NEW
+    assert page.new.name.text() == "SUBJ-001"
+    assert FIRST not in page.new.name.text()
+    page.back()
+    privacy.keep_details.setChecked(True)
+    page.next()
+    assert page.new.name.text() == "A-joined"
+    page.new.name.setText("mine")
+    page.back()
+    privacy.anonymous.setChecked(True)
+    page.next()
+    assert page.new.name.text() == "mine"
+    # "Save as": a folder or one file.
+    page.new.folder = str(tmp_path)
+    assert page.new.destination().endswith("mine.mefd")
+    page.new.save_file.setChecked(True)
+    assert page.new.destination().endswith("mine.mefd.tar")
+    page.new.save_folder.setChecked(True)
+    request = page.make_request()
+    assert request.anonymous is not None and not request.one_file
+
+
+def test_join_anonymous_as_one_file_end_to_end(window_page, qtbot, tmp_path):
+    from explorer_sessions import FIRST, LAST, PATIENT_ID
+
+    window, page = window_page
+    a = write_with_notes(tmp_path / "A.mefd", T0)
+    b = write_with_notes(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page, leave_out=["a2"])
+    page.keep.rows[0].set_how(KEEP_LAST)
+    page.keep.rows[0].duration.set_seconds(3600)
+    page.keep.rows[1].set_how(KEEP_FIRST)
+    page.keep.rows[1].duration.set_seconds(1800)
+    before = sorted((p.name, p.stat().st_size) for p in tmp_path.rglob("*"))
+    page.next()
+    assert page.step == STEP_PRIVACY
+    page.privacy.anonymous.setChecked(True)
+    page.privacy.dates.keep_utc.setChecked(True)
+    page.privacy.dates.new_date.setDate(QDate(1990, 1, 1))
+    shift = page.privacy.shift_us()
+    assert shift is not None and shift != 0
+    page.next()
+    assert page.step == STEP_NEW
+    out = tmp_path / "out"
+    out.mkdir()
+    page.new.folder = str(out)
+    page.new.save_file.setChecked(True)
+    assert page.new.problem_text() == ""
+    check = page.next()
+    with qtbot.waitSignal(check.finished, timeout=120_000):
+        pass
+    assert page.step == STEP_RUN, page.new.findings.count()
+    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
+        pass
+    assert page.result is not None and page.result.ok, page.result
+    text = page.run_step.result.text()
+    assert "anonymous" in text and "one file" in text
+    dst = out / "SUBJ-001.mefd.tar"
+    assert os.listdir(out) == [dst.name]
+    assert mef3io.Reader(str(dst)).channels == ["a1", "a3"]
+    found = mef3io.time_range(str(dst))
+    assert (found.start_uutc, found.end_uutc) == (
+        T0 + HOUR + shift,
+        T0 + 3 * HOUR + HOUR // 2 + shift,
+    )
+    blob = dst.read_bytes()
+    for secret in (FIRST, LAST, PATIENT_ID):
+        assert secret.encode() not in blob
+    assert all(not r.get("text") for r in mef3io.Reader(str(dst)).records(level="all"))
+    # The originals are untouched, nothing else is left behind.
+    after = sorted(
+        (p.name, p.stat().st_size) for p in tmp_path.rglob("*") if "out" not in p.parts[-2:-1]
+    )
+    assert [x for x in after if x[0] in ("A.mefd", "B.mefd")] == [
+        x for x in before if x[0] in ("A.mefd", "B.mefd")
+    ]
+    assert not [n for n in os.listdir(out) if n.startswith(PARTS_PREFIX)]
+    assert not [n for n in os.listdir(tmp_path) if n.startswith(PARTS_PREFIX)]
+    # "Open it in Explore" works for a single-file recording, and its history
+    # says it was made by the anonymizer.
+    page.open_result()
+    assert window.pages.currentWidget() is window.explorer
+    qtbot.waitUntil(
+        lambda: any(e.name == "SUBJ-001" and not e.busy for e in window.explorer.entries()),
+        timeout=60_000,
+    )
+    entry = next(e for e in window.explorer.entries() if e.name == "SUBJ-001")
+    groups = entry.details.history_groups()
+    assert any(h is not None and "anonymize" in h.operations for h, _parts in groups)
+
+
+def test_moving_the_dates_without_a_plan_never_keeps_the_real_dates(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_with_notes(tmp_path / "A.mefd", T0)
+    b = write_with_notes(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page)
+    page.next()
+    privacy = page.privacy
+    privacy.anonymous.setChecked(True)
+    privacy.dates_move.setChecked(True)
+    privacy.dates.plan = None  # no plan at all
+    with pytest.raises(ValueError):
+        privacy.choice()
+
+
+def test_an_incomplete_date_plan_is_told_to_the_user_not_swallowed(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_with_notes(tmp_path / "A.mefd", T0)
+    b = write_with_notes(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page)
+    page.next()
+    page.privacy.anonymous.setChecked(True)
+    page.privacy.dates_move.setChecked(True)
+    page.privacy.dates.plan = None
+    page.go(STEP_NEW)
+    page.new.name.setText("joined")
+    before = sorted(p.name for p in tmp_path.rglob("*"))
+    assert page.check_and_save() is None
+    assert page.new.findings.count() == 1
+    assert page.handle is None
+    assert sorted(p.name for p in tmp_path.rglob("*")) == before
