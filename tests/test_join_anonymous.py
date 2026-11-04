@@ -313,8 +313,14 @@ def test_anonymous_join_accepts_a_leave_out_that_only_some_recordings_have(tmp_p
 def test_a_channel_in_none_of_the_recordings_is_still_refused(tmp_path):
     a = write(tmp_path / "A.mefd", T0, channels=("a1", "a2", "a3"))
     b = write(tmp_path / "B.mefd", T0 + 3 * HOUR, channels=("a1", "a2", "b9"))
-    request = request_for(a, b, tmp_path / "SUBJ-011.mefd", j.Anonymous(shift_us=SHIFT),
-                          exclude=("nowhere",), keep_a=j.Keep(j.KEEP_WHOLE))
+    request = request_for(
+        a,
+        b,
+        tmp_path / "SUBJ-011.mefd",
+        j.Anonymous(shift_us=SHIFT),
+        exclude=("nowhere",),
+        keep_a=j.Keep(j.KEEP_WHOLE),
+    )
     assert j.check_join(request)
     assert not (tmp_path / "SUBJ-011.mefd").exists()
 
