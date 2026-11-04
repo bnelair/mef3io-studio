@@ -863,24 +863,18 @@ def _folder_bytes(folder: str) -> int:
     return total
 
 
-def _source_bytes(path: str, excluded: frozenset[str], channels: int) -> int:
-    """Bytes of the kept channels of one recording (a folder of channel
-    folders; a single file counts by the share of channels kept)."""
+def _source_bytes(path: str, excluded: frozenset[str], channels: tuple[str, ...]) -> int:
+    """Bytes of a recording (every file under it, or the single file) times
+    the share of channels kept. The app knows no MEF file names, so channels
+    are assumed to be about equal in size."""
     try:
-        if os.path.isfile(path):
-            share = 1.0
-            if channels:
-                share = max(1, channels - len(excluded)) / channels
-            return int(os.stat(path).st_size * share)
-        total = 0
-        for entry in os.scandir(path):
-            if entry.is_dir() and entry.name.lower().endswith(".timd"):
-                if entry.name[: -len(".timd")] in excluded:
-                    continue
-                total += _folder_bytes(entry.path)
-        return total
+        total = os.stat(path).st_size if os.path.isfile(path) else _folder_bytes(path)
     except OSError:
         return 0
+    if channels:
+        kept = [c for c in channels if c not in excluded]
+        total = int(total * len(kept) / len(channels))
+    return total
 
 
 def sizing(request: JoinRequest, plan: JoinPlan, layouts: dict) -> Sizing:
@@ -891,7 +885,7 @@ def sizing(request: JoinRequest, plan: JoinPlan, layouts: dict) -> Sizing:
     for s in request.sources:
         layout = _as_layout(layouts.get(s.key, (None, None)))
         span = plan.spans.get(s.key)
-        size = _source_bytes(s.source, excluded, len(layout.channels))
+        size = _source_bytes(s.source, excluded, layout.channels)
         if span is not None and layout.start is not None and layout.end is not None:
             length = max(1, layout.end - layout.start)
             size = int(size * min(1.0, max(0, span.end - span.start) / length))
