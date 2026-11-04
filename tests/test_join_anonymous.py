@@ -457,7 +457,8 @@ def test_a_recording_left_with_no_channel_is_refused_plainly(tmp_path, anonymous
     request, out = _zero_channel_request(tmp_path, anonymous)
     findings = j.check_join(request)
     assert findings
-    assert "Every channel" in findings[0].message.detail or "Every channel" in str(findings[0].message)
+    message = findings[0].message
+    assert "Every channel" in message.detail or "Every channel" in str(message)
     assert findings[0].key == str(tmp_path / "B.mefd")
     result = j.make_joined(request)
     assert not result.ok
