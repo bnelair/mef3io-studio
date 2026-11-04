@@ -38,6 +38,7 @@ Test versions are published as GitHub pre-releases, full releases as the latest 
 | 0.1.0 | 2.1.1 | **First full release** (no longer a test version): rename recordings safely in time order with undo, **Edit details** (makes a new copy), password choices on every new copy, saved channel choices and **Make new recordings** in one batch ([notes](release-notes/0.1.0.md)) |
 | 0.1.1 | 2.1.1 | **Cut into pieces**: several new recordings from one, every few hours or days (or one per calendar day) or at typed times, each a checked copy ([notes](release-notes/0.1.1.md)) |
 | 0.1.2 | 2.1.1 | **Fast signal viewer**: paging, scrolling and changing the view take about a tenth of a second instead of seconds with many channels ([notes](release-notes/0.1.2.md)) |
+| 0.1.3 | 2.1.1 | The signal viewer no longer leaves a page empty after a brief read error ([notes](release-notes/0.1.3.md)) |
 
 ## Next directions (each needs a specification first)
 
