@@ -178,7 +178,7 @@ def group_channels(
 
 
 class _Job:
-    __slots__ = ("key", "request", "token", "state", "seq", "deferred")
+    __slots__ = ("key", "request", "token", "state", "seq", "deferred", "start_gen")
 
     def __init__(self, key, request: Request, seq: int) -> None:
         self.key = key
@@ -187,6 +187,7 @@ class _Job:
         self.state = "queued"  # queued | running | done | cancelled
         self.seq = seq
         self.deferred = False  # waiting for a cancelled read of the same key
+        self.start_gen = request.generation  # the newest view that asked when the read began
 
 
 class TileScheduler:
@@ -415,6 +416,7 @@ class TileScheduler:
                     if job is None or job.state != "queued" or job.request.priority != priority:
                         continue  # cancelled, taken, or a stale heap entry
                     job.state = "running"
+                    job.start_gen = job.request.generation
                     self._active += 1
                     return job
                 self._cv.wait()
@@ -440,6 +442,21 @@ class TileScheduler:
                 result = None
             with self._cv:
                 live = job.state == "running"
+                # A newer view asked for this tile while the read ran (it
+                # joined the running read): a failure that began before then
+                # (a disk that came back meanwhile) must not empty the newer
+                # page. Read once more for it; a second failure is reported.
+                if (
+                    live
+                    and error is not None
+                    and job.request.generation > job.start_gen
+                    and not (self._closed or self._draining)
+                ):
+                    job.state = "queued"
+                    heapq.heappush(self._heap, (job.request.priority, next(self._seq), key))
+                    self._active -= 1
+                    self._cv.notify_all()
+                    continue
                 if live:
                     job.state = "done"
                     if self._jobs.get(key) is job:
