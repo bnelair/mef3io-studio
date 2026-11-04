@@ -667,8 +667,13 @@ class PrivacyStep(QWidget):
     def choice(self) -> Anonymous | None:
         if not self.is_anonymous():
             return None
+        shift = self.shift_us()
+        if shift is None and self.dates_move.isChecked():
+            # Fail closed: "move the dates" without a plan must never turn
+            # into "keep the real dates".
+            raise ValueError("The dates are to be moved, but there is no plan for it.")
         return Anonymous(
-            shift_us=self.shift_us(),
+            shift_us=shift,
             pseudonym=self.pseudonym.text().strip(),
             clear=self.details.clear(),
             text=self.details.text(),

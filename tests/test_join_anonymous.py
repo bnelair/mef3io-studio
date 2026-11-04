@@ -272,3 +272,166 @@ def test_an_existing_file_is_never_replaced(tmp_path):
     assert not result.ok
     assert dst.read_bytes() == b"not yours to replace"
     assert os.listdir(out) == ["SUBJ-007.mefd.tar"]
+
+
+# -- review round 1 ------------------------------------------------------------------
+
+
+def pack_as_tar(folder: Path) -> Path:
+    import tarfile
+
+    tar = folder.with_name(folder.name + ".tar")
+    with tarfile.open(tar, "w") as t:
+        t.add(folder, arcname=folder.name)
+    return tar
+
+
+def test_anonymous_join_accepts_a_leave_out_that_only_some_recordings_have(tmp_path):
+    # A has a1 a2 a3, B has a1 a2 b9: leaving out a3 and b9 is fine for a
+    # normal join, so it is fine for an anonymous one (a folder and a file).
+    a = write(tmp_path / "A.mefd", T0, channels=("a1", "a2", "a3"))
+    b_folder = write(tmp_path / "B.mefd", T0 + 3 * HOUR, channels=("a1", "a2", "b9"))
+    b = pack_as_tar(b_folder)
+    before = fingerprint(a, b_folder)
+    dst = tmp_path / "SUBJ-010.mefd"
+    request = j.new_request(
+        [
+            j.JoinSource(str(a), str(a), j.Keep(j.KEEP_WHOLE)),
+            j.JoinSource(str(b), str(b), j.Keep(j.KEEP_WHOLE)),
+        ],
+        str(dst),
+        exclude_channels=("a3", "b9"),
+        anonymous=j.Anonymous(shift_us=SHIFT),
+    )
+    assert j.check_join(request) == []
+    result = j.make_joined(request)
+    assert result.ok, result.message
+    assert set(mef3io.Reader(str(dst)).channels) == {"a1", "a2"}
+    assert fingerprint(a, b_folder) == before
+
+
+def test_a_channel_in_none_of_the_recordings_is_still_refused(tmp_path):
+    a = write(tmp_path / "A.mefd", T0, channels=("a1", "a2", "a3"))
+    b = write(tmp_path / "B.mefd", T0 + 3 * HOUR, channels=("a1", "a2", "b9"))
+    request = request_for(a, b, tmp_path / "SUBJ-011.mefd", j.Anonymous(shift_us=SHIFT),
+                          exclude=("nowhere",), keep_a=j.Keep(j.KEEP_WHOLE))
+    assert j.check_join(request)
+    assert not (tmp_path / "SUBJ-011.mefd").exists()
+
+
+def everything_in(path: Path) -> tuple[bytes, list[str]]:
+    """All bytes and all names (files and folders) under a path or of a file."""
+    path = Path(path)
+    if path.is_file():
+        return path.read_bytes(), [path.name]
+    blob, names = b"", []
+    for root, dirs, files in os.walk(path):
+        names += list(dirs) + list(files)
+        for f in files:
+            blob += (Path(root) / f).read_bytes()
+    return blob, names
+
+
+@pytest.mark.parametrize("one_file", [False, True])
+def test_nothing_of_the_originals_is_in_the_result(tmp_path, one_file):
+    a = write(tmp_path / "Quartz-night1.mefd", T0)
+    b = write(tmp_path / "Quartz-night2.mefd", T0 + 3 * HOUR)
+    out = tmp_path / "out"
+    out.mkdir()
+    dst = out / ("SUBJ-012.mefd.tar" if one_file else "SUBJ-012.mefd")
+    request = request_for(a, b, dst, j.Anonymous(shift_us=SHIFT), one_file=one_file)
+    result = j.make_joined(request)
+    assert result.ok, result.message
+    blob, names = everything_in(dst)
+    secrets = [FIRST, LAST, PATIENT_ID, SITE, "Quartz", "night1", "night2", str(tmp_path)]
+    for secret in secrets:
+        assert secret.encode() not in blob, secret
+        assert not any(secret in n for n in names), secret
+    # The folder holds only the recording's own files.
+    assert os.listdir(out) == [dst.name]
+
+
+@pytest.mark.parametrize("one_file", [False, True])
+def test_a_failure_in_the_join_leaves_nothing_behind(tmp_path, monkeypatch, one_file):
+    a, b = two_sources(tmp_path)
+    before = fingerprint(a, b)
+    out = tmp_path / "out"
+    out.mkdir()
+    dst = out / ("SUBJ-013.mefd.tar" if one_file else "SUBJ-013.mefd")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("disk exploded")
+
+    monkeypatch.setattr(mef3io, "merge_sessions", boom)
+    result = j.make_joined(request_for(a, b, dst, j.Anonymous(shift_us=SHIFT), one_file=one_file))
+    assert not result.ok
+    assert os.listdir(out) == []
+    assert not leftovers(tmp_path)
+    assert fingerprint(a, b) == before
+
+
+def test_a_failure_in_the_packing_leaves_nothing_behind(tmp_path, monkeypatch):
+    a, b = two_sources(tmp_path)
+    before = fingerprint(a, b)
+    out = tmp_path / "out"
+    out.mkdir()
+    dst = out / "SUBJ-014.mefd.tar"
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("disk exploded")
+
+    monkeypatch.setattr(j.archive, "run_in_helper", boom)
+    result = j.make_joined(request_for(a, b, dst, j.Anonymous(shift_us=SHIFT), one_file=True))
+    assert not result.ok
+    assert os.listdir(out) == []
+    assert not leftovers(tmp_path)
+    assert fingerprint(a, b) == before
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "A",  # an original's name
+        PATIENT_ID,
+        FIRST,
+        SITE,
+    ],
+)
+def test_the_new_name_may_not_be_an_original_or_a_patient_detail(tmp_path, bad):
+    a, b = two_sources(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    request = request_for(a, b, out / f"{bad}.mefd", j.Anonymous(shift_us=SHIFT))
+    assert j.check_join(request), bad
+    assert os.listdir(out) == []
+
+
+@pytest.mark.parametrize("pseudonym", [f"P-{PATIENT_ID}", f"{LAST}-1", f"x{FIRST}x", f"{SITE}-p"])
+def test_the_pseudonym_may_not_hold_a_patient_detail(tmp_path, pseudonym):
+    a, b = two_sources(tmp_path)
+    anon = j.Anonymous(shift_us=SHIFT, pseudonym=pseudonym)
+    request = request_for(a, b, tmp_path / "SUBJ-015.mefd", anon)
+    assert j.check_join(request), pseudonym
+    assert not (tmp_path / "SUBJ-015.mefd").exists()
+
+
+def test_one_file_alone_counts_as_a_change(tmp_path):
+    # One recording, kept whole, nothing left out, not anonymous: packing it
+    # into one file is a real result, not an exact copy.
+    a = write(tmp_path / "A.mefd", T0, notes=False)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def req(dst, one_file):
+        return j.new_request(
+            [j.JoinSource(str(a), str(a), j.Keep(j.KEEP_WHOLE))], str(dst), one_file=one_file
+        )
+
+    assert not req(out / "x.mefd", False).changes
+    assert j.check_join(req(out / "x.mefd", False))  # still an exact copy: refused
+    request = req(out / "x.mefd.tar", True)
+    assert request.changes
+    assert j.check_join(request) == []
+    result = j.make_joined(request)
+    assert result.ok, result.message
+    assert os.listdir(out) == ["x.mefd.tar"]

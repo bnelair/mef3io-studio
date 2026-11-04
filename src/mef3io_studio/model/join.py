@@ -445,6 +445,7 @@ class JoinRequest:
             bool(self.exclude_channels)
             or self.output_password is not None
             or self.anonymous is not None
+            or self.one_file
         )
 
     @property
@@ -679,19 +680,40 @@ def _placeholder(request: JoinRequest) -> str:
     return os.path.join(_PLACEHOLDER_DIR, request.name + ".mefd")
 
 
-def _anonymize_kwargs(request: JoinRequest, span: Span | None) -> dict:
+def _excluded_for(request: JoinRequest, key: str, layouts: dict | None) -> list[str] | None:
+    """The left-out channels that one recording has. A channel the other
+    recordings have is simply not in this one (a normal join accepts that);
+    a channel NONE has is passed on to the first recording, so the library
+    refuses it as "not in this recording". Channels not known: all."""
+    wanted = list(request.exclude_channels)
+    if not wanted or layouts is None:
+        return wanted or None
+    own = _as_layout(layouts.get(key, (None, None))).channels
+    if not own:
+        return wanted
+    anywhere = {c for s in request.sources for c in _as_layout(layouts.get(s.key, ())).channels}
+    first = request.sources[0].key == key
+    keep = [c for c in wanted if c in own or (first and c not in anywhere)]
+    return keep or None
+
+
+def _anonymize_kwargs(
+    request: JoinRequest, span: Span | None, key: str = "", layouts: dict | None = None
+) -> dict:
     anon = request.anonymous
     return dict(
         pseudonym=anon.pseudonym or request.name,
         clear=tuple(anon.clear),
         text=anon.text,
-        exclude_channels=list(request.exclude_channels) or None,
+        exclude_channels=_excluded_for(request, key, layouts),
         time_range=None if span is None or span.whole else span.time_range,
         exact=True,
     )
 
 
-def _anonymous_refusals(request: JoinRequest, s: JoinSource, span: Span, cancel) -> list:
+def _anonymous_refusals(
+    request: JoinRequest, s: JoinSource, span: Span, cancel, layouts: dict | None = None
+) -> list:
     """What ``anonymize.check`` would refuse for this source cut to its kept
     part, as findings. The new recording's NAME is checked as the name of
     the copy, because that is the name the result carries."""
@@ -704,7 +726,7 @@ def _anonymous_refusals(request: JoinRequest, s: JoinSource, span: Span, cancel)
             request.anonymous.shift_us,
             password=s.password,
             cancel=cancel.for_library(),
-            **_anonymize_kwargs(request, span),
+            **_anonymize_kwargs(request, span, s.key, layouts),
         )
     out = []
     for r in report.refusals:
@@ -724,6 +746,29 @@ def _anonymous_refusal_message(refusal, request: JoinRequest) -> UserMessage:
     paths, stems = _paths_and_stems(request)
     detail = technical_text(_RefusalText(refusal), paths=paths, stems=stems)
     return message_for(refusal.code, details, detail) or refusal_message(refusal, paths, stems)
+
+
+def _original_name_findings(request: JoinRequest) -> list[CheckFinding]:
+    """An anonymous recording is not named like an original (the name would
+    give the original away). The message does not repeat the name."""
+    if request.anonymous is None:
+        return []
+    originals = {s.name.casefold() for s in request.sources}
+    out = []
+    for what, value in (("name", request.name), ("code", request.anonymous.pseudonym)):
+        if value and value.strip().casefold() in originals:
+            out.append(
+                CheckFinding(
+                    None,
+                    UserMessage(
+                        f"The new {what} is the name of an original",
+                        f"The new recording's {what} is the same as the name of one of the "
+                        "recordings it is made from, which would give it away. Nothing was "
+                        "changed. Choose another one.",
+                    ),
+                )
+            )
+    return out
 
 
 def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[CheckFinding]:
@@ -751,6 +796,9 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
         layouts, findings = read_layouts(request, cancel)
         if findings:
             return findings
+        findings = _original_name_findings(request)
+        if findings:
+            return findings
         plan = plan_for(request, layouts)
         if not plan.ok:
             return _plan_findings(plan, request)
@@ -768,7 +816,7 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
             s = request.sources[0]
             span = plan.spans[s.key]
             if anon is not None:
-                return _anonymous_refusals(request, s, span, cancel)
+                return _anonymous_refusals(request, s, span, cancel, layouts)
             refusals = transform_refusals(
                 ChangeRequest(
                     s.source,
@@ -787,7 +835,7 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
             span = plan.spans[key]
             s = sources[key]
             if anon is not None:
-                findings += _anonymous_refusals(request, s, span, cancel)
+                findings += _anonymous_refusals(request, s, span, cancel, layouts)
                 continue
             if span.whole:
                 continue
@@ -946,6 +994,9 @@ def make_joined(
             layouts, findings = read_layouts(request, cancel)
             if findings:
                 return JoinResult(request.destination, message=findings[0].message)
+            findings = _original_name_findings(request)
+            if findings:
+                return JoinResult(request.destination, message=findings[0].message)
             plan = plan_for(request, layouts)
             if not plan.ok:
                 return JoinResult(
@@ -955,7 +1006,7 @@ def make_joined(
             problem = space_problem(request, size)
             if problem is not None:
                 return JoinResult(request.destination, message=problem)
-            report = run(request, plan, size, send, cancel)
+            report = run(request, plan, size, send, cancel, layouts)
     except JobCancelled:
         raise
     except archive.TargetExists:
@@ -1027,6 +1078,7 @@ def run(
     size: Sizing,
     send: Callable[[JoinProgress], object] | None,
     cancel: CancelToken,
+    layouts: dict | None = None,
 ):
     """THE pipeline: every stage of one join or trim, from the originals to
     the finished recording (folder or one file). Returns a report with
@@ -1086,7 +1138,7 @@ def run(
             output_password=output_password,
             progress=progress(kind),
             cancel=library_cancel,
-            **_anonymize_kwargs(request, span),
+            **_anonymize_kwargs(request, span, s.key, layouts),
         )
 
     if request.single:

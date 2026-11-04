@@ -716,7 +716,11 @@ recordings chosen.
    with the full-access password).
 2. **Channels.** Every channel of every chosen recording is kept unless you
    leave it out (the same channel list as on the Anonymize page). The new
-   recording holds every channel you keep, from all the recordings.
+   recording holds every channel you keep, from all the recordings. This is
+   the same for an anonymous recording: a channel you leave out is left out
+   of every recording that has it, and the recordings do not need to have the
+   same channels. (A channel that none of the chosen recordings has is
+   refused.)
 3. **What to keep.** The recordings are listed **in time order**, with their
    start and end in your time zone. For each, choose what to keep:
    - **The whole recording**;
@@ -787,8 +791,10 @@ one date move and one pseudonym for all), and saved in the hidden temporary
 folder next to the new recording. The parts are then joined, the temporary
 parts are removed at once, and for one file the joined recording is packed,
 compared with what it was packed from and given its name. So no copy with the
-patient's details is ever written, and the originals (which may be on a
-network drive) are read once for the copy and once more for its check. The
+patient's details is ever written. Each original (which may be on a network
+drive) is read once to make its kept part and once more to check that part
+against it; the joining and the packing then work only on the temporary copies,
+not on the originals. The
 progress bar covers all of it. The new recording's **History** (in Explore)
 says it was made by the anonymizer.
 

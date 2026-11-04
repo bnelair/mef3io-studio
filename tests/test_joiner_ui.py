@@ -422,3 +422,18 @@ def test_join_anonymous_as_one_file_end_to_end(window_page, qtbot, tmp_path):
     entry = next(e for e in window.explorer.entries() if e.name == "SUBJ-001")
     groups = entry.details.history_groups()
     assert any(h is not None and "anonymize" in h.operations for h, _parts in groups)
+
+
+def test_moving_the_dates_without_a_plan_never_keeps_the_real_dates(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_with_notes(tmp_path / "A.mefd", T0)
+    b = write_with_notes(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page)
+    page.next()
+    privacy = page.privacy
+    privacy.anonymous.setChecked(True)
+    privacy.dates_move.setChecked(True)
+    privacy.dates.plan = None  # no plan at all
+    with pytest.raises(ValueError):
+        privacy.choice()
