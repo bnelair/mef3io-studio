@@ -721,18 +721,58 @@ recordings chosen.
    of every recording that has it, and the recordings do not need to have the
    same channels. (A channel that none of the chosen recordings has is
    refused.)
-3. **What to keep.** The recordings are listed **in time order**, with their
-   start and end in your time zone. For each, choose what to keep:
-   - **The whole recording**;
-   - **The first…** or **The last…** so many hours, minutes and seconds
-     (more than the recording holds keeps all of it);
-   - **From … to …** two dates and times, typed in the time zone shown above
-     the list (a time outside the recording is cut back to it).
+3. **What to keep.** A **map** shows each chosen recording on one row, on a
+   shared time axis, exactly like the combined timeline in Explore: the blue
+   stretches are when the recording has data, so gaps and recordings that
+   run at the same time are easy to see. Turn the mouse wheel over it to
+   zoom, drag the background to move along it, or use **Zoom in**, **Zoom
+   out** and **Show everything**. What you keep is drawn clearly; the rest
+   is shaded. The recordings are also listed **in time order** in a table,
+   with their start and end in your time zone. Two ways to choose:
+   - **The same window for all recordings, set on the map** (the choice
+     when you picked several recordings). Two lines, **Start** and **End**,
+     mark the window. Every recording keeps only its own data inside it
+     (from Start up to, not including, End). Drag a line with the mouse, or
+     click the map, press **S** (Start) or **E** (End), and move it with the
+     **left** and **right** arrow keys (**Shift**: ten times further,
+     **Ctrl**: one second, **Home** or **End**: to the first or last
+     moment, **Esc**: let go). A line sticks to the first and last moment of
+     the recordings when you bring it close, and Start always stays before
+     End. Below the map you can also **type** the time, in either form, and
+     the line moves there:
+     - **Date and time (UTC)**, to the microsecond, for example
+       `2026-11-04 13:05:22.123456` (the seconds and the fraction are
+       optional);
+     - **Time as a number (microseconds since 1 January 1970, UTC)**, for
+       example `1793883922123456`: the way the recording file itself
+       stores times.
 
-   The **preview** under the list shows each recording on its own row, as a
-   light bar, with the part you keep in blue, on one timeline, so the gaps
-   between them, and parts that run at the same time, are easy to see. The
-   new recording keeps the times exactly as they were: joining never moves
+     The line, the date and the number always show the same moment. Press
+     Enter, or leave the field, to apply what you typed. If it cannot be
+     read, or Start would not be before End, a message says so and the line
+     does not move; a time outside the recordings is pulled in to the first
+     or last moment, and the message says that too. A recording that has no
+     data between Start and End (also when the window falls in a gap of it)
+     is **left out**: it is greyed on the map, the table says "Left out: no
+     data between Start and End", and it is not part of the new recording or
+     of the later steps. If every recording is left out you cannot go on.
+     The times here are the **real times of the recordings**; if you later
+     make the new recording anonymous with the dates moved, this step says
+     that its times will differ. When you chose a time zone, the step also
+     shows the Start and End in it.
+   - **Choose for each recording.** For each, choose what to keep:
+     - **The whole recording**;
+     - **The first…** or **The last…** so many hours, minutes and seconds
+       (more than the recording holds keeps all of it);
+     - **From … to …** two dates and times, typed in the time zone shown above
+       the list (a time outside the recording is cut back to it).
+
+     The map then shows what each recording keeps, with the Start and End
+     lines hidden. Changing the choice of any recording switches to this way
+     by itself; switching back to the window finds the lines where you left
+     them.
+
+   The new recording keeps the times exactly as they were: joining never moves
    anything in time. **Two kept parts may run at the same time only if they
    share no channel you keep.** If they do share one, they turn red, the step
    names the shared channels, and you cannot go on until you keep less of one

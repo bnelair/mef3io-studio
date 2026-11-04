@@ -1,5 +1,5 @@
 """The "Join or trim" page, offscreen: recordings from the Explore list,
-what to keep of each (in time order, with the preview), overlaps stopping
+what to keep of each (in time order, with the map), overlaps stopping
 the run, and a real join through the helper process."""
 
 from __future__ import annotations
@@ -55,6 +55,21 @@ def choose_all(page, leave_out=()):
         page.picker.click(name, False)
     page.next()
     assert page.step == STEP_KEEP
+    wait_for_map(page)
+
+
+def wait_for_map(page, seconds=60):
+    """The map is worked out in short slices; Next stays disabled in the
+    window mode until it has arrived."""
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    end = time.monotonic() + seconds
+    while not page.keep.layout_ready and time.monotonic() < end:
+        QApplication.processEvents()
+        time.sleep(0.005)
+    assert page.keep.layout_ready
 
 
 def test_the_page_is_in_the_navigation(window):
@@ -82,7 +97,7 @@ def test_keep_choices_preview_and_overlap(window_page, qtbot, tmp_path):
     assert not keep.ok and not page.next_button.isEnabled()
     assert "overlap" in keep.problems.text()
     assert "the channels a1, a2" in keep.problems.text()
-    assert all(r[4] for r in keep.preview.rows)
+    assert all(r[4] for r in keep.preview_rows)
     # The first 90 minutes of A and the last hour of B follow each other.
     keep.rows[0].set_how(KEEP_FIRST)
     keep.rows[0].duration.set_seconds(5400)
@@ -91,12 +106,12 @@ def test_keep_choices_preview_and_overlap(window_page, qtbot, tmp_path):
     keep.rows[1].duration.set_seconds(3600)
     assert keep.ok and page.next_button.isEnabled()
     assert keep.problems.isHidden()
-    spans = [r[3] for r in keep.preview.rows]
+    spans = [r[3] for r in keep.preview_rows]
     assert [(s.start, s.end) for s in spans] == [
         (T0, T0 + 3 * HOUR // 2),
         (T0 + 2 * HOUR, T0 + 3 * HOUR),
     ]
-    assert not any(r[4] for r in keep.preview.rows)
+    assert not any(r[4] for r in keep.preview_rows)
     assert keep.table.item(0, 4).text() == "1 h 30 min"
     assert "2 h 30 min" in keep.summary.text()
     # A duration of zero is refused on the spot.
@@ -212,13 +227,13 @@ def test_side_by_side_recordings_join_unless_they_share_a_kept_channel(
     keep = page.keep
     # The same hour, sharing "x": refused, naming it, both drawn red.
     assert not keep.ok and "the channel x" in keep.problems.text()
-    assert all(r[4] for r in keep.preview.rows)
+    assert all(r[4] for r in keep.preview_rows)
     # Leaving "x" out makes them side by side: two rows, nothing red.
     page.back()
     page.picker.click("x", False)
     page.next()
-    assert keep.ok and not any(r[4] for r in keep.preview.rows)
-    assert len(keep.preview.rows) == 2
+    assert keep.ok and not any(r[4] for r in keep.preview_rows)
+    assert len(keep.preview_rows) == 2
     page.next()
     assert page.step == STEP_PRIVACY
     page.next()

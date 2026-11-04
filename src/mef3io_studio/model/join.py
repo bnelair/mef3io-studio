@@ -257,6 +257,46 @@ def resolve_keep(keep: Keep, start: int | None, end: int | None) -> Span | str:
     return UNKNOWN_CHOICE
 
 
+# --------------------------------------------------------------------------
+# One window for every recording ("set on the map")
+
+
+def _has_data_in(runs, start: int, end: int) -> bool:
+    """Whether any stretch ``[a, b]`` of ``runs`` meets ``[start, end)``
+    (a stretch that is a single moment counts when that moment is inside)."""
+    return any((a < end and b > start) or (a == b and start <= a < end) for a, b in runs)
+
+
+def window_keeps(
+    layouts: dict,
+    start: int,
+    end: int,
+    runs: dict | None = None,
+) -> tuple[dict[str, Keep], tuple[str, ...]]:
+    """One window ``[start, end)`` (microseconds since 1970, UTC) applied to
+    every recording in ``layouts`` (key -> :class:`Layout`): each keeps only
+    its data inside it. Returns ``(keep per recording that has data inside
+    the window, keys left out)``. A recording is left out when its own
+    extent does not meet the window, or, when ``runs`` (key -> its
+    stretches with data) is given, when none of its stretches does: the
+    window then falls in a gap of that recording. A recording whose times
+    are not known is kept in (its own problem is then reported by
+    :func:`plan_join`, as for any other choice). Pure."""
+    keeps: dict[str, Keep] = {}
+    left_out: list[str] = []
+    for key, value in layouts.items():
+        layout = _as_layout(value)
+        if layout.start is not None and layout.end is not None and end > start:
+            meets = max(start, layout.start) < min(end, layout.end)
+            if meets and runs is not None and key in runs:
+                meets = _has_data_in(runs[key], start, end)
+            if not meets:
+                left_out.append(key)
+                continue
+        keeps[key] = Keep(KEEP_BETWEEN, start_us=int(start), end_us=int(end))
+    return keeps, tuple(left_out)
+
+
 @dataclass(frozen=True)
 class JoinSource:
     """One recording and what to keep of it. ``password``: its full-access
@@ -853,10 +893,20 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
             if span.whole:
                 continue
             cut = True
+            # With the channels left out of the new recording: data only in
+            # those channels is no data (the library then refuses the part as
+            # empty, before anything is written). A recording left with no
+            # channel at all is the merge check's business, not the cut's.
             refusals = transform_refusals(
-                ChangeRequest(s.source, placeholder, s.password, time_range=span.time_range),
+                ChangeRequest(
+                    s.source,
+                    placeholder,
+                    s.password,
+                    exclude_channels=tuple(_excluded_for(request, key, layouts) or ()),
+                    time_range=span.time_range,
+                ),
                 cancel,
-                ignore=PLACEHOLDER_CODES,
+                ignore=frozenset(PLACEHOLDER_CODES) | {"no-channels-left"},
             )
             findings += [CheckFinding(key, _check_message(r, request)) for r in refusals[:1]]
         if findings:

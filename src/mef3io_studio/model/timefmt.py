@@ -14,6 +14,7 @@ Plain Python, no Qt.
 from __future__ import annotations
 
 import math
+import re
 from datetime import UTC, datetime, timedelta, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
@@ -79,6 +80,55 @@ def format_time(us: int | None, zone: tzinfo = UTC, seconds_decimals: int = 0) -
         return f"{text} UTC"
     offset = moment.strftime("%z")  # +0100
     return f"{text} {offset[:3]}:{offset[3:]}"
+
+
+def format_utc_us(us: int) -> str:
+    """ "2026-11-04 13:05:22.123456": a UTC time to the microsecond, exact
+    (the zone is named beside the field, not repeated in it). The year always
+    has four digits ("0999-..."), written here and not by ``strftime`` (which
+    does not pad it everywhere); a time outside years 1 to 9999 is "not a
+    valid time", as in :func:`format_time`."""
+    try:
+        m = to_datetime(us, UTC)
+    except (OverflowError, ValueError, OSError):
+        return "not a valid time"
+    return (
+        f"{m.year:04d}-{m.month:02d}-{m.day:02d} "
+        f"{m.hour:02d}:{m.minute:02d}:{m.second:02d}.{m.microsecond:06d}"
+    )
+
+
+_UTC_TEXT = re.compile(
+    r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]+(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:[.,](\d{1,6}))?)?)?"
+    r"\s*(?:UTC|utc|Z|z)?\s*$"
+)
+
+
+def parse_utc_text(text: str) -> int | None:
+    """Microseconds since 1970 of "2026-11-04 13:05:22.123456" (UTC): the
+    time may stop at the minute or second, the fraction has up to six
+    digits, a trailing "UTC" or "Z" is allowed. None when it is not a real
+    date and time."""
+    found = _UTC_TEXT.match(text or "")
+    if found is None:
+        return None
+    year, month, day, hour, minute, second, fraction = found.groups()
+    try:
+        moment = datetime(
+            int(year), int(month), int(day), int(hour or 0), int(minute or 0), int(second or 0)
+        )
+    except ValueError:
+        return None
+    micro = int((fraction or "").ljust(6, "0") or 0)
+    return from_local(moment, UTC) + micro
+
+
+def parse_whole_number(text: str) -> int | None:
+    """A whole number typed by a person, spaces, commas and underscores
+    between digits allowed ("1 604 495 122 123 456"); None for anything
+    else (a minus sign, a decimal point, letters, nothing)."""
+    cleaned = re.sub(r"[\s,_]", "", text or "")
+    return int(cleaned) if cleaned.isdigit() and cleaned.isascii() else None
 
 
 def format_span(seconds: float | None) -> str:

@@ -32,7 +32,7 @@ shown inside a technical-details panel.
 | recover | **rescue** (after an interrupted copy) |
 | annotations, records | **notes and events** |
 | discontinuity, gap in the index | **gap** |
-| uUTC, timestamp, epoch | **time** (always shown as a date and time, or hidden) |
+| uUTC, timestamp, epoch | **time** (always shown as a date and time, or hidden). The one exception: Join or trim's map has a field for the same moment as a whole number, labelled **"Time as a number (microseconds since 1 January 1970, UTC)"** (never "timestamp" or "uUTC"), because people who script with the files ask for it |
 | RED block, CRC, checksum, `.tdat`, `.tmet`, `.tidx` | never in the main UI |
 | exception, traceback, error code | never in the main UI; the message says what happened |
 | cancel (a job) | **stop** |

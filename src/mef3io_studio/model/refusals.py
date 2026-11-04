@@ -590,8 +590,9 @@ JOIN_WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     ),
     technical("time-range-empty"): _fixed(
         EMPTY_WINDOW_TITLE,
-        f"There is no recorded signal in the part chosen to keep. {NOTHING_JOINED} Choose "
-        "another part.",
+        "There is no recorded signal in the part chosen to keep, in the channels that are "
+        "kept (a gap inside the recording, or signal only in a channel left out, counts as "
+        f"none). {NOTHING_JOINED} Move the Start and End lines, or choose another part.",
     ),
     technical("name-too-long"): _fixed(
         "The name is too long",

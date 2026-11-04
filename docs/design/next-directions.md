@@ -32,6 +32,26 @@ the anonymous parts, whose cleared patient fields are equal; parts removed;
 pack, compare, name), so a later single-pass mef3io call replaces only that
 function. Room is left for a "notes and events: keep / leave out" option
 (`join.Anonymous`) once the library has it.
+**Trimming on the map.** "What to keep" shows Explore's combined timeline
+(`explorer/combined.CombinedTimelineWidget`, reused through the subclass
+`joiner/trimmap.TrimMapWidget`, which paints a Start and an End line, the kept
+and left-out parts, and handles dragging and keys) and offers **one window for
+all recordings** or the per-recording choices. The window is two integers in
+microseconds (UTC) held by `KeepStep.window`; the lines, a UTC date-and-time
+field (to the microsecond) and a whole-number field (microseconds since 1970)
+all show it and move it. The rules are Qt-free in `model/join.window_keeps`:
+every recording gets `Keep(between, start, end)`, so a recording keeps
+`[Start, End)` of its own data; one whose extent, or (with the Explorer's
+stretches with data) whose data, does not meet the window is **left out**
+(not refused: it just takes no part, and later steps never see it; a window
+that leaves none is refused in plain words). Default: window mode when
+several recordings are chosen, per recording for one (as before); touching a
+recording's own choice switches to per recording. Times are the real times
+(the dates move only at the Privacy step, which the step says). Typed input
+is applied on Enter or focus loss; unreadable input or Start >= End shows a
+message and moves nothing, input outside the span is pulled in and said.
+Limit: a gap INSIDE one part (the Explorer's stretches are per part) does not
+count as a gap here; mef3io decides what such a window holds.
 Still open: cutting one recording into several pieces in one go.
 
 ## Signal viewer
