@@ -5,9 +5,11 @@ and a ring on every click.
     QT_QPA_PLATFORM=offscreen PYTHONPATH=src python scripts/manual/build_videos.py
         [--out dist/manual/videos] [--tour t1 ...] [--fps 20] [--format auto|mp4|apng]
 
-``--format auto`` (default) writes ``<tour>.mp4`` (H.264) through
-QtMultimedia's FFmpeg backend when this Qt can encode it, and otherwise
-says clearly why not and writes ``<tour>.png`` instead: an animated PNG
+``--format auto`` (default) writes ``<tour>.mp4`` through QtMultimedia's
+FFmpeg backend: H.264 when this Qt can encode it, else MPEG-4 Part 2 in the
+same .mp4 (the PySide6 FFmpeg is an LGPL build without x264; the script says
+so). Only when QtMultimedia is missing it says why and writes ``<tour>.png``
+instead: an animated PNG
 (APNG; open it in any browser), written by this script itself, so it needs
 no extra program. For MP4, install the full PySide6 (``pip install
 PySide6-Addons==<the PySide6 version>``): the lean ``PySide6-Essentials``
@@ -150,14 +152,17 @@ class FrameSink(Sink):
 # Writers
 
 
-def _can_mp4() -> tuple[bool, str]:
-    """(possible, reason if not)."""
+def _can_mp4() -> tuple[str | None, str]:
+    """(codec name to use or None, note). H.264 when this Qt can encode it;
+    otherwise MPEG-4 Part 2 in the same .mp4 file if the backend offers it
+    (the FFmpeg that ships with PySide6 is an LGPL build without x264).
+    Needs a QApplication."""
     try:
         from PySide6 import QtMultimedia as M
     except ImportError as exc:
         import PySide6
 
-        return False, (
+        return None, (
             f"QtMultimedia is not installed ({exc}). Install the full PySide6, e.g. "
             f"'pip install PySide6-Addons=={PySide6.__version__}', for MP4 output"
         )
@@ -166,19 +171,25 @@ def _can_mp4() -> tuple[bool, str]:
         encode = M.QMediaFormat.ConversionMode.Encode
         if M.QMediaFormat.FileFormat.MPEG4 not in fmt.supportedFileFormats(encode):
             return (
-                False,
+                None,
                 "this Qt's multimedia backend cannot write MPEG-4 (is the FFmpeg backend missing?)",
             )
         fmt.setFileFormat(M.QMediaFormat.FileFormat.MPEG4)
-        if M.QMediaFormat.VideoCodec.H264 not in fmt.supportedVideoCodecs(encode):
-            return False, "this Qt's multimedia backend has no H.264 encoder"
+        codecs = fmt.supportedVideoCodecs(encode)
+        if M.QMediaFormat.VideoCodec.H264 in codecs:
+            return "H264", ""
+        if M.QMediaFormat.VideoCodec.MPEG4 in codecs:
+            return "MPEG4", (
+                "this Qt's FFmpeg has no H.264 encoder (the PySide6 build is LGPL, no x264, "
+                "and no hardware encoder was found); using MPEG-4 Part 2 inside the .mp4"
+            )
+        return None, "this Qt's multimedia backend has no H.264 or MPEG-4 video encoder"
     except Exception as exc:  # a broken backend must not stop the APNG fallback
-        return False, f"QtMultimedia could not be asked what it can encode: {exc}"
-    return True, ""
+        return None, f"QtMultimedia could not be asked what it can encode: {exc}"
 
 
-def write_mp4(frames, fps: int, path: Path) -> None:
-    """H.264 in MPEG-4 through QtMultimedia (QVideoFrameInput + QMediaRecorder)."""
+def write_mp4(frames, fps: int, path: Path, codec: str = "H264") -> None:
+    """An .mp4 through QtMultimedia (QVideoFrameInput + QMediaRecorder)."""
     from PySide6.QtCore import QEventLoop, QSize, QTimer, QUrl
     from PySide6.QtGui import QImage
     from PySide6.QtMultimedia import (
@@ -199,7 +210,7 @@ def write_mp4(frames, fps: int, path: Path) -> None:
     recorder = QMediaRecorder()
     session.setRecorder(recorder)
     media = QMediaFormat(QMediaFormat.FileFormat.MPEG4)
-    media.setVideoCodec(QMediaFormat.VideoCodec.H264)
+    media.setVideoCodec(getattr(QMediaFormat.VideoCodec, codec))
     recorder.setMediaFormat(media)
     recorder.setVideoResolution(size)
     recorder.setVideoFrameRate(fps)
@@ -337,19 +348,21 @@ def main(argv=None) -> int:
     tourlib.prepare_environment(tourlib.scratch("video-env-"))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    can, why = _can_mp4()
-    want_mp4 = args.format == "mp4" or (args.format == "auto" and can)
-    if args.format == "mp4" and not can:
-        print(f"Cannot write MP4: {why}.")
-        return 1
-    if args.format == "auto" and not can:
-        print(
-            f"MP4 is not possible here: {why}.\n"
-            "Writing animated PNG files (.png, open in a browser) instead."
-        )
     from mef3io_studio.app import create_application
 
     create_application()
+    codec, note = _can_mp4()
+    want_mp4 = args.format == "mp4" or (args.format == "auto" and codec is not None)
+    if want_mp4 and codec is None:
+        print(f"Cannot write MP4: {note}.")
+        return 1
+    if want_mp4 and note:
+        print(f"Note: {note}.")
+    if not want_mp4 and args.format == "auto":
+        print(
+            f"MP4 is not possible here: {note}.\n"
+            "Writing animated PNG files (.png, open in a browser) instead."
+        )
     status = 0
     for tour in tourlib.load_tours(args.tour):
         print(f"recording {tour.key}: {tour.title}", flush=True)
@@ -357,7 +370,10 @@ def main(argv=None) -> int:
         name = f"{tour.key}-{tour.video_title or 'tour'}"
         path = out / (name + (".mp4" if want_mp4 else ".png"))
         try:
-            (write_mp4 if want_mp4 else write_apng)(sink.frames, args.fps, path)
+            if want_mp4:
+                write_mp4(sink.frames, args.fps, path, codec)
+            else:
+                write_apng(sink.frames, args.fps, path)
         except Exception as exc:
             print(f"  failed: {exc}")
             status = 1

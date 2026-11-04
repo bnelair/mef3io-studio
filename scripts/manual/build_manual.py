@@ -122,6 +122,9 @@ class Manual:
 
         self.tours, self.shots, self.cover = tours, shots, cover
         self.version, self.date = version, date
+        import mef3io
+
+        self.library_version = mef3io.__version__
         self.page_w = device.width() - 2 * MARGIN_MM * MM
         self.page_h = device.height() - 2 * MARGIN_MM * MM - FOOTER_MM * MM
         self.doc = QTextDocument()
@@ -226,7 +229,7 @@ class Manual:
         c.insertBlock(self._block(bottom=2), self._fmt())
         c.insertFragment(QTextDocumentFragment(tmp))
 
-    def picture(self, name: str, image, width_fraction=0.94):
+    def picture(self, name: str, image, width_fraction=0.8):
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QTextDocument, QTextImageFormat
 
@@ -256,6 +259,13 @@ class Manual:
             align=center,
         )
         self.para(f"Version {self.version}", size=14, bold=True, bottom=2, align=center)
+        self.para(
+            f"with mef3io library {self.library_version}",
+            size=11,
+            color=MUTED,
+            bottom=2,
+            align=center,
+        )
         self.para(self.date, size=12, color=MUTED, bottom=14, align=center)
         if self.cover:
             self.picture(*self.cover, 0.8)
@@ -338,15 +348,17 @@ class Manual:
                 f"{i}. {rec['title']}", tag=sid, size=12, bold=True, top=6, bottom=3, color=BLUE
             )
             self.picture(rec["image"], rec["qimage"])
-            self.para(rec["caption"], bottom=3)
             then = rec["then"]
             end = f"{sid}-end"
             if then:
+                self.para(rec["caption"], bottom=3)
                 self.para(
                     "Then " + " and ".join(then) + ".", tag=end, italic=True, color=MUTED, bottom=6
                 )
             else:
-                self.para("", tag=end, bottom=2)
+                # (the last block of the card carries the tag: an empty block
+                # would be reused by the next heading and lose it)
+                self.para(rec["caption"], tag=end, bottom=6)
 
     def reference(self, number: int):
         tag = "ref"

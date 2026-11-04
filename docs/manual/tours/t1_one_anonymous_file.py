@@ -54,7 +54,7 @@ def build() -> Tour:
             "Drag the Start line",
             "Drag the Start line to where the new recording should begin. Data before "
             "it is shaded and will not be kept.",
-            do=[drag_line("start", day(7, 2))],
+            do=[drag_line("start", day(6, 23))],
             focus=lambda ctx: ctx.window.joiner.keep.map,
         ),
         Step(
@@ -65,7 +65,7 @@ def build() -> Tour:
             do=[
                 type_in(
                     lambda ctx: ctx.window.joiner.keep.date_edit["end"],
-                    utc_text(day(9, 2)),
+                    utc_text(day(8, 23)),
                     "type the End time",
                 )
             ],

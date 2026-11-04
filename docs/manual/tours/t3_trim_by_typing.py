@@ -5,8 +5,8 @@ from tourlib import Step, Tour, click, pick_rows, type_in
 
 
 def build() -> Tour:
-    start = day(8, 1)
-    end = day(8, 4)
+    start = day(7, 22.5)
+    end = day(7, 23.5)
     steps = [
         *open_demo_steps(),
         Step(
@@ -64,7 +64,7 @@ def build() -> Tour:
             then=[click("Next")],
             hold=2.5,
         ),
-        new_recording_step("tuesday-3-hours", one_file=False),
+        new_recording_step("tuesday-1-hour", one_file=False),
         saved_step(),
     ]
     return Tour(

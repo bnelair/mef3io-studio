@@ -13,9 +13,9 @@ def utc_text(us: int) -> str:
     return format_utc_us(us)
 
 
-def day(d: int, hour: int = 0) -> int:
+def day(d: int, hour: float = 0) -> int:
     """A moment on the made-up calendar: day 6 = 6 January 2000."""
-    return T0 + (d - 6) * 24 * HOUR + hour * HOUR
+    return T0 + (d - 6) * 24 * HOUR + round(hour * HOUR)
 
 
 # -- Explore ------------------------------------------------------------------

@@ -21,8 +21,8 @@ def build() -> Tour:
         ),
         Step(
             "Look at the timeline",
-            "The Timeline tab shows when the recording has data. The gap in the middle "
-            "of the night is a stretch with no data.",
+            "The Timeline tab shows when the recording has data. The gap a little before "
+            "the end of the first hour is a ten-minute stretch with no data.",
             do=[click("Timeline")],
             focus=lambda ctx: ctx.window.explorer.tabs,
         ),

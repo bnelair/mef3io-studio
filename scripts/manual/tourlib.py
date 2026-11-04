@@ -42,6 +42,7 @@ TOURS_DIR = ROOT / "docs" / "manual" / "tours"
 SECOND = 1_000_000
 HOUR = 3600 * SECOND
 T0 = 946_684_800_000_000 + 5 * 24 * HOUR  # 2000-01-06 00:00 UTC
+NIGHT_HOURS = 2  # each made-up night is two hours long
 
 
 # --------------------------------------------------------------------------
@@ -83,10 +84,11 @@ NIGHTS = ("study-monday", "study-tuesday", "study-wednesday")
 CHANNELS = ("F3", "F4", "C3", "C4", "ECG", "EMG")
 
 
-def write_demo(folder: Path, fs: float = 1.0) -> Demo:
-    """Three made-up nights (22:00 to 06:00 UTC on 6, 7 and 8 January 2000),
-    six channels (ECG and EMG are the ones the tours leave out), a few notes
-    and events, and a half-hour gap in the second night. A made-up patient."""
+def write_demo(folder: Path, fs: float = 256.0) -> Demo:
+    """Three made-up nights of 2 hours each (22:00 to 24:00 UTC on 6, 7 and
+    8 January 2000) sampled at 256 Hz, six channels (ECG and EMG are the
+    ones the tours leave out), a few notes and events, and a ten-minute gap
+    in the second night (at 22:50). A made-up patient."""
     import mef3io
     import numpy as np
 
@@ -96,30 +98,35 @@ def write_demo(folder: Path, fs: float = 1.0) -> Demo:
     meta = mef3io.Metadata(
         subject=mef3io.Subject(name_1="Demo", name_2="Person", id="X-0001"),
     )
+    rng = np.random.default_rng(7)
     for night, name in enumerate(NIGHTS):
         start = T0 + (22 + 24 * night) * HOUR
         path = folder / f"{name}.mefd"
-        n = int(8 * 3600 * fs)
-        t = np.arange(n)
+        n = int(NIGHT_HOURS * 3600 * fs)
+        t = np.arange(n) / fs  # seconds
         with mef3io.Writer(str(path), overwrite=True, units="uV", metadata=meta) as w:
             for c, ch in enumerate(CHANNELS):
-                sig = 40 * np.sin(t / (11.0 + 3 * c)) + 8 * np.sin(t / 2.3 + night)
+                sig = (
+                    30 * np.sin(2 * np.pi * (1.5 + 0.2 * c) * t)  # slow waves
+                    + 12 * np.sin(2 * np.pi * (9.0 + 0.5 * c) * t + night)  # alpha
+                    + 5 * rng.standard_normal(n)
+                ).round(1)
                 if night == 1:
-                    cut = int(3 * 3600 * fs)  # a gap of half an hour after 3 hours
-                    gap = int(0.5 * 3600 * fs)
+                    cut = int(50 * 60 * fs)  # a gap of ten minutes after 50 minutes
+                    gap = int(10 * 60 * fs)
                     w.write(ch, sig[:cut], start, fs)
-                    w.write(ch, sig[cut + gap :], start + (cut + gap) * int(SECOND / fs), fs)
+                    w.write(ch, sig[cut + gap :], start + round((cut + gap) * SECOND / fs), fs)
                 else:
                     w.write(ch, sig, start, fs)
             w.write_annotations(
                 [
-                    {"time": start + 10 * 60 * SECOND, "text": "lights off"},
-                    {"time": start + 3 * HOUR, "type": "Note", "text": "restless"},
-                    {"time": start + 6 * HOUR, "text": "lights on"},
+                    {"time": start + 5 * 60 * SECOND, "text": "lights off"},
+                    {"time": start + 40 * 60 * SECOND, "type": "Note", "text": "restless"},
+                    {"time": start + 110 * 60 * SECOND, "text": "lights on"},
                 ]
             )
         demo.paths[name] = path
-        demo.spans[name] = (start, start + 8 * HOUR)
+        demo.spans[name] = (start, start + NIGHT_HOURS * HOUR)
     return demo
 
 

@@ -31,13 +31,17 @@ headless (no video), so a screen change that breaks a tour fails the tests.
 
 ### About the video format
 
-`build_videos.py` writes **MP4 (H.264)** through Qt's multimedia
-(`QMediaCaptureSession` + `QVideoFrameInput` + `QMediaRecorder`) when this
-Qt can encode it. That needs the **full PySide6** (`pip install
+`build_videos.py` writes an **MP4** through Qt's multimedia
+(`QMediaCaptureSession` + `QVideoFrameInput` + `QMediaRecorder`). It uses
+H.264 when this Qt can encode it. The FFmpeg inside PySide6 is an LGPL build
+without x264, so on a typical install it writes **MPEG-4 Part 2** inside the
+`.mp4` (plays in VLC, Qt and most desktop players; browsers may not; the script
+prints which codec it used). That needs the **full PySide6** (`pip install
 PySide6-Addons==<the PySide6 version>`): the slim `PySide6-Essentials` has no
-QtMultimedia. When it is missing, the script says so and writes an
-**animated PNG** (`<tour>.png`; open it in a browser) with its own small
-writer, which needs no extra program. The PDF needs only PySide6 itself.
+QtMultimedia. Only when QtMultimedia is missing does the script say so and
+write an **animated PNG** (`<tour>.png`; open it in a browser) with its own
+small writer. The PDF needs only PySide6 itself. The offscreen platform
+encodes fine.
 
 ## Write or change a tour
 
@@ -57,8 +61,8 @@ of **steps**; each step has
 
 `scripts/manual/tourlib.py` has the actions and the driver, and
 `docs/manual/tours/_common.py` the steps that several tours share. The made-up
-recordings (three nights, six channels, notes and events, a half-hour gap,
-a made-up patient) are written by `tourlib.write_demo`.
+recordings (three 2-hour nights at 256 Hz, six channels, notes and events,
+a ten-minute gap, a made-up patient) are written by `tourlib.write_demo`.
 
 When a tour breaks after a UI change, the error names what it looked for
 ("The tour looks for 'Next' on screen but it is not there"): update the tour,
