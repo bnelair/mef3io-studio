@@ -21,8 +21,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime, tzinfo
 
-from PySide6.QtCore import QDate, QDateTime, QRectF, QSize, Qt, QTime, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QDate, QDateTime, QTime, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -30,6 +29,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QTableWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -63,6 +64,7 @@ from ..common.flow import FlowLayout
 from ..common.pages import scaled_font
 from ..common.passwords import PasswordsStep
 from ..common.theme import LIGHT, Theme
+from ..explorer.combined import ZOOM_STEP
 from ..explorer.state import RecordingEntry
 from ..model import join as join_model
 from ..model.anonymize import (
@@ -72,6 +74,7 @@ from ..model.anonymize import (
     name_problem,
 )
 from ..model.channels import ChannelSelection
+from ..model.coverage import RecordingInput, combine_steps
 from ..model.join import (
     KEEP_BETWEEN,
     KEEP_FIRST,
@@ -87,6 +90,7 @@ from ..model.join import (
     Layout,
     plan_join,
     problem_text,
+    window_keeps,
 )
 from ..model.recording import ACCESS_BASIC
 from ..model.shiftplan import Blocker
@@ -94,12 +98,17 @@ from ..model.timefmt import (
     format_count,
     format_span,
     format_time,
+    format_utc_us,
     from_local,
+    parse_utc_text,
+    parse_whole_number,
     resolve_zone,
     to_datetime,
 )
 from ..workers.jobs import JobManager
+from ..workers.slices import SlicedRunner
 from ..workers.tasks import check_join, join_recordings
+from .trimmap import END, LABELS, START, TrimMapWidget
 
 #: Wait this long after the last change of the Explore list before listing
 #: the recordings again (a scan delivers them in quick bursts).
@@ -347,95 +356,30 @@ class KeepRow(QWidget):
         return Keep(KEEP_WHOLE)
 
 
-class KeptPartsPreview(QWidget):
-    """One lane per recording on a shared time axis: the whole recording as
-    a light track, the kept part filled in, overlapping parts in red. Gaps
-    between recordings are the empty space between the lanes' bars."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.rows: list[tuple[str, int, int, object, bool]] = []
-        self.zone: tzinfo = UTC
-        self.theme: Theme = LIGHT
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def _metrics(self):
-        em = self.fontMetrics().height()
-        row = round(em * 1.5)
-        names = [self.fontMetrics().horizontalAdvance(r[0]) for r in self.rows] or [0]
-        gutter = min(max(names) + em, round(em * 12))
-        return em, row, gutter, round(em * 2.0)
-
-    def sizeHint(self) -> QSize:  # noqa: N802
-        em, row, _gutter, axis = self._metrics()
-        return QSize(em * 30, axis + max(1, len(self.rows)) * row + em)
-
-    def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return self.sizeHint()
-
-    def set_rows(self, rows, zone: tzinfo) -> None:
-        """``rows``: (name, recording start, recording end, kept Span or
-        None, overlaps another kept part)."""
-        self.rows = list(rows)
-        self.zone = zone
-        self.updateGeometry()
-        self.setMinimumHeight(self.sizeHint().height())
-        self.update()
-
-    def set_theme(self, theme: Theme) -> None:
-        self.theme = theme
-        self.update()
-
-    def paintEvent(self, _event) -> None:  # noqa: N802
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if not self.rows:
-            painter.end()
-            return
-        theme = self.theme
-        em, row, gutter, axis = self._metrics()
-        left, right = gutter, self.width() - em
-        width = max(1.0, right - left)
-        t0 = min(r[1] for r in self.rows)
-        t1 = max(max(r[2] for r in self.rows), t0 + 1)
-
-        def x_of(t: int) -> float:
-            return left + width * (t - t0) / (t1 - t0)
-
-        painter.setPen(QColor(theme.muted))
-        painter.drawText(
-            QRectF(left, 0, width / 2, em * 1.2),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            format_time(t0, self.zone),
-        )
-        painter.drawText(
-            QRectF(left + width / 2, 0, width / 2, em * 1.2),
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            format_time(t1, self.zone),
-        )
-        pen = QPen(QColor(theme.border))
-        painter.setPen(pen)
-        base = em * 1.5
-        painter.drawLine(round(left), round(base), round(right), round(base))
-        for i, (name, start, end, span, overlap) in enumerate(self.rows):
-            y = axis + i * row
-            painter.setPen(QColor(theme.text))
-            painter.drawText(
-                QRectF(0, y, gutter - em * 0.5, row),
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                self.fontMetrics().elidedText(
-                    name, Qt.TextElideMode.ElideRight, int(gutter - em * 0.5)
-                ),
-            )
-            painter.setPen(Qt.PenStyle.NoPen)
-            x0, x1 = x_of(start), x_of(end)
-            painter.setBrush(QColor(theme.divider))
-            painter.drawRoundedRect(QRectF(x0, y + row * 0.3, max(1.5, x1 - x0), row * 0.4), 3, 3)
-            if span is not None:
-                k0, k1 = x_of(span.start), x_of(span.end)
-                painter.setBrush(QColor(theme.danger if overlap else theme.accent))
-                painter.drawRect(QRectF(k0, y + row * 0.15, max(2.0, k1 - k0), row * 0.7))
-        painter.end()
+#: Words for the two ways to choose what to keep.
+MODE_WINDOW = "window"
+MODE_EACH = "each"
+LEFT_OUT_TEXT = "Left out: no data between Start and End"
+NO_DATA_IN_WINDOW = (
+    "No recording has data between Start and End. Move the lines so that they enclose some."
+)
+TIMES_ARE_REAL = (
+    "These are the real times of the recordings, as they were recorded (UTC for the "
+    "date and time fields and for the number)."
+)
+TIMES_ARE_REAL_MOVED = (
+    " You chose to make the new recording anonymous with the dates moved: its times will "
+    "differ from these by the same whole number of days."
+)
+DATE_HELP = "Write it like 2026-11-04 13:05:22.123456 (UTC). Seconds and the fraction are optional."
+NUMBER_HELP = (
+    "Write the time as a whole number: microseconds since 1 January 1970, UTC (for "
+    "example 1604495122123456)."
+)
+NUMBER_TIP = (
+    "The same moment as a whole number of microseconds since 1 January 1970, UTC. This is how "
+    "the recording stores its times."
+)
 
 
 class KeepStep(QWidget):
@@ -446,24 +390,110 @@ class KeepStep(QWidget):
     def __init__(self, page: JoinerPage):
         super().__init__(page)
         self.page = page
-        self.rows: list[KeepRow] = []
+        #: Every chosen recording's row, in time order (see :attr:`rows`).
+        self.all_rows: list[KeepRow] = []
         self.plan = JoinPlan()
+        self.mode = MODE_EACH
+        #: The window ``[start, end)`` for every recording, microseconds.
+        self.window: tuple[int, int] = (0, 1)
+        self.bounds: tuple[int, int] = (0, 1)
+        #: Keys of the recordings the window leaves out, and what each
+        #: recording keeps in window mode.
+        self.left_out: frozenset[str] = frozenset()
+        self._window_keeps: dict[str, Keep] = {}
+        self._keys: tuple[str, ...] = ()
+        self._runs: dict = {}
+        self._coverage_cache: dict = {}
+        self._layout_keys: tuple[str, ...] | None = None
         self.zone_note = _label(muted=True)
         #: What the signal viewer asked for and what this page holds instead.
         self.viewer_note = _label(muted=True)
         self.viewer_note.setVisible(False)
         self.table = _table(self.COLUMNS)
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self.preview = KeptPartsPreview()
         self.summary = _label(bold=True)
         self.problems = _label()
         self.problems.setObjectName("Bad")
+
+        self.mode_window = QRadioButton("The same window for all recordings, set on the map")
+        self.mode_each = QRadioButton("Choose for each recording")
+        self.mode_each.setChecked(True)
+        modes = QButtonGroup(self)
+        for b in (self.mode_window, self.mode_each):
+            modes.addButton(b)
+            b.toggled.connect(self._mode_toggled)
+        self.map = TrimMapWidget()
+        self.map.setMinimumHeight(round(self.fontMetrics().height() * 11))
+        self.map.window_moved.connect(self._map_moved)
+        self.map_buttons = FlowLayout()
+        self.fit_button = QToolButton()
+        self.fit_button.setText("Show everything")
+        self.fit_button.setToolTip("Show the whole time span of the recordings (Home key)")
+        self.zoom_in_button = QToolButton()
+        self.zoom_in_button.setText("Zoom in")
+        self.zoom_in_button.setToolTip("Or turn the mouse wheel over the map")
+        self.zoom_out_button = QToolButton()
+        self.zoom_out_button.setText("Zoom out")
+        self.fit_button.clicked.connect(self.map.fit_all)
+        self.zoom_in_button.clicked.connect(lambda: self.map.zoom(ZOOM_STEP * ZOOM_STEP))
+        self.zoom_out_button.clicked.connect(lambda: self.map.zoom(1 / (ZOOM_STEP * ZOOM_STEP)))
+        for b in (self.fit_button, self.zoom_in_button, self.zoom_out_button):
+            self.map_buttons.addWidget(b)
+        self.map_buttons.addWidget(
+            _label(
+                "Drag the Start and End lines (or click a flag, or press S or E, then use "
+                "the arrow keys). Shaded parts are not kept.",
+                muted=True,
+            )
+        )
+
+        # The Start and End fields: a date and time, and the same as a number.
+        self.date_edit = {START: QLineEdit(), END: QLineEdit()}
+        self.number_edit = {START: QLineEdit(), END: QLineEdit()}
+        fields = QGridLayout()
+        fields.setContentsMargins(0, 0, 0, 0)
+        fields.addWidget(_label("Date and time (UTC)", bold=True), 0, 1)
+        fields.addWidget(
+            _label("Time as a number (microseconds since 1 January 1970, UTC)", bold=True), 0, 2
+        )
+        for i, which in enumerate((START, END), start=1):
+            fields.addWidget(_label(LABELS[which], bold=True), i, 0)
+            fields.addWidget(self.date_edit[which], i, 1)
+            fields.addWidget(self.number_edit[which], i, 2)
+            self.date_edit[which].setPlaceholderText("2026-11-04 13:05:22.123456")
+            self.date_edit[which].setAccessibleName(f"{LABELS[which]}: date and time in UTC")
+            self.date_edit[which].setToolTip(DATE_HELP)
+            self.number_edit[which].setPlaceholderText("1604495122123456")
+            self.number_edit[which].setAccessibleName(
+                f"{LABELS[which]}: time as a number, microseconds since 1 January 1970, UTC"
+            )
+            self.number_edit[which].setToolTip(NUMBER_TIP)
+            self.date_edit[which].editingFinished.connect(lambda w=which: self._commit(w, True))
+            self.number_edit[which].editingFinished.connect(lambda w=which: self._commit(w, False))
+        fields.setColumnStretch(1, 1)
+        fields.setColumnStretch(2, 1)
+        self.field_message = _label()
+        self.field_message.setObjectName("Bad")
+        self.field_message.setVisible(False)
+        self.local_note = _label(muted=True)
+        self.real_note = _label(muted=True)
+        self.window_box = QWidget()
+        wb = QVBoxLayout(self.window_box)
+        wb.setContentsMargins(0, 0, 0, 0)
+        wb.addLayout(fields)
+        wb.addWidget(self.field_message)
+        wb.addWidget(self.local_note)
+        wb.addWidget(self.real_note)
+
+        self._layout_runner = SlicedRunner(self)
+        self._layout_runner.done.connect(self._on_layout_done)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(
             _label(
-                "Choose what to keep of each recording. They are listed in time order, and "
-                "the new recording holds the kept parts in that order, with the gaps between "
+                "Choose what to keep of the recordings. The map shows when each one has data. "
+                "The new recording holds the kept parts in time order, with the gaps between "
                 "them as they really were. Parts may run at the same time (side by side) only "
                 "when they hold different channels: two parts that overlap in time must not "
                 "share a channel you keep.",
@@ -472,24 +502,34 @@ class KeepStep(QWidget):
         )
         layout.addWidget(self.zone_note)
         layout.addWidget(self.viewer_note)
+        layout.addWidget(self.mode_window)
+        layout.addWidget(self.mode_each)
+        layout.addWidget(self.map, 2)
+        layout.addLayout(self.map_buttons)
+        layout.addWidget(self.window_box)
         layout.addWidget(self.table, 1)
-        layout.addWidget(_label("Preview of the kept parts", bold=True))
-        layout.addWidget(self.preview)
         layout.addWidget(self.summary)
         layout.addWidget(self.problems)
 
+    # -- the recordings ----------------------------------------------------------------
+    @property
+    def rows(self) -> list[KeepRow]:
+        """The rows of the recordings that are kept (those the window leaves
+        out are not part of the new recording, or of any later step)."""
+        return [r for r in self.all_rows if r.entry.key not in self.left_out]
+
     def set_recordings(self, entries: list[RecordingEntry]) -> None:
         """List ``entries`` in time order, keeping each one's choice."""
-        states = {r.entry.key: r.state() for r in self.rows}
+        states = {r.entry.key: r.state() for r in self.all_rows}
         entries = sorted(entries, key=lambda e: (e.details.start, e.details.end, e.key))
         self.table.setRowCount(0)  # deletes the old rows' widgets
         zone = self.page.zone
-        self.rows = []
+        self.all_rows = []
         for e in entries:
             row = KeepRow(e, zone, states.get(e.key))
-            row.changed.connect(self.recompute)
-            self.rows.append(row)
-        rows = self.rows
+            row.changed.connect(self._row_changed)
+            self.all_rows.append(row)
+        rows = self.all_rows
         self.table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             details = row.entry.details
@@ -501,16 +541,215 @@ class KeepStep(QWidget):
         self.table.resizeColumnsToContents()
         self.table.resizeRowsToContents()
         self.zone_note.setText(f"Times are shown in {zone_words(zone)}; type them the same way.")
+        keys = tuple(e.key for e in entries)
+        if keys != self._keys:
+            # A different set of recordings: the window starts as all of it, and
+            # several recordings are trimmed with one window by default.
+            self._keys = keys
+            lo = min((e.details.start for e in entries), default=0)
+            hi = max((e.details.end for e in entries), default=1)
+            self.bounds = (lo, max(hi, lo + 1))
+            self.window = self.bounds
+            self.left_out = frozenset()
+            self._runs = {}
+            self._set_mode(MODE_WINDOW if len(entries) > 1 else MODE_EACH)
+        self.map.set_bounds(*self.bounds)
+        self.map.zone = zone
+        self._show_window()
+        if entries:
+            self._start_layout(entries)
+        else:
+            self._layout_runner.cancel()
+            self.map.set_layout(None, refit=True)
         self.recompute()
 
     def set_zone(self) -> None:
         """Show the same choices in the page's (new) time zone."""
-        if self.rows:
-            self.set_recordings([r.entry for r in self.rows])
+        if self.all_rows:
+            self.set_recordings([r.entry for r in self.all_rows])
+        self.map.set_zone(self.page.zone)
 
+    def set_theme(self, theme: Theme) -> None:
+        self.map.set_theme(theme)
+
+    # -- the map ----------------------------------------------------------------------------
+    def _start_layout(self, entries: list[RecordingEntry]) -> None:
+        items = [RecordingInput(e.key, e.name, e.details) for e in entries]
+        cache = self._coverage_cache
+        keys = tuple(sorted(i.key for i in items))
+
+        def work():
+            layout, new_cache = yield from combine_steps(items, cache)
+            return layout, new_cache, keys
+
+        self._layout_runner.submit(work())
+
+    def _on_layout_done(self, result) -> None:
+        if result is None:
+            return
+        layout, cache, keys = result
+        if keys != tuple(sorted(r.entry.key for r in self.all_rows)):
+            return  # an older request, for other recordings
+        self._coverage_cache = cache
+        self._runs = {r.key: r.runs for r in layout.rows if r.has_data}
+        refit = keys != self._layout_keys
+        self._layout_keys = keys
+        self.map.set_layout(layout, refit=refit)
+        self.map.set_zone(self.page.zone)
+        # Only a window that now leaves a recording out changes anything (a
+        # check that is running must not be spoilt by the map arriving).
+        before = self.left_out
+        self._apply_window()
+        if self.left_out != before:
+            self.recompute()
+
+    def _map_moved(self, start: int, end: int) -> None:
+        self._set_window(start, end)
+
+    # -- the window -----------------------------------------------------------------------
+    def _mode_toggled(self, *_args) -> None:
+        mode = MODE_WINDOW if self.mode_window.isChecked() else MODE_EACH
+        if mode != self.mode:
+            self.mode = mode
+            self._show_window()
+            self.recompute()
+
+    def _set_mode(self, mode: str) -> None:
+        self.mode = mode
+        for button, wanted in ((self.mode_window, MODE_WINDOW), (self.mode_each, MODE_EACH)):
+            button.blockSignals(True)
+            button.setChecked(mode == wanted)
+            button.blockSignals(False)
+
+    def _row_changed(self, *_args) -> None:
+        """A choice for one recording: that is a choice per recording."""
+        if self.mode == MODE_WINDOW:
+            self._set_mode(MODE_EACH)
+            self._show_window()
+        self.recompute()
+
+    def _show_window(self) -> None:
+        window = self.mode == MODE_WINDOW
+        self.window_box.setVisible(window)
+        self.map.set_lines_enabled(window)
+        for row in self.all_rows:
+            row.setEnabled(not window)
+        self.map.set_window(*self.window)
+        self._write_fields()
+
+    def set_window(self, start: int, end: int) -> None:
+        """Choose the window (as dragging the lines would): switches to the
+        window for all recordings."""
+        if self.mode != MODE_WINDOW:
+            self._set_mode(MODE_WINDOW)
+            self._show_window()
+        self._set_window(start, end)
+
+    def _set_window(self, start: int, end: int) -> None:
+        lo, hi = self.bounds
+        start = min(max(int(start), lo), hi - 1)
+        end = max(min(int(end), hi), start + 1)
+        self.window = (start, end)
+        self.map.set_window(start, end)
+        self._write_fields()
+        self.field_message.setVisible(False)
+        self.recompute()
+
+    def _write_fields(self) -> None:
+        for which, t in ((START, self.window[0]), (END, self.window[1])):
+            self.date_edit[which].setText(format_utc_us(t))
+            self.number_edit[which].setText(str(t))
+        zone = self.page.zone
+        if zone is UTC:
+            self.local_note.setVisible(False)
+        else:
+            self.local_note.setText(
+                f"In {zone_words(zone)}: Start {format_time(self.window[0], zone, 6)}, "
+                f"End {format_time(self.window[1], zone, 6)}."
+            )
+            self.local_note.setVisible(True)
+
+    def _say(self, text: str) -> None:
+        self.field_message.setText(text)
+        self.field_message.setVisible(bool(text))
+
+    def _commit(self, which: str, is_date: bool) -> None:
+        """A date or number was typed: move the line there, or say why not
+        (the line stays where it is)."""
+        edit = (self.date_edit if is_date else self.number_edit)[which]
+        text = edit.text()
+        current = self.window[0] if which == START else self.window[1]
+        if text.strip() in (format_utc_us(current), str(current)):
+            return  # unchanged (focus just left the field)
+        t = parse_utc_text(text) if is_date else parse_whole_number(text)
+        if t is None:
+            self._say(
+                f"The {LABELS[which]} {'date and time' if is_date else 'number'} cannot be read. "
+                + (DATE_HELP if is_date else NUMBER_HELP)
+                + f" The {LABELS[which]} line has not moved."
+            )
+            return
+        lo, hi = self.bounds
+        note = ""
+        if t < lo:
+            t, note = (
+                lo,
+                "That is before the first recording starts, so it was moved to the first moment.",
+            )
+        elif t > hi:
+            t, note = (
+                hi,
+                "That is after the last recording ends, so it was moved to the last moment.",
+            )
+        start, end = self.window
+        if which == START:
+            if t >= end:
+                self._say("Start must be before End. The Start line has not moved.")
+                return
+            start = t
+        else:
+            if t <= start:
+                self._say("End must be after Start. The End line has not moved.")
+                return
+            end = t
+        self._set_window(start, end)
+        self._say(note)
+
+    def _apply_window(self) -> None:
+        """Work out what each recording keeps in window mode (and which
+        are left out)."""
+        if self.mode != MODE_WINDOW:
+            self.left_out = frozenset()
+            self._window_keeps = {}
+            return
+        layouts = {
+            r.entry.key: Layout(
+                r.entry.details.start,
+                r.entry.details.end,
+                tuple(c.name for c in r.entry.details.channels),
+            )
+            for r in self.all_rows
+        }
+        keeps, left = window_keeps(layouts, self.window[0], self.window[1], self._runs or None)
+        self._window_keeps = keeps
+        self.left_out = frozenset(left)
+
+    def keep_of(self, row: KeepRow) -> Keep:
+        if self.mode == MODE_WINDOW:
+            found = self._window_keeps.get(row.entry.key)
+            if found is not None:
+                return found
+        return row.keep()
+
+    def set_dates_moved(self, moved: bool) -> None:
+        self.real_note.setText(TIMES_ARE_REAL + (TIMES_ARE_REAL_MOVED if moved else ""))
+
+    # -- what the page and the later steps ask --------------------------------------------
     def sources(self) -> list[JoinSource]:
+        self._apply_window()
         return [
-            JoinSource(r.entry.key, r.entry.location, r.keep(), r.entry.password) for r in self.rows
+            JoinSource(r.entry.key, r.entry.location, self.keep_of(r), r.entry.password)
+            for r in self.rows
         ]
 
     def layouts(self) -> dict:
@@ -524,18 +763,24 @@ class KeepStep(QWidget):
         }
 
     def recompute(self, *_args) -> None:
+        self._apply_window()
         self.plan = plan_join(
             self.sources(), self.layouts(), excluded=self.page.selection.excluded, changes=True
         )
-        names = {r.entry.key: r.entry.name for r in self.rows}
+        names = {r.entry.key: r.entry.name for r in self.all_rows}
         overlapping = self.plan.overlapping
-        preview = []
+        shown = {}
+        left_out_words = {}
         total = 0.0
-        for i, row in enumerate(self.rows):
+        self.preview_rows = []
+        for i, row in enumerate(self.all_rows):
             key = row.entry.key
             span = self.plan.spans.get(key)
             problem = self.plan.problem_of(key)
-            if problem is not None:
+            if key in self.left_out:
+                text = LEFT_OUT_TEXT
+                left_out_words[key] = LEFT_OUT_TEXT
+            elif problem is not None:
                 text = problem_text(problem, names)
             elif span is not None:
                 total += span.seconds
@@ -544,12 +789,16 @@ class KeepStep(QWidget):
                 )
             else:
                 text = ""
+            if span is not None and key not in self.left_out:
+                shown[key] = (span.start, span.end)
             item = self.table.item(i, 4)
             if item is not None:
                 item.setText(text)
             details = row.entry.details
-            preview.append((row.entry.name, details.start, details.end, span, key in overlapping))
-        self.preview.set_rows(preview, self.page.zone)
+            self.preview_rows.append(
+                (row.entry.name, details.start, details.end, span, key in overlapping)
+            )
+        self.map.set_kept(shown, left_out_words)
         self.table.resizeColumnToContents(4)
         self.summary.setText(
             f"The new recording will hold about {format_span(total)} of signal."
@@ -557,6 +806,8 @@ class KeepStep(QWidget):
             else ""
         )
         words = list(dict.fromkeys(problem_text(p, names) for p in self.plan.problems))
+        if self.mode == MODE_WINDOW and self.all_rows and not self.rows:
+            words = [NO_DATA_IN_WINDOW]
         self.problems.setText("\n".join(words))
         self.problems.setVisible(bool(words))
         self.changed.emit()
@@ -1078,7 +1329,7 @@ class JoinerPage(QWidget):
             self.stack.addWidget(widget)
         for step in (self.recordings, self.keep, self.picker, self.privacy, self.new):
             step.changed.connect(self._inputs_changed)
-        self.keep.preview.set_theme(self.theme)
+        self.keep.set_theme(self.theme)
 
         self.back_button = QPushButton("Back")
         self.back_button.clicked.connect(self.back)
@@ -1115,7 +1366,7 @@ class JoinerPage(QWidget):
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
         if self._built:
-            self.keep.preview.set_theme(theme)
+            self.keep.set_theme(theme)
 
     def set_zone_name(self, name: str) -> None:
         self.zone = resolve_zone(name)
@@ -1160,7 +1411,7 @@ class JoinerPage(QWidget):
         listed = {e.key: e for e in self.explorer.entries()}
         lost = [
             r.entry.name
-            for r in self.keep.rows
+            for r in self.keep.all_rows
             if (e := listed.get(r.entry.key)) is None or e.details is None or e.busy
         ]
         if not lost:
@@ -1176,6 +1427,9 @@ class JoinerPage(QWidget):
 
     def _inputs_changed(self, *_args) -> None:
         self._generation += 1
+        self.keep.set_dates_moved(
+            self.privacy.is_anonymous() and self.privacy.dates_move.isChecked()
+        )
         self._update_buttons()
 
     def _checking(self) -> bool:
@@ -1202,6 +1456,9 @@ class JoinerPage(QWidget):
             self._prepare_channels()
         elif step == STEP_KEEP:
             self._prepare_channels()
+            self.keep.set_dates_moved(
+                self.privacy.is_anonymous() and self.privacy.dates_move.isChecked()
+            )
             self.keep.recompute()
         elif step == STEP_PRIVACY:
             self.privacy.set_recordings()
@@ -1212,7 +1469,7 @@ class JoinerPage(QWidget):
         self._update_buttons()
 
     def _prepare_channels(self) -> None:
-        entries = [r.entry for r in self.keep.rows]
+        entries = [r.entry for r in self.keep.all_rows]
         keys = tuple(e.key for e in entries)
         if keys == self._selection_keys:
             return
@@ -1226,6 +1483,7 @@ class JoinerPage(QWidget):
         recording is made anonymous."""
         return (
             bool(self.selection.excluded)
+            or bool(self.keep.left_out)
             or self.new.passwords.both.isChecked()
             or self.privacy.is_anonymous()
         )
@@ -1461,13 +1719,13 @@ class JoinerPage(QWidget):
         if self.step != STEP_KEEP:
             return False
         end_up = -(-end // SECOND_US) * SECOND_US
-        for row in self.keep.rows:
+        for row in self.keep.all_rows:
             row.set_how(KEEP_BETWEEN)
             row.start.set_us(max(start, row.entry.details.start), self.zone)
             row.end.set_us(min(end_up, row.entry.details.end), self.zone)
         self.keep.recompute()
         # What is kept now (a recording ending mid-second is kept to its end).
-        kept = [r.keep() for r in self.keep.rows]
+        kept = [r.keep() for r in self.keep.all_rows]
         new_start = min(k.start_us for k in kept)
         new_end = max(k.end_us for k in kept)
         asked = f"{format_time(start, self.zone, 3)} to {format_time(end, self.zone, 3)}"
@@ -1496,6 +1754,7 @@ class JoinerPage(QWidget):
         self.privacy.reset()
         self._selection_keys = ()
         self.keep.set_recordings([])
+        self.keep._layout_keys = None
         self.keep.viewer_note.setVisible(False)
         self.recordings.ticked.clear()
         self.recordings.lost.setVisible(False)

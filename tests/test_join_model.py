@@ -609,3 +609,93 @@ def test_a_failed_marker_leaves_no_folder(two, monkeypatch):
     with pytest.raises(OSError):
         j.make_parts_folder(request)
     assert not os.path.exists(request.parts_folder)
+
+
+# --------------------------------------------------------------------------
+# One window for every recording (the map on "What to keep")
+
+
+def _layouts():
+    return {
+        "A": j.Layout(T0, T0 + 2 * HOUR, ("a1",)),
+        "B": j.Layout(T0 + 3 * HOUR, T0 + 5 * HOUR, ("a1",)),
+        "C": j.Layout(T0 + HOUR, T0 + 4 * HOUR, ("a1",)),
+    }
+
+
+def test_window_keeps_gives_every_recording_the_exact_window():
+    start, end = T0 + HOUR + 123_456, T0 + 3 * HOUR + 7
+    keeps, left_out = j.window_keeps(_layouts(), start, end)
+    assert set(keeps) == {"A", "B", "C"} and left_out == ()
+    assert all(k == j.Keep(j.KEEP_BETWEEN, start_us=start, end_us=end) for k in keeps.values())
+    # What each keeps, to the microsecond: the window inside the recording's data.
+    sources = [j.JoinSource(k, "/x/" + k, keeps[k]) for k in keeps]
+    plan = j.plan_join(sources, _layouts(), changes=True)
+    assert (plan.spans["A"].start, plan.spans["A"].end) == (start, T0 + 2 * HOUR)
+    assert plan.spans["A"].to_end  # reaches A's own end
+    assert (plan.spans["C"].start, plan.spans["C"].end) == (start, end)
+    assert (plan.spans["B"].start, plan.spans["B"].end) == (T0 + 3 * HOUR, end)
+    assert plan.spans["C"].time_range == (start, end)  # [start, end), exact
+
+
+def test_window_leaves_out_recordings_without_data_inside_it():
+    keeps, left_out = j.window_keeps(_layouts(), T0 + 2 * HOUR, T0 + 3 * HOUR)
+    # A ends exactly where the window starts and B starts where it ends:
+    # [start, end) does not meet them.
+    assert set(keeps) == {"C"} and set(left_out) == {"A", "B"}
+    keeps, left_out = j.window_keeps(_layouts(), T0 - 5 * HOUR, T0 - HOUR)
+    assert keeps == {} and set(left_out) == {"A", "B", "C"}
+
+
+def test_window_uses_the_stretches_with_data_when_known():
+    # C has data only in its first and last hour: a window in its middle
+    # (inside its extent) holds no data.
+    runs = {"C": ((T0 + HOUR, T0 + 2 * HOUR), (T0 + 3 * HOUR, T0 + 4 * HOUR))}
+    keeps, left_out = j.window_keeps(
+        {"C": _layouts()["C"]}, T0 + 2 * HOUR + 1, T0 + 3 * HOUR - 1, runs
+    )
+    assert keeps == {} and left_out == ("C",)
+    keeps, left_out = j.window_keeps({"C": _layouts()["C"]}, T0 + 2 * HOUR - 1, T0 + 3 * HOUR, runs)
+    assert set(keeps) == {"C"}
+    # A single moment inside the window counts.
+    keeps, _ = j.window_keeps(
+        {"C": _layouts()["C"]}, T0, T0 + 9 * HOUR, {"C": ((T0 + HOUR, T0 + HOUR),)}
+    )
+    assert set(keeps) == {"C"}
+
+
+def test_window_with_unknown_times_or_a_bad_window_is_reported_not_hidden():
+    keeps, left_out = j.window_keeps({"X": j.Layout(None, None)}, T0, T0 + HOUR)
+    plan = j.plan_join([j.JoinSource("X", "/x/X", keeps["X"])], {"X": j.Layout(None, None)})
+    assert left_out == () and plan.problems[0].code == j.TIMES_UNKNOWN
+    keeps, left_out = j.window_keeps(_layouts(), T0 + HOUR, T0 + HOUR)  # empty window
+    sources = [j.JoinSource(k, "/x/" + k, keeps[k]) for k in keeps]
+    plan = j.plan_join(sources, _layouts())
+    assert {p.code for p in plan.problems} == {j.END_NOT_AFTER_START}
+
+
+def test_a_window_join_of_two_recordings_holds_the_window_and_the_data_only(tmp_path):
+    a = write(tmp_path / "A.mefd", T0, 2 * 3600)
+    b = write(tmp_path / "B.mefd", T0 + 3 * HOUR, 2 * 3600)
+    c = write(tmp_path / "C.mefd", T0 + 10 * HOUR, 3600)  # far outside the window
+    start, end = T0 + HOUR + 30 * MINUTE, T0 + 3 * HOUR + 20 * MINUTE
+    paths = {"A": a, "B": b, "C": c}
+    layouts = {
+        "A": j.Layout(T0, T0 + 2 * HOUR, ("a1", "a2")),
+        "B": j.Layout(T0 + 3 * HOUR, T0 + 5 * HOUR, ("a1", "a2")),
+        "C": j.Layout(T0 + 10 * HOUR, T0 + 11 * HOUR, ("a1", "a2")),
+    }
+    keeps, left_out = j.window_keeps(layouts, start, end)
+    assert left_out == ("C",)
+    out = tmp_path / "out"
+    out.mkdir()
+    request = j.new_request([source(paths[k], keeps[k]) for k in keeps], str(out / "joined.mefd"))
+    assert j.check_join(request) == []
+    assert j.make_joined(request).ok
+    found = mef3io.time_range(str(out / "joined.mefd"))
+    # The output runs from the window's start to the window's end, but only
+    # as far as the data goes: the hour between A and B stays a gap.
+    assert found.start_uutc == start and found.end_uutc == end
+    want = np.concatenate([expected(start, T0 + 2 * HOUR), expected(T0 + 3 * HOUR, end)])
+    for channel in ("a1", "a2"):
+        np.testing.assert_array_equal(kept_values(out / "joined.mefd", channel), want)

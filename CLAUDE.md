@@ -365,7 +365,7 @@ Code (app shell, #2/#3):
   last sample's own time), so `read_layouts` takes the end from each
   channel's last block (`Reader.block_envelope(ch, t0=stated_end - 1)`:
   only the last part's index, `end_uutc` = start + samples/fs); the page
-  uses Explore's details (header ends) for the preview only. Start and
+  uses Explore's details (header ends) for the map only. WINDOW MODE ("What to keep", default for >1 recording): `KeepStep.window` = two ints (us, UTC), set by the `joiner/trimmap.TrimMapWidget` lines (a subclass of Explore's `CombinedTimelineWidget`: reuse, never copy), a UTC date field and a whole-number field, always in sync; `model/join.window_keeps` gives every recording `Keep(between)` or LEAVES IT OUT (extent or, from the coverage runs, data not meeting `[Start, End)`); `KeepStep.rows` = kept rows only (later steps never see left-out ones), `all_rows` = every chosen one (channels step, `_still_readable`, viewer window). Touching a row's own choice switches to per-recording mode. A layout arriving late must NOT emit `changed` unless something changed (it would void a running check). Signals carrying times are `Signal(object, ...)`: `int` is 32 bit. Start and
   "times confirmed" (`offset_known`) still come from `time_range`; channels
   from the Reader. `plan_join(sources, layouts, excluded=, changes=)`
   (pure) orders by time; OVERLAP IS PER CHANNEL: two kept parts conflict
