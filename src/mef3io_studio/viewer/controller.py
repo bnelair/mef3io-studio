@@ -450,6 +450,8 @@ class ViewController(QObject):
             if tile_key not in j.tile_keys:
                 continue
             if j.generation > generation:
+                if j.state != "waiting" or tile_key in j.arrays:
+                    continue  # it already has the tile
                 tile = j.tile_numbers[j.tile_keys.index(tile_key)]
                 self.scheduler.request(j.plan.rate, j.plan.channels, tile, j.priority, j.generation)
             else:

@@ -267,6 +267,31 @@ def test_an_old_read_error_does_not_empty_a_newer_page(one, qtbot, monkeypatch):
     assert all(r.piece is not None for r in one.canvas.rows)
 
 
+def test_a_read_error_fails_the_pages_asked_for_before_it(one, qtbot, monkeypatch):
+    """The converse: an error marked with the page's own generation (the
+    read failed after that page asked) fails it, and says so."""
+    failed = []
+    one.controller.failed.connect(failed.append)
+    gate = threading.Event()
+    real = one.data.read_tile
+
+    def held(*a, **k):
+        gate.wait(10)
+        return real(*a, **k)
+
+    monkeypatch.setattr(one.data, "read_tile", held)
+    one.controller.cache.clear()
+    one.controller._held.clear()
+    one.controller._held_bytes = 0
+    one.set_state(t0=T0 + 45 * SEC)
+    ctl = one.controller
+    job = next(j for j in ctl._jobs.values() if j.tile_keys and j.generation == ctl._generation)
+    ctl._on_error(job.tile_keys[0], OSError("disk went away"), ctl._generation)
+    assert job.key not in ctl._jobs
+    assert failed and "could not be read" in failed[0]
+    gate.set()
+
+
 def test_a_tile_the_cache_refuses_still_reaches_the_block(one, qtbot):
     one.controller.cache.set_budget(1)  # nothing fits: every tile is "evicted" at once
     one.set_state(t0=T0 + 25 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
