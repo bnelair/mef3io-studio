@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
-    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
@@ -362,6 +361,7 @@ MODE_WINDOW = "window"
 MODE_EACH = "each"
 LEFT_OUT_TEXT = "Left out: no data between Start and End"
 WAIT_FOR_MAP = "Wait a moment: the map is still being worked out."
+MAP_FAILED = "The map could not be drawn. Choose for each recording instead."
 NO_DATA_IN_WINDOW = (
     "No recording has data between Start and End. Move the lines so that they enclose some."
 )
@@ -492,11 +492,12 @@ class KeepStep(QWidget):
 
         self._layout_runner = SlicedRunner(self)
         self._layout_runner.done.connect(self._on_layout_done)
+        self._layout_runner.failed.connect(self._on_layout_failed)
+        self._map_failed = False
 
-        # Everything sits in a scroll area, so that on a small window the map,
-        # the Start and End fields and the table can all still be reached.
-        body = QWidget()
-        layout = QVBoxLayout(body)
+        # The wizard around this step scrolls; the step itself does not, so
+        # there is one scrollbar and Back and Next stay in reach.
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(
             _label(
@@ -519,13 +520,6 @@ class KeepStep(QWidget):
         layout.addWidget(self.table, 1)
         layout.addWidget(self.summary)
         layout.addWidget(self.problems)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(body)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
 
     # -- the recordings ----------------------------------------------------------------
     @property
@@ -599,6 +593,8 @@ class KeepStep(QWidget):
         items = [RecordingInput(e.key, e.name, e.details) for e in entries]
         cache = self._coverage_cache
         keys = tuple(sorted(i.key for i in items))
+        self._map_failed = False
+        self.mode_window.setEnabled(True)
 
         def work():
             layout, new_cache = yield from combine_steps(items, cache)
@@ -625,6 +621,14 @@ class KeepStep(QWidget):
         self._apply_window()
         if self.left_out != before or not was_ready:
             self.recompute()
+
+    def _on_layout_failed(self) -> None:
+        """The map could not be worked out: say so, and go on without it."""
+        self._map_failed = True
+        self.mode_window.setEnabled(False)
+        self._set_mode(MODE_EACH)
+        self._show_window()
+        self.recompute()
 
     def _map_moved(self, start: int, end: int) -> None:
         self._set_window(start, end)
@@ -829,6 +833,8 @@ class KeepStep(QWidget):
             else ""
         )
         words = list(dict.fromkeys(problem_text(p, names) for p in self.plan.problems))
+        if self._map_failed and self.mode == MODE_EACH:
+            words = [MAP_FAILED, *words]
         if self.mode == MODE_WINDOW and self.all_rows and not self.layout_ready:
             words = [WAIT_FOR_MAP]
         elif self.mode == MODE_WINDOW and self.all_rows and not self.rows:

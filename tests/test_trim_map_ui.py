@@ -15,6 +15,7 @@ from test_joiner_ui import choose_all, write
 
 from mef3io_studio.joiner.page import (
     LEFT_OUT_TEXT,
+    MAP_FAILED,
     MODE_EACH,
     MODE_WINDOW,
     NO_DATA_IN_WINDOW,
@@ -559,3 +560,65 @@ def test_utc_text_for_early_and_negative_times():
     assert format_utc_us(10**20) == "not a valid time"
     assert format_utc_us(-(10**20)) == "not a valid time"
     assert parse_utc_text("0000-01-01") is None
+
+
+def test_close_lines_flip_their_flags_outward_without_meeting(trim_map):
+    trim_map.set_window(T0 + 2 * HOUR, T0 + 2 * HOUR + 60 * SECOND)
+    rects = trim_map.flag_rects()
+    assert not rects[START].intersects(rects[END])
+    assert rects[START].center().x() < rects[END].center().x()
+    # Far apart: Start hangs right of its line, End left of its own.
+    trim_map.set_window(T0, T0 + 6 * HOUR)
+    far = trim_map.flag_rects()
+    assert far[START].left() <= far[END].left() and not far[START].intersects(far[END])
+    # Close to the left edge the flags stay inside the widget.
+    trim_map.set_window(T0, T0 + SECOND)
+    near = trim_map.flag_rects()
+    assert not near[START].intersects(near[END])
+    assert near[START].left() >= 0 and near[END].right() <= trim_map.width()
+
+
+def test_a_left_out_row_is_visibly_shaded_in_both_themes(trim_map):
+    from mef3io_studio.common.theme import DARK, LIGHT
+
+    for theme in (LIGHT, DARK):
+        trim_map.set_theme(theme)
+        trim_map.set_window(T0 + 3 * HOUR, T0 + 4 * HOUR)
+        trim_map.set_kept({"B": (T0 + 3 * HOUR, T0 + 4 * HOUR)}, {"A": LEFT_OUT_TEXT})
+        image = trim_map.grab().toImage()
+        plot = trim_map.plot_rect()
+        _em, row_h, _g, axis = trim_map._metrics()
+        # A pixel in the left-out row A, clear of its words, differs from the surface.
+        px = image.pixelColor(int(plot.right()) - 4, int(axis + row_h * 0.1))
+        from PySide6.QtGui import QColor
+
+        assert px != QColor(theme.surface), theme.name
+
+
+def test_a_failed_map_says_so_and_the_page_stays_usable(window_page, qtbot, tmp_path, monkeypatch):
+    def broken(items, cache):
+        raise RuntimeError("synthetic failure")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("mef3io_studio.joiner.page.combine_steps", broken)
+    window, page = window_page
+    two_recordings(qtbot, window, tmp_path)
+    page.go(0)
+    page.recordings.set_ticked([e.key for e in page.recordings.rows])
+    page.next()
+    page.next()
+    keep = page.keep
+    qtbot.waitUntil(lambda: keep._map_failed)
+    assert keep.mode == MODE_EACH and keep.mode_each.isChecked()
+    assert MAP_FAILED in keep.problems.text()
+    assert not keep.mode_window.isEnabled()
+    assert keep.ok and page.next_button.isEnabled()
+
+
+def test_the_wizard_has_one_scrollbar_area_around_the_keep_step(window_page, qtbot, tmp_path):
+    from PySide6.QtWidgets import QScrollArea
+
+    window, page = window_page
+    two_recordings(qtbot, window, tmp_path)
+    choose_all(page)
+    assert page.keep.findChildren(QScrollArea) == []

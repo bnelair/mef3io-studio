@@ -238,6 +238,10 @@ class TrimMapWidget(CombinedTimelineWidget):
         first = self.scrollbar.value()
         shade = QColor(theme.surface)
         shade.setAlphaF(0.72)
+        # A row that is left out is also tinted with the text colour, so that
+        # it reads as shaded on the plain surface in both themes.
+        left_out_tint = QColor(theme.text)
+        left_out_tint.setAlphaF(0.16)
         clip = QRectF(0, axis, self.width(), self.height() - axis)
         painter.setClipRect(clip)
         notes: list[tuple[QRectF, str]] = []
@@ -246,7 +250,9 @@ class TrimMapWidget(CombinedTimelineWidget):
             # The shading starts at the plot: the recording's name in the
             # gutter keeps its full contrast.
             if row.key in self.left_out:
-                painter.fillRect(QRectF(plot.left(), y, plot.width(), row_h), shade)
+                whole = QRectF(plot.left(), y, plot.width(), row_h)
+                painter.fillRect(whole, shade)
+                painter.fillRect(whole, left_out_tint)
                 notes.append(
                     (
                         QRectF(plot.left() + em * 0.3, y, plot.width() - em * 0.6, row_h),
@@ -298,6 +304,45 @@ class TrimMapWidget(CombinedTimelineWidget):
         painter.setClipping(False)
         painter.end()
 
+    def flag_rects(self) -> dict[str, QRectF]:
+        """Where the Start and End flags sit. Normally Start hangs to the
+        right of its line and End to the left; when the lines are so close
+        that the flags would meet, they swing outward (Start to the left of
+        its line, End to the right), kept inside the widget."""
+        em, _row_h, _gutter, axis = self._metrics()
+        plot = self.plot_rect()
+        fm = self.fontMetrics()
+        info = {}
+        for which, t in ((START, self.start), (END, self.end)):
+            x = self.x_of(t)
+            text = LABELS[which]
+            if not (plot.left() - 0.5 <= x <= plot.right() + 0.5):
+                text = ("◀ " + text) if x < plot.left() else (text + " ▶")
+                x = plot.left() if x < plot.left() else plot.right()
+            info[which] = (x, text, fm.horizontalAdvance(text) + em * 0.8)
+        flag_h = em * 1.15
+        top = axis - flag_h - em * 0.1
+
+        def place(which, outward):
+            x, _text, w = info[which]
+            to_right = (which == START) != outward
+            left = x if to_right else x - w
+            left = min(max(left, plot.left() - em * 0.2), self.width() - w - 1)
+            return QRectF(left, top, w, flag_h)
+
+        rects = {w: place(w, False) for w in (START, END)}
+        if rects[START].right() + em * 0.2 > rects[END].left():
+            rects = {w: place(w, True) for w in (START, END)}
+            gap = em * 0.2
+            a, b = rects[START], rects[END]
+            if a.right() + gap > b.left():
+                # Pinned against an edge: move End (or, at the far edge, Start)
+                # along so they still do not meet.
+                b.moveLeft(min(a.right() + gap, self.width() - b.width() - 1))
+                if a.right() + gap > b.left():
+                    a.moveLeft(b.left() - gap - a.width())
+        return rects
+
     def _paint_line(self, painter, which, t, em, axis, plot) -> None:
         theme = self.theme
         active = which == self.active
@@ -305,25 +350,20 @@ class TrimMapWidget(CombinedTimelineWidget):
         inside = plot.left() - 0.5 <= x <= plot.right() + 0.5
         color = QColor(theme.accent if active else theme.text)
         text = LABELS[which]
-        fm = self.fontMetrics()
         if not inside:
             text = ("◀ " + text) if x < plot.left() else (text + " ▶")
             x = plot.left() if x < plot.left() else plot.right()
-        flag_w = fm.horizontalAdvance(text) + em * 0.8
-        flag_h = em * 1.15
-        top = axis - flag_h - em * 0.1
-        # The Start flag hangs to the right of its line, the End flag to the left.
-        left = x if which == START else x - flag_w
-        left = min(max(left, plot.left() - em * 0.2), self.width() - flag_w - 1)
+        flag = self.flag_rects()[which]
+        left, top, flag_w, flag_h = flag.left(), flag.top(), flag.width(), flag.height()
         pen = QPen(color, 3 if active else 2)
         if inside:
             painter.setPen(pen)
             painter.drawLine(QPointF(x, top), QPointF(x, self.height()))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(color)
-        painter.drawRoundedRect(QRectF(left, top, flag_w, flag_h), 3, 3)
+        painter.drawRoundedRect(flag, 3, 3)
         painter.setPen(QColor(theme.accent_text if active else theme.surface))
-        painter.drawText(QRectF(left, top, flag_w, flag_h), Qt.AlignmentFlag.AlignCenter, text)
+        painter.drawText(flag, Qt.AlignmentFlag.AlignCenter, text)
         if active and self.hasFocus():
             painter.setPen(QPen(QColor(theme.text), 1, Qt.PenStyle.DashLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
