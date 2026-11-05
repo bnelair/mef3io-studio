@@ -85,6 +85,8 @@ class ChangeRequest:
     #: blocks to the window.
     time_range: tuple[int, int] | None = field(default=None, repr=False)
     exact: bool = True
+    #: ``"keep"`` (default) or ``"drop"``: leave all notes and events out.
+    records: str = "keep"
     #: An opaque id of the recording, for a batch (``model.pipeline``).
     key: str = ""
 
@@ -224,6 +226,7 @@ def _kwargs(request: ChangeRequest) -> dict:
         metadata=dict(request.metadata) if request.metadata else None,
         time_range=request.time_range,
         exact=request.exact,
+        records=request.records,
         password=request.password,
     )
 

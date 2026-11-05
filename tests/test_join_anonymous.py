@@ -126,7 +126,8 @@ def test_anonymous_one_file_trimmed_and_joined(tmp_path):
     assert "anonymize" in ops
     # Progress runs from the first stage to the last, in order, never back.
     kinds = [m.kind for m in sent]
-    assert kinds[0] == "cut" and kinds[-1] == "check" and "join" in kinds and "pack" in kinds
+    assert kinds[0] == "join" and kinds[-1] == "check" and "pack" in kinds
+    assert "cut" not in kinds  # one pass: no separate cut of each recording
     overall = [m.overall for m in sent]
     assert overall == sorted(overall) and 0.0 <= overall[0] and overall[-1] <= 1.0
     assert all(m.anonymous for m in sent)
@@ -167,9 +168,9 @@ def test_single_recording_anonymous_as_one_file(tmp_path):
 
 
 def test_not_anonymous_as_one_file_is_unchanged_except_the_file(tmp_path):
-    # No notes: with notes, a trimmed part joined to another fails mef3io's
-    # check (provenance_UUID) also WITHOUT this feature (mef3io 2.1.1).
-    a, b = two_sources(tmp_path, notes=False)
+    # With notes: a trimmed part joined to another recording works in one
+    # pass (mef3io 2.1.1 failed its own check here; fixed in 2.2.0).
+    a, b = two_sources(tmp_path)
     dst = tmp_path / "joined.mefd.tar"
     request = request_for(a, b, dst, None, one_file=True)
     assert j.check_join(request) == []
@@ -186,7 +187,7 @@ def test_the_new_name_may_not_hold_a_patient_detail(tmp_path):
     dst = tmp_path / f"{LAST}-copy.mefd.tar"
     request = request_for(a, b, dst, j.Anonymous(shift_us=SHIFT), one_file=True)
     findings = j.check_join(request)
-    assert findings and findings[0].key is not None
+    assert findings  # one reason for the whole run
     assert not dst.exists() and not leftovers(tmp_path)
 
 
@@ -203,7 +204,7 @@ def test_a_part_that_cannot_be_joined_is_found_before_anything_is_written(tmp_pa
 
 
 @pytest.mark.parametrize("one_file", [False, True])
-@pytest.mark.parametrize("stage", ["cut", "join", "pack", "check"])
+@pytest.mark.parametrize("stage", ["join", "pack", "check"])
 def test_stop_at_every_stage_leaves_nothing_behind(tmp_path, stage, one_file):
     if stage in ("pack", "check") and not one_file:
         pytest.skip("only one file is packed")
@@ -247,7 +248,7 @@ def test_not_enough_room_is_refused_with_how_much_is_needed(tmp_path, monkeypatc
     assert os.listdir(out) == [] and not leftovers(tmp_path)
 
 
-def test_the_worst_moment_counts_the_file_and_what_it_is_packed_from(tmp_path):
+def test_the_worst_moment_is_the_result_and_for_one_file_also_the_packed_file(tmp_path):
     a, b = two_sources(tmp_path)
     layouts, _ = j.read_layouts(request_for(a, b, tmp_path / "x.mefd"), CancelToken())
     folder = request_for(a, b, tmp_path / "x.mefd", j.Anonymous(shift_us=SHIFT))
@@ -255,10 +256,10 @@ def test_the_worst_moment_counts_the_file_and_what_it_is_packed_from(tmp_path):
     plan = j.plan_for(folder, layouts)
     s_folder, s_one = j.sizing(folder, plan, layouts), j.sizing(one, plan, layouts)
     assert s_folder.total == s_one.total > 0
-    # Parts + joined result (about 2x) for a folder; the file adds nothing
-    # to that peak because the parts are removed before packing.
-    assert s_folder.peak >= 2 * s_folder.total * 0.99
-    assert s_one.peak >= s_folder.peak
+    # Just the result for a folder (no temporary parts any more); for one
+    # file the result and the packed file beside it.
+    assert s_folder.peak == s_folder.total
+    assert s_one.peak == 2 * s_one.total
 
 
 def test_an_existing_file_is_never_replaced(tmp_path):

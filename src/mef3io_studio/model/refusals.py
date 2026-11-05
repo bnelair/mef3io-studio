@@ -82,6 +82,9 @@ WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     technical("text-invalid"): _fixed(
         "The copy could not be made", f"A choice was not valid. {NOTHING} {REPORT}"
     ),
+    technical("records-invalid"): _fixed(
+        "The copy could not be made", f"A choice was not valid. {NOTHING} {REPORT}"
+    ),
     technical("shift-zero"): _fixed(
         "The dates would not move",
         f"The new date is the recording's own date, so nothing would move. {NOTHING} Choose "
@@ -475,6 +478,10 @@ JOIN_WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     technical("merge-passwords-count"): _app_mistake(),
     technical("merge-time-range"): _app_mistake(),
     technical("merge-rename"): _app_mistake(),
+    technical("merge-time-ranges-count"): _app_mistake("The parts to keep were not valid."),
+    technical("merge-anonymize-metadata"): _app_mistake(),
+    technical("merge-threads-invalid"): _app_mistake(),
+    technical("records-invalid"): _app_mistake("The choice about notes and events was not valid."),
     technical("output-password-unpaired"): _fixed(
         "Type both passwords",
         f"A password-protected recording needs both passwords. {NOTHING_JOINED} Type both, "

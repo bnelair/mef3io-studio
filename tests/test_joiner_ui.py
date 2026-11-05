@@ -471,3 +471,45 @@ def test_an_incomplete_date_plan_is_told_to_the_user_not_swallowed(window_page, 
     assert page.new.findings.count() == 1
     assert page.handle is None
     assert sorted(p.name for p in tmp_path.rglob("*")) == before
+
+
+def test_notes_and_events_choice_on_the_privacy_step_end_to_end(window_page, qtbot, tmp_path):
+    window, page = window_page
+    a = write_with_notes(tmp_path / "A.mefd", T0)
+    b = write_with_notes(tmp_path / "B.mefd", T0 + 3 * HOUR)
+    open_in_explorer(qtbot, window, [a, b])
+    choose_all(page)
+    page.keep.rows[0].set_how(KEEP_LAST)
+    page.keep.rows[0].duration.set_seconds(3600)
+    page.next()
+    assert page.step == STEP_PRIVACY
+    privacy = page.privacy
+    # Asked for any new recording, whether anonymous or not; Keep is default.
+    assert privacy.notes_keep.isChecked() and privacy.records() == "keep"
+    assert privacy.notes_keep.isVisibleTo(page) and privacy.notes_leave_out.isVisibleTo(page)
+    assert not privacy.notes_note.isVisibleTo(page)
+    privacy.anonymous.setChecked(True)
+    assert privacy.details.text_drop.isVisibleTo(page)
+    privacy.notes_leave_out.setChecked(True)
+    # Nothing left to choose the text of.
+    assert privacy.records() == "drop" and privacy.notes_note.isVisibleTo(page)
+    assert not privacy.details.text_drop.isVisibleTo(page)
+    privacy.notes_keep.setChecked(True)
+    assert privacy.details.text_drop.isVisibleTo(page)
+    privacy.notes_leave_out.setChecked(True)
+    privacy.keep_details.setChecked(True)
+    page.next()
+    page.new.folder = str(tmp_path)
+    page.new.name.setText("bare")
+    assert page.make_request().records == "drop"
+    check = page.next()
+    with qtbot.waitSignal(check.finished, timeout=120_000):
+        pass
+    assert page.step == STEP_RUN
+    with qtbot.waitSignal(page.handle.finished, timeout=120_000):
+        pass
+    assert page.result is not None and page.result.ok, page.result
+    assert "All notes and events were left out." in page.run_step.result.text()
+    dst = tmp_path / "bare.mefd"
+    assert list(mef3io.Reader(str(dst)).records(level="all")) == []
+    assert not [n for _r, _d, f in os.walk(dst) for n in f if n.endswith((".rdat", ".ridx"))]
