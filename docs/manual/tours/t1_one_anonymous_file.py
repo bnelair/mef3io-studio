@@ -93,10 +93,23 @@ def build() -> Tour:
                     "pick the new date",
                 ),
             ],
-            then=[click("Next")],
             focus=around(
                 lambda ctx: ctx.window.joiner.privacy.dates_move,
                 lambda ctx: ctx.window.joiner.privacy.dates,
+            ),
+        ),
+        Step(
+            "Notes and events",
+            "Notes and events can hold text that names the patient. Under Notes and "
+            "events, Keep them is chosen: they stay in the new recording, with the text "
+            "removed because you chose Make it anonymous. Choose Leave them out to drop "
+            "every note and event instead; the text choice then disappears, and the "
+            "result says \"All notes and events were left out.\" This tour keeps them.",
+            do=[click("Keep them")],
+            then=[click("Next")],
+            focus=around(
+                lambda ctx: ctx.window.joiner.privacy.notes_keep,
+                lambda ctx: ctx.window.joiner.privacy.notes_leave_out,
             ),
         ),
         new_recording_step(
@@ -104,7 +117,12 @@ def build() -> Tour:
             one_file=True,
             extra_caption="The name must not contain the patient's details or an original's name.",
         ),
-        saved_step("Everything is in one file."),
+        saved_step(
+            "Everything is in one file. One progress bar goes through the stages: joining "
+            "the chosen parts of the recordings into one and checking, packing the new "
+            "recording into one file, and checking that the file holds the same recording. "
+            "Nothing is saved in between."
+        ),
         Step(
             "Open it in Explore",
             "Choose Open it in Explore to look at the result. Its History says it was "

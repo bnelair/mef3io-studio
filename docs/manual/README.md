@@ -70,7 +70,7 @@ or the text it points at.
 
 ## Adding to the tours later
 
-Adding a step for a new option (for example "Notes and events: keep / leave
-out" on the Privacy step) is a new `Step(...)` in the tour, with
+Adding a step for a new option (for example a future choice on the Privacy
+step; "Notes and events: Keep them / Leave them out" is in tour T1) is a new `Step(...)` in the tour, with
 `click("<its text>")`; nothing else changes. New tours are picked up
 automatically (file names starting with `t`).
