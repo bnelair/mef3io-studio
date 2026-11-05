@@ -5,6 +5,16 @@ made-up recordings, from one source: the *tours* in `docs/manual/tours/`.
 Rebuild both for every release, so the pictures and the videos always show
 the current screens. Nothing here uses real data.
 
+## Released automatically
+
+The release build (`.github/workflows/build.yml`, job `manual`) runs both
+scripts below on Linux with the full PySide6 and ffmpeg, re-encodes each video
+to H.264 (`ffmpeg -i in.mp4 -c:v libx264 -pix_fmt yuv420p -movflags +faststart
+out.mp4`, so browsers play it) and attaches
+`mef3io-studio-manual-<VERSION>.pdf` and `mef3io-studio-<tour>-<name>.mp4` to
+the GitHub Release, with the installers. Nothing is uploaded by hand. The PDF
+name always carries the app version (from `VERSION`).
+
 ## Rebuild
 
 From the repository root, with the development environment active
