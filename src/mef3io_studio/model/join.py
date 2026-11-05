@@ -885,7 +885,13 @@ def _named_source(refusal, request: JoinRequest) -> str | None:
     that recording); else None = about the whole run. The message is only
     read here, never shown."""
     text = str(getattr(refusal, "message", "") or "")
-    named = {s.key for s in request.sources if s.source and s.source in text}
+    found = [s for s in request.sources if s.source and s.source in text]
+    # a path inside a longer named path (X.mefd in X.mefd.tar) is not named
+    named = {
+        s.key
+        for s in found
+        if not any(o.source != s.source and s.source in o.source for o in found)
+    }
     return next(iter(named)) if len(named) == 1 else None
 
 

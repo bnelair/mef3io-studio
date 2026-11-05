@@ -281,3 +281,22 @@ def test_leaving_the_notes_out_is_said_on_the_result(tmp_path):
     assert "All notes and events were left out." in saved_words(result)
     kept, _ = window_request(tmp_path / "k", tmp_path / "k" / "y.mefd")
     assert "notes and events" not in saved_words(j.make_joined(kept)).lower()
+
+
+def test_a_refusal_names_the_recording_not_a_shorter_path_inside_it():
+    """X.mefd sits inside X.mefd.tar's path: a message naming only the tar
+    is about the tar, not both (review round 1)."""
+    keep = j.Keep(j.KEEP_FIRST, HOUR)
+    folder, tar = "/r/X.mefd", "/r/X.mefd.tar"
+    request = j.JoinRequest(
+        (j.JoinSource(folder, folder, keep), j.JoinSource(tar, tar, keep)), "/out/Y.mefd"
+    )
+
+    class Refusal:
+        message = f"no recorded signal in {tar}"
+
+    assert j._named_source(Refusal(), request) == tar
+    Refusal.message = f"no recorded signal in {folder}"
+    assert j._named_source(Refusal(), request) == folder
+    Refusal.message = "the whole run"
+    assert j._named_source(Refusal(), request) is None
