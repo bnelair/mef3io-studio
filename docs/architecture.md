@@ -55,7 +55,7 @@ be the first thing that does.
 ## Library APIs the first release depends on
 
 Tracked in [mef3io#71](https://github.com/bnelair/mef3io/issues/71). The app
-pins one exact mef3io version (today **2.1.1**, in `pyproject.toml` and the
+pins one exact mef3io version (today **2.2.0**, in `pyproject.toml` and the
 hashed lock files).
 
 | API | Used by | mef3io issue | Status |
@@ -67,7 +67,7 @@ hashed lock files).
 | `archive_session` / `extract_session` | Pack / unpack, per-recording archives in a batch | (existing) | In use |
 | `Validator` | Check for problems | (existing) | In use |
 | `transform_session(..., time_range=, exact=True)` and `transform.check(...)`: a cut copy (one recording trimmed, or each part to join), with channel subsets and new passwords; refusal codes `transform.REFUSAL_CODES` | Join or trim (`model/join.py`) | [#73](https://github.com/bnelair/mef3io/issues/73), [#103](https://github.com/bnelair/mef3io/issues/103) | In use (mef3io 1.5) |
-| `merge_sessions(...)` and `merge.check(...)`: several recordings into one, checked against every source; `merge.REFUSAL_CODES` | Join or trim (`model/join.py`) | [#103](https://github.com/bnelair/mef3io/issues/103) | In use (mef3io 1.5) |
+| `merge_sessions(...)` and `merge.check(...)`: several recordings into one, checked against every source; since 2.2 one call also trims each recording (`time_ranges`), leaves channels and notes out (`records=`), makes it anonymous (`anonymize=`) and runs on `n_threads`; `merge.REFUSAL_CODES` | Join or trim (`model/join.py`) | [#103](https://github.com/bnelair/mef3io/issues/103) | In use (mef3io 2.2) |
 | `time_range(...)`: first and last time from a few small files | Join or trim (turning "the first hour" into times, time order) | [#72](https://github.com/bnelair/mef3io/issues/72) | In use (mef3io 1.5) |
 | `transform_session(...)` for password changes, channel presets and batch | Passwords, Edit details, Make new recordings (`model/changes.py`, `model/makenew.py`, `model/presets.py`) | [#73](https://github.com/bnelair/mef3io/issues/73) | In use (mef3io 1.5); the in-place `edit_metadata` (never times) is not built |
 | `rename_session(...)` (folder, session-level annotation files and stored names, as one journaled operation), `fix_name_drift(...)`, `rename_archive(...)`, `name_drift(...)`, `operation_marker(...)` and `RenameReport.undo()` | Rename window (`model/rename.py`, `model/rename_ops.py`, `explorer/rename.py`) | [#72](https://github.com/bnelair/mef3io/issues/72) | In use (mef3io 1.5, app 0.1.0) |

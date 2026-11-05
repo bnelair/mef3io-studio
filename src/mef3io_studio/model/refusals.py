@@ -475,6 +475,10 @@ JOIN_WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     technical("merge-passwords-count"): _app_mistake(),
     technical("merge-time-range"): _app_mistake(),
     technical("merge-rename"): _app_mistake(),
+    technical("merge-time-ranges-count"): _app_mistake("The parts to keep were not valid."),
+    technical("merge-anonymize-metadata"): _app_mistake(),
+    technical("merge-threads-invalid"): _app_mistake(),
+    technical("records-invalid"): _app_mistake("The choice about notes and events was not valid."),
     technical("output-password-unpaired"): _fixed(
         "Type both passwords",
         f"A password-protected recording needs both passwords. {NOTHING_JOINED} Type both, "

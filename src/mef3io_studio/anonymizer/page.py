@@ -787,16 +787,31 @@ class DetailsAndTextBox(QWidget):
         for box in (self.clear_patient, self.clear_location, self.clear_descriptions):
             layout.addWidget(box)
         layout.addWidget(self.clear_warning)
-        layout.addWidget(_label("Text of notes and events:", bold=True))
+        self.text_heading = _label("Text of notes and events:", bold=True)
+        layout.addWidget(self.text_heading)
         layout.addWidget(self.text_drop)
         layout.addWidget(self.text_keep)
         layout.addWidget(self.keep_warning)
         self._on_changed()
 
+    def show_text_choice(self, shown: bool) -> None:
+        """Hide the choice about the text of notes and events when there are
+        no notes and events to choose for (Join or trim leaves them out)."""
+        if shown == getattr(self, "_text_shown", True):
+            return
+        self._text_shown = shown
+        self._show_parts()
+
     def _on_changed(self, *_args) -> None:
-        self.keep_warning.setVisible(self.text_keep.isChecked())
-        self.clear_warning.setVisible(not all(self.clear_choices_bools()))
+        self._show_parts()
         self.changed.emit()
+
+    def _show_parts(self) -> None:
+        shown = getattr(self, "_text_shown", True)
+        for widget in (self.text_heading, self.text_drop, self.text_keep):
+            widget.setVisible(shown)
+        self.keep_warning.setVisible(shown and self.text_keep.isChecked())
+        self.clear_warning.setVisible(not all(self.clear_choices_bools()))
 
     def clear_choices_bools(self) -> tuple[bool, bool, bool]:
         return (
