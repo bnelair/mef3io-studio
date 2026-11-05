@@ -351,6 +351,7 @@ Code (app shell, #2/#3):
   has its own message). Tests: tests/test_rename_model.py,
   tests/test_rename_ui.py (use `age()`/utime: a fresh synthetic recording is
   "written a moment ago"; tests run with `PYTHONPATH=src` from a worktree).
+- Manual and videos (#83): `docs/manual/tours/tN_*.py` (steps driven on the REAL app on made-up data) -> `scripts/manual/build_manual.py` (PDF `dist/manual/mef3io-studio-manual-<VERSION>.pdf`) and `build_videos.py` (MP4 via QtMultimedia, needs PySide6-Addons of the same version). The release build (build.yml job `manual`, PR #84) re-encodes the videos to H.264 and the release job attaches PDF + videos. A UI change that breaks a tour fails `tests/test_manual_tours.py`; fix the tour (docs/manual/README.md).
 - Join or trim (#31): `model/join.py` (Qt-free) + `joiner/page.py` (a wizard
   like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
   `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,
