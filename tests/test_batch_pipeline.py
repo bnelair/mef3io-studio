@@ -190,7 +190,8 @@ def test_stop_right_after_the_copy_is_finished_keeps_it_and_says_so(qtbot, jobs,
     copy appears under its final name. The copy is complete and checked, so it
     stays, and the result screen lists it as saved."""
     big = write_large(tmp_path / "big.mefd", channels=2, parts=2, seconds=900)
-    second = write_plain(tmp_path / "second.mefd")
+    # large too, so it cannot also finish before the Stop lands
+    second = write_large(tmp_path / "second.mefd", channels=2, parts=2, seconds=900)
     batch, dest, work = make_batch(tmp_path, pipeline.FOLDERS, [big, second], exclude=())
     handle = jobs.submit("batch", tasks.run_batch, batch, None)
     published = []
