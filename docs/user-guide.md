@@ -1,6 +1,6 @@
 # User guide
 
-This guide describes the app as of version **0.1.3**. It has three pages:
+This guide describes the app as of version **0.1.4**. It has three pages:
 **Explore** (see what is in your recordings), **Anonymize** (make
 anonymized copies of them) and **Join or trim** (keep part of a recording,
 or join parts of several into one). From Explore you can also rename
@@ -1070,6 +1070,12 @@ afterwards:
 
 ## Help and reporting problems
 
+- **The user manual and the tutorial videos.** Each release on the
+  [Releases page](https://github.com/bnelair/mef3io-studio/releases) has the
+  manual as a PDF and short captioned videos that show, step by step, how to
+  join or trim recordings, make a new one anonymous, and save it as one file.
+  They are made by the app itself on made-up recordings, so they always show
+  the current screens.
 - **Which version you have** is shown in the window's title and at the
   bottom of the list of pages on the left. A version with "dev" in its number is a
   test version; 0.1.0 and later are full releases (still early).
