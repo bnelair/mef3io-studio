@@ -230,6 +230,8 @@ def test_a_window_in_a_gap_is_refused_as_holding_no_recording(tmp_path):
     )
     findings = j.check_join(request)
     assert findings and findings[0].message.title == "The chosen part holds no recording"
+    # Shown under the recording it is about (mef3io's single check names it).
+    assert findings[0].key == str(gap)
     assert not (tmp_path / "x.mefd").exists()
     result = j.make_joined(request)
     assert not result.ok and result.message.title == "The chosen part holds no recording"

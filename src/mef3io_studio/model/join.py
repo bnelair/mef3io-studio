@@ -874,7 +874,19 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
         report = mef3io.merge.check(paths, target, cancel=library_cancel, **arguments)
         words = _anonymous_refusal_message if anon is not None else _check_message
         refusals = [r for r in report.refusals if r.code not in ignore]
-        return _unique([CheckFinding(None, words(r, request)) for r in refusals])
+        return _unique(
+            [CheckFinding(_named_source(r, request), words(r, request)) for r in refusals]
+        )
+
+
+def _named_source(refusal, request: JoinRequest) -> str | None:
+    """The recording a refusal of the one merge check is about, when mef3io's
+    message names exactly one of the sources (the page then shows it under
+    that recording); else None = about the whole run. The message is only
+    read here, never shown."""
+    text = str(getattr(refusal, "message", "") or "")
+    named = {s.key for s in request.sources if s.source and s.source in text}
+    return next(iter(named)) if len(named) == 1 else None
 
 
 def _unique(findings: list[CheckFinding]) -> list[CheckFinding]:

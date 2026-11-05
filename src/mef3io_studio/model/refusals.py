@@ -82,6 +82,9 @@ WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     technical("text-invalid"): _fixed(
         "The copy could not be made", f"A choice was not valid. {NOTHING} {REPORT}"
     ),
+    technical("records-invalid"): _fixed(
+        "The copy could not be made", f"A choice was not valid. {NOTHING} {REPORT}"
+    ),
     technical("shift-zero"): _fixed(
         "The dates would not move",
         f"The new date is the recording's own date, so nothing would move. {NOTHING} Choose "
