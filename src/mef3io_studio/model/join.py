@@ -3,42 +3,38 @@
 The user picks one or more recordings and, for each, what to keep: all of
 it, the first or the last so many hours/minutes/seconds, or everything
 between two times. The result is one new recording; the originals are never
-changed. All the work on the files is mef3io's (1.5):
+changed. All the work on the files is mef3io's (2.2):
 
 * ``mef3io.time_range`` (a few small files per channel) turns "the first
   hour" into a window and orders the recordings by time;
-* ``mef3io.transform_session(..., time_range=, exact=True)`` cuts one
-  recording: a single recording is trimmed straight into the destination;
-* ``mef3io.merge_sessions`` joins several into one.
+* SEVERAL recordings are made into one by ONE call, straight from the
+  originals: ``mef3io.merge_sessions(..., time_ranges=, exact=True,
+  exclude_channels=, anonymize=, records=, output_password=)``. The kept part
+  of each, the channels left out, the anonymizing (one shift and one
+  pseudonym for all), leaving out the notes and events and the new password
+  protection all happen in that one pass over the data: no temporary copy of
+  any part is ever written (so none can hold the patient's details);
+* ONE recording (a merge needs two) is trimmed straight into the
+  destination with ``transform_session(time_range=, exact=True, records=)``,
+  or, when it is made anonymous, ``anonymize_session`` with the same options.
 
 Each of them builds under ``<dst>.partial/``, checks what it wrote against
 its sources and only then gives it its final name; a refusal, a failure or
 a Stop leaves nothing behind.
 
-How several recordings are joined (:func:`make_joined`, in a helper process):
+Only "Save as one file" still uses a hidden folder, :data:`PARTS_PREFIX` +
+random hex (opaque: no names; the dot hides it; folder scans skip the app's
+``.mef3io-studio-`` names), next to the destination: the recording is built
+there, packed with ``archive_session``, the pack is compared with it and only
+then given its final name (never replacing anything). The folder is ALWAYS
+removed afterwards: success, refusal, failure or Stop (in the helper's
+``finally``, and again by the task when a helper had to be ended:
+:func:`tidy`).
 
-1. A recording kept whole is given to ``merge_sessions`` as it is.
-2. Any other is first cut into a temporary copy holding exactly its kept
-   part. The temporary copies live in ONE folder next to the destination,
-   :data:`PARTS_PREFIX` + random hex (opaque: no names; the dot hides it;
-   folder scans skip the app's ``.mef3io-studio-`` names), never inside a
-   recording, and the folder is ALWAYS removed afterwards: success, refusal,
-   failure or Stop (in the helper's ``finally``, and again by the task when
-   a helper had to be ended: :func:`tidy`).
-3. ``merge_sessions`` joins the parts, in time order, into the destination,
-   leaving out the chosen channels and adding the chosen password
-   protection. The channel choice and the passwords therefore apply once,
-   to the result.
-
-Password safety: every temporary copy is PASSWORD-PROTECTED with two
-throw-away passwords made in the helper process for this run only (never
-sent back, logged or stored). A copy made without passwords would hold the
-patient details and the text of notes readable on disk, beside the
-destination, for as long as the join runs (or after a crash, until someone
-deletes the folder): exactly what the original's password protection was
-there to prevent. The same is done for unprotected originals too: one rule
-is simpler to check, and costs only re-protecting a few small details
-files (the signal itself is never password-protected in MEF).
+A channel left out is left out of the result as a whole: ``merge_sessions``
+takes the list over all recordings, so a recording that does not hold one of
+the channels is fine (as long as some recording does), and the app no longer
+works out which recording holds which.
 
 Overlaps are refused PER CHANNEL, not worked around: two kept parts
 conflict only when they overlap in time AND share a channel that is not
@@ -66,27 +62,16 @@ would be an exact copy: refused as "nothing would change"
 (:data:`NOTHING_TO_CHANGE`). Kept whole WITH a change (channels or
 passwords), it is a copy with those changes, by ``transform_session``.
 
-ANONYMOUS and ONE FILE (:class:`Anonymous`, ``JoinRequest.one_file``): the
-whole pipeline is ONE function, :func:`run`, which the page never looks
-inside. No copy that still holds the patient's details is ever written:
+NOTES AND EVENTS (``JoinRequest.records``): ``"keep"`` (default) carries
+them over (merged in time order); ``"drop"`` leaves ALL of them out, at
+every level, in any kind of join (anonymous or not): the result has no note
+files at all, and mef3io's check expects none. With an anonymous copy that
+keeps them, :class:`Anonymous` ``.text`` still says whether their text is
+removed or kept.
 
-* every source is anonymized straight from the original, cut to its kept
-  part (``anonymize_session(time_range=, exact=True, exclude_channels=)``,
-  one shift and one pseudonym for all), into a hidden folder next to the
-  new recording (:data:`PARTS_PREFIX`, same drive as the result, so the
-  originals may sit on a slow network drive and are read once per pass);
-* the anonymized parts are joined with ``merge_sessions`` (it accepts them:
-  the cleared patient fields are equal; the session name comes from the
-  destination), and the parts are removed at once;
-* for one file the joined recording, still in the hidden folder, is packed
-  with ``archive_session``, the pack is compared with it, and only then is
-  it given its final name (never replacing anything).
-
-The same stages, in the same order, are what a later single-pass mef3io
-call replaces; the page only sees :class:`JoinRequest`, :func:`check_join`,
-:func:`make_joined` and :class:`JoinProgress`. Room is left for a later
-"notes and events: keep / leave out" option (:class:`Anonymous` is the one
-place to add it).
+The whole pipeline is ONE function, :func:`run`, which the page never looks
+inside; the page only sees :class:`JoinRequest`, :func:`check_join`,
+:func:`make_joined` and :class:`JoinProgress`.
 
 Free space is checked before anything is written (:func:`sizing`): the
 worst moment of the chosen pipeline must fit on the drive of the result.
@@ -107,9 +92,6 @@ from dataclasses import dataclass, field
 from . import archive, pipeline
 from .anonymize import (
     CLEAR_ALL,
-    CLEAR_DESCRIPTIONS,
-    CLEAR_LOCATION,
-    CLEAR_PATIENT,
     TEXT_DROP,
     _RefusalText,
     copy_name,
@@ -144,7 +126,10 @@ KEEP_CHOICES = (KEEP_WHOLE, KEEP_FIRST, KEEP_LAST, KEEP_BETWEEN)
 
 #: The temporary parts folder's name starts with this (then random hex).
 PARTS_PREFIX = ".mef3io-studio-parts-"
-#: Written into the parts folder right after this run creates it, holding
+#: Notes and events: carried over, or all left out (mef3io's ``records=``).
+RECORDS_KEEP = "keep"
+RECORDS_DROP = "drop"
+#: Written into the hidden folder right after this run creates it, holding
 #: the run's token: only a folder carrying it is ever removed, so a folder
 #: that was already there (whatever it holds) is never touched.
 PARTS_MARKER = ".made-by-mef3io-studio"
@@ -437,8 +422,8 @@ def problem_text(problem: Problem, names: dict[str, str]) -> str:
 @dataclass(frozen=True)
 class Anonymous:
     """Make the new recording anonymous (the Anonymize page's choices for
-    one copy). A later "notes and events: keep / leave out" option (a
-    mef3io option that does not exist yet) is one more field here."""
+    one copy). Whether the notes and events are kept at all is
+    ``JoinRequest.records``, for any join."""
 
     #: Added to every time (whole days, from ``shiftplan``); None = the dates
     #: are kept as they are.
@@ -470,6 +455,8 @@ class JoinRequest:
     anonymous: Anonymous | None = None
     #: Save as ONE file (``.mefd.tar``) instead of a folder.
     one_file: bool = False
+    #: ``RECORDS_KEEP`` or ``RECORDS_DROP`` (leave out all notes and events).
+    records: str = RECORDS_KEEP
 
     @property
     def name(self) -> str:
@@ -486,6 +473,7 @@ class JoinRequest:
             or self.output_password is not None
             or self.anonymous is not None
             or self.one_file
+            or self.records == RECORDS_DROP
         )
 
     @property
@@ -499,10 +487,6 @@ class JoinRequest:
         if self.one_file:
             return os.path.join(self.parts_folder, self.name + ".mefd")
         return self.destination
-
-    @property
-    def parts_subfolder(self) -> str:
-        return os.path.join(self.parts_folder, "parts")
 
     @property
     def packed_path(self) -> str:
@@ -523,6 +507,7 @@ def new_request(
     output_password: tuple[str, str] | None = None,
     anonymous: Anonymous | None = None,
     one_file: bool = False,
+    records: str = RECORDS_KEEP,
 ) -> JoinRequest:
     return JoinRequest(
         tuple(sources),
@@ -533,16 +518,16 @@ def new_request(
         secrets.token_hex(16),
         anonymous,
         one_file,
+        records,
     )
 
 
 @dataclass(frozen=True)
 class JoinProgress:
     """How far one stage has got (plain data, sent from the helper).
-    ``kind``: "cut" (keeping the part of recording ``index`` of the
-    ``count`` to cut; anonymous = made anonymous at the same time), "trim"
-    (one recording straight into the new recording), "join", "pack" or
-    "check" (the one file). ``step``/``steps``/``weight`` are stage sizes
+    ``kind``: "trim" (one recording straight into the new recording), "join"
+    (several, in one pass: the kept part of each, anonymous at the same time
+    when asked), "pack" or "check" (the one file). ``step``/``steps``/``weight`` are stage sizes
     (about the bytes each stage handles), so the bar moves evenly."""
 
     kind: str
@@ -578,6 +563,10 @@ class JoinResult:
     #: What was made (for the result screen).
     anonymous: bool = False
     one_file: bool = False
+    #: All notes and events were left out (``records="drop"``), and how many
+    #: there were in what was kept (mef3io's ``records_dropped``).
+    notes_left_out: bool = False
+    records_dropped: int = 0
 
 
 @dataclass(frozen=True)
@@ -701,18 +690,6 @@ def _by_key(request: JoinRequest) -> dict[str, JoinSource]:
 
 _PLACEHOLDER_DIR = os.path.join(tempfile.gettempdir(), ".mef3io-studio-not-a-folder")
 
-#: merge.check fields that an anonymous copy clears in every part before the
-#: parts are joined: differences there are not a problem.
-_CLEARED_BY = {
-    "subject_name_1": CLEAR_PATIENT,
-    "subject_name_2": CLEAR_PATIENT,
-    "subject_id": CLEAR_PATIENT,
-    "recording_location": CLEAR_LOCATION,
-    "session_description": CLEAR_DESCRIPTIONS,
-    "channel_description": CLEAR_DESCRIPTIONS,
-    "reference_description": CLEAR_DESCRIPTIONS,
-}
-
 
 def _placeholder(request: JoinRequest) -> str:
     """A path for the new recording that does not exist (checks write
@@ -720,40 +697,53 @@ def _placeholder(request: JoinRequest) -> str:
     return os.path.join(_PLACEHOLDER_DIR, request.name + ".mefd")
 
 
-def _excluded_for(request: JoinRequest, key: str, layouts: dict | None) -> list[str] | None:
-    """The left-out channels that one recording has. A channel the other
-    recordings have is simply not in this one (a normal join accepts that);
-    a channel NONE has is passed on to the first recording, so the library
-    refuses it as "not in this recording". Channels not known: all."""
-    wanted = list(request.exclude_channels)
-    if not wanted or layouts is None:
-        return wanted or None
-    own = _as_layout(layouts.get(key, (None, None))).channels
-    if not own:
-        return wanted
-    anywhere = {c for s in request.sources for c in _as_layout(layouts.get(s.key, ())).channels}
-    first = request.sources[0].key == key
-    keep = [c for c in wanted if c in own or (first and c not in anywhere)]
-    return keep or None
-
-
-def _anonymize_kwargs(
-    request: JoinRequest, span: Span | None, key: str = "", layouts: dict | None = None
-) -> dict:
+def _anonymize_kwargs(request: JoinRequest, span: Span | None) -> dict:
+    """``anonymize_session``'s options for ONE recording (the single path)."""
     anon = request.anonymous
     return dict(
         pseudonym=anon.pseudonym or request.name,
         clear=tuple(anon.clear),
         text=anon.text,
-        exclude_channels=_excluded_for(request, key, layouts),
+        exclude_channels=list(request.exclude_channels) or None,
         time_range=None if span is None or span.whole else span.time_range,
         exact=True,
+        records=request.records,
     )
 
 
-def _anonymous_refusals(
-    request: JoinRequest, s: JoinSource, span: Span, cancel, layouts: dict | None = None
-) -> list:
+def _anonymize_spec(request: JoinRequest) -> dict | None:
+    """``merge_sessions(anonymize=)``: the same options, for all recordings
+    at once (one shift, one pseudonym). None = patient details kept."""
+    anon = request.anonymous
+    if anon is None:
+        return None
+    return dict(
+        shift_us=anon.shift_us,
+        pseudonym=anon.pseudonym or request.name,
+        clear=tuple(anon.clear),
+        text=anon.text,
+    )
+
+
+def _merge_arguments(request: JoinRequest, plan: JoinPlan) -> dict:
+    """What ``merge_sessions`` / ``merge.check`` are given (the recordings in
+    time order), the same for both so the check is the run's own."""
+    sources = _by_key(request)
+    ordered = [sources[k] for k in plan.order]
+    ranges = [None if plan.spans[k].whole else plan.spans[k].time_range for k in plan.order]
+    return dict(
+        paths=[s.source for s in ordered],
+        passwords=[s.password for s in ordered],
+        exclude_channels=list(request.exclude_channels) or None,
+        time_ranges=ranges if any(r is not None for r in ranges) else None,
+        exact=True,
+        anonymize=_anonymize_spec(request),
+        records=request.records,
+        n_threads=0,
+    )
+
+
+def _anonymous_refusals(request: JoinRequest, s: JoinSource, span: Span, cancel) -> list:
     """What ``anonymize.check`` would refuse for this source cut to its kept
     part, as findings. The new recording's NAME is checked as the name of
     the copy, because that is the name the result carries."""
@@ -766,7 +756,7 @@ def _anonymous_refusals(
             request.anonymous.shift_us,
             password=s.password,
             cancel=cancel.for_library(),
-            **_anonymize_kwargs(request, span, s.key, layouts),
+            **_anonymize_kwargs(request, span),
         )
     out = []
     for r in report.refusals:
@@ -832,14 +822,11 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
     * free space for the worst moment of the pipeline (:func:`sizing`);
     * one recording: ``transform.check`` (``anonymize.check`` when it is
       made anonymous) exactly as it will run;
-    * several: ``transform.check`` / ``anonymize.check`` for each part to
-      cut (its window; the temporary copy does not exist yet, so its place
-      is not checked), and ``merge.check`` over the ORIGINALS with the
-      channel choice and the passwords: sampling rates, patient details,
-      date hiding, the destination. Its ``merge-overlap`` is left out when
-      a part is cut (the originals may overlap where nothing is kept; the
-      kept parts were checked above, and the join itself checks again), and
-      so are differences in what an anonymous copy clears.
+    * several: ONE ``merge.check`` over the ORIGINALS with exactly the
+      arguments the run will give ``merge_sessions`` (a window per recording,
+      the channel choice, the anonymizing, the notes choice): empty parts,
+      overlap on the kept data, sampling rates, patient details, date
+      hiding, the name of the new recording.
     The new passwords are never passed: they play no part in any of it."""
     import mef3io
 
@@ -858,7 +845,6 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
         problem = space_problem(request, sizing(request, plan, layouts))
         if problem:
             return [CheckFinding(None, problem)]
-        sources = _by_key(request)
         library_cancel = cancel.for_library()
         anon = request.anonymous
         # Where the library is told the recording goes: for one file it is
@@ -869,7 +855,7 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
             s = request.sources[0]
             span = plan.spans[s.key]
             if anon is not None:
-                return _anonymous_refusals(request, s, span, cancel, layouts)
+                return _anonymous_refusals(request, s, span, cancel)
             refusals = transform_refusals(
                 ChangeRequest(
                     s.source,
@@ -877,57 +863,36 @@ def check_join(request: JoinRequest, cancel: CancelToken | None = None) -> list[
                     s.password,
                     exclude_channels=request.exclude_channels,
                     time_range=None if span.whole else span.time_range,
+                    records=request.records,
                 ),
                 cancel,
                 ignore=ignore,
             )
             return [CheckFinding(s.key, _check_message(r, request)) for r in refusals[:1]]
-        placeholder = os.path.join(_PLACEHOLDER_DIR, "part.mefd")
-        cut = anon is not None
-        for key in plan.order:
-            span = plan.spans[key]
-            s = sources[key]
-            if anon is not None:
-                findings += _anonymous_refusals(request, s, span, cancel, layouts)
-                continue
-            if span.whole:
-                continue
-            cut = True
-            # With the channels left out of the new recording: data only in
-            # those channels is no data (the library then refuses the part as
-            # empty, before anything is written). A recording left with no
-            # channel at all is the merge check's business, not the cut's.
-            refusals = transform_refusals(
-                ChangeRequest(
-                    s.source,
-                    placeholder,
-                    s.password,
-                    exclude_channels=tuple(_excluded_for(request, key, layouts) or ()),
-                    time_range=span.time_range,
-                ),
-                cancel,
-                ignore=frozenset(PLACEHOLDER_CODES) | {"no-channels-left"},
-            )
-            findings += [CheckFinding(key, _check_message(r, request)) for r in refusals[:1]]
-        if findings:
-            return findings
-        ordered = [sources[k] for k in plan.order]
-        report = mef3io.merge.check(
-            [s.source for s in ordered],
-            target,
-            passwords=[s.password for s in ordered],
-            exclude_channels=list(request.exclude_channels) or None,
-            cancel=library_cancel,
+        arguments = _merge_arguments(request, plan)
+        paths = arguments.pop("paths")
+        report = mef3io.merge.check(paths, target, cancel=library_cancel, **arguments)
+        words = _anonymous_refusal_message if anon is not None else _check_message
+        refusals = [r for r in report.refusals if r.code not in ignore]
+        return _unique(
+            [CheckFinding(_named_source(r, request), words(r, request)) for r in refusals]
         )
-        cleared = set(anon.clear) if anon is not None else set()
-        refusals = [
-            r
-            for r in report.refusals
-            if not (cut and r.code == "merge-overlap")
-            and r.code not in ignore
-            and not (r.code == "merge-identity-differs" and _CLEARED_BY.get(r.field) in cleared)
-        ]
-        return _unique([CheckFinding(None, _check_message(r, request)) for r in refusals])
+
+
+def _named_source(refusal, request: JoinRequest) -> str | None:
+    """The recording a refusal of the one merge check is about, when mef3io's
+    message names exactly one of the sources (the page then shows it under
+    that recording); else None = about the whole run. The message is only
+    read here, never shown."""
+    text = str(getattr(refusal, "message", "") or "")
+    found = [s for s in request.sources if s.source and s.source in text]
+    # a path inside a longer named path (X.mefd in X.mefd.tar) is not named
+    named = {
+        s.key
+        for s in found
+        if not any(o.source != s.source and s.source in o.source for o in found)
+    }
+    return next(iter(named)) if len(named) == 1 else None
 
 
 def _unique(findings: list[CheckFinding]) -> list[CheckFinding]:
@@ -949,13 +914,13 @@ def _unique(findings: list[CheckFinding]) -> list[CheckFinding]:
 @dataclass(frozen=True)
 class Sizing:
     """About how many bytes each kept part holds and the most that is on the
-    drive of the new recording at any one moment."""
+    drive of the new recording at any one moment: the new recording, plus
+    (one file) the packed file beside it."""
 
     #: key -> bytes of the kept part (kept channels, kept time).
     kept: dict = field(default_factory=dict, repr=False)
     total: int = 0
-    #: The worst moment: parts + the joined recording, or (one file) the
-    #: joined recording + the packed file.
+    #: The worst moment: the new recording, or (one file) it + the packed file.
     peak: int = 0
 
     @property
@@ -1002,13 +967,8 @@ def sizing(request: JoinRequest, plan: JoinPlan, layouts: dict) -> Sizing:
             size = int(size * min(1.0, max(0, span.end - span.start) / length))
         kept[s.key] = size
     total = sum(kept.values())
-    anonymous = request.anonymous is not None
-    cut_total = sum(
-        v for k, v in kept.items() if anonymous or (k in plan.spans and not plan.spans[k].whole)
-    )
-    first = total if request.single else cut_total + total
-    second = 2 * total if request.one_file else 0
-    return Sizing(kept, total, max(first, second))
+    # The result, and (one file) beside it the packed file.
+    return Sizing(kept, total, 2 * total if request.one_file else total)
 
 
 def space_problem(request: JoinRequest, size: Sizing) -> UserMessage | None:
@@ -1022,22 +982,15 @@ def space_problem(request: JoinRequest, size: Sizing) -> UserMessage | None:
     return UserMessage(
         "There is not enough free space",
         f"The drive of the chosen folder has {format_size(free)} free. While the new "
-        f"recording is made it needs about {format_size(size.needed)} there (the temporary "
-        "copies are removed afterwards). Free some space or choose another folder. "
+        f"recording is made it needs about {format_size(size.needed)} there"
+        f"{' (the folder it is packed from is removed afterwards)' if request.one_file else ''}. "
+        "Free some space or choose another folder. "
         f"{NOTHING_JOINED}",
     )
 
 
 # --------------------------------------------------------------------------
 # The run
-
-
-def _throwaway_passwords() -> tuple[str, str]:
-    """Two different passwords for the temporary copies of this run only:
-    ASCII, 12 characters (every MEF program accepts them)."""
-    basic = "b" + secrets.token_hex(6)[:11]
-    full = "f" + secrets.token_hex(6)[:11]
-    return basic, full
 
 
 def make_joined(
@@ -1104,6 +1057,8 @@ def make_joined(
         parts_left=not remove_parts(request),
         anonymous=anonymous,
         one_file=one_file,
+        notes_left_out=request.records == RECORDS_DROP,
+        records_dropped=int(getattr(report, "records_dropped", 0) or 0),
     )
 
 
@@ -1117,18 +1072,12 @@ class _Stage:
 
 def _stages(request: JoinRequest, plan: JoinPlan, size: Sizing) -> list[_Stage]:
     """The stages of this run, in order, weighted by the bytes they handle
-    (the bar then moves evenly). Merging and packing read and write the
-    local drive, so they count a little less than reading the originals."""
-    anonymous = request.anonymous is not None
+    (the bar then moves evenly): the one pass that makes the recording (the
+    copy and mef3io's check of it), then, for one file, packing and
+    comparing. Packing reads and writes the local drive, so it counts a
+    little less than reading the originals."""
     total = max(1, size.total)
-    stages: list[_Stage] = []
-    if request.single:
-        stages.append(_Stage("trim", 1, 1, total))
-    else:
-        cuts = [k for k in plan.order if anonymous or not plan.spans[k].whole]
-        for n, key in enumerate(cuts):
-            stages.append(_Stage("cut", n + 1, len(cuts), max(1, size.kept.get(key, 0))))
-        stages.append(_Stage("join", 1, 1, max(1, int(total * 0.6))))
+    stages = [_Stage("trim" if request.single else "join", 1, 1, total)]
     if request.one_file:
         stages.append(_Stage("pack", 1, 1, max(1, int(total * 0.6))))
         stages.append(_Stage("check", 1, 1, max(1, int(total * 0.05))))
@@ -1143,15 +1092,13 @@ def run(
     cancel: CancelToken,
     layouts: dict | None = None,
 ):
-    """THE pipeline: every stage of one join or trim, from the originals to
-    the finished recording (folder or one file). Returns a report with
-    ``channels_kept``, ``channels_excluded``, ``bytes_written``, ``notes``.
-    A single mef3io call that does several of these stages in one pass can
-    replace the body of this function; nothing outside it depends on the
-    stages."""
+    """THE pipeline of one join or trim, from the originals to the finished
+    recording (folder or one file): ONE mef3io call (``merge_sessions``, or
+    for a single recording ``transform_session`` / ``anonymize_session``),
+    then, for one file, packing. Returns a report with ``channels_kept``,
+    ``channels_excluded``, ``bytes_written``, ``notes``, ``records_dropped``."""
     import mef3io
 
-    sources = _by_key(request)
     library_cancel = cancel.for_library()
     anon = request.anonymous
     stages = _stages(request, plan, size)
@@ -1187,28 +1134,23 @@ def run(
         if callback is not None:
             callback(0, 1)
 
-    exclude = list(request.exclude_channels) or None
-    if request.one_file or (not request.single and (anon is not None or _cuts(request, plan))):
+    if request.one_file:
         make_parts_folder(request)
     built = request.built_path
-
-    def anonymize(s: JoinSource, dst: str, span, kind: str, output_password=None):
-        return mef3io.anonymize_session(
-            s.source,
-            dst,
-            anon.shift_us,
-            password=s.password,
-            output_password=output_password,
-            progress=progress(kind),
-            cancel=library_cancel,
-            **_anonymize_kwargs(request, span, s.key, layouts),
-        )
-
     if request.single:
         s = request.sources[0]
         span = plan.spans[s.key]
         if anon is not None:
-            report = anonymize(s, built, span, "trim", request.output_password)
+            report = mef3io.anonymize_session(
+                s.source,
+                built,
+                anon.shift_us,
+                password=s.password,
+                output_password=request.output_password,
+                progress=progress("trim"),
+                cancel=library_cancel,
+                **_anonymize_kwargs(request, span),
+            )
         else:
             report = transform_copy(
                 ChangeRequest(
@@ -1218,72 +1160,29 @@ def run(
                     exclude_channels=request.exclude_channels,
                     output_password=request.output_password,
                     time_range=None if span.whole else span.time_range,
+                    records=request.records,
                 ),
                 progress("trim"),
                 cancel,
             )
     else:
-        paths: list[str] = []
-        passwords: list[str] = []
-        temporary = None
-        if anon is None and _cuts(request, plan):
-            temporary = _throwaway_passwords()
-        if anon is not None or temporary is not None:
-            os.mkdir(request.parts_subfolder)
-        n = 0
-        for key in plan.order:
-            s = sources[key]
-            span = plan.spans[key]
-            if anon is None and span.whole:
-                paths.append(s.source)
-                passwords.append(s.password)
-                continue
-            cancel.raise_if_cancelled()
-            n += 1
-            part = os.path.join(request.parts_subfolder, f"part-{n}.mefd")
-            if anon is not None:
-                # Anonymous from the start: the part holds no patient details
-                # (so it needs no temporary password).
-                anonymize(s, part, span, "cut")
-                paths.append(part)
-                passwords.append("")
-            else:
-                transform_copy(
-                    # Protected: see the module's notes on password safety.
-                    ChangeRequest(
-                        s.source,
-                        part,
-                        s.password,
-                        output_password=temporary,
-                        time_range=span.time_range,
-                    ),
-                    progress("cut"),
-                    cancel,
-                )
-                paths.append(part)
-                passwords.append(temporary[1])
-        cancel.raise_if_cancelled()
+        arguments = _merge_arguments(request, plan)
+        paths = arguments.pop("paths")
+        # ONE call, from the originals: the kept part of each, the channels
+        # left out, anonymous, with or without the notes, and the new
+        # passwords, in one pass over the data.
         report = mef3io.merge_sessions(
             paths,
             built,
-            passwords=passwords,
-            # An anonymous part was made without the left-out channels.
-            exclude_channels=None if anon is not None else exclude,
             output_password=request.output_password,
             progress=progress("join"),
             cancel=library_cancel,
+            **arguments,
         )
-        # The parts are no longer needed: free their room before packing.
-        if os.path.isdir(request.parts_subfolder):
-            shutil.rmtree(request.parts_subfolder, ignore_errors=True)
     if request.one_file:
         cancel.raise_if_cancelled()
         _pack(request, announce, progress, cancel)
     return report
-
-
-def _cuts(request: JoinRequest, plan: JoinPlan) -> bool:
-    return any(not plan.spans[k].whole for k in plan.order)
 
 
 def _pack(request: JoinRequest, announce, progress, cancel: CancelToken) -> None:
@@ -1367,13 +1266,11 @@ def tidy(request: JoinRequest, partial_was_there: bool = False) -> bool:
 def progress_phase(message: JoinProgress) -> str:
     """What the progress bar says for one stage (plain words)."""
     anonymous = " and making it anonymous" if message.anonymous else ""
-    if message.kind == "cut":
-        return (
-            f"Keeping the chosen part of recording {message.index} of {message.count}"
-            f"{anonymous}, then checking it"
-        )
     if message.kind == "join":
-        return "Joining the parts into one recording, then checking it"
+        return (
+            f"Joining the chosen parts of the recordings into one{anonymous}, "
+            "then checking the new recording"
+        )
     if message.kind == "pack":
         return "Packing the new recording into one file"
     if message.kind == "check":

@@ -797,7 +797,13 @@ recordings chosen.
    anonymous recording is `SUBJ-001`, never made from an original's name.
    The new name and pseudonym may not contain the patient's names, ID or
    location, or an original's name; that is checked before anything is
-   written.
+   written. Under **Notes and events**, whatever you chose above, choose
+   **Keep them** (the default) or **Leave them out**. Leaving them out
+   removes every note and event from the new recording, with its time, so no
+   text that might name the patient is left in it; the signal, the times and
+   the channels are as without it, and the originals keep their notes. When
+   you leave them out, the choice about the text of notes is not needed and
+   is hidden. The result says when they were left out.
 5. **New recording.** Type its name and choose the folder (by default the
    folder of the first recording). Under **Save as**, choose **A folder
    (.mefd)** or **One file (.mefd.tar), which this app opens directly**. The
@@ -811,9 +817,8 @@ recordings chosen.
    passwords, would only make an exact copy, so it is refused.
 6. **Check and save.** First everything is checked, without writing
    anything: that there is enough free space on the drive of the chosen
-   folder for the busiest moment (about twice the size of what you keep when
-   several recordings are joined, or when the result is one file; the message
-   says how much), that each kept part holds signal, that no two parts share a
+   folder for the busiest moment (about the size of what you keep, and twice
+   that when the result is one file; the message says how much), that each kept part holds signal, that no two parts share a
    channel at the same time, that the channels have the same sampling rate
    in every recording, that the recordings are of the same patient (their
    patient details match), the passwords, and that the name is free. While
@@ -825,31 +830,29 @@ recordings chosen.
    and a **Stop** button, and it is **checked against the originals** before
    it gets its name. At the end, **Open it in Explore** shows it there.
 
-**Anonymous and one file in one go.** Each kept part is made anonymous as it
-is read from its original (trimmed, without the channels you left out, with
-one date move and one pseudonym for all), and saved in the hidden temporary
-folder next to the new recording. The parts are then joined, the temporary
-parts are removed at once, and for one file the joined recording is packed,
-compared with what it was packed from and given its name. So no copy with the
-patient's details is ever written. Each original (which may be on a network
-drive) is read once to make its kept part and once more to check that part
-against it; the joining and the packing then work only on the temporary copies,
-not on the originals. The
-progress bar covers all of it. The new recording's **History** (in Explore)
-says it was made by the anonymizer.
+**One pass, straight from the originals.** However many recordings you
+join, the new recording is made in a single go from the originals: the kept
+part of each, without the channels you left out, anonymous if you chose that
+(one date move and one pseudonym for all), with or without the notes and
+events, and with the new passwords, all in one pass over the data. Nothing is
+saved in between, so no copy with the patient's details is ever written and
+no temporary copy of a part exists. This is also faster than before, because
+each original (which may be on a network drive) is read once to make the new
+recording and once more to check it, and the files are opened far fewer
+times. The progress bar covers the whole run, and **Stop** works at any
+moment and leaves nothing behind. One recording that is only trimmed (a join
+needs two) is made the same way, in one call. The new recording's **History**
+(in Explore) says it was made by the anonymizer or by a copy with changes; it
+cannot say that the notes were left out, which the result screen does.
 
-**How joining works, and the temporary folder.** When several recordings are
-joined and some are trimmed, the kept part of each trimmed one is first saved
-on its own, in a hidden temporary folder next to the new recording (its name
-starts with `.mef3io-studio-parts-`); then the parts are joined into the new
-recording. Those temporary parts are **password-protected with throw-away
-passwords** made for that run only, so the folder never holds readable
-patient details, even if the computer stops halfway. The folder is always
-removed at the end, also when you press Stop or something goes wrong; if it
-ever cannot be removed, the result says so, and you can delete it yourself.
-The app only ever removes a temporary folder it made for that run (it leaves
-a small note inside it to recognise it); anything else is left alone.
-A recording you keep whole is used as it is, without a temporary copy.
+**The hidden temporary folder (one file only).** Only **One file
+(.mefd.tar)** uses a hidden folder next to the new file (its name starts with
+`.mef3io-studio-parts-`): the recording is made there, packed, compared with
+what it was packed from, and the file then given its name. The folder is
+always removed at the end, also when you press Stop or something goes wrong;
+if it ever cannot be removed, the result says so, and you can delete it
+yourself. The app only ever removes a folder it made for that run (it leaves a
+small note inside it to recognise it); anything else is left alone.
 
 ## View signals
 

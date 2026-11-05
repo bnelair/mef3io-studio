@@ -10,8 +10,8 @@ nothing) in a helper process, and only then makes the recording, in a
 helper process too, with one progress bar and Stop. The originals are never
 changed.
 
-The rules (what each choice keeps, overlaps, the temporary parts and their
-password protection) live in ``model.join``; the widgets never import
+The rules (what each choice keeps, overlaps, the one mef3io call that
+makes the result from the originals) live in ``model.join``; the widgets never import
 mef3io. Recordings come from the Explore list (opened with their
 passwords there): no recording is opened twice.
 """
@@ -80,6 +80,8 @@ from ..model.join import (
     KEEP_FIRST,
     KEEP_LAST,
     KEEP_WHOLE,
+    RECORDS_DROP,
+    RECORDS_KEEP,
     SECOND_US,
     Anonymous,
     JoinPlan,
@@ -142,19 +144,27 @@ PROTECTED_SOURCES = (
 )
 
 HOW_IT_WORKS = (
-    "Several recordings: the part of each that you keep is first saved, password-protected, "
-    "in a hidden temporary folder next to the new recording, then the parts are joined into "
-    "the new recording, which is checked against them. The temporary folder is always "
-    "removed at the end, also when you stop or something goes wrong. The originals are "
-    "never changed."
+    "Several recordings: the part of each that you keep is joined straight into the new "
+    "recording in one go, which is then checked against the originals. Nothing is saved "
+    "in between. The originals are never changed."
+)
+
+NOTES_INTRO = (
+    "Notes and events can hold text that names the patient. You can keep them in the new "
+    "recording or leave them all out."
+)
+NOTES_KEEP = "Keep them"
+NOTES_LEAVE_OUT = "Leave them out"
+NOTES_LEFT_OUT_NOTE = (
+    "Every note and event is left out of the new recording, with its time. The signal is "
+    "not affected, and the originals keep theirs."
 )
 
 HOW_IT_WORKS_ANONYMOUS = (
     "The part of each recording that you keep is made anonymous as it is read from the "
-    "original, and saved in a hidden temporary folder next to the new recording: a copy "
-    "with the patient's details is never written. The parts are then joined into the new "
-    "recording, which is checked. The temporary folder is always removed at the end, also "
-    "when you stop or something goes wrong. The originals are never changed."
+    "original and joined straight into the new recording, in one go: a copy with the "
+    "patient's details is never written. The new recording is then checked. The originals "
+    "are never changed."
 )
 
 PRIVACY_KEEP = "Keep the patient details (as in the originals)"
@@ -166,9 +176,11 @@ DATES_KEEP_WARNING = (
 )
 
 FILE_NOTE = (
-    "The new recording is made and packed in a hidden temporary folder next to the file, "
-    "compared with what it was packed from, and only then given its name. For a moment the "
-    "chosen drive needs room for about twice the size of what you keep."
+    "The new recording is made in a hidden temporary folder next to the file and packed, the "
+    "file is compared with what it was packed from, and only then it is given its name. The "
+    "temporary folder is always removed at the end, also when you stop or something goes "
+    "wrong. For a moment the chosen drive needs room for about twice the size of what you "
+    "keep."
 )
 
 SAVE_FOLDER = "A folder (.mefd), as the originals"
@@ -903,6 +915,14 @@ class PrivacyStep(QWidget):
         self.span_note = _label(muted=True)
         self.problem = _label()
         self.problem.setObjectName("Bad")
+        self.notes_keep = QRadioButton(NOTES_KEEP)
+        self.notes_leave_out = QRadioButton(NOTES_LEAVE_OUT)
+        self.notes_keep.setChecked(True)
+        notes_group = QButtonGroup(self)
+        for b in (self.notes_keep, self.notes_leave_out):
+            notes_group.addButton(b)
+            b.toggled.connect(self._update)
+        self.notes_note = _label(NOTES_LEFT_OUT_NOTE, muted=True)
         form = QFormLayout()
         form.addRow("Pseudonym (stored as the patient's code):", self.pseudonym)
         self.options = QWidget()
@@ -923,6 +943,11 @@ class PrivacyStep(QWidget):
         layout.addWidget(self.keep_details)
         layout.addWidget(self.anonymous)
         layout.addWidget(self.options)
+        layout.addWidget(_label("Notes and events", bold=True))
+        layout.addWidget(_label(NOTES_INTRO, muted=True))
+        layout.addWidget(self.notes_keep)
+        layout.addWidget(self.notes_leave_out)
+        layout.addWidget(self.notes_note)
         layout.addWidget(self.problem)
         layout.addStretch(1)
         self._update()
@@ -946,6 +971,10 @@ class PrivacyStep(QWidget):
         plan = self.dates.plan
         planned = plan.recordings[0] if plan is not None and plan.recordings else None
         return planned.shift_us if planned is not None else None
+
+    def records(self) -> str:
+        """``RECORDS_KEEP`` or ``RECORDS_DROP`` (mef3io's ``records=``)."""
+        return RECORDS_DROP if self.notes_leave_out.isChecked() else RECORDS_KEEP
 
     def choice(self) -> Anonymous | None:
         if not self.is_anonymous():
@@ -1006,6 +1035,10 @@ class PrivacyStep(QWidget):
     def _update(self, *_args) -> None:
         anonymous = self.is_anonymous()
         self.options.setVisible(anonymous)
+        leaving_out = self.notes_leave_out.isChecked()
+        self.notes_note.setVisible(leaving_out)
+        # Nothing to remove the text of when there are no notes.
+        self.details.show_text_choice(not leaving_out)
         moving = anonymous and self.dates_move.isChecked()
         self.dates.setVisible(moving)
         self.dates_warning.setVisible(anonymous and self.dates_keep.isChecked())
@@ -1017,6 +1050,7 @@ class PrivacyStep(QWidget):
 
     def reset(self) -> None:
         self.keep_details.setChecked(True)
+        self.notes_keep.setChecked(True)
         self.pseudonym.clear()
 
 
@@ -1192,6 +1226,23 @@ class NewRecordingStep(QWidget):
 # Step 5: saving, then the result
 
 
+def saved_words(result: JoinResult) -> str:
+    """The result screen's sentence for a recording that was saved and
+    checked."""
+    kept = format_count(len(result.channels_kept), "channel")
+    how = ""
+    if result.anonymous:
+        how += " It is anonymous: the patient's details were cleared as it was made."
+    if result.notes_left_out:
+        how += " All notes and events were left out."
+    if result.one_file:
+        how += " It was saved as one file, which this app opens directly."
+    return (
+        f"The new recording was saved with {kept} and checked against the originals, "
+        f"which were not changed.{how}"
+    )
+
+
 class RunStep(QWidget):
     def __init__(self, page: JoinerPage):
         super().__init__(page)
@@ -1252,16 +1303,7 @@ class RunStep(QWidget):
             )
         elif result is not None and result.ok:
             self.heading.setText("Saved and checked")
-            kept = format_count(len(result.channels_kept), "channel")
-            how = ""
-            if result.anonymous:
-                how += " It is anonymous: the patient's details were cleared as it was made."
-            if result.one_file:
-                how += " It was saved as one file, which this app opens directly."
-            self.result.setText(
-                f"The new recording was saved with {kept} and checked against the originals, "
-                f"which were not changed.{how}" + left
-            )
+            self.result.setText(saved_words(result) + left)
             self.show_buttons(True)
         else:
             message = result.message if result is not None else failure
@@ -1591,6 +1633,7 @@ class JoinerPage(QWidget):
             output_password=output,
             anonymous=self.privacy.choice(),
             one_file=self.new.one_file,
+            records=self.privacy.records(),
         )
 
     def _names(self) -> dict[str, str]:

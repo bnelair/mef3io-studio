@@ -25,13 +25,19 @@ since test version 0.1.0.dev5; see the
 [user guide](../user-guide.md#join-or-trim-recordings) and `model/join.py`).
 Join or trim can also make the new recording **anonymous** (a "Privacy" step
 that reuses the Anonymize page's dates step and clear-and-text box) and save
-it as **one file** (`.mefd.tar`): `model/join.run` is the one pipeline (each
-source anonymized, cut and without the left-out channels straight from the
-original into the hidden parts folder next to the result; `merge_sessions` of
-the anonymous parts, whose cleared patient fields are equal; parts removed;
-pack, compare, name), so a later single-pass mef3io call replaces only that
-function. Room is left for a "notes and events: keep / leave out" option
-(`join.Anonymous`) once the library has it.
+it as **one file** (`.mefd.tar`). Since mef3io 2.2 (app 0.1.4) the whole
+pipeline is ONE library call: `model/join.run` gives `merge_sessions` the
+originals in time order with a `time_ranges` window each, `exclude_channels`,
+`anonymize={shift_us, pseudonym, clear, text}` (one shift for all),
+`records="keep"|"drop"`, the new passwords and `n_threads=0`; one recording
+(a merge needs two) goes to `transform_session` / `anonymize_session` with the
+same options; for one file the result, built in the hidden folder, is then
+packed, compared and named. No temporary copy of a part exists. The
+**Notes and events: Keep them / Leave them out** choice sits in the Privacy
+step because notes hold free text that can name the patient, and it applies to
+any join, anonymous or not (`JoinRequest.records`); with anonymous + keep,
+the existing text choice (remove / keep) still applies and is hidden when the
+notes are left out.
 **Trimming on the map.** "What to keep" shows Explore's combined timeline
 (`explorer/combined.CombinedTimelineWidget`, reused through the subclass
 `joiner/trimmap.TrimMapWidget`, which paints a Start and an End line, the kept

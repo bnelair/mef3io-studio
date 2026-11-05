@@ -409,11 +409,11 @@ def check_join(ctx: JobContext, request: join.JoinRequest) -> list[join.CheckFin
 
 def join_recordings(ctx: JobContext, request: join.JoinRequest) -> join.JoinResult:
     """Make the joined or trimmed recording in a helper process, with one
-    progress bar over every step (each cut, then the join). A refusal or
-    failure comes back as the result's message; Stop ends the helper
-    (mef3io removes what it had started) and the temporary parts and an
-    unfinished destination are removed here too, in case the helper had to
-    be ended before it could tidy up."""
+    progress bar over every step (the join or trim, then, for one file, the
+    packing and its check). A refusal or failure comes back as the result's
+    message; Stop ends the helper (mef3io removes what it had started) and
+    this run's hidden folder and an unfinished destination are removed here
+    too, in case the helper had to be ended before it could tidy up."""
     _register_join_identity(request)
     partial_was_there = os.path.lexists(request.destination + ".partial")
     ctx.add_cleanup(lambda: join.tidy(request, partial_was_there))
