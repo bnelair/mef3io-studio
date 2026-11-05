@@ -27,6 +27,7 @@ tour with a clear message: that is how a changed screen breaks a tour in CI.
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import tempfile
@@ -56,7 +57,7 @@ def prepare_environment(data_dir: Path) -> None:
     os.environ["MEF3IO_STUDIO_DATA_DIR"] = str(data_dir)
     os.environ["MEF3IO_STUDIO_NO_STARTUP_OFFERS"] = "1"
     os.environ["MEF3IO_STUDIO_NO_KEEP_AWAKE"] = "1"
-    os.environ.setdefault("MEF3IO_STUDIO_LOG_DIR", str(data_dir / "logs"))
+    os.environ["MEF3IO_STUDIO_LOG_DIR"] = str(data_dir / "logs")
 
 
 # --------------------------------------------------------------------------
@@ -594,7 +595,11 @@ def run_tour(
 
 
 def scratch(prefix="demo-") -> Path:
-    return Path(tempfile.mkdtemp(prefix=prefix))
+    """A new temporary folder, removed when the script ends (only folders
+    made here are ever removed)."""
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    atexit.register(cleanup, path)
+    return path
 
 
 def cleanup(path: Path) -> None:

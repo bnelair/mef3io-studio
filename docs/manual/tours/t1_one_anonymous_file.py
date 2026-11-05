@@ -104,7 +104,7 @@ def build() -> Tour:
             "events, Keep them is chosen: they stay in the new recording, with the text "
             "removed because you chose Make it anonymous. Choose Leave them out to drop "
             "every note and event instead; the text choice then disappears, and the "
-            "result says \"All notes and events were left out.\" This tour keeps them.",
+            'result says "All notes and events were left out." This tour keeps them.',
             do=[click("Keep them")],
             then=[click("Next")],
             focus=around(
@@ -126,7 +126,7 @@ def build() -> Tour:
         Step(
             "Open it in Explore",
             "Choose Open it in Explore to look at the result. Its History says it was "
-            "made by the anonymizer, and its patient details are gone.",
+            "made anonymous, and its patient details are gone.",
             do=[do(_open_result, "Open it in Explore", "choose Open it in Explore")],
             focus=lambda ctx: ctx.window.explorer.table,
         ),
