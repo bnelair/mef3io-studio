@@ -10,8 +10,8 @@ nothing) in a helper process, and only then makes the recording, in a
 helper process too, with one progress bar and Stop. The originals are never
 changed.
 
-The rules (what each choice keeps, overlaps, the temporary parts and their
-password protection) live in ``model.join``; the widgets never import
+The rules (what each choice keeps, overlaps, the one mef3io call that
+makes the result from the originals) live in ``model.join``; the widgets never import
 mef3io. Recordings come from the Explore list (opened with their
 passwords there): no recording is opened twice.
 """
