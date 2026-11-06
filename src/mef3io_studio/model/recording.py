@@ -466,6 +466,9 @@ class InspectOutcome:
     needs_password: bool = False
     wrong_password: bool = False
     error: UserMessage | None = None
+    #: The folder's (or file's) modification time when it was read, so Join
+    #: or trim can tell with ONE ``stat`` that it was touched since.
+    stamp: int | None = None
 
     @property
     def name(self) -> str:

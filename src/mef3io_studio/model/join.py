@@ -47,15 +47,19 @@ decides on the recorded blocks and also allows recordings that take turns
 on one channel: not what this feature is for. ``merge_sessions`` still
 checks the recorded signal itself (``merge-overlap``) as the last word.
 
-End times: a recording's end is where its last sample ENDS (exclusive).
-mef3io's ``time_range`` reports the end its headers state, which is that
-for mef3io's own files but may be the last sample's own time for another
-writer's (one sample period earlier). So the run takes each recording's end
-from the index instead: the end of the last block of each channel
-(``Reader.block_envelope``, which reads only the last part's block index
-and gives ``start + samples / rate``), see :func:`read_layouts`. A window
-that reaches the recording's end is also handed to mef3io one microsecond
-past it (``Span.to_end``), so the last sample is kept either way.
+What is already known is not read again: the page hands the request what
+Explore knows of each recording (``JoinRequest.layouts``: start, end,
+channels, size on disk), and then neither the check nor the run opens a
+recording or walks its folder (that cost tens of thousands of file-system
+calls on big recordings, minutes on a network drive). Only a recording
+Explore has no answer for is opened (:func:`read_layouts`). A recording's
+end is then the end its headers state (Explore's): for mef3io's own files
+that is where the last sample ends; for another writer's it may be the last
+sample's own time (one sample period earlier). That cannot lose a sample: a
+window that reaches the recording's end is handed to mef3io one microsecond
+past it (``Span.to_end``), so the last sample is kept either way. The page
+re-checks instead of running when a recording was touched since Explore
+read it (one ``stat`` each) (:func:`facts_still_true`).
 
 One recording kept whole with no channel left out and no new passwords
 would be an exact copy: refused as "nothing would change"
@@ -315,6 +319,11 @@ class Layout:
     start: int | None = field(default=None, repr=False)
     end: int | None = field(default=None, repr=False)
     channels: tuple[str, ...] = field(default=(), repr=False)
+    #: Bytes the whole recording takes on disk, when Explore already measured
+    #: them (None = measure the folder).
+    total_bytes: int | None = field(default=None, repr=False)
+    #: When Explore read it (its modification time): see :func:`facts_still_true`.
+    stamp: int | None = field(default=None, repr=False)
 
 
 def _as_layout(value) -> Layout:
@@ -457,6 +466,10 @@ class JoinRequest:
     one_file: bool = False
     #: ``RECORDS_KEEP`` or ``RECORDS_DROP`` (leave out all notes and events).
     records: str = RECORDS_KEEP
+    #: What Explore already knows of each recording (key -> :class:`Layout`:
+    #: start, end, channels, size). A recording listed here is NOT opened
+    #: again by the check or the run; one that is not listed is opened.
+    layouts: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def name(self) -> str:
@@ -508,6 +521,7 @@ def new_request(
     anonymous: Anonymous | None = None,
     one_file: bool = False,
     records: str = RECORDS_KEEP,
+    layouts: dict | None = None,
 ) -> JoinRequest:
     return JoinRequest(
         tuple(sources),
@@ -519,6 +533,7 @@ def new_request(
         anonymous,
         one_file,
         records,
+        dict(layouts or {}),
     )
 
 
@@ -629,13 +644,19 @@ def read_layouts(
     each channel (``block_envelope``: where the last sample ends, whatever
     a writer stated in its headers; see the module notes). A recording
     whose times are not confirmed (protected, full-access password not
-    given) is reported, not planned."""
+    given) is reported, not planned. A recording in ``request.layouts``
+    (what Explore already knows) is taken as it is and not opened."""
     import mef3io
 
     layouts: dict[str, Layout] = {}
     findings: list[CheckFinding] = []
     for s in request.sources:
         cancel.raise_if_cancelled()
+        known = request.layouts.get(s.key)
+        if known is not None:
+            # Explore already read it: nothing is opened again.
+            layouts[s.key] = _as_layout(known)
+            continue
         try:
             found = read_time(s.source, s.password, cancel)
             if not found.verified:
@@ -656,6 +677,31 @@ def read_layouts(
             continue
         layouts[s.key] = Layout(int(found.start), end, channels)
     return layouts, findings
+
+
+def facts_still_true(request: JoinRequest) -> bool:
+    """The recordings look as they did when Explore read them: ONE ``stat``
+    per recording (its folder's, or the file's, modification time against
+    ``Layout.stamp``). Not a proof (data appended inside a part is not seen),
+    only a way to notice that a recording was touched; mef3io's own check
+    inside the copy stays the safety. A recording without a stamp, or that
+    cannot be read, counts as changed."""
+    for s in request.sources:
+        known = request.layouts.get(s.key)
+        stamp = getattr(known, "stamp", None)
+        try:
+            if stamp is None or os.stat(s.source).st_mtime_ns != stamp:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def without_facts(request: JoinRequest) -> JoinRequest:
+    """The same request, but every recording is opened afresh."""
+    import dataclasses
+
+    return dataclasses.replace(request, layouts={})
 
 
 def _plan_findings(plan: JoinPlan, request: JoinRequest) -> list[CheckFinding]:
@@ -929,24 +975,43 @@ class Sizing:
 
 
 def _folder_bytes(folder: str) -> int:
+    """Bytes of every file under ``folder``: one listing per folder, and
+    the size of a file from the listing (on Windows it carries the size; on
+    other systems one ``stat`` per file, never a second one)."""
     total = 0
-    for root, _dirs, files in os.walk(folder):
-        for name in files:
-            try:
-                total += os.stat(os.path.join(root, name)).st_size
-            except OSError:
-                pass
+    stack = [folder]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
     return total
 
 
-def _source_bytes(path: str, excluded: frozenset[str], channels: tuple[str, ...]) -> int:
+def _source_bytes(
+    path: str,
+    excluded: frozenset[str],
+    channels: tuple[str, ...],
+    known: int | None = None,
+) -> int:
     """Bytes of a recording (every file under it, or the single file) times
     the share of channels kept. The app knows no MEF file names, so channels
     are assumed to be about equal in size."""
-    try:
-        total = os.stat(path).st_size if os.path.isfile(path) else _folder_bytes(path)
-    except OSError:
-        return 0
+    if known is not None:
+        total = int(known)
+    else:
+        try:
+            total = os.stat(path).st_size if os.path.isfile(path) else _folder_bytes(path)
+        except OSError:
+            return 0
     if channels:
         kept = [c for c in channels if c not in excluded]
         total = int(total * len(kept) / len(channels))
@@ -961,7 +1026,7 @@ def sizing(request: JoinRequest, plan: JoinPlan, layouts: dict) -> Sizing:
     for s in request.sources:
         layout = _as_layout(layouts.get(s.key, (None, None)))
         span = plan.spans.get(s.key)
-        size = _source_bytes(s.source, excluded, layout.channels)
+        size = _source_bytes(s.source, excluded, layout.channels, layout.total_bytes)
         if span is not None and layout.start is not None and layout.end is not None:
             length = max(1, layout.end - layout.start)
             size = int(size * min(1.0, max(0, span.end - span.start) / length))

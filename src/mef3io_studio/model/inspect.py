@@ -393,6 +393,10 @@ def inspect_recording(
     location = os.fspath(location)
     size = size_on_disk(location)
     try:
+        stamp = os.stat(location).st_mtime_ns
+    except OSError:
+        stamp = None
+    try:
         # Warnings are caught, not shown: mef3io's warning texts start with
         # the full path, which must not reach the log.
         with stopped_by_library(), library_warnings_caught():
@@ -430,7 +434,7 @@ def inspect_recording(
         reasons = [_strip_location(str(p.get("reason") or ""), location) for p in summary.problems]
         error = UserMessage(NOTHING_READABLE.title, NOTHING_READABLE.text, "\n".join(reasons))
         return InspectOutcome(location, size_bytes=size, error=error)
-    return InspectOutcome(location, size_bytes=size, details=details)
+    return InspectOutcome(location, size_bytes=size, details=details, stamp=stamp)
 
 
 def inspect_many(

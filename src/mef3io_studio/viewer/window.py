@@ -118,7 +118,7 @@ class ViewerWindow(QMainWindow):
     #: The page changed: (start, end) in µs.
     page_changed = Signal(object, object)
     #: "Send to Join or trim": (recording indexes, start, end).
-    join_requested = Signal(object, object, object)
+    join_requested = Signal(object, object, object, object)
     #: The notes and events were read: (records or None when they could not
     #: be, indexes of recordings whose notes are locked).
     annotations_ready = Signal(object, object)
@@ -1541,7 +1541,9 @@ class ViewerWindow(QMainWindow):
         if not who:
             self.status_message.setText("No recording holds data in this range.")
             return
-        self.join_requested.emit(tuple(who), rng[0], rng[1])
+        # The channels hidden here go along: Join or trim leaves them out
+        # (and shows the choice, so it can be changed there).
+        self.join_requested.emit(tuple(who), rng[0], rng[1], tuple(sorted(self.state.hidden)))
 
     def _export_context(self, menu: QMenu, row: int, t: int) -> None:
         menu.addSeparator()
