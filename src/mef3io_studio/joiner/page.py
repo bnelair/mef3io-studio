@@ -122,6 +122,8 @@ REFRESH_DELAY_MS = 150
 STEPS = ("Recordings", "Channels", "What to keep", "Privacy", "New recording", "Save")
 STEP_RECORDINGS, STEP_CHANNELS, STEP_KEEP, STEP_PRIVACY, STEP_NEW, STEP_RUN = range(len(STEPS))
 
+RECORDING_CHANGED = "This recording has changed since it was opened; the times were updated."
+
 #: The "Keep" choices, in the order the list shows them.
 KEEP_LABELS = (
     (KEEP_WHOLE, "The whole recording"),
@@ -1702,15 +1704,17 @@ class JoinerPage(QWidget):
                     "Check and save again."
                 )
                 return
-            if findings:
-                self.new.set_findings(findings, self._names())
-                return
             if request.layouts and not join_model.facts_still_true(request):
                 # A recording was touched since Explore read it: what the
                 # check used may be out of date, so check again, opening
-                # every recording afresh. (An unchanged check is not repeated.)
+                # every recording afresh (times and sizes are recomputed
+                # from what is there now). An unchanged check is not repeated.
                 self.check_handle = None
+                self.status.emit(RECORDING_CHANGED)
                 self._check_then_start(join_model.without_facts(request))
+                return
+            if findings:
+                self.new.set_findings(findings, self._names())
                 return
             self.start(request)
 
@@ -1844,13 +1848,24 @@ class JoinerPage(QWidget):
 
     def _leave_out_hidden(self, hidden) -> None:
         """Leave out the channels hidden in the viewer (only those this
-        selection has; never all of them), and say so on the picker."""
+        selection has), and say so on the picker. If every channel was
+        hidden none is kept yet and the picker says so (Next waits until
+        one is ticked)."""
         selection = self.selection
         names = [n for n in dict.fromkeys(hidden) if n in selection.rows]
-        if not names or len(names) >= selection.total:
+        if not names:
             return
         selection.set_kept(names, False)
         selection.clear_history()
+        if len(names) >= selection.total:
+            self.picker.set_selection(
+                selection,
+                len(self.keep.all_rows),
+                "No channel was shown in the viewer, so none is ticked yet: tick the "
+                "channels you want.",
+            )
+            self._update_buttons()
+            return
         self.picker.set_selection(
             selection,
             len(self.keep.all_rows),

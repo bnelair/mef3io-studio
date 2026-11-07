@@ -7,12 +7,14 @@ from __future__ import annotations
 import os
 
 import mef3io
+import numpy as np
 import pytest
 from test_anonymizer_ui import open_in_explorer
-from test_join_anonymous import HOUR, T0, write
+from test_join_anonymous import FS, HOUR, T0, S, write
 from test_joiner_ui import choose_all, wait_for_map
 
 from mef3io_studio.model import join as j
+from mef3io_studio.model.cancel import CancelToken
 from mef3io_studio.model.inspect import inspect_recording
 
 
@@ -124,6 +126,26 @@ def test_the_stamp_notices_a_touched_recording(tmp_path):
     assert not j.facts_still_true(gone)
 
 
+def append(path, start_us, seconds=60):
+    """Add data to a recording after it was read (what a recording that is
+    still being written does)."""
+    n = int(seconds * FS)
+    values = (start_us - T0) / S + np.arange(n) / FS
+    with mef3io.Writer(str(path)) as w:
+        for name in ("a1", "a2", "a3"):
+            w.write(name, values, start_us, FS)
+
+
+def test_data_appended_after_explore_read_it_is_noticed(tmp_path):
+    request, (a, _b) = request_for(tmp_path, with_facts=True)
+    assert j.facts_still_true(request)
+    old_end = request.layouts[request.sources[0].key].end
+    append(a, old_end + 1_000_000)
+    assert not j.facts_still_true(request)
+    fresh = j.read_layouts(j.without_facts(request), CancelToken())[0]
+    assert fresh[request.sources[0].key].end > old_end
+
+
 def test_no_recording_path_is_touched_twice_by_the_studio(tmp_path, monkeypatch):
     """Check, the "still true" test and the run: the studio itself touches
     (stat, list, open) no recording path more than once (network drives)."""
@@ -159,8 +181,10 @@ def test_no_recording_path_is_touched_twice_by_the_studio(tmp_path, monkeypatch)
     assert result.ok, result.message
     twice = {os.path.basename(p): n for p, n in touched.items() if n > 1}
     assert not twice, twice
-    # and the studio's part is small: at most one stat per recording folder
-    assert sum(touched.values()) <= len(roots)
+    # and the studio's part is small: a few stats (recording, channel folders
+    # and the largest file of each folder), no listing, no open
+    # (per recording: itself, 3 channel folders, 3 data files, 1 file at its root)
+    assert sum(touched.values()) <= len(roots) * (1 + 3 + 3 + 1)
 
 
 def test_the_run_does_not_open_the_recordings_again(tmp_path, monkeypatch):

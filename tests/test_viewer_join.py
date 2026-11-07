@@ -138,7 +138,9 @@ def test_hiding_in_explore_reaches_an_open_viewer_at_once(window, qtbot, tmp_pat
     qtbot.waitUntil(lambda: not window.viewers, timeout=5000)
 
 
-def test_viewer_hiding_everything_or_nothing_leaves_every_channel_in(window, qtbot, tmp_path):
+def test_viewer_hiding_everything_or_nothing_leaves_none_ticked_or_nothing_out(
+    window, qtbot, tmp_path
+):
     window._closing = True
     window.show()
     a = write(tmp_path / "A.mefd", T0)
@@ -150,5 +152,10 @@ def test_viewer_hiding_everything_or_nothing_leaves_every_channel_in(window, qtb
     # a name the recording does not have, or every channel: nothing is left out
     assert page.choose_window([entry.key], T0, T0 + HOUR, ("zz",))
     assert page.selection.excluded == ()
+    # every channel hidden: none is ticked yet, with a notice, Next waits
     assert page.choose_window([entry.key], T0, T0 + HOUR, ("a1", "a2"))
-    assert page.selection.excluded == ()
+    assert page.selection.kept == frozenset()
+    assert "No channel was shown in the viewer" in page.picker.notice_label.text()
+    assert not page.next_button.isEnabled()
+    page.picker.click("a2", True)
+    assert page.next_button.isEnabled()

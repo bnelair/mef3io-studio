@@ -59,7 +59,7 @@ sample's own time (one sample period earlier). That cannot lose a sample: a
 window that reaches the recording's end is handed to mef3io one microsecond
 past it (``Span.to_end``), so the last sample is kept either way. The page
 re-checks instead of running when a recording was touched since Explore
-read it (one ``stat`` each) (:func:`facts_still_true`).
+read it (a few ``stat``s each, none listed or opened) (:func:`facts_still_true`).
 
 One recording kept whole with no channel left out and no new passwords
 would be an exact copy: refused as "nothing would change"
@@ -323,7 +323,7 @@ class Layout:
     #: them (None = measure the folder).
     total_bytes: int | None = field(default=None, repr=False)
     #: When Explore read it (its modification time): see :func:`facts_still_true`.
-    stamp: int | None = field(default=None, repr=False)
+    stamp: tuple | None = field(default=None, repr=False)
 
 
 def _as_layout(value) -> Layout:
@@ -680,18 +680,25 @@ def read_layouts(
 
 
 def facts_still_true(request: JoinRequest) -> bool:
-    """The recordings look as they did when Explore read them: ONE ``stat``
-    per recording (its folder's, or the file's, modification time against
-    ``Layout.stamp``). Not a proof (data appended inside a part is not seen),
-    only a way to notice that a recording was touched; mef3io's own check
-    inside the copy stays the safety. A recording without a stamp, or that
-    cannot be read, counts as changed."""
+    """The recordings look as they did when Explore read them: ``stat`` of
+    the few paths in ``Layout.stamp`` (the recording, each channel's folder,
+    the largest file of every folder), each once, nothing listed or opened.
+    That notices data appended to a recording (the data file grows) and a
+    new part in a channel. mef3io's check reports no times, so this is the
+    signal. Residual gap: a change that alters none of those (edited in
+    place without changing its size) is not seen; mef3io's own check inside
+    the copy stays the safety. A recording without a stamp, or that cannot
+    be read, counts as changed."""
     for s in request.sources:
         known = request.layouts.get(s.key)
         stamp = getattr(known, "stamp", None)
+        if not stamp:
+            return False
         try:
-            if stamp is None or os.stat(s.source).st_mtime_ns != stamp:
-                return False
+            for path, mtime, size in stamp:
+                st = os.stat(path)
+                if st.st_mtime_ns != mtime or (size and st.st_size != size):
+                    return False
         except OSError:
             return False
     return True
