@@ -1279,9 +1279,10 @@ def mixed_words(result: JoinResult) -> str:
         )
     if result.mixed_factors:
         out += (
-            " Some channels mix scale factors: "
-            f"{_channel_list(result.mixed_factors)}. The values are correct in this app, but "
-            "older tools such as mef_tools read these channels as zeros."
+            " Some channels were recorded with different amplitude settings in different "
+            f"recordings: {_channel_list(result.mixed_factors)}. The values are correct in "
+            "this app, but some older programs (for example the mef_tools Python package) "
+            "show these channels as all zeros."
         )
     return out
 

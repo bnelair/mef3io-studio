@@ -322,8 +322,8 @@ def test_mixed_units_and_factors_are_told_in_plain_words(tmp_path):
     assert result.ok and result.mixed_units == ("a1",) and result.mixed_factors == ("a1",)
     words = saved_words(result)
     assert "Some channels have different units in different recordings: a1." in words
-    assert "Some channels mix scale factors: a1." in words
-    assert "older tools such as mef_tools read these channels as zeros" in words
+    assert "different amplitude settings in different recordings: a1." in words
+    assert "show these channels as all zeros" in words
     plain, _ = window_request(tmp_path / "p", tmp_path / "p" / "y.mefd")
     clean = j.make_joined(plain)
     assert clean.ok and not clean.mixed_units and not clean.mixed_factors
