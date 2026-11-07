@@ -6,14 +6,18 @@
 [![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
 
-**0.1.4** is the latest release (0.1.0 was the first full release). The app is
+**0.1.5** is the latest release (0.1.0 was the first full release). **If you
+made a recording with Join or trim in 0.1.4 and chose a time window for a
+recording whose saved times were wrong, please make it again with 0.1.5**:
+0.1.4 could leave out that recording's chosen part without saying so (see the
+[release notes](docs/release-notes/0.1.5.md)). The app is
 still early, so expect rough edges and tell us about them. It can explore recordings, make anonymized
 copies, keep part of a recording or join parts of several into one, show
 their signals in a viewer (where you can also add notes and events), rename
 recordings safely, change their details into a new copy, give new copies
 passwords, and make new recordings from many at once with a saved choice of
 channels. See [Project status](#project-status) and the
-[release notes](docs/release-notes/0.1.4.md).
+[release notes](docs/release-notes/0.1.5.md).
 
 ## Getting the app
 

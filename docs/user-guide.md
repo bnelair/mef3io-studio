@@ -1,6 +1,6 @@
 # User guide
 
-This guide describes the app as of version **0.1.4**. It has three pages:
+This guide describes the app as of version **0.1.5**. It has three pages:
 **Explore** (see what is in your recordings), **Anonymize** (make
 anonymized copies of them) and **Join or trim** (keep part of a recording,
 or join parts of several into one). From Explore you can also rename
@@ -826,14 +826,24 @@ recordings chosen.
    that when the result is one file; the message says how much), that each kept part holds signal, that no two parts share a
    channel at the same time, that the channels have the same sampling rate
    in every recording, that the recordings are of the same patient (their
-   patient details match), the passwords, and that the name is free. While
+   patient details match), the passwords, and that the name is free. This
+   check uses what Explore already found out about each recording, so it
+   does not read the recordings through again; if a recording has changed
+   since Explore looked at it (for example it has grown), the page says so
+   and checks again with the new times. While
    the check runs, the choices cannot be changed; if something changes
    anyway (for example you switch to another page, which clears typed
    passwords), nothing is started and you choose Check and save again.
    Anything that stops it is listed in plain words on the New recording
    step. Then the new recording is made, with one progress bar for all of it
    and a **Stop** button, and it is **checked against the originals** before
-   it gets its name. At the end, **Open it in Explore** shows it there.
+   it gets its name. If some channels have different units, or different
+   amplitude settings, in different recordings, the result says so and names
+   them (a channel with different units is labelled with the units of its
+   first part and nothing is rescaled; with different amplitude settings the
+   values are right in Studio, but some older programs, for example the
+   mef_tools Python package, show those channels as all zeros). At the end,
+   **Open it in Explore** shows it there.
 
 **One pass, straight from the originals.** However many recordings you
 join, the new recording is made in a single go from the originals: the kept

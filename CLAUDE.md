@@ -382,13 +382,13 @@ Code (app shell, #2/#3):
   is a plain transform copy). Run (`make_joined`, ONE helper process for
   the whole run, one progress bar via `JoinProgress.overall`; kinds `trim`
   | `join` | `pack` | `check`): ONE mef3io call FROM THE ORIGINALS (since
-  mef3io 2.2.0 / app 0.1.4; NO temporary copy of a part exists, so no
+  mef3io 2.2.0 / app 0.1.4, on 2.3.0 / app 0.1.5 the windowed-join data-loss fix; NO temporary copy of a part exists, so no
   throw-away passwords): several -> `merge_sessions(sources in time order,
   dst, passwords, exclude_channels, time_ranges=[None | span.time_range],
   exact=True, anonymize={shift_us, pseudonym, clear, text} | None,
   records="keep"|"drop", output_password, n_threads=0, progress, cancel)`
   (`_merge_arguments` is shared by run and check, so the check is the run's
-  own); a merge takes the left-out list OVER ALL sources (a channel only some
+  own); 0.1.5 FAST CHECK: check and run take Explore's cached facts (start/end, channels, size) instead of reopening; `model/join.facts_still_true` compares a cheap staleness signature (a few files) and `without_facts` re-reads once if a recording changed (page says so, checks again); the Channels step is always shown (viewer "Send to Join or trim" preselects visible channels, hide-all = none ticked + notice); merge `MixedUnitsWarning`/`MixedFactorsWarning` become plain result notices (`_warned_channels`), `units.mixed` shows in Explore's checks; a merge takes the left-out list OVER ALL sources (a channel only some
   have is fine; one none has is refused), so the app no longer filters it per
   source; ONE recording (merge needs two) -> `transform_session` (via
   `changes.transform_copy`, `ChangeRequest.records`) or, anonymous,
