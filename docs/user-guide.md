@@ -714,8 +714,13 @@ recordings chosen.
    recording that cannot be used says why: for example, a password-protected
    recording opened only with its basic password (open it again in Explore
    with the full-access password).
-2. **Channels.** Every channel of every chosen recording is kept unless you
-   leave it out (the same channel list as on the Anonymize page). The new
+2. **Channels.** This step is always shown, so you pick exactly the channels you
+   want. Every channel of every chosen recording is kept unless you leave it
+   out (the same channel list as on the Anonymize page). **To keep only a
+   few:** choose **Exclude all**, then tick the channels you want (the filter
+   helps to find them). Coming from the signal viewer, the channels you could
+   see there start as kept and the others as left out; if you hid every
+   channel, none is ticked yet and you tick the ones you want. The new
    recording holds every channel you keep, from all the recordings. This is
    the same for an anonymous recording: a channel you leave out is left out
    of every recording that has it, and the recordings do not need to have the
@@ -1003,7 +1008,9 @@ offers:
 - **Copy times** puts the start and end on the clipboard;
 - **Add to list** and **Show the list…** keep several ranges, which you can
   save as a CSV or JSON file (they hold real dates, so store them with care);
-- **Send to Join or trim** opens the Join or trim page with this range;
+- **Send to Join or trim** opens the Join or trim page with this range. It stops at the **Channels** step, with only the channels you could
+  see in the viewer kept (the ones you hid are left out, and if you hid all of
+  them none is ticked yet); change the choice there if you like;
 - **Clear the range**.
 
 ### Add notes and events (edit mode)

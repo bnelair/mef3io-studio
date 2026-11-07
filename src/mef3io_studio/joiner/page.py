@@ -122,6 +122,8 @@ REFRESH_DELAY_MS = 150
 STEPS = ("Recordings", "Channels", "What to keep", "Privacy", "New recording", "Save")
 STEP_RECORDINGS, STEP_CHANNELS, STEP_KEEP, STEP_PRIVACY, STEP_NEW, STEP_RUN = range(len(STEPS))
 
+RECORDING_CHANGED = "This recording has changed since it was opened; the times were updated."
+
 #: The "Keep" choices, in the order the list shows them.
 KEEP_LABELS = (
     (KEEP_WHOLE, "The whole recording"),
@@ -797,8 +799,23 @@ class KeepStep(QWidget):
                 r.entry.details.start,
                 r.entry.details.end,
                 tuple(c.name for c in r.entry.details.channels),
+                r.entry.outcome.size_bytes,
+                r.entry.outcome.stamp,
             )
             for r in self.rows
+        }
+
+    def known_layouts(self) -> dict:
+        """What Explore knows of the chosen recordings, to hand to the check
+        and the run so they do not open them again. Left out: a recording
+        whose times Explore could not confirm (the full-access password was
+        not given): the check opens that one and says so."""
+        layouts = self.layouts()
+        return {
+            r.entry.key: layouts[r.entry.key]
+            for r in self.rows
+            if not r.entry.details.offset_assumed_zero
+            and None not in (r.entry.details.start, r.entry.details.end)
         }
 
     def recompute(self, *_args) -> None:
@@ -1634,6 +1651,7 @@ class JoinerPage(QWidget):
             anonymous=self.privacy.choice(),
             one_file=self.new.one_file,
             records=self.privacy.records(),
+            layouts=self.keep.known_layouts(),
         )
 
     def _names(self) -> dict[str, str]:
@@ -1665,6 +1683,9 @@ class JoinerPage(QWidget):
             )
             return None
         self.new.set_findings([])
+        return self._check_then_start(request)
+
+    def _check_then_start(self, request: JoinRequest):
         handle = self.jobs.submit("Checking before joining", check_join, request)
         self.check_handle = handle
         generation = self._generation
@@ -1682,6 +1703,15 @@ class JoinerPage(QWidget):
                     "The choices changed during the check, so nothing was started. Choose "
                     "Check and save again."
                 )
+                return
+            if request.layouts and not join_model.facts_still_true(request):
+                # A recording was touched since Explore read it: what the
+                # check used may be out of date, so check again, opening
+                # every recording afresh (times and sizes are recomputed
+                # from what is there now). An unchanged check is not repeated.
+                self.check_handle = None
+                self.status.emit(RECORDING_CHANGED)
+                self._check_then_start(join_model.without_facts(request))
                 return
             if findings:
                 self.new.set_findings(findings, self._names())
@@ -1782,17 +1812,18 @@ class JoinerPage(QWidget):
             self.next()
         return True
 
-    def choose_window(self, keys, start: int, end: int) -> bool:
+    def choose_window(self, keys, start: int, end: int, hidden=()) -> bool:
         """Start over with exactly these recordings and keep ``[start, end)``
         of each (the signal viewer's "Send to Join or trim"), stopping at the
-        "What to keep" step so the window can be checked. The page works in
-        whole seconds: the start is rounded down and the end up, so the part
-        asked for is always inside what is kept. False when it could not."""
+        "Channels" step so the person sees which channels are kept: the ones
+        ``hidden`` in the viewer are left out there (and can be changed). The
+        part to keep is set on the "What to keep" step behind it. The page
+        works in whole seconds: the start is rounded down and the end up, so
+        the part asked for is always inside what is kept. False when it
+        could not."""
         if not self.choose(keys) or self.step != STEP_CHANNELS:
             return False
-        self.next()  # the channels step has nothing to decide here
-        if self.step != STEP_KEEP:
-            return False
+        self._leave_out_hidden(hidden)
         end_up = -(-end // SECOND_US) * SECOND_US
         for row in self.keep.all_rows:
             row.set_how(KEEP_BETWEEN)
@@ -1814,6 +1845,35 @@ class JoinerPage(QWidget):
         self.keep.viewer_note.setVisible(True)
         self.status.emit(text)
         return True
+
+    def _leave_out_hidden(self, hidden) -> None:
+        """Leave out the channels hidden in the viewer (only those this
+        selection has), and say so on the picker. If every channel was
+        hidden none is kept yet and the picker says so (Next waits until
+        one is ticked)."""
+        selection = self.selection
+        names = [n for n in dict.fromkeys(hidden) if n in selection.rows]
+        if not names:
+            return
+        selection.set_kept(names, False)
+        selection.clear_history()
+        if len(names) >= selection.total:
+            self.picker.set_selection(
+                selection,
+                len(self.keep.all_rows),
+                "No channel was shown in the viewer, so none is ticked yet: tick the "
+                "channels you want.",
+            )
+            self._update_buttons()
+            return
+        self.picker.set_selection(
+            selection,
+            len(self.keep.all_rows),
+            f"From the viewer: the {format_count(len(names), 'channel')} hidden there "
+            f"{'is' if len(names) == 1 else 'are'} left out. Change it here if you like; "
+            'to keep only a few channels, choose "Exclude all" and tick the ones to keep.',
+        )
+        self._update_buttons()
 
     def restart(self) -> None:
         self.request = None

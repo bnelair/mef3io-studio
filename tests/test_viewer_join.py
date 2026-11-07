@@ -10,7 +10,7 @@ from explorer_sessions import metadata
 from test_anonymizer_ui import open_in_explorer
 from test_viewer_ui import settle
 
-from mef3io_studio.joiner.page import STEP_KEEP, STEP_RECORDINGS
+from mef3io_studio.joiner.page import STEP_CHANNELS, STEP_KEEP, STEP_RECORDINGS
 from mef3io_studio.model.join import KEEP_BETWEEN
 
 T0 = 946_684_800_000_000
@@ -46,9 +46,17 @@ def test_send_to_join_or_trim_prefills_the_joiner(window, qtbot, tmp_path):
     win = open_viewer(window, qtbot)
     win.set_export_edge("start", T0 + HOUR + 30)  # 30 microseconds into the hour
     win.set_export_edge("end", T0 + 3 * HOUR + 1800 * 1_000_000)
+    win.hide_channel("a2")  # only a1 is wanted
     win.send_action.trigger()
     joiner = window.joiner
-    assert window.pages.currentWidget() is joiner and joiner.step == STEP_KEEP
+    # It stops at Channels, with the hidden channel already left out.
+    assert window.pages.currentWidget() is joiner and joiner.step == STEP_CHANNELS
+    assert joiner.selection.excluded == ("a2",)
+    assert not joiner.picker.notice_label.isHidden()
+    assert "hidden there" in joiner.picker.notice_label.text()
+    assert joiner.make_request().exclude_channels == ("a2",)
+    joiner.next()
+    assert joiner.step == STEP_KEEP
     rows = joiner.keep.rows
     assert [r.entry.name for r in rows] == ["A", "B"]
     assert all(r.how.currentData() == KEEP_BETWEEN for r in rows)
@@ -95,6 +103,8 @@ def test_a_recording_ending_mid_second_is_kept_to_its_end(window, qtbot, tmp_pat
     window.module_list.setCurrentRow(window.module_keys.index("joiner"))
     page = window.joiner
     assert page.choose_window([entry.key], T0 + 10 * 1_000_000 + 500, end)
+    assert page.step == STEP_CHANNELS and page.selection.excluded == ()
+    page.next()
     row = page.keep.rows[0]
     assert row.keep().end_us >= end  # never floored below the requested end
     assert row.keep().start_us <= T0 + 10 * 1_000_000 + 500
@@ -126,3 +136,26 @@ def test_hiding_in_explore_reaches_an_open_viewer_at_once(window, qtbot, tmp_pat
     assert "Case" not in win.windowTitle()
     win.close()
     qtbot.waitUntil(lambda: not window.viewers, timeout=5000)
+
+
+def test_viewer_hiding_everything_or_nothing_leaves_none_ticked_or_nothing_out(
+    window, qtbot, tmp_path
+):
+    window._closing = True
+    window.show()
+    a = write(tmp_path / "A.mefd", T0)
+    open_in_explorer(qtbot, window, [a])
+    qtbot.waitUntil(lambda: all(not e.busy for e in window.explorer.entries()), timeout=60_000)
+    entry = window.explorer.entries()[0]
+    window.module_list.setCurrentRow(window.module_keys.index("joiner"))
+    page = window.joiner
+    # a name the recording does not have, or every channel: nothing is left out
+    assert page.choose_window([entry.key], T0, T0 + HOUR, ("zz",))
+    assert page.selection.excluded == ()
+    # every channel hidden: none is ticked yet, with a notice, Next waits
+    assert page.choose_window([entry.key], T0, T0 + HOUR, ("a1", "a2"))
+    assert page.selection.kept == frozenset()
+    assert "No channel was shown in the viewer" in page.picker.notice_label.text()
+    assert not page.next_button.isEnabled()
+    page.picker.click("a2", True)
+    assert page.next_button.isEnabled()

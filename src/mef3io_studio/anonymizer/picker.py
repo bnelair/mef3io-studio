@@ -189,10 +189,12 @@ class ChannelPicker(QWidget):
         self._anchor: str | None = None
 
         intro = QLabel(
-            "Every channel goes into the copies unless you leave it out. Click a box to "
-            "leave a channel out; Shift+click to do the same for every channel between it "
-            "and the one you clicked before. Ctrl+click (Cmd+click on a Mac) highlights "
-            "channels; Space then ticks or unticks the highlighted ones.",
+            "A ticked box means the channel is kept; every channel is kept unless you "
+            "leave it out. Click a box to leave a channel out; Shift+click to do the same "
+            "for every channel between it and the one you clicked before. Ctrl+click "
+            "(Cmd+click on a Mac) highlights channels; Space then ticks or unticks the "
+            'highlighted ones. To keep only a few channels: choose "Exclude all", then '
+            "tick the channels you want to keep (the filter helps to find them).",
             self,
         )
         intro.setObjectName("Muted")
@@ -210,6 +212,7 @@ class ChannelPicker(QWidget):
         self.keep_all = QPushButton("Keep all", self)
         self.keep_all.clicked.connect(lambda: self._do(lambda s: s.keep_all()))
         self.exclude_all = QPushButton("Exclude all", self)
+        self.exclude_all.setToolTip("Leave every channel out. Then tick the ones you want to keep.")
         self.exclude_all.clicked.connect(lambda: self._do(lambda s: s.exclude_all()))
         self.invert = QPushButton("Swap kept and left out", self)
         self.invert.clicked.connect(lambda: self._do(lambda s: s.invert()))
