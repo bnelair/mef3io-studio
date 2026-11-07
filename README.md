@@ -473,7 +473,7 @@ point to a commit on `main`.
 ## Project status
 
 mef3io-studio is an **early** app: **0.1.0 is the first full release**, built
-on mef3io 2.2.0. It has the installers; **Explore**; **Anonymize**;
+on mef3io 2.3.0. It has the installers; **Explore**; **Anonymize**;
 **Join or trim** and **Cut into pieces**; the **signal viewer** with its optional edit mode for adding
 notes and events; **rename** in time order with undo; **edit details** into a
 new copy; **passwords** on every new copy; and **Make new recordings** with

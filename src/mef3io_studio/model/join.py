@@ -582,6 +582,23 @@ class JoinResult:
     #: there were in what was kept (mef3io's ``records_dropped``).
     notes_left_out: bool = False
     records_dropped: int = 0
+    #: Channels whose pieces use different units / different scale factors
+    #: (mef3io's ``MixedUnitsWarning`` / ``MixedFactorsWarning``); the saved
+    #: recording is correct, the result screen only tells the person.
+    mixed_units: tuple[str, ...] = ()
+    mixed_factors: tuple[str, ...] = ()
+
+
+def _warned_channels(caught: list, name: str) -> tuple[str, ...]:
+    """Channel names listed by the caught mef3io warnings of class ``name``
+    (``MefWarning.details``), in order, without repeats."""
+    seen: dict[str, None] = {}
+    for w in caught:
+        if type(w.message).__name__ != name:
+            continue
+        for item in getattr(w.message, "details", ()) or ():
+            seen.setdefault(str(item), None)
+    return tuple(seen)
 
 
 @dataclass(frozen=True)
@@ -1078,7 +1095,7 @@ def make_joined(
     cancel.raise_if_cancelled()
     anonymous, one_file = request.anonymous is not None, request.one_file
     try:
-        with stopped_by_library(), library_warnings_caught():
+        with stopped_by_library(), library_warnings_caught() as caught:
             layouts, findings = read_layouts(request, cancel)
             if findings:
                 return JoinResult(request.destination, message=findings[0].message)
@@ -1131,6 +1148,8 @@ def make_joined(
         one_file=one_file,
         notes_left_out=request.records == RECORDS_DROP,
         records_dropped=int(getattr(report, "records_dropped", 0) or 0),
+        mixed_units=_warned_channels(caught, "MixedUnitsWarning"),
+        mixed_factors=_warned_channels(caught, "MixedFactorsWarning"),
     )
 
 

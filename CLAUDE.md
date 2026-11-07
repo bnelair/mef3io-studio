@@ -4,7 +4,7 @@ Desktop app (PySide6) for exploring, organizing, protecting and anonymizing
 MEF 3.0 recordings, built
 on the mef3io library (github.com/bnelair/mef3io). Status: early development;
 0.1.0 = first full release (after dev1-dev6; dev5 Join or trim #31, dev6 signal
-viewer + edit mode, additions only), on mef3io 2.2.0: Rename window (#12,
+viewer + edit mode, additions only), on mef3io 2.3.0: Rename window (#12,
 undo until close), Edit details copy (#14), shared password choice (#15),
 "Make new recordings" with saved channel choices (#16). Still to come:
 metadata edit in place, change/remove stored notes. Cutting into pieces is built
@@ -484,7 +484,7 @@ Code (app shell, #2/#3):
   elsewhere" warning via `password_interop_issue`); output blocks are never
   password-protected (MEF design), the text says passwords do not hide the
   signal. NOT built: editing in place (needs mef3io `edit_metadata`, absent in
-  2.2.0) - no placeholder UI. History word for op 8: "copied with changes".
+  2.3.0) - no placeholder UI. History word for op 8: "copied with changes".
 - Make new recordings (#16): ONE window for the same changes in many
   recordings (`makenew/dialog.py` `MakeNewDialog`, Explore button + list menu
   "Make new recordings…", steps recordings -> channels -> details ->

@@ -300,3 +300,31 @@ def test_a_refusal_names_the_recording_not_a_shorter_path_inside_it():
     assert j._named_source(Refusal(), request) == folder
     Refusal.message = "the whole run"
     assert j._named_source(Refusal(), request) is None
+
+
+def _scaled(path: Path, start: int, units: str, scale: float) -> Path:
+    values = scale * (np.arange(int(600 * FS)) / FS)
+    with mef3io.Writer(str(path), overwrite=True, metadata=metadata(), units=units) as w:
+        w.write("a1", values, start, FS)
+    return path
+
+
+def test_mixed_units_and_factors_are_told_in_plain_words(tmp_path):
+    """mef3io 2.3 turns mixed units into a warning (no refusal) and warns about
+    channels older tools read as zeros: the result screen says both, in
+    everyday words, naming the channels; a plain join says nothing extra."""
+    from mef3io_studio.joiner.page import saved_words
+
+    a = _scaled(tmp_path / "A.mefd", T0, "uV", 1.0)
+    b = _scaled(tmp_path / "B.mefd", T0 + HOUR, "mV", 1000.7)
+    sources = [j.JoinSource(str(p), str(p), j.Keep(j.KEEP_WHOLE)) for p in (a, b)]
+    result = j.make_joined(j.new_request(sources, str(tmp_path / "o.mefd")))
+    assert result.ok and result.mixed_units == ("a1",) and result.mixed_factors == ("a1",)
+    words = saved_words(result)
+    assert "Some channels have different units in different recordings: a1." in words
+    assert "different amplitude settings in different recordings: a1." in words
+    assert "show these channels as all zeros" in words
+    plain, _ = window_request(tmp_path / "p", tmp_path / "p" / "y.mefd")
+    clean = j.make_joined(plain)
+    assert clean.ok and not clean.mixed_units and not clean.mixed_factors
+    assert "units" not in saved_words(clean) and "scale factors" not in saved_words(clean)
