@@ -1256,8 +1256,34 @@ def saved_words(result: JoinResult) -> str:
         how += " It was saved as one file, which this app opens directly."
     return (
         f"The new recording was saved with {kept} and checked against the originals, "
-        f"which were not changed.{how}"
+        f"which were not changed.{how}{mixed_words(result)}"
     )
+
+
+def _channel_list(names: tuple[str, ...], limit: int = 6) -> str:
+    shown = ", ".join(names[:limit])
+    more = len(names) - limit
+    return shown + (f" and {more} more" if more > 0 else "")
+
+
+def mixed_words(result: JoinResult) -> str:
+    """Plain words for channels that mix units or scale factors (nothing is
+    wrong with the recording; the person should know)."""
+    out = ""
+    if result.mixed_units:
+        out += (
+            " Some channels have different units in different recordings: "
+            f"{_channel_list(result.mixed_units)}. Nothing was changed or rescaled, and the "
+            "whole channel is labelled with the units of its first part. Check that the "
+            "recordings really use the units you expect."
+        )
+    if result.mixed_factors:
+        out += (
+            " Some channels mix scale factors: "
+            f"{_channel_list(result.mixed_factors)}. The values are correct in this app, but "
+            "older tools such as mef_tools read these channels as zeros."
+        )
+    return out
 
 
 class RunStep(QWidget):
