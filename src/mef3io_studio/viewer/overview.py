@@ -130,12 +130,13 @@ class OverviewBand(TimelineNav):
                 y0 = mid - float(np.clip(hi[x] / scale, -1, 1)) * half
                 y1 = mid - float(np.clip(lo[x] / scale, -1, 1)) * half
                 p.drawLine(QPointF(x + 0.5, y0), QPointF(x + 0.5, max(y1, y0 + 1)))
+            # the name on a small chip, so it stays legible over the signal
+            chip = QRectF(3, lane.top() + 2, p.fontMetrics().horizontalAdvance(ch) + 6, 11)
+            fill = QColor(pal.background)
+            fill.setAlpha(220)
+            p.fillRect(chip, fill)
             p.setPen(QColor(pal.muted))
-            p.drawText(
-                lane.adjusted(4, 1, 0, 0),
-                int(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft),
-                ch,
-            )
+            p.drawText(chip, int(Qt.AlignmentFlag.AlignCenter), ch)
         # the page marker, continued from the strip below (same three lines)
         x0, x1 = self.x_of(self.page[0]), self.x_of(self.page[1])
         x1 = max(x1, x0 + 4.0)
