@@ -558,3 +558,12 @@ Code (app shell, #2/#3):
   OWN stretches (the Explorer's are merged across gaps under 1.5 sample
   periods, and a piece inside such a gap would be refused by mef3io). A day's
   midnight that does not exist (clock jumps at 00:00) is the jump instant.
+
+Overview band (viewer, `viewer/overview.py`): min/max of the whole recording
+above the strip, from `block_envelope` (index only; units already scaled per
+segment). ONE multi-channel call per request for uncached channels only, on
+the viewer's open reader (never a second open: pinned by
+`tests/test_viewer_overview.py`), in the controller's background pool; cache
+`controller.overview` for the open recording. Default = first shown channel,
+max 4 lanes, each scaled to its own range; hidden channels leave the band.
+Click/drag shared with the strip via `strip.TimelineNav`.

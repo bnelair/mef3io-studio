@@ -62,6 +62,7 @@ from .filters import FilterPanel, ResponseDialog
 from .keymap import KEYMAP, NAVIGATION_ACTIONS, TIMEBASE_ACTIONS, HelpOverlay, entry_for
 from .marks import Chip, ChipsRow, TypesPanel
 from .montage_bar import ChannelChooser, MontageBar
+from .overview import MAX_LANES, OverviewBand
 from .recordings import Banner, RecordingBand
 from .side_panel import SidePanel
 from .strip import OverviewStrip
@@ -187,7 +188,7 @@ class ViewerWindow(QMainWindow):
         self.controller.pieces_changed.connect(self._apply_pieces)
         self.controller.loading_changed.connect(lambda on: self.canvas.set_loading(on))
         self.controller.failed.connect(self._failed)
-        self.controller.strip_envelope.connect(lambda env: self.strip.set_envelope(env))
+        self.controller.overview_changed.connect(self._overview_data)
         self.setWindowFlag(Qt.WindowType.Window, True)
         em = self.fontMetrics().height()
         self.resize(em * 80, em * 44)
@@ -198,6 +199,11 @@ class ViewerWindow(QMainWindow):
         self.canvas.zone = zone
         self.strip = OverviewStrip(palette, self)
         self.strip.zone = zone
+        self.overview_band = OverviewBand(palette, self)
+        #: The channels the user picked for the band (None = the default: the
+        #: first channel shown) and whether the band is on.
+        self.overview_pick: list[str] | None = None
+        self.overview_on = True
         self.band = self.band_slot = RecordingBand(
             palette, self._rec_colour, self._rec_letter, self.recording_label, self
         )
@@ -219,7 +225,7 @@ class ViewerWindow(QMainWindow):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(0)
         box.addWidget(self.edit.banner)
-        for w in (self.strip, self.band_slot, self.chips_slot):
+        for w in (self.overview_band, self.strip, self.band_slot, self.chips_slot):
             box.addWidget(w)
         box.addWidget(self.canvas, 1)
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -241,6 +247,8 @@ class ViewerWindow(QMainWindow):
         self._apply_profile()
         self.strip.colour_of = self._rec_colour
         self.strip.set_timeline(data.timeline_start, data.timeline_end, self._coverage)
+        self.overview_band.set_timeline(data.timeline_start, data.timeline_end)
+        self._sync_overview()
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(120)
@@ -357,6 +365,15 @@ class ViewerWindow(QMainWindow):
         self.channels_button = tool(
             "Channels", "Choose the channels to show (C)", self.toggle_channels
         )
+        self.overview_button = tool(
+            "Overview",
+            "Choose which channels the overview above the timeline shows",
+            lambda: self.overview_button.showMenu(),
+        )
+        self.overview_menu = QMenu(self.overview_button)
+        self.overview_menu.aboutToShow.connect(self._fill_overview_menu)
+        self.overview_button.setMenu(self.overview_menu)
+        self.overview_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.spacing_box = self._steps_box(vv.SPACING_STEPS, "{:g} mm", "Distance between rows")
         self.sens_box = self._steps_box(vv.SENS_STEPS, "{:g} µV/mm", "Sensitivity")
         self.auto_button = tool(
@@ -371,6 +388,7 @@ class ViewerWindow(QMainWindow):
         self.types_button = tool("Types", "Types of notes and events (T)", lambda: press("types"))
         row2.addWidget(self.montage_bar)
         row2.addWidget(self.channels_button)
+        row2.addWidget(self.overview_button)
         for label, w in (("Spacing", self.spacing_box), ("Sensitivity", self.sens_box)):
             row2.addWidget(QLabel(label, self))
             row2.addWidget(w)
@@ -435,6 +453,7 @@ class ViewerWindow(QMainWindow):
         self.range_dialog.chosen.connect(self._choose_range)
         self.annotations_ready.connect(self._on_annotations)
         self.strip.navigate.connect(self.centre_at)
+        self.overview_band.navigate.connect(self.centre_at)
         self.montage_bar.changed.connect(self._montage_chosen)
         self.channel_chooser.hidden_changed.connect(lambda h: self.set_hidden(h))
         self.spacing_box.activated.connect(lambda i: self._box_chose("spacing", self.spacing_box))
@@ -645,6 +664,7 @@ class ViewerWindow(QMainWindow):
         hidden = frozenset(hidden)
         self.channel_chooser.set_channels(self._channels, hidden)
         self.set_state(hidden=hidden, row_offset=0)
+        self._sync_overview()
 
     def _lead_members(self, channel: str) -> set[str]:
         lead = montage.lead_and_contact(channel)[0]
@@ -804,6 +824,7 @@ class ViewerWindow(QMainWindow):
         self.canvas.set_view(t0, t0 + length, s.sensitivity, s.spacing, offset)
         self.canvas.multi = self.multi
         self.strip.set_page(t0, t0 + length)
+        self.overview_band.set_page(t0, t0 + length)
         self._update_recordings_view(t0, t0 + length)
         self._update_marks_view()
         self._set_rows_loading(rows)
@@ -935,6 +956,7 @@ class ViewerWindow(QMainWindow):
         if palette is not self.canvas.palette_:
             self.canvas.set_palette(palette)
             self.strip.set_palette(palette)
+            self.overview_band.set_palette(palette)
             self._recolour()
 
     # -- pointer and status ----------
@@ -1642,10 +1664,61 @@ class ViewerWindow(QMainWindow):
     def row_labels(self) -> list[str]:
         return [r.label for r in self.canvas.rows]
 
-    def request_strip_envelope(self) -> None:
-        """Draw a faint envelope of the first channel in the strip (index only)."""
-        if self._channels and not self.edit.saving:
-            self.controller.request_strip_envelope(self._channels[0])
+    # -- the overview band ----------
+
+    def overview_channels(self) -> list[str]:
+        """The channels in the band: the user's picks that are still shown,
+        else (the default) the first channel shown. Never more than
+        ``MAX_LANES``."""
+        shown = [c for c in self._channels if c not in self.state.hidden]
+        picked = [c for c in (self.overview_pick or []) if c in shown]
+        return (picked or shown[:1])[:MAX_LANES]
+
+    def _sync_overview(self) -> None:
+        """Show the band for the right channels and ask for the missing ones
+        (once each; the controller keeps them for this recording)."""
+        chans = self.overview_channels() if self.overview_on and not self._closed else []
+        self.overview_band.setVisible(bool(chans))
+        self.overview_band.set_channels(chans)
+        self._overview_data()
+        if chans and not self.edit.saving:
+            self.controller.request_overview(chans)
+
+    def _overview_data(self) -> None:
+        self.overview_band.set_data(self.controller.overview, self.controller.overview_failed)
+
+    def _fill_overview_menu(self) -> None:
+        menu = self.overview_menu
+        menu.clear()
+        on = menu.addAction("Show the overview")
+        on.setCheckable(True)
+        on.setChecked(self.overview_on)
+        on.toggled.connect(self.set_overview_on)
+        menu.addSeparator()
+        chosen = set(self.overview_channels())
+        for ch in self._channels:
+            if ch in self.state.hidden:
+                continue
+            act = menu.addAction(ch)
+            act.setCheckable(True)
+            act.setChecked(ch in chosen)
+            act.setEnabled(self.overview_on and (ch in chosen or len(chosen) < MAX_LANES))
+            act.toggled.connect(lambda checked, c=ch: self.pick_overview_channel(c, checked))
+        note = menu.addAction(f"Up to {MAX_LANES} channels, each scaled to its own size")
+        note.setEnabled(False)
+
+    def set_overview_on(self, on: bool) -> None:
+        self.overview_on = bool(on)
+        self._sync_overview()
+
+    def pick_overview_channel(self, channel: str, on: bool) -> None:
+        chosen = self.overview_channels()
+        if on and channel not in chosen:
+            chosen.append(channel)
+        elif not on and channel in chosen:
+            chosen.remove(channel)
+        self.overview_pick = chosen
+        self._sync_overview()
 
     def changeEvent(self, event) -> None:  # noqa: N802
         super().changeEvent(event)

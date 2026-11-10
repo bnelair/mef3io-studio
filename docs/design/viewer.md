@@ -93,7 +93,16 @@ From top to bottom, as in the clinical viewer:
 2. **Toolbar row 2:** Montage, Channels (C), Spacing, Sensitivity + Auto,
    Timebase, Filters (summary text, opens the filter panel), Colour profile,
    Types (T).
-3. **Overview strip (32 px):** the whole timeline.
+3. **Overview band (above the strip, 22 px per channel, up to 4):** the
+   whole recording's min/max per pixel column for the chosen shown channels
+   (default: the first shown), each lane scaled to its own 99th-percentile
+   range; gaps empty; the page frame continues from the strip over the band;
+   click/drag shares `TimelineNav` with the strip. One multi-channel
+   `block_envelope` call per request, only for channels not cached, on the
+   viewer's own reader (no second open), background thread, cache for the
+   open recording (4096 columns per channel, reduced to the width when
+   drawn). Code: `viewer/overview.py`, `ViewController.request_overview`.
+3a. **Overview strip (32 px):** the whole timeline.
    - Data drawn per recording in that recording's colour, with gaps
      hatched.
    - The current page drawn as a box.

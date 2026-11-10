@@ -358,6 +358,11 @@ class ViewerData:
         """Min/max per block from the block index alone (never the samples)."""
         return self._combined.block_envelope(channel, int(t0), int(t1))
 
+    def envelopes(self, channels: Sequence[str], t0: int, t1: int) -> dict:
+        """Several channels at once: ONE call on the open reader (each index
+        read once, concurrently); a dict keyed by channel name."""
+        return self._combined.block_envelope(list(channels), int(t0), int(t1))
+
     # -- annotations -----------------------------------------------------------------------
 
     @property
