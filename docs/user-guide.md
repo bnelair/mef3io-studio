@@ -933,6 +933,21 @@ channels, Ctrl+wheel zooms the timebase at the pointer, dragging pans, and
 a double-click puts that moment in the middle of the page. A right-click
 offers more choices for the channel or moment under the pointer.
 
+**The overview.** Above the coloured timeline bar there is a band that shows
+the whole recording at a glance: for each stretch, the lowest and the
+highest value of a channel. It is there to help you find your way in time
+before a page has loaded. The frame that marks the page you are looking at
+reaches from the timeline bar up over the band, and a click or a drag on the
+band takes you there exactly as on the bar. Where the recording has a gap,
+the band stays empty. It is read in the background without loading the
+signals (it can take a moment on a big recording on a network drive; the band
+says "Loading the overview" meanwhile), and a channel already shown comes
+back at once. The **Overview** button in the second toolbar row chooses the
+channels in the band: by default the first channel that is shown, and up to
+four, each drawn in its own row and scaled to its own size (so rows are not
+comparable with each other). A channel you hide leaves the band. The same
+menu turns the band off.
+
 **Jump** (Ctrl+K) understands a time of day (`14:30`), a day and time (`day
 2 08:00`), a date and time (`2000-01-31 14:30`), a move from the page you
 are on (`+10m`, `-90s`, `+2h`), and a recording letter (`B`, the start of that
