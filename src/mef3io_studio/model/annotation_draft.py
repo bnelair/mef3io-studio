@@ -230,6 +230,8 @@ class Draft:
         self._undo: list[_Snapshot] = []
         self._redo: list[_Snapshot] = []
         self._next = 1
+        #: Bumped by every change (a view of the draft is rebuilt only when it moved).
+        self.version = 0
         #: Gives the keys (:func:`mark_key`) of the notes already stored; set by
         #: the window. None = nothing is stored (as in a test).
         self.stored_keys: Callable[[], Collection[tuple]] | None = None
@@ -246,6 +248,7 @@ class Draft:
         self._removed = set(snap.removed)
 
     def _push(self) -> None:
+        self.version += 1
         self._undo.append(self._snap())
         self._redo.clear()
 
@@ -264,6 +267,7 @@ class Draft:
     def undo(self) -> bool:
         if not self._undo:
             return False
+        self.version += 1
         self._redo.append(self._snap())
         self._restore(self._undo.pop())
         return True
@@ -271,6 +275,7 @@ class Draft:
     def redo(self) -> bool:
         if not self._redo:
             return False
+        self.version += 1
         self._undo.append(self._snap())
         self._restore(self._redo.pop())
         return True
@@ -278,6 +283,7 @@ class Draft:
     def written(self, uids: Iterable[int]) -> None:
         """These items were saved: they leave the draft, and so does the
         undo history (a saved addition cannot be undone in place)."""
+        self.version += 1
         for uid in set(uids):
             self._items.pop(uid, None)
         self._undo.clear()
@@ -285,6 +291,7 @@ class Draft:
 
     def clear(self) -> None:
         """Forget everything (after a discard)."""
+        self.version += 1
         self._items.clear()
         self._removed.clear()
         self._undo.clear()

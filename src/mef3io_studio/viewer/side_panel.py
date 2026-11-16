@@ -198,6 +198,9 @@ class NotesTab(QWidget):
         for row, m in enumerate(self.rows):
             if mark is not None and m == mark and m.state == mark.state and m.uid == mark.uid:
                 self.table.selectRow(row)
+                item = self.table.item(row, 0)
+                if item is not None:  # a note just added is brought into view
+                    self.table.scrollToItem(item)
                 return
 
     def selected_type(self) -> str | None:

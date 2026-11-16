@@ -17,7 +17,6 @@ thread of their own and arrive by a signal.
 from __future__ import annotations
 
 import bisect
-import dataclasses
 import json
 import os
 import threading
@@ -52,6 +51,7 @@ from PySide6.QtWidgets import (
 from ..common.theme import LIGHT, Theme
 from ..model import dsp, montage, timefmt
 from ..model import viewer_colours as vc
+from ..model import viewer_display as vd
 from ..model import viewer_marks as vm
 from ..model import viewer_view as vv
 from ..model.viewer_view import ViewState
@@ -253,6 +253,10 @@ class ViewerWindow(QMainWindow):
         self._list_runner.done.connect(self._list_ready)
         self._fill_runner = SlicedRunner(self)
         self._max_span = 0
+        self._stored: vd.Stored | None = None
+        self._stored_for = None  # the marks _stored was made from
+        self._stored_flags: tuple = ()
+        self._shape: tuple | None = None
         self._privacy_sig: tuple | None = None
         self.export_start: int | None = None
         self.export_end: int | None = None
@@ -1658,7 +1662,7 @@ class ViewerWindow(QMainWindow):
 
     def _rebuild_types(self) -> None:
         dark = self.canvas.palette_.dark
-        counts = vm.type_counts(self._display_marks(), self._shown)
+        counts = self._shaped().counts
         self.types_panel.set_types(
             [(k, label, n, vm.kind_colour(k, dark)) for k, label, n in counts], self.hidden_kinds
         )
@@ -1675,67 +1679,64 @@ class ViewerWindow(QMainWindow):
         )
         self._set_visible()
 
+    def _shaped(self) -> vd.Display:
+        """The notes as shown (:func:`vd.compose`). What the stored notes give is
+        made once per read of the notes; adding a note to the draft only inserts
+        it, so a recording with 60,000 notes stays quick."""
+        flags = tuple(bool(self._shown(r.index)) for r in self.data.recordings)
+        if self._stored_for is not self.marks or self._stored_flags != flags:
+            self._stored = vd.Stored(self.marks, self._shown)
+            self._stored_for, self._stored_flags = self.marks, flags
+            self._shape = None
+        d = self.edit.draft
+        hidden = self.hidden_kinds
+        stamp = (d.version, hidden)
+        if self._shape is None or self._shape[0] != stamp:
+            drafts, changed = [], []
+            if d.dirty:
+                changed = [i.replaces for i in d.items if i.replaces is not None]
+                changed += d.removed_stored()
+                for item in d.items:
+                    holders = self.data.holders_at(item.channel, item.time)
+                    recording = (
+                        item.recording
+                        if item.recording is not None
+                        else (holders[0] if holders else 0)
+                    )
+                    drafts.append(
+                        vm.Mark(
+                            item.time,
+                            item.end,
+                            item.code,
+                            recording,
+                            "channel" if item.channel else "session",
+                            item.channel,
+                            item.stored_text,
+                            "changed" if item.replaces is not None else "new",
+                            item.uid,
+                        )
+                    )
+            self._shape = (stamp, vd.compose(self._stored, drafts, changed, hidden, self._shown))
+        return self._shape[1]
+
     def _display_marks(self) -> list[vm.Mark]:
         """What is shown: the stored notes and events, with the draft's
         changes on top (a taken-out or changed stored note stays, marked; a
         new one is added)."""
-        d = self.edit.draft
-        if not d.dirty:
-            return self.marks
-        changed = {i.replaces: i for i in d.items if i.replaces is not None}
-        out: list[vm.Mark] = []
-        for m in self.marks:
-            if d.is_removed(m) or m in changed:
-                out.append(dataclasses.replace(m, state="removed"))
-            else:
-                out.append(m)
-        for item in d.items:
-            holders = self.data.holders_at(item.channel, item.time)
-            recording = (
-                item.recording if item.recording is not None else (holders[0] if holders else 0)
-            )
-            out.append(
-                vm.Mark(
-                    item.time,
-                    item.end,
-                    item.code,
-                    recording,
-                    "channel" if item.channel else "session",
-                    item.channel,
-                    item.stored_text,
-                    "changed" if item.replaces is not None else "new",
-                    item.uid,
-                )
-            )
-        out.sort(key=lambda m: (m.time, m.recording, m.channel or ""))
-        return out
+        return self._shaped().marks
 
     def _set_visible(self) -> None:
-        shown: dict[int, bool] = {}
-        hidden = self.hidden_kinds
-        keep, keys = [], []
-        for m in self._display_marks():
-            ok = shown.get(m.recording)
-            if ok is None:
-                ok = shown[m.recording] = bool(self._shown(m.recording))
-            key = vm.kind_for(m, ok)[0]
-            if key not in hidden:
-                keep.append(m)
-                keys.append(key)
-        self._visible = keep
-        self._visible_keys = keys
-        self._visible_times = [m.time for m in keep]
+        shape = self._shaped()
+        self._visible = shape.visible
+        self._visible_keys = shape.keys
+        self._visible_times = shape.times
         # arrays for the crowded view: merging per pixel column is numpy over these
-        self._times_np = np.asarray(self._visible_times, dtype=np.int64)
-        rank = {k: vm.kind_importance(k) for k in set(keys)}
-        self._importance_np = np.fromiter((rank[k] for k in keys), dtype=np.int64, count=len(keys))
-        self._drafted = [i for i, m in enumerate(keep) if m.state]
-        self._drafted_np = np.zeros(len(keep), dtype=bool)
-        self._drafted_np[self._drafted] = True
-        self._ends_np = np.fromiter(
-            (max(m.end, m.time) if m.end else m.time for m in keep), dtype=np.int64, count=len(keep)
-        )
-        self._max_span = max((m.end - m.time for m in keep if m.end), default=0)
+        self._times_np = shape.times_np
+        self._importance_np = shape.importance_np
+        self._drafted = shape.drafted
+        self._drafted_np = shape.drafted_np
+        self._ends_np = shape.ends_np
+        self._max_span = shape.max_span
 
     def _types_chosen(self, hidden) -> None:
         self.hidden_kinds = frozenset(hidden)
@@ -1934,7 +1935,11 @@ class ViewerWindow(QMainWindow):
         query = tab.search.text()
         if wanted is None and not query.strip():
             self._list_runner.cancel()
-            self._list_ready((self._visible[:MAX_LISTED], len(self._visible)))
+            rows = self._visible[:MAX_LISTED]
+            # a note of the draft is always listed (marked as not stored), also far
+            # down a very long list: it is what the user just wrote
+            rows += [self._visible[i] for i in self._drafted if i >= MAX_LISTED]
+            self._list_ready((rows, len(self._visible)))
             return
         steps = self._list_steps(wanted, query, self._visible, self._visible_keys)
         if len(self._visible) <= LIST_SYNC_LIMIT:  # small: done at once, as before
@@ -1955,7 +1960,7 @@ class ViewerWindow(QMainWindow):
                 m, query, ok, self._rec_letter(m.recording)
             ):
                 total += 1
-                if len(rows) < MAX_LISTED:
+                if len(rows) < MAX_LISTED or m.state:  # a draft note is always listed
                     rows.append(m)
             if i % LIST_SLICE == LIST_SLICE - 1:
                 yield
@@ -1968,7 +1973,7 @@ class ViewerWindow(QMainWindow):
         note = (
             f"The first {len(rows)} of {total} are listed. Search or choose a type "
             "to narrow the list."
-            if total > len(rows)
+            if total > len(rows) or len(rows) > MAX_LISTED
             else None
         )
         steps = self.notes_tab.fill_steps(rows, self._shown, self._rec_letter, self.zone, note=note)
