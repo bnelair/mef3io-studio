@@ -82,6 +82,12 @@ def _entries(spacing, hour, day):
         KeyEntry("export_start", ("S",), "Set the export start at the pointer", False, "export"),
         KeyEntry("export_end", ("E",), "Set the export end at the pointer", False, "export"),
         KeyEntry(
+            "new_note",
+            ("N",),
+            "Add a note at the pointer (a text field opens; Enter keeps it, Esc drops it). "
+            "After Shift+drag the note lasts as long as the selection",
+        ),
+        KeyEntry(
             "add_note",
             ("A", "1", "2", "3", "4", "5", "6", "7", "8", "9"),
             "Add a note (edit mode only)",

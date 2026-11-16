@@ -671,6 +671,7 @@ class ViewerWindow(QMainWindow):
         h["types"] = lambda: self._toggle_tool(self.types_panel, self.types_button)
         h["note_list"] = self.toggle_side_panel
         h["add_note"] = self._add_key
+        h["new_note"] = self.edit.quick_note
         h["undo"] = self.edit.undo
         h["redo"] = self.edit.redo
 

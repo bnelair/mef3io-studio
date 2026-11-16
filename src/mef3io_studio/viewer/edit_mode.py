@@ -35,10 +35,13 @@ from ..model import viewer_marks as vm
 from ..model.errors import UserMessage
 from ..workers.jobs import JobManager
 from .edit_dialogs import ImportPreview, NoteEditor, SavePreview, ask_unsaved
+from .inline_note import Hint, InlineNote
 
 log = logging.getLogger(__name__)
 
 BANNER_TEXT = "Edit mode: changes are a draft until you save"
+#: How many of the last texts typed are kept for one-key reuse (this window only).
+RECENT_TEXTS = 8
 #: An import file bigger than this is refused (it is read in one go).
 MAX_IMPORT_BYTES = 64 << 20
 
@@ -78,6 +81,15 @@ class EditMode(QObject):
         #: The selected display Mark (a draft one, or a stored one).
         self.selected = None
         self.last_job = None
+        #: The last texts typed in the inline field, newest first. In memory for
+        #: this window only: a note's text can hold patient details, so it is
+        #: never written to the preferences, a file or a log.
+        self.recent_texts: list[str] = []
+        self._inline: InlineNote | None = None
+        #: What the inline field is for: ("new", time, end) or ("change", uid).
+        self._inline_for: tuple | None = None
+        self._types_of: list | None = None
+        self._types: list[str] = []
         self._jobs: JobManager | None = None
         self.banner = QFrame(window)
         self.banner.setObjectName("EditBanner")
@@ -377,6 +389,130 @@ class EditMode(QObject):
     def add_here(self) -> None:
         """The key ``A`` and the notes list's Add button."""
         self.open_new()
+
+    # -- adding fast: the key N and the inline field ----------
+
+    @property
+    def inline(self) -> InlineNote:
+        if self._inline is None:
+            self._inline = InlineNote(self.win.canvas)
+            self._inline.kept.connect(self._inline_kept)
+            self._inline.dropped.connect(self._inline_dropped)
+        return self._inline
+
+    def _recording_types(self) -> list[str]:
+        """The types of note the recordings already hold (their quick labels:
+        what the type list shows), most used first, then the quick types."""
+        marks = self.win.marks
+        if marks is not self._types_of:
+            counts = vm.type_counts(marks, self.win._shown)
+            self._types = [label for key, label, _n in counts if key.startswith(vm.QUICK_PREFIX)]
+            self._types_of = marks
+        out = list(self._types)
+        for label in self.quick_types():
+            if label.casefold() != ad.PLAIN.casefold() and label.casefold() not in {
+                x.casefold() for x in out
+            }:
+                out.append(label)
+        return out
+
+    def hints(self) -> list[Hint]:
+        """What the inline field offers for one key: the last texts typed, then
+        types (about six in all, the texts first but at most four)."""
+        out = [Hint("text", t) for t in self.recent_texts[:4]]
+        for label in self._recording_types():
+            if len(out) >= 6:
+                break
+            out.append(Hint("type", label))
+        return out
+
+    def remember_text(self, text: str) -> None:
+        text = " ".join(text.split())
+        if not text:
+            return
+        self.recent_texts = [t for t in self.recent_texts if t.casefold() != text.casefold()]
+        self.recent_texts.insert(0, text)
+        del self.recent_texts[RECENT_TEXTS:]
+
+    def quick_note(self) -> None:
+        """The key N: a note at the pointer (or over the selection) in a few
+        keystrokes. Turns edit mode on when it is off."""
+        if self._busy():
+            return
+        if self.inline.is_open:
+            self.inline.field.setFocus()
+            return
+        if not self.on and not self.set_on(True):
+            return
+        time, end = self._anchor()
+        problem = self._check_values(
+            {"time": time, "end": end, "label": ad.PLAIN, "text": "", "channel": None}
+        )
+        if problem and problem not in (ad.DUPLICATE_STORED, ad.DUPLICATE_DRAFT):
+            self.win.last_refusal = problem
+            self.win.status_message.setText(problem)
+            return
+        self._inline_for = ("new", time, end)
+        when = timefmt.format_time(time, self.win.zone, 3)
+        head = f"Note at {when}" + (
+            f" lasting {timefmt.format_span((end - time) / 1e6)}" if end is not None else ""
+        )
+        self._place_inline(time, head, "")
+
+    def change_text(self, uid: int) -> None:
+        """Change the text of a draft note in the inline field."""
+        if self._busy():
+            return
+        item = self.draft.get(uid)
+        if item is None:
+            return
+        self._inline_for = ("change", uid)
+        when = timefmt.format_time(item.time, self.win.zone, 3)
+        self._place_inline(item.time, f"Change the note at {when}", item.stored_text)
+
+    def _place_inline(self, time: int, head: str, text: str) -> None:
+        w = self.win
+        c = w.canvas
+        row = w._pointer_row if w._pointer_t is not None else None
+        y = c.row_y(row) + c.row_height * 0.5 if row is not None else c.plot_rect().top() + 8
+        self.inline.open_at(c.x_of(time), y, head, text, self.hints())
+
+    def _inline_dropped(self) -> None:
+        self._inline_for = None
+        self.win.canvas.setFocus()
+
+    def _inline_kept(self, typed: str, save: bool) -> None:
+        what, self._inline_for = self._inline_for, None
+        self.win.canvas.setFocus()
+        if what is None or self._busy():
+            return
+        label, text = ad.split_text(typed.strip())
+        if what[0] == "change":
+            item = self.draft.get(what[1])
+            if item is None:
+                return
+            try:
+                item = self.draft.update(item.uid, label=label, text=text)
+            except ValueError as exc:
+                self.win.last_refusal = str(exc)
+                self.win.status_message.setText(str(exc))
+                return
+            self.remember_text(typed)
+            self.refresh()
+            self.select_item(item)
+            return
+        _kind, time, end = what
+        item = self.add(time, end, label, text)
+        if item is None:
+            return
+        self.remember_text(typed)
+        if end is not None:
+            self.win.canvas.clear_selection()
+        self.win.status_message.setText(
+            "Note added to the draft. Ctrl+S saves it; it is not in the recording yet."
+        )
+        if save:
+            self.save()
 
     # -- changing and taking out ----------
 

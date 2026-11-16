@@ -1283,3 +1283,158 @@ def test_a_save_never_stores_a_note_twice(ed, qtbot):
     win.edit.add(T0 + 7 * SEC, None, "Note", "really new")
     finish_save(qtbot, win)
     assert len(records(win.data.location_of(0))) == before + 1 and not draft.dirty
+
+
+# --- adding fast: the key N and the inline field -------------------------------------------------
+
+
+def type_in(win, text):
+    QTest.keyClicks(win.edit.inline.field, text)
+
+
+def press(win, k, mods=Qt.KeyboardModifier.NoModifier):
+    QTest.keyClick(win.edit.inline.field, k, mods)
+
+
+def test_n_adds_a_note_at_the_pointer_without_first_choosing_a_mode(ed, qtbot):
+    win, spy, _ = ed
+    assert not win.edit.on
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    inline = win.edit.inline
+    assert win.edit.on and inline.isVisible() and inline.field.hasFocus()
+    # right there: its left edge is at the note's time on the page
+    assert abs(inline.x() - win.canvas.x_of(T0 + 12 * SEC)) <= 4
+    type_in(win, "eyes closed")
+    press(win, Qt.Key.Key_Return)
+    assert not inline.isVisible()
+    (item,) = win.edit.draft.items
+    assert abs(item.time - (T0 + 12 * SEC)) < 300_000 and item.end is None
+    assert (item.label, item.text) == ("Note", "eyes closed")
+    # a draft: marked as not stored in the list and on the traces, and nothing is written yet
+    assert [m.state for m in win.notes_tab.rows if m.state == "new"] == ["new"]
+    assert "1 new note or event" in win.edit.count_label.text()
+    assert "not in the recording yet" in win.status_message.text()
+    assert win.canvas.hasFocus()
+
+
+def test_esc_drops_the_note_and_an_empty_enter_keeps_a_bare_marker(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "never kept")
+    press(win, Qt.Key.Key_Escape)
+    assert not win.edit.inline.isVisible() and not win.edit.draft.dirty
+    key(win, Qt.Key.Key_N)
+    press(win, Qt.Key.Key_Return)
+    assert [(i.label, i.text) for i in win.edit.draft.items] == [("Note", "")]
+
+
+def test_after_shift_drag_n_adds_a_note_with_a_duration(ed):
+    win, spy, _ = ed
+    win.canvas.selection = (T0 + 20 * SEC, T0 + 25 * SEC, 0)
+    key(win, Qt.Key.Key_N)
+    assert "lasting 5 s" in win.edit.inline.head.text()
+    type_in(win, "run of spikes")
+    press(win, Qt.Key.Key_Return)
+    (item,) = win.edit.draft.items
+    assert (item.time, item.end, item.is_span) == (T0 + 20 * SEC, T0 + 25 * SEC, True)
+    assert win.canvas.selection is None  # used up
+
+
+def test_a_typed_type_is_kept_as_the_type(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "Spike: sharp wave")
+    press(win, Qt.Key.Key_Return)
+    (item,) = win.edit.draft.items
+    assert (item.label, item.text) == ("Spike", "sharp wave")
+
+
+def test_the_last_texts_and_the_types_in_the_recording_are_one_key_away(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    assert [h.kind for h in win.edit.inline.hints][:1] == ["type"]  # no text typed yet
+    assert "Spike" in [h.value for h in win.edit.inline.hints]  # the recording holds one
+    type_in(win, "first words")
+    press(win, Qt.Key.Key_Return)
+    at(win, T0 + 14 * SEC)
+    key(win, Qt.Key.Key_N)
+    inline = win.edit.inline
+    assert inline.hints[0].kind == "text" and inline.hints[0].value == "first words"
+    press(win, Qt.Key.Key_1, Qt.KeyboardModifier.AltModifier)
+    assert inline.field.text() == "first words"
+    spike = next(i for i, h in enumerate(inline.hints) if h.value == "Spike")
+    inline.field.setText("blunt")
+    press(win, Qt.Key.Key_1 + spike, Qt.KeyboardModifier.AltModifier)
+    assert inline.field.text() == "Spike: blunt"  # the type goes in front, the text stays
+    press(win, Qt.Key.Key_Return)
+    assert win.edit.recent_texts[0] == "Spike: blunt"
+    assert len(win.edit.draft.items) == 2
+
+
+def test_typed_texts_are_never_stored_in_the_preferences(make_window, pair, qtbot, tmp_path):
+    from mef3io_studio.common.settings import Settings
+
+    path = tmp_path / "prefs.ini"
+    s = Settings(str(path))
+    win = make_window(*pair, settings=s)
+    wait_marks(qtbot, win)
+    wide(win)
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "patient-detail-xyz")
+    press(win, Qt.Key.Key_Return)
+    win.save_preferences()
+    assert "patient-detail-xyz" not in (path.read_text() if path.exists() else "")
+    assert win.edit.recent_texts == ["patient-detail-xyz"]
+
+
+def test_n_outside_every_recording_says_why_and_a_copy_is_refused(ed):
+    win, spy, _ = ed
+    at(win, T0 + 75 * SEC)  # the gap between A and B
+    key(win, Qt.Key.Key_N)
+    assert not win.edit.inline.isVisible() and not win.edit.draft.dirty
+    assert "No recording holds data" in win.status_message.text()
+    # a copy of a stored note ("Alpha plain note" at 5 s) is refused when it is kept
+    at(win, T0 + 5 * SEC)
+    win.edit.quick_note()
+    win.edit._inline_for = ("new", T0 + 5 * SEC, None)  # exactly the stored time
+    type_in(win, "Alpha plain note")
+    press(win, Qt.Key.Key_Return)
+    assert not win.edit.draft.dirty and win.status_message.text() == ad.DUPLICATE_STORED
+
+
+def test_a_click_elsewhere_keeps_typed_words_and_drops_an_empty_field(ed, qtbot):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "kept by a click")
+    win.canvas.setFocus(Qt.FocusReason.MouseFocusReason)
+    assert not win.edit.inline.isVisible()
+    assert [i.text for i in win.edit.draft.items] == ["kept by a click"]
+    at(win, T0 + 14 * SEC)
+    key(win, Qt.Key.Key_N)
+    win.canvas.setFocus(Qt.FocusReason.MouseFocusReason)
+    assert len(win.edit.draft.items) == 1  # an empty field is dropped
+
+
+def test_n_on_a_packed_recording_is_refused_in_plain_words(make_window, pair, tmp_path, qtbot):
+    win = make_window(*pair)
+    wait_marks(qtbot, win)
+    win.data.is_archive = lambda i: True
+    key(win, Qt.Key.Key_N)
+    assert not win.edit.on and not win.edit.inline.isVisible()
+    assert "packed in a single file" in win.status_message.text()
+
+
+def test_n_is_in_the_key_table_and_the_help(ed):
+    from mef3io_studio.viewer import keymap
+
+    entry = next(e for e in keymap.KEYMAP if e.action == "new_note")
+    assert entry.keys == ("N",) and entry.feature == ""
+    clashes = [e.action for e in keymap.KEYMAP if "N" in e.keys]
+    assert clashes == ["new_note"]
+    assert not BANNED_RE.search(entry.text)
