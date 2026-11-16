@@ -1237,3 +1237,49 @@ def test_a_stop_before_any_write_is_not_taken_for_a_stop_after_one(ed, qtbot, mo
     assert win.edit.draft.dirty and win.edit.save_button.isEnabled() and not win.edit.stale
     assert win.status_message.text() == "The save was stopped. Nothing was added."
     assert not spy.problems
+
+
+# --- the same note twice ------------------------------------------------------------------------
+
+
+def test_a_note_equal_to_a_stored_or_drafted_one_is_refused_at_once(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    # "Alpha plain note" is stored at +5 s (a point, the whole recording)
+    assert win.edit.add(T0 + 5 * SEC, None, "Note", "Alpha plain note") is None
+    assert win.status_message.text() == ad.DUPLICATE_STORED and not win.edit.draft.dirty
+    assert win.edit.add(T0 + 5 * SEC, None, "Note", "another text") is not None
+    assert win.edit.add(T0 + 5 * SEC, None, "Note", "another text") is None
+    assert win.status_message.text() == ad.DUPLICATE_DRAFT
+    assert len(win.edit.draft.items) == 1
+
+
+def test_the_editor_stays_open_with_the_sentence_for_a_copy(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    editor = win.edit._make_editor("Add a note or event")
+    editor.set_values(T0 + 5 * SEC, None, "Note", "Alpha plain note", None)
+    editor.ok.click()
+    assert editor.error.text() == ad.DUPLICATE_STORED and editor.result() != 1
+
+
+def test_a_save_never_stores_a_note_twice(ed, qtbot):
+    win, spy, _ = ed
+    turn_on(win)
+    before = len(records(win.data.location_of(0)))
+    draft = win.edit.draft
+    saved = draft.stored_keys
+    draft.stored_keys = None  # a copy that got into the draft before it was stored
+    draft.add(T0 + 5 * SEC, None, "Note", "Alpha plain note")
+    draft.stored_keys = saved
+    win.edit.refresh()
+    assert win.edit.save() is False  # only copies: nothing to write
+    assert not draft.dirty and "already stored" in win.status_message.text()
+    assert len(records(win.data.location_of(0))) == before
+    # a mixed draft writes only the new one and the copy leaves the draft too
+    draft.stored_keys = None
+    draft.add(T0 + 5 * SEC, None, "Note", "Alpha plain note")
+    draft.stored_keys = saved
+    win.edit.add(T0 + 7 * SEC, None, "Note", "really new")
+    finish_save(qtbot, win)
+    assert len(records(win.data.location_of(0))) == before + 1 and not draft.dirty

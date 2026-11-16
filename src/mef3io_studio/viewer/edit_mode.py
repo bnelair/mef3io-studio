@@ -67,6 +67,9 @@ class EditMode(QObject):
         super().__init__(window)
         self.win = window
         self.draft = ad.Draft()
+        self.draft.stored_keys = self._stored_keys
+        self._keys_of: list | None = None  # the marks the keys below were made from
+        self._keys: frozenset = frozenset()
         self.on = False
         self.saving = False
         #: A save ended not knowing what it wrote and the recordings could not be
@@ -124,6 +127,15 @@ class EditMode(QObject):
         """At the window's close: only a manager made here is stopped."""
         if self._jobs is not None and self._jobs.parent() is self:
             self._jobs.dispose()
+
+    def _stored_keys(self) -> frozenset:
+        """:func:`ad.mark_key` of every stored note, made once per read of the
+        notes (the window replaces ``marks`` with each read)."""
+        marks = self.win.marks
+        if marks is not self._keys_of:
+            self._keys = frozenset(ad.mark_key(m) for m in marks)
+            self._keys_of = marks
+        return self._keys
 
     def quick_types(self) -> tuple[str, ...]:
         s = self.win.settings
@@ -266,12 +278,18 @@ class EditMode(QObject):
             return int(w._pointer_t), None
         return int(w.state.t0 + w.page_us() // 2), None
 
-    def _check_values(self, values: dict, replacing_stored=None) -> str:
+    def _check_values(self, values: dict, ignore_uid: int | None = None) -> str:
         item = ad.DraftItem(
             0, values["time"], values["end"], values["label"], "", values["channel"]
         )
         r = ad.route(item, self.win.data.holders_at)
-        return r.reason if r.status == "outside" else ""
+        if r.status == "outside":
+            return r.reason
+        same = ad.DraftItem(
+            0, values["time"], values["end"], values["label"], values.get("text", ""),
+            values["channel"],
+        )  # fmt: skip
+        return self.draft.duplicate_reason(same, ignore_uid=ignore_uid)
 
     def add_quick(self, number: int) -> None:
         """Keys 1 to 9: the quick type. A plain note opens the editor (it
@@ -294,7 +312,9 @@ class EditMode(QObject):
         recording holds data there."""
         if self._busy():
             return None
-        problem = self._check_values({"time": time, "end": end, "label": label, "channel": channel})
+        problem = self._check_values(
+            {"time": time, "end": end, "label": label, "text": text, "channel": channel}
+        )
         if problem:
             self.win.last_refusal = problem
             self.win.status_message.setText(problem)
@@ -315,12 +335,12 @@ class EditMode(QObject):
                 self.select(m)
                 return
 
-    def _make_editor(self, title: str) -> NoteEditor:
+    def _make_editor(self, title: str, ignore_uid: int | None = None) -> NoteEditor:
         return NoteEditor(
             self.win.zone,
             self.quick_types(),
             self.win._channels,
-            self._check_values,
+            lambda values: self._check_values(values, ignore_uid),
             title,
             self.win,
         )
@@ -394,7 +414,9 @@ class EditMode(QObject):
             stored = m
             label, text = ad.split_text(m.text)
             values0 = (m.time, m.end, label, text, m.channel)
-        editor = self._make_editor("Change a note or event")
+        changed = item if stored is None else self.draft.changed_version(stored)
+        own = getattr(changed, "uid", None)
+        editor = self._make_editor("Change a note or event", own)
         editor.set_values(*values0)
         values = self.ask_note(editor)
         if values is None:
@@ -500,9 +522,14 @@ class EditMode(QObject):
         if not self.ask_import(preview) or not preview.can_add:
             return
         n = self.draft.add_many(r.as_row() for r in preview.usable)
-        self.win.status_message.setText(
-            f"{timefmt.format_count(n, 'note or event', 'notes and events')} added to the draft."
-        )
+        left = self.draft.skipped_duplicates
+        text = f"{timefmt.format_count(n, 'note or event', 'notes and events')} added to the draft."
+        if left:
+            text += (
+                f" {timefmt.format_count(left, 'row')} left out: "
+                f"{'it is' if left == 1 else 'they are'} already stored or in the draft."
+            )
+        self.win.status_message.setText(text)
         self.refresh()
 
     # -- export ----------
@@ -602,6 +629,10 @@ class EditMode(QObject):
             return self.draft.save_plan(data.holders_at, choices)
 
         first = plan_for({})
+        if first.count == 0 and first.duplicates and not first.ambiguous and not first.refused:
+            # Everything new is already stored: nothing to write, and nothing twice.
+            self._drop_duplicates(first)
+            return False
         if first.count == 0 and not first.ambiguous and not first.refused:
             # Only changes to stored notes: shown, never written here.
             n = first.needs_copy
@@ -629,6 +660,19 @@ class EditMode(QObject):
             handle.cancelled.connect(lambda: self._prepare_failed(None))
             return True
         return self._ask_then_save(data, plan_for, then_off, then_close)
+
+    def _drop_duplicates(self, plan) -> None:
+        """Items that equal a stored note leave the draft: a note is never stored twice."""
+        if not plan.duplicates:
+            return
+        self.draft.written({i.uid for i in plan.duplicates})
+        self.select(None)
+        self.refresh()
+        n = len(plan.duplicates)
+        self.win.status_message.setText(
+            f"{timefmt.format_count(n, 'note was', 'notes were')} already stored, so "
+            f"{'it was' if n == 1 else 'they were'} not added again."
+        )
 
     def _prepare_ended(self) -> None:
         """The save did not start (stopped, refused, failed): the draft is
@@ -735,6 +779,8 @@ class EditMode(QObject):
     def _saved(self, out: SaveOutcome, plan, then_off: bool, then_close: bool) -> None:
         w = self.win
         self.saving = False
+        if plan.duplicates:  # the same as a stored note: never written, and no longer a draft
+            self.draft.written({i.uid for i in plan.duplicates})
         if out.uids:
             # Exactly what was appended leaves the draft (a second save must not add it again).
             self.draft.written(out.uids)
