@@ -22,6 +22,7 @@ from test_viewer_marks_ui import at as _at
 from mef3io_studio.common.theme import DARK
 from mef3io_studio.model import annotation_draft as ad
 from mef3io_studio.model.errors import UserMessage
+from mef3io_studio.viewer import edit_mode
 from mef3io_studio.viewer.edit_dialogs import ImportPreview, SavePreview
 from mef3io_studio.viewer.edit_mode import BANNER_TEXT
 
@@ -1059,3 +1060,73 @@ def test_a_window_that_moved_on_unlocks_the_draft(ed, qtbot):
     win.edit.saving = True  # as save() leaves it while the facts are read
     assert win.edit._ask_then_save(object(), lambda c: None, False, False) is False
     _unlocked(win)
+
+
+def _wait_saved(qtbot, win):
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
+    assert win.edit.save_button.isEnabled() and win.edit.draft.dirty
+
+
+def test_a_save_task_that_is_stopped_frees_the_draft_and_the_window(ed, qtbot, monkeypatch):
+    """A stop that reaches the task from outside the write loop (queued task
+    removed, a stop inside the library before the first write) used to leave
+    the window locked: Save and Discard grey, closing refused."""
+    from mef3io_studio.model.cancel import JobCancelled
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.data.read_facts()
+    win.edit.ask_save = lambda plan_for: ({}, {})
+
+    def stopped(*a, **k):
+        raise JobCancelled()
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", stopped)
+    win.edit.save()
+    _wait_saved(qtbot, win)
+    assert win.edit.discard_button.isEnabled()
+    assert win.edit.set_on(True) is True
+
+
+def test_a_stop_after_the_first_write_began_says_to_look_before_saving_again(
+    ed, qtbot, monkeypatch
+):
+    from mef3io_studio.model.cancel import JobCancelled
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.data.read_facts()
+    win.edit.ask_save = lambda plan_for: ({}, {})
+
+    def stopped_in_the_middle(data, plan, pw, check, *rest):
+        check()  # the loop asks before each write
+        raise JobCancelled()
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", stopped_in_the_middle)
+    win.edit.save()
+    _wait_saved(qtbot, win)
+    assert len(spy.problems) == 1
+    assert "may already have been added" in spy.problems[0].text
+
+
+def test_a_failure_starting_the_save_frees_the_draft(ed, qtbot, monkeypatch):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.data.read_facts()
+    win.edit.ask_save = lambda plan_for: ({}, {})
+    real = win.begin_data_change
+    calls = []
+
+    def broken():
+        calls.append(1)
+        real()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(win, "begin_data_change", broken)
+    win.edit.save()
+    assert calls
+    _wait_saved(qtbot, win)
+    assert len(spy.problems) == 1 and "Nothing was saved" in spy.problems[0].text

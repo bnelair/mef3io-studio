@@ -667,42 +667,63 @@ class EditMode(QObject):
         data = w.data
         controller = w.controller
         self.saving = True
-        w.begin_data_change()
-        self._sync_buttons()
+        touched = {"writing": False}  # set when the first write may have started
+        try:
+            w.begin_data_change()
+            self._sync_buttons()
 
-        def work(ctx):
-            result = asave.write_plan(
-                data,
-                plan,
-                passwords,
-                ctx.check_cancelled,
-                lambda done, total: ctx.report(done, total, "Adding the notes and events"),
-                register_identity,
-            )
-            records, locked, error = None, (), result.error
-            if result.uids:
-                ctx.report(0, None, "Reading the recordings again")
-                try:
-                    controller.scheduler.drain(60.0)
-                    data.reopen()
-                except Exception:  # noqa: BLE001 - the notes are stored; the window must say so
-                    error = error or UserMessage(
-                        "The notes were added, but they cannot be shown",
-                        "The new notes and events are in the recordings, but the viewer could "
-                        "not read the recordings again. Close this window and open the "
-                        "recordings again.",
-                    )
-                else:
+            def check(ctx):
+                touched["writing"] = True
+                ctx.check_cancelled()
+
+            def work(ctx):
+                result = asave.write_plan(
+                    data,
+                    plan,
+                    passwords,
+                    lambda: check(ctx),
+                    lambda done, total: ctx.report(done, total, "Adding the notes and events"),
+                    register_identity,
+                )
+                records, locked, error = None, (), result.error
+                if result.uids:
+                    ctx.report(0, None, "Reading the recordings again")
                     try:
-                        records, locked = data.annotations(), tuple(data.annotations_locked)
-                    except Exception:  # noqa: BLE001 - the list then says it could not be read
-                        records, locked = None, ()
-            return SaveOutcome(result.written, result.uids, records, locked, error, result.stopped)
+                        controller.scheduler.drain(60.0)
+                        data.reopen()
+                    except Exception:  # noqa: BLE001 - the notes are stored; the window must say so
+                        error = error or UserMessage(
+                            "The notes were added, but they cannot be shown",
+                            "The new notes and events are in the recordings, but the viewer "
+                            "could not read the recordings again. Close this window and open "
+                            "the recordings again.",
+                        )
+                    else:
+                        try:
+                            records, locked = data.annotations(), tuple(data.annotations_locked)
+                        except Exception:  # noqa: BLE001 - the list then says it could not be read
+                            records, locked = None, ()
+                return SaveOutcome(
+                    result.written, result.uids, records, locked, error, result.stopped
+                )
 
-        handle = self.jobs.submit("Adding notes and events", work)
+            handle = self.jobs.submit("Adding notes and events", work)
+        except Exception:  # noqa: BLE001 - the draft must never stay locked
+            log.exception("the save could not be started")
+            self._save_ended(None, False, started=False)
+            self.show_problem(
+                UserMessage(
+                    "The notes could not be saved",
+                    "Something went wrong before anything was added. Nothing was saved, and "
+                    "the changes stay in the draft.",
+                )
+            )
+            return
         self.last_job = handle
         handle.succeeded.connect(lambda out: self._saved(out, plan, then_off, then_close))
-        handle.failed.connect(self._save_crashed)
+        handle.failed.connect(lambda m: self._save_ended(m, touched["writing"]))
+        # Stopped before it ran, or a stop that came from inside the library.
+        handle.cancelled.connect(lambda: self._save_ended(None, touched["writing"], stopped=True))
 
     def _saved(self, out: SaveOutcome, plan, then_off: bool, then_close: bool) -> None:
         w = self.win
@@ -727,10 +748,24 @@ class EditMode(QObject):
                 w.close()
         self.save_finished.emit(out)
 
-    def _save_crashed(self, message) -> None:
+    def _save_ended(self, message, writing: bool, stopped: bool = False, started=True) -> None:
+        """The task ended without an outcome (failed, or stopped from outside the
+        write loop). The loop reports a stop and a failure itself, with exactly
+        what was appended; getting here means that report was lost. The draft is
+        free again. When a write may have begun, the recordings may hold notes
+        the draft still lists, so the window says to look before saving again."""
         self.saving = False
         self.win.end_data_change(None, (), reopened=False)
         self._sync_buttons()
+        if writing and started:
+            message = UserMessage(
+                "The save ended in an unexpected place" if not stopped else "The save was stopped",
+                "Some notes and events may already have been added to the recordings. They "
+                "are still in the draft, so close this window and open the recordings again "
+                "to see what is stored before saving again.",
+            )
+        elif stopped and message is None and started:
+            self.win.status_message.setText("The save was stopped. Nothing was added.")
         if message is not None:
             self.show_problem(message)
         self.save_finished.emit(None)
