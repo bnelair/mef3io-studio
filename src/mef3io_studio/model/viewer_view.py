@@ -310,7 +310,7 @@ class Performance:
     load_workers: int = 0
     decode_threads: int = 0
     filter_workers: int = 0
-    lookahead_pages: int = 2
+    lookahead_pages: int = 4
     memory_mb: int = 0
 
 

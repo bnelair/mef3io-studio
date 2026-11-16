@@ -70,7 +70,7 @@ PREFERENCES: dict[str, Preference] = {
         Preference("viewer/load_workers", 0, int),
         Preference("viewer/decode_threads", 0, int),
         Preference("viewer/filter_workers", 0, int),
-        Preference("viewer/lookahead_pages", 2, int),
+        Preference("viewer/lookahead_pages", 4, int),
         Preference("viewer/memory_mb", 0, int),
     )
 }

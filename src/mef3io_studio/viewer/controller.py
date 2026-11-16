@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -28,7 +29,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ..common.privacy import scrub
 from ..model import dsp, montage
 from ..model.cancel import CancelToken, JobCancelled, is_stop
-from ..model.viewer_view import Performance, aligned_block, memory_bytes, next_block_start
+from ..model.viewer_view import Performance, aligned_block, memory_bytes
 from ..workers import viewer_pipeline as pipe
 from ..workers.viewer_scheduler import (
     LOOKAHEAD,
@@ -42,7 +43,14 @@ from ..workers.viewer_scheduler import (
 )
 from .strip import envelope_bins
 
-MAX_COMPUTE = 2
+
+def default_compute_workers() -> int:
+    """Block computations at once: half the cores, at least 2, at most 8 (the
+    ``viewer/filter_workers`` preference overrides it)."""
+    return max(2, min(8, (os.cpu_count() or 2) // 2))
+
+
+MAX_COMPUTE = default_compute_workers()
 log = logging.getLogger(__name__)
 STRIP_BINS = 2000
 #: A lost tile is asked for again at most this often / this many times.
@@ -52,6 +60,12 @@ MAX_RETRIES = 3
 HELD_SHARE = 0.25
 #: ... but never less than this (a tiny budget must still let a block finish).
 HELD_FLOOR = 32 << 20
+#: Idle for this long, the look-ahead deepens one page at a time ...
+IDLE_BEFORE_DEEPENING = 1.0
+#: ... as long as what is cached stays under this share of the cache budget ...
+DEEPEN_SHARE = 0.5
+#: ... and at most this many pages further than the preference.
+MAX_DEEPER = 24
 
 
 @dataclass(eq=False)
@@ -69,6 +83,8 @@ class _Job:
     state: str = "waiting"  # waiting | computing
     token: CancelToken = field(default_factory=CancelToken)
     seq: int = 0
+    #: Distance in pages from the visible one (0): nearer blocks come first.
+    rank: int = 0
     #: ``(fixed tile group, tile number)`` of every tile the block reads
     tile_refs: list = field(default_factory=list)
     retries: int = 0
@@ -137,12 +153,17 @@ class ViewController(QObject):
         self._jobs: dict[tuple, _Job] = {}
         self._seq = itertools.count()
         self._generation = 0
+        #: Extra pages looked ahead while idle (reset by every new page).
+        self._deeper = 0
+        self._shown_at = time.monotonic()
+        self._direction = 1
+        self.idle_before_deepening = IDLE_BEFORE_DEEPENING
         self._req: _Request | None = None
         self._loading = False
         self._closed = False
         self._watch = QTimer(self)  # a waiting job is looked at again now and then
         self._watch.setInterval(250)
-        self._watch.timeout.connect(self._pump)
+        self._watch.timeout.connect(self._tick)
         self._watch.start()
         self._tile.connect(self._pump)
         self._done.connect(self._on_done)
@@ -193,6 +214,9 @@ class ViewController(QObject):
             return
         self._generation += 1
         gen = self._generation
+        self._deeper = 0
+        self._shown_at = time.monotonic()
+        self._direction = direction
         data = self.data
         length = max(1, page[1] - page[0])
         span = aligned_block(page[0], length, data.timeline_start)
@@ -218,14 +242,18 @@ class ViewController(QObject):
             if any(first <= ri < last for ri in plan.rows):
                 key = self._ensure(req, gi, span, VISIBLE, wanted)
                 req.keys[gi] = key
-        self._drop_stale(gen, wanted)
         self._collect()
         self._set_loading(self._visible_pending(req))
         if not overview:
             self._look_ahead(req, direction, wanted)
+        # once, after every wanted block is known: a block that the old page
+        # looked ahead to and the new one still wants keeps its running work
+        self._drop_stale(gen, wanted)
         self._pump()
 
-    def _ensure(self, req: _Request, gi: int, span, priority: int, wanted: set) -> tuple:
+    def _ensure(
+        self, req: _Request, gi: int, span, priority: int, wanted: set, rank: int = 0
+    ) -> tuple:
         plan = req.plans[gi]
         settings = req.settings
         if req.overview:
@@ -244,6 +272,7 @@ class ViewController(QObject):
         job = self._jobs.get(key)
         if job is not None and not job.token.cancelled:
             job.priority = min(job.priority, priority)
+            job.rank = min(job.rank, rank)
             job.generation = req.generation
             return key
         job = _Job(
@@ -257,6 +286,7 @@ class ViewController(QObject):
             priority,
             req.generation,
             seq=next(self._seq),
+            rank=rank,
         )
         if not req.overview:
             for group in plan.sources:
@@ -292,10 +322,12 @@ class ViewController(QObject):
         self.scheduler.cancel_stale(gen)
 
     def _look_ahead(self, req: _Request, direction: int, wanted: set) -> None:
-        """Tiles 2 pages ahead and 1 behind; the filtered block of the next
-        page in the direction of travel; the screens above and below."""
+        """Raw tiles for the pages ahead and one behind; the filtered blocks of
+        the next ``lookahead_pages`` pages in the direction of travel (nearest
+        first) and of one page behind; the screens above and below."""
         length = req.span[1] - req.span[0]
         page_len = int(length / 1.5)
+        depth = self.perf.lookahead_pages + self._deeper
         groups = list(
             dict.fromkeys(
                 ChannelGroup(p.rate, g)
@@ -311,15 +343,17 @@ class ViewController(QObject):
             direction,
             groups,
             generation=req.generation,
-            ahead_pages=self.perf.lookahead_pages,
+            ahead_pages=depth,
         )
         self.scheduler.request_all(plan)
-        nxt = aligned_block(
-            next_block_start(req.span, page_len, direction), page_len, self.data.timeline_start
-        )
-        if nxt[0] >= self.data.timeline_start - page_len and nxt[0] < self.data.timeline_end:
-            for gi in list(req.keys):
-                self._ensure(req, gi, nxt, LOOKAHEAD, wanted)
+        sign = 1 if direction >= 0 else -1
+        tl = self.data.timeline_start
+        pages = [(sign * i, i) for i in range(1, depth + 1)] + [(-sign, 2)]
+        for j, rank in pages:
+            nxt = aligned_block(t0 + j * page_len, page_len, tl)
+            if nxt[0] >= tl - page_len and nxt[0] < self.data.timeline_end:
+                for gi in list(req.keys):
+                    self._ensure(req, gi, nxt, LOOKAHEAD, wanted, rank)
         # the screens above and below
         first, last = req.visible
         n = max(1, last - first)
@@ -328,7 +362,43 @@ class ViewController(QObject):
                 continue
             if any(first - n <= ri < last + n for ri in p.rows):
                 self._ensure(req, gi, req.span, SCREENS, wanted)
-        self._drop_stale(req.generation, wanted)
+
+    def _tick(self) -> None:
+        self._pump()
+        self._maybe_deepen()
+
+    def _page_bytes(self, req: _Request) -> int:
+        """About what one more page ahead holds in the cache: a block like the
+        visible ones, and the raw tiles of its groups."""
+        page_s = max(1, req.span[1] - req.span[0]) / 1.5 / 1e6
+        blocks = sum(int(getattr(p, "nbytes", 0)) for p in req.pieces.values())
+        sources = {(p.rate, g) for p in req.plans for g in p.sources}
+        raw = sum(len(g) * 4 * r * page_s for r, g in sources)
+        return int(blocks + raw)
+
+    def _maybe_deepen(self) -> bool:
+        """Idle for a while: look one page further ahead, while what is
+        cached stays under a share of the budget. Returns whether it did."""
+        req = self._req
+        if (
+            self._closed
+            or req is None
+            or req.overview
+            or self._jobs
+            or self._zombies
+            or self.scheduler.pending()
+            or self._deeper >= MAX_DEEPER
+            or time.monotonic() - self._shown_at < self.idle_before_deepening
+            or self._visible_pending(req)
+        ):
+            return False
+        if self.cache.bytes_used + self._page_bytes(req) > DEEPEN_SHARE * self.cache.budget:
+            return False
+        self._deeper += 1
+        wanted: set = set()
+        self._look_ahead(req, self._direction, wanted)
+        self._pump()
+        return True
 
     # -- compute pool ----------
 
@@ -339,11 +409,18 @@ class ViewController(QObject):
         inflight += len(self._zombies)
         waiting = sorted(
             (j for j in self._jobs.values() if j.state == "waiting"),
-            key=lambda j: (j.priority, j.seq),
+            key=lambda j: (j.priority, j.rank, j.seq),
+        )
+        # slots are always kept for the visible page: look-ahead takes at most two thirds
+        ahead_cap = max(1, self.max_compute * 2 // 3)
+        ahead = sum(
+            1 for j in self._jobs.values() if j.state == "computing" and j.priority > VISIBLE
         )
         for job in waiting:
             if inflight >= self.max_compute:
                 break
+            if job.priority > VISIBLE and ahead >= ahead_cap:
+                continue
             missing = self._missing(job)
             if missing:
                 now = time.monotonic()
@@ -363,6 +440,7 @@ class ViewController(QObject):
             job.state = "computing"
             self._update_needed()
             inflight += 1
+            ahead += job.priority > VISIBLE
             self._pool.submit(self._compute, job)
         self._collect()
 

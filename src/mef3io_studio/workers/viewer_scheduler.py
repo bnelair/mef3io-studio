@@ -395,9 +395,14 @@ class TileScheduler:
                 add(g, k, VISIBLE)
         for window in (ahead, behind):
             near = edge if window is ahead else (page_t0 if sign > 0 else page_t1)
-            for g in channel_groups:
-                for k in tiles(g, window[0], window[1], near):
-                    add(g, k, LOOKAHEAD)
+            # nearest first across ALL groups: the next page is whole before the one after
+            wanted = [
+                (abs(data.tile_start_time(g.rate, k) - near), gi, k, g)
+                for gi, g in enumerate(channel_groups)
+                for k in tiles(g, window[0], window[1], near)
+            ]
+            for _, _, k, g in sorted(wanted, key=lambda w: w[:3]):
+                add(g, k, LOOKAHEAD)
         for g in adjacent_groups:
             for k in tiles(g, page_t0, page_t1, page_t0):
                 add(g, k, SCREENS)

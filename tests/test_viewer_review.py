@@ -465,7 +465,7 @@ def test_performance_settings_reach_the_scheduler_pool_and_reader(make_window, t
 
 
 def test_performance_settings_are_validated_and_default_to_automatic(settings):
-    assert performance_from(settings) == vv.Performance(0, 0, 0, 2, 0)
+    assert performance_from(settings) == vv.Performance(0, 0, 0, 4, 0)
     assert vv.memory_bytes(performance_from(settings)) == 512 * 1024 * 1024
     settings.set("viewer/load_workers", 999)
     settings.set("viewer/lookahead_pages", 99)
@@ -482,7 +482,7 @@ def test_settings_dialog_has_a_signal_viewer_section(qtbot, settings):
     spins = dlg.viewer_spins
     assert spins["viewer/load_workers"].specialValueText() == "Automatic"
     assert spins["viewer/load_workers"].value() == 0
-    assert spins["viewer/lookahead_pages"].value() == 2
+    assert spins["viewer/lookahead_pages"].value() == 4
     spins["viewer/lookahead_pages"].setValue(5)
     spins["viewer/memory_mb"].setValue(1024)
     spins["viewer/memory_mb"].setValue(20)  # below the lowest allowed amount
