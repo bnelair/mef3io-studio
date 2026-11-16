@@ -544,11 +544,18 @@ class TraceCanvas(QWidget):
             return ""
         return f"{scale:g} {display_units(self.rows[i].units) or 'µV'}/mm"
 
+    def row_name(self, i: int) -> str:
+        """The name drawn for row ``i``: the part after the lead's name for the
+        rows after a lead's first, except for the first row on screen, which is
+        always named in full (the rows above it are scrolled away)."""
+        row = self.rows[i]
+        return row.label if i == self.row_offset else (row.short or row.label)
+
     def gutter_lines(self, i: int) -> list[str]:
         """The texts of row ``i``'s gutter: its name, then (small) what is
         special about it, in this order."""
         row = self.rows[i]
-        lines = [row.short or row.label]
+        lines = [self.row_name(i)]
         for extra in (self.row_scale_text(i), row.note and "as recorded"):
             if extra:
                 lines.append(extra)
@@ -633,14 +640,15 @@ class TraceCanvas(QWidget):
             if yc - self.row_height / 2 > plot.height():
                 break
             p.setPen(QColor(pal.text))
-            indent = fm.horizontalAdvance("AA") if row.short else 0
+            shortened = row.short and i != self.row_offset
+            indent = fm.horizontalAdvance("AA") if shortened else 0
             bold = row.group_first and row.group != OTHER_GROUP
             if bold:
                 f = QFont(font)
                 f.setBold(True)
                 p.setFont(f)
             label = (p.fontMetrics() if bold else fm).elidedText(
-                row.short or row.label,
+                self.row_name(i),
                 Qt.TextElideMode.ElideRight,
                 self.gutter - 8 - indent - (fm.horizontalAdvance("AA") if row.tag else 0),
             )

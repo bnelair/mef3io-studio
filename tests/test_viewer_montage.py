@@ -117,3 +117,49 @@ def test_apply_errors_name_the_row_not_the_data():
         m.apply(rows, {"LA1": np.zeros(4, np.float32)})
     with pytest.raises(ValueError, match="different length"):
         m.apply(rows, {"LA1": np.zeros(4, np.float32), "LA2": np.zeros(3, np.float32)})
+
+
+# --- what is a lead: by rule, among ALL recorded channels ----------
+
+SCALP = ["Fp1", "Fp2", "F3", "F4", "F7", "F8", "C3", "C4", "T3", "T4", "T5", "T6", "P3", "P4"]
+SCALP += ["O1", "O2", "A1", "A2", "Fz", "Cz", "Pz"]
+
+
+def test_only_a_prefix_with_four_contacts_including_the_first_is_a_lead():
+    assert m.real_leads(SCALP) == frozenset()  # scalp names are never leads
+    names = SCALP + [f"LA{i}" for i in range(1, 13)] + ["B1", "B2", "B4", "B5", "D2", "D3", "D4"]
+    assert m.real_leads(names) == {"LA", "B"}  # D has no contact 1
+    assert m.real_leads(["LB1", "LB2", "LB3"]) == frozenset()  # only three
+
+
+def test_scalp_names_are_never_grouped_or_shortened():
+    rows = m.as_recorded(SCALP)
+    leads = m.real_leads(SCALP)
+    assert all(not g.group and not g.first and not g.short for g in m.group_rows(rows, leads))
+    # not even with the rows of a depth lead beside them
+    names = SCALP + [f"LA{i}" for i in range(1, 7)]
+    groups = m.group_rows(m.as_recorded(names), m.real_leads(names))
+    assert [g.group for g in groups[: len(SCALP)]] == [""] * len(SCALP)
+    assert groups[len(SCALP)].first and groups[len(SCALP) + 1].short == "2"
+
+
+def test_a_channel_of_a_lead_is_eeg_whatever_its_letters():
+    names = [f"{p}{i}" for p in ("HR", "CO", "DC", "LOC", "ROC") for i in range(1, 5)]
+    leads = m.real_leads(names)
+    assert leads == {"HR", "CO", "DC", "LOC", "ROC"}
+    assert not any(m.is_non_eeg(n, leads) for n in names)
+    assert all(m.is_non_eeg(n) for n in ("HR1", "CO1", "DC3"))  # alone, by their letters
+    rows = m.as_recorded(["Fz", *names, "ECG1", "ECG2", "Cz"])
+    ordered = [r.plus for r in m.non_eeg_last(rows, leads)]
+    assert ordered == ["Fz", *names, "Cz", "ECG1", "ECG2"]  # only the ECG goes to the end
+    groups = m.group_rows(m.non_eeg_last(rows, leads), leads)
+    assert groups[1].group == "HR" and groups[-1].group == m.OTHER_GROUP
+
+
+def test_derived_labels_are_never_shortened():
+    names = [f"LA{i}" for i in range(1, 6)] + ["Cz"]
+    leads = m.real_leads(names)
+    for rows in (m.lead_bipolar(names), m.referenced(names, "Cz", lambda _n: 256.0)):
+        groups = m.group_rows(rows, leads)
+        assert any(g.group == "LA" for g in groups)  # the thin line may stay
+        assert all(g.short == "" for g in groups)  # but "LA2 − LA3" is never "2 − LA3"

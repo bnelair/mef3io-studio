@@ -250,10 +250,11 @@ def test_channels_that_are_not_eeg_come_last_in_every_montage(make_window, tmp_p
 def test_rows_of_one_lead_are_a_group_with_the_lead_named_once():
     from mef3io_studio.model import montage as m
 
-    names = [f"LA{i}" for i in range(1, 6)] + ["Fp1", "Fp2"] + [f"LB{i}" for i in (1, 2, 3)]
+    names = [f"LA{i}" for i in range(1, 6)] + ["Fp1", "Fp2"] + [f"LB{i}" for i in (1, 2, 3, 4)]
     names += ["ECG", "EMG1"]
     groups = m.group_rows(m.as_recorded(names))
     assert [g.first for g in groups] == [True, *[False] * 4, False, False, True, False, False] + [
+        False,
         True,
         False,
     ]
@@ -261,8 +262,8 @@ def test_rows_of_one_lead_are_a_group_with_the_lead_named_once():
     assert (
         groups[5].group == "" and groups[6].group == ""
     )  # two rows are no group: kept as they are
-    assert groups[9].short == "3"
-    assert groups[10].group == groups[11].group == m.OTHER_GROUP and groups[11].short == ""
+    assert groups[9].short == "3" and groups[10].short == "4"
+    assert groups[11].group == groups[12].group == m.OTHER_GROUP and groups[12].short == ""
 
 
 def test_the_canvas_draws_a_line_between_leads_and_the_lead_name_once(make_window, tmp_path):
@@ -290,14 +291,15 @@ def test_the_canvas_draws_a_line_between_leads_and_the_lead_name_once(make_windo
 def test_the_channel_chooser_ticks_a_whole_lead_and_searches_by_name(make_window, tmp_path, qtbot):
     from PySide6.QtCore import Qt
 
-    kinds = {f"LA{i}": "eeg" for i in range(1, 5)} | {f"LB{i}": "eeg" for i in range(1, 4)}
+    kinds = {f"LA{i}": "eeg" for i in range(1, 5)} | {f"LB{i}": "eeg" for i in range(1, 5)}
+    kinds |= {f"LC{i}": "eeg" for i in range(1, 4)}  # three contacts: not a lead
     kinds |= {"Cz": "eeg", "ECG": "ecg"}
     win = make_window(write_kinds(tmp_path / "chooser.mefd", kinds))
     chooser = win.channel_chooser
     leads = [
         chooser.leads.item(i).data(Qt.ItemDataRole.UserRole) for i in range(chooser.leads.count())
     ]
-    assert leads == ["LA", "LB"]  # leads of two or more channels only
+    assert leads == ["LA", "LB"]  # leads by the rule: four contacts, the first among them
     chooser.set_lead("LA", False)
     assert win.state.hidden == {"LA1", "LA2", "LA3", "LA4"}
     assert not any(n.startswith("LA") for n in win.row_labels())
@@ -396,3 +398,65 @@ def test_the_rows_label_names_the_rows_that_are_fully_on_screen(make_window, tmp
             i for i in range(first, 40) if canvas.row_y(i) + canvas.row_height / 2 <= plot_h + 1e-6
         ]
         assert win.rows_label.text() == f"Rows {first + 1}-{whole[-1] + 1} of 40", height
+
+
+# --- leads and the guess about channels that are not EEG, in the window ----------
+
+
+def lead_names():
+    names = ["Fp1", "Fp2", "F3", "F4"] + [f"LA{i}" for i in range(1, 7)]
+    return names + [f"HR{i}" for i in range(1, 5)] + ["ECG"]
+
+
+def test_a_depth_lead_called_hr_stays_with_the_eeg_and_scalp_names_are_not_grouped(
+    make_window, tmp_path
+):
+    win = make_window(write_kinds(tmp_path / "leads.mefd", {n: "eeg" for n in lead_names()}))
+    labels = win.row_labels()
+    assert labels[-1] == "ECG" and sorted(labels) == sorted(
+        lead_names()
+    )  # HR is not sent to the end
+    rows = {r.channel: r for r in win.canvas.rows}
+    assert not rows["HR1"].own_scale and rows["ECG"].own_scale
+    assert not any(rows[n].group for n in ("Fp1", "Fp2", "F3", "F4"))
+    assert rows["LA2"].short == "2" and rows["HR3"].short == "3" and rows["F4"].short == ""
+    assert win._leads == {"LA", "HR"}
+
+
+def test_the_first_row_on_screen_is_named_in_full_when_it_is_mid_lead(make_window, tmp_path):
+    win = make_window(write_kinds(tmp_path / "mid.mefd", {f"LA{i}": "eeg" for i in range(1, 14)}))
+    win.set_state(spacing=20)
+    win.set_state(row_offset=6)
+    canvas = win.canvas
+    assert canvas.gutter_lines(6)[0] == "LA7"  # the first on screen: its lead is scrolled away
+    assert canvas.gutter_lines(7)[0] == "8"
+    win.set_state(row_offset=0)
+    assert canvas.gutter_lines(0)[0] == "LA1" and canvas.gutter_lines(1)[0] == "2"
+
+
+def test_the_derived_montages_name_their_rows_in_full(make_window, tmp_path):
+    from mef3io_studio.model import viewer_view as vv
+
+    names = [f"LA{i}" for i in range(1, 7)] + ["Cz"]
+    win = make_window(write_kinds(tmp_path / "der.mefd", {n: "eeg" for n in names}))
+    win.set_state(montage=vv.MONTAGE_BIPOLAR)
+    shown = [win.canvas.gutter_lines(i)[0] for i in range(len(win.canvas.rows))]
+    assert [x for x in shown if "−" in x] == [
+        "LA1 − LA2",
+        "LA2 − LA3",
+        "LA3 − LA4",
+        "LA4 − LA5",
+        "LA5 − LA6",
+    ]
+    win.set_state(montage=vv.MONTAGE_REFERENCE, reference="Cz")
+    shown = [win.canvas.gutter_lines(i)[0] for i in range(len(win.canvas.rows))]
+    assert shown[:3] == ["LA1 − Cz", "LA2 − Cz", "LA3 − Cz"]  # full, never "2 − Cz"
+
+
+def test_the_chooser_offers_only_leads_by_the_rule(make_window, tmp_path):
+    win = make_window(write_kinds(tmp_path / "ch.mefd", {n: "eeg" for n in lead_names()}))
+    chooser = win.channel_chooser
+    offered = [chooser.leads.item(i).data(0x100) for i in range(chooser.leads.count())]
+    assert sorted(offered) == ["HR", "LA"]
+    win.hide_lead("F3")  # not in a lead: only itself
+    assert win.state.hidden == {"F3"}

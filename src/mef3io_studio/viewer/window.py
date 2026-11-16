@@ -204,6 +204,8 @@ class ViewerWindow(QMainWindow):
         self._screen_hooked = False
         self._rate_of = data.rate
         self._channels = list(data.channels)
+        #: The leads among all recorded channels (see ``montage.real_leads``).
+        self._leads = montage.real_leads(self._channels)
         self._rates = sorted({float(data.rate(c)) for c in self._channels}) or [256.0]
         self.perf = performance_from(settings)
         self.controller = ViewController(data, self.perf, parent=self)
@@ -900,8 +902,10 @@ class ViewerWindow(QMainWindow):
         self.set_state(hidden=hidden, row_offset=0)
 
     def _lead_members(self, channel: str) -> set[str]:
-        lead = montage.lead_and_contact(channel)[0]
-        return {c for c in self._channels if montage.lead_and_contact(c)[0] == lead}
+        lead = montage.lead_of(channel, self._leads)
+        if lead is None:  # not in a lead: it is on its own
+            return {channel}
+        return {c for c in self._channels if montage.lead_of(c, self._leads) == lead}
 
     def hide_channel(self, channel: str) -> None:
         self.set_hidden(self.state.hidden | {channel})
@@ -1178,7 +1182,8 @@ class ViewerWindow(QMainWindow):
         overview = self.overview()
         key = vv.MONTAGE_RECORDED if overview else self.state.montage
         rows = self._rows_for(key, self.state.reference)
-        return montage.non_eeg_last([r for r in rows if r.plus not in self.state.hidden])
+        shown = [r for r in rows if r.plus not in self.state.hidden]
+        return montage.non_eeg_last(shown, self._leads)
 
     def _refresh(self) -> None:
         if self._closed or self.canvas.width() < 10 or self.edit.saving:
@@ -1392,7 +1397,9 @@ class ViewerWindow(QMainWindow):
         # side by side); with recordings in turn the band says it.
         keep_tags = len(set(tags)) > 1
         groups = (
-            montage.group_rows(rows) if not self.overview() else [montage.RowGroup()] * len(rows)
+            montage.group_rows(rows, self._leads)
+            if not self.overview()
+            else [montage.RowGroup()] * len(rows)
         )
         for i, (row, pc, tag) in enumerate(zip(rows, pieces, tags, strict=True)):
             tag = tag if keep_tags else ""
@@ -1411,7 +1418,7 @@ class ViewerWindow(QMainWindow):
                     None if old is None else old[0],
                     0 if old is None else old[1],
                     bad,
-                    montage.is_non_eeg(row.plus),
+                    montage.is_non_eeg(row.plus, self._leads),
                     groups[i].first,
                     groups[i].short,
                     groups[i].group,

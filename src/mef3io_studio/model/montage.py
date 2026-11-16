@@ -8,7 +8,7 @@ computes them. Channel names can identify: nothing here logs.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -54,26 +54,54 @@ def lead_and_contact(name: str) -> tuple[str, int | None]:
     return name, None
 
 
+#: A name prefix is a lead only with at least this many contacts, one of them
+#: contact 1 (``LA1`` ... ``LA12``): scalp names (``F3`` ``F4`` ``F7`` ``F8``,
+#: ``T3``-``T6``, ``A1`` ``A2``, ``Fp1`` ``Fp2``) are not leads.
+MIN_LEAD_CONTACTS = 4
+
+
+def real_leads(names: Sequence[str]) -> frozenset[str]:
+    """The leads among ALL recorded channels: prefixes with at least
+    :data:`MIN_LEAD_CONTACTS` different contacts, contact 1 among them."""
+    contacts: dict[str, set[int]] = {}
+    for n in names:
+        lead, contact = lead_and_contact(n)
+        if contact is not None:
+            contacts.setdefault(lead, set()).add(contact)
+    return frozenset(lead for lead, c in contacts.items() if len(c) >= MIN_LEAD_CONTACTS and 1 in c)
+
+
+def lead_of(name: str, leads: Collection[str]) -> str | None:
+    """The lead ``name`` belongs to (one of ``leads``), else None."""
+    lead, contact = lead_and_contact(name)
+    return lead if contact is not None and lead in leads else None
+
+
 #: Channels that are not EEG, by their name without digits and signs (``EMG1``,
 #: ``SpO2``, ``DC3``): another unit and another size, so a view of many EEG
-#: channels puts them last and scales each by itself.
+#: channels puts them last and gives each its own sensitivity.
 NON_EEG = frozenset(
     "ecg ekg emg eog loc roc dc spo sao osat trig trigger resp respiration pleth ppg photic "
     "pulse hr snore flow airflow effort thorax abdomen temp bp event co etco ptt".split()
 )
 
 
-def is_non_eeg(name: str) -> bool:
+def is_non_eeg(name: str, leads: Collection[str] = ()) -> bool:
+    """Whether the channel is, by its name, not EEG. A channel that belongs to a
+    lead (``leads``: see :func:`real_leads`) is EEG whatever its letters: a depth
+    lead may be called ``HR`` or ``CO``."""
+    if lead_of(name, leads) is not None:
+        return False
     key = re.sub(r"[^a-z]", "", name.casefold())
     return key in NON_EEG or key.startswith(("ecg", "ekg", "emg", "eog"))
 
 
-def non_eeg_last(rows: Sequence[Row]) -> list[Row]:
+def non_eeg_last(rows: Sequence[Row], leads: Collection[str] = ()) -> list[Row]:
     """The rows with the channels that are not EEG (ECG, EMG, DC, SpO2 ...) after
     the others, each group in its own order (judged by the row's own channel:
     ``ECG - Cz`` is an ECG row)."""
-    eeg = [r for r in rows if not is_non_eeg(r.plus)]
-    rest = [r for r in rows if is_non_eeg(r.plus)]
+    eeg = [r for r in rows if not is_non_eeg(r.plus, leads)]
+    rest = [r for r in rows if is_non_eeg(r.plus, leads)]
     return eeg + rest if rest and eeg else list(rows)
 
 
@@ -95,17 +123,21 @@ class RowGroup:
     short: str = ""
 
 
-def group_rows(rows: Sequence[Row]) -> list[RowGroup]:
+def group_rows(rows: Sequence[Row], leads: Collection[str] | None = None) -> list[RowGroup]:
     """Group consecutive rows of one lead (``LA1``, ``LA2`` ...); a run of fewer
-    than :data:`MIN_GROUP` rows (Fp1, Fp2 ...) is not a group and keeps its
-    labels. Rows of channels that are not EEG form one group at the end."""
+    than :data:`MIN_GROUP` rows is not a group and keeps its labels. ``leads`` are
+    the real leads among ALL recorded channels (:func:`real_leads`; None = judged
+    from these rows only). Rows of channels that are not EEG form one group at the
+    end. Only a row that is a channel as recorded is shortened: a derivation
+    (``LA2 − LA3``, ``LA2 − Cz``) always keeps its full label."""
+    if leads is None:
+        leads = real_leads([r.plus for r in rows])
     keys: list[str] = []
     for r in rows:
-        if is_non_eeg(r.plus):
+        if is_non_eeg(r.plus, leads):
             keys.append(OTHER_GROUP)
         else:
-            lead, contact = lead_and_contact(r.plus)
-            keys.append(lead if contact is not None else "")
+            keys.append(lead_of(r.plus, leads) or "")
     out = [RowGroup(k) for k in keys]
     i = 0
     while i < len(rows):
@@ -115,7 +147,13 @@ def group_rows(rows: Sequence[Row]) -> list[RowGroup]:
         if keys[i] and j - i >= (1 if keys[i] == OTHER_GROUP else MIN_GROUP):
             for k in range(i, j):
                 short = ""
-                if keys[i] != OTHER_GROUP and k > i and rows[k].label.startswith(keys[i]):
+                if (
+                    keys[i] != OTHER_GROUP
+                    and k > i
+                    and rows[k].minus is None
+                    and rows[k].label == rows[k].plus
+                    and rows[k].label.startswith(keys[i])
+                ):
                     rest = rows[k].label[len(keys[i]) :].lstrip(" _-")
                     short = rest if rest and not rest[0].isalpha() else ""
                 out[k] = RowGroup(keys[i], k == i, short)

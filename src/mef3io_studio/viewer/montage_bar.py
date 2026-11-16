@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..model.montage import lead_and_contact
+from ..model.montage import lead_of, real_leads
 from ..model.viewer_view import MONTAGE_NAMES, MONTAGE_REFERENCE, MONTAGES
 
 
@@ -87,7 +87,8 @@ class MontageBar(QWidget):
 
 class ChannelChooser(QWidget):
     """Tick the channels to show; search; Show all. Above the channels, the
-    leads (``LA1`` ... ``LA12`` are the lead ``LA``): tick or untick a whole
+    leads (``LA1`` ... ``LA12`` are the lead ``LA``; scalp names such as ``F3`` ``F4``
+    are not leads, see ``montage.real_leads``): tick or untick a whole
     lead at once; a lead with only some of its channels shown is half ticked."""
 
     hidden_changed = Signal(object)  # frozenset of hidden channel names
@@ -133,12 +134,13 @@ class ChannelChooser(QWidget):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Unchecked if n in hidden else Qt.CheckState.Checked)
             self.list.addItem(item)
+        leads = real_leads(names)  # by the rule, among all the recorded channels
         members: dict[str, list[str]] = {}
         for n in names:
-            lead, contact = lead_and_contact(n)
-            if contact is not None:
+            lead = lead_of(n, leads)
+            if lead is not None:
                 members.setdefault(lead, []).append(n)
-        self._lead_members = {k: v for k, v in members.items() if len(v) >= 2}
+        self._lead_members = members
         self.leads.clear()
         for lead, chans in self._lead_members.items():
             item = QListWidgetItem(f"{lead}  ({len(chans)} channels)")
