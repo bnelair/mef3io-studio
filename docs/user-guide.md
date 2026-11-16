@@ -825,6 +825,9 @@ to see the full list of keys. The main ones:
 | More or less space between rows | Ctrl+Up and Ctrl+Down (on a Mac: Alt+Up and Alt+Down) |
 | Show other channels | Shift+Up and Shift+Down, or Page Up and Page Down |
 | Choose the timebase (10, 15, 30, 60 or 120 mm/s) | Alt+1 to Alt+5 |
+| One hour forward or back | Ctrl+Right and Ctrl+Left |
+| One day forward or back | Ctrl+Shift+Right and Ctrl+Shift+Left |
+| Next or previous stretch with data (over a gap) | `.` and `,` |
 | Go to a time | `G` |
 | Jump | Ctrl+K |
 | Choose channels | `C` |
@@ -840,8 +843,18 @@ offers more choices for the channel or moment under the pointer.
 2 08:00`), a date and time (`2000-01-31 14:30`), a move from the page you
 are on (`+10m`, `-90s`, `+2h`), and a recording letter (`B`, the start of that
 recording). Shift+Enter finds the previous time of day instead of the next.
-The **Day** and time boxes in the toolbar do the same. Times are shown in
+The **Day** and time boxes in the toolbar do the same, and you can also type
+a date and time (`2000-01-31 14:30`) or just a date in the time box. Times are shown in
 the time zone you chose for the site (see *Times and time zones*).
+
+**Long recordings.** The strip above the traces shows the whole recording:
+the data in colour, the gaps hatched (also a pause inside one recording, once
+the viewer has read where the data is), a line and the date at every midnight.
+Move the pointer over it to read the time, the day, and how long a gap is.
+For a recording of days the toolbar offers **−1 day**, **−1 h**, **+1 h**,
+**+1 day** and **◀ Data** and **Data ▶**, which jump to the previous or next
+stretch with data and skip over a gap. The slowest timebases (0.002 mm/s and
+up) put a day or more on the screen.
 
 **Scales.** The toolbar sets the *sensitivity* (µV per millimetre; **Auto**
 chooses one that fits the signals), the *timebase* (millimetres per second)
@@ -869,8 +882,27 @@ The **Montage** box in the toolbar chooses how the channels are shown:
   lead (for example A1 against A2).
 
 **Channels** (`C`) opens a list with a search box: tick the channels to show.
-Right-clicking a trace can also hide a channel or a whole lead, or show only
-that lead.
+Above the channels are the **leads** (for example LA, made of LA1 to LA12):
+tick or untick a whole lead at once; a lead with only some of its channels
+shown is half ticked. Searching finds a lead by its name or by a channel in
+it. Right-clicking a trace can also hide a channel or a whole lead, or show
+only that lead.
+
+**Many channels.** When a recording has more channels than fit, the toolbar
+says which ones are on screen ("Rows 33-64 of 256") and a scroll bar appears
+beside the traces; Page Up and Page Down show the previous or next screenful.
+In the spacing box, **Fit all rows** puts as many channels on the screen as can
+still be read (never closer than 4 mm) and you scroll to the rest; a larger
+number in the same box gives fewer, larger rows. The viewer remembers the
+choice. Channels of one lead are drawn as a group: a thin line above the
+first, and the lead's name once. Channels that are not EEG (ECG, EMG, DC, SpO2
+and the like) come last, each drawn to fit its own row.
+
+**Traces on open.** The viewer fits the sensitivity to the signals when a
+recording opens (a sensitivity you chose before is kept) and draws every trace
+around the middle of its row, so a constant offset does not move it. A trace
+that swings further than a row and a half is cut off there and the cut is marked
+with small arrows; use **Auto**, or choose a larger µV/mm number, to see it whole.
 
 ### Filters
 

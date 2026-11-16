@@ -22,7 +22,8 @@ SPACING_STEPS = (2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 25, 30)
 #: Timebase, millimetres per second (default 30): the clinical steps...
 TIMEBASE_CLINICAL = (3, 5, 7.5, 10, 15, 20, 30, 40, 60, 90, 120, 180, 240)
 #: ...and the slower ones that zoom out into the overview.
-TIMEBASE_OVERVIEW = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2)
+#: Down to 0.002 mm/s, where an ordinary window holds two to three days.
+TIMEBASE_OVERVIEW = (0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2)
 TIMEBASE_STEPS = TIMEBASE_OVERVIEW + TIMEBASE_CLINICAL
 #: Alt+1 ... Alt+5.
 TIMEBASE_KEYS = (10, 15, 30, 60, 120)
@@ -78,6 +79,19 @@ def fit_spacing(plot_height_px: float, px_per_mm: float, n_rows: int) -> float:
     return float(
         min(SPACING_STEPS[-1], max(READABLE_SPACING_MM, plot_height_px / px_per_mm / n_rows))
     )
+
+
+def stretch_start(starts, t0: int, direction: int, eps: int = 1) -> int | None:
+    """The start of the next (``direction`` > 0) or previous stretch with data,
+    counted from the page that starts at ``t0``: the first start after ``t0`` or
+    the last one before it. ``starts`` is sorted. None when there is none."""
+    import bisect
+
+    if direction > 0:
+        i = bisect.bisect_right(starts, t0 + eps)
+        return starts[i] if i < len(starts) else None
+    i = bisect.bisect_left(starts, t0 - eps)
+    return starts[i - 1] if i > 0 else None
 
 
 def rows_text(first: int, shown: int, total: int) -> str:

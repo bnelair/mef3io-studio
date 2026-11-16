@@ -708,6 +708,102 @@ mef3io), driven by a scheduler in `workers/`.
   - the export range reaches the joiner prefilled.
 - **UI text:** passes tests/test_ui_language.py.
 
+## Many channels and long recordings (phase 4)
+
+The viewer must not make anyone zoom just to see that channels have signal,
+nor lose their place in hundreds of channels or days of time.
+
+**Traces on open (`viewer/canvas.py`, `viewer/window.py`)**
+- **Centred.** Each row is drawn around the level its trace has on this page
+  (the median of the page; a `_RowShape` carries `centre` and `spread`), so a
+  DC offset or drift of millivolts never moves a trace away from its row.
+- **A bounded band.** A trace is cut off at `CLIP_HALF_ROWS` (0.75) row heights
+  above and below its middle, and the cut is marked with small arrows in the
+  accent colour on that line (every `CLIP_MARK_SPACING_PX`), so a flat run along
+  the line is never mistaken for the signal. The old limit was 40 rows.
+- **Auto on open.** When the first page is complete the sensitivity is fitted
+  once (`_auto_on_open`), unless a sensitivity was saved before (a saved
+  choice stays). Auto itself is the median over the EEG rows in view of each
+  row's 98th percentile distance from its own middle, so one flat or one huge
+  channel does not move it; flat rows are left out, and channels that are not
+  EEG do not take part. It waits for the rows on screen, not for the
+  controller's loading flag (which is still on at that moment).
+- **Channels that are not EEG** (`montage.is_non_eeg`: ECG, EMG, EOG, DC,
+  SpO2, trigger, ...) are placed after the others (`montage.non_eeg_last`,
+  judged by the row's own channel, so `ECG − Cz` is an ECG row) and each is
+  fitted to its own row (`DrawRow.own_scale`), whatever the sensitivity says.
+
+**Many channels**
+- With more rows than fit, the toolbar says **"Rows 33-64 of 256"** and a
+  vertical scroll bar sits beside the traces (hidden when everything fits).
+  Page Up / Page Down (already the next / previous screenful) and Shift+wheel
+  keep working; the scroll bar and the keys set the same `row_offset`.
+- **Spacing** has a first choice **Fit all rows** (`ViewState.fit_rows`): the
+  distance is worked out from the rows and the window and never goes under
+  `READABLE_SPACING_MM` (4 mm); beyond that the rest is reached by scrolling,
+  never squashed. "Fewer, larger rows" is a larger number in the same box.
+  Remembered through the existing `viewer/spacing` preference (0 = fit all).
+- Tile reads follow the rows on screen: blocks are asked for with the visible
+  priority only for the groups holding rows in view (a test scrolls a
+  200-row recording and checks which groups are requested).
+
+**Leads**
+- Rows of one lead in a row (`LA1`, `LA2` ... `LA12`, runs of at least
+  `montage.MIN_GROUP` = 3) are a group: a thin line above it, the lead named
+  once (its first row, bold; the following rows show only the contact
+  number, `DrawRow.short`; the row's real label is unchanged everywhere
+  else). `montage.group_rows` is pure. Referenced and lead-bipolar montages
+  are untouched (their labels are not shortened).
+- The channel chooser lists the **leads** (two or more channels) above the
+  channels: tick or untick a whole lead; a lead with some channels shown is
+  half ticked; the search finds a lead by its name or any channel in it.
+
+**Long recordings**
+- **Overview strip.** The data is drawn as pixel runs (`strip.pixel_runs`: at
+  most one per pixel column, a few array operations per recording, never a
+  loop over stretches). Local midnights are a line through the bar with the
+  date. The **real stretches with data** come from the block index of the first
+  channel (`strip.block_stretches`, read once on the strip's thread after the
+  first page, `controller.strip_stretches`): a pause inside one recording is a
+  gap, which the segment times alone do not tell (until the index has been
+  read the strip uses the segment times). Hover shows the time with its day and
+  "There is data here" or "No data: a gap of 3 h" (`readout`, also the tooltip).
+- **Keys and buttons:** Ctrl+Right / Ctrl+Left one hour, Ctrl+Shift+Right /
+  Left one day, `.` / `,` the next / previous stretch with data (a jump over a
+  gap; `vv.stretch_start`: the first start after the page, the last one before
+  it). The six toolbar buttons show only where they mean something (an hour
+  needs 2 h of timeline, a day 2 days, stretches two or more stretches).
+- **Timebase** goes down to 0.002 mm/s (a wide window then holds three to four
+  days); the "= 1 day 6 h" label already reads in days.
+- **Go** takes a date and time (`2000-01-31 14:30`) or a date alone
+  (`2000-01-31`, midnight) as well as a time of day beside the Day box; Jump
+  takes the same.
+
+**Notes carried into a page.** Notes that began before the page and last into
+it are drawn one by one only up to `MAX_BANDS` (200); beyond that they are ONE
+marker at the left edge, "N notes and events continue from before this page"
+(a counted tick and a chip "N from before"): hover lists the nearest eight, a
+click on the chip goes to the latest of them, `[` steps to them like to any
+note. The counts of everything drawn still add up to the notes in view.
+
+**A save that is stopped.** The save task (`edit_mode._start_save`) is guarded
+from `begin_data_change` to `submit`; a task that ends without an outcome
+(stopped before it ran, or from inside the library before the first write)
+frees the draft and the window (`_save_ended`). The write loop reports its own
+stops and failures with exactly the notes appended, so the notes file is
+either complete for every step it reports (each step is one `write_annotations`
+call, stopped only between calls) or, if the process dies, torn (the existing
+"left unfinished" message). When the stop came after a write may have begun
+and no outcome was reported, the message says some notes may already be
+stored and to reopen before saving again.
+
+**Held keys.** A held navigation key (auto-repeat) moves the page at every repeat
+but asks for the picture once per batch of repeats
+(`ViewerWindow._refresh_soon`, `REPEAT_FRAME_MS`): the repeats that arrive
+together (the window was painting) cost one request, and nothing is read or
+computed for the pages passed. After a visible block is given up the held
+look-ahead goes on in the same pump.
+
 ## Phases
 
 1. **Viewer:**

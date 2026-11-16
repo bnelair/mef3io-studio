@@ -7,7 +7,7 @@ words are read in the site time zone.
   page (``previous=True``: the previous one);
 * ``day 2 08:00``: the 2nd calendar day of the recording (day 1 = the day
   it starts), at that time;
-* ``YYYY-MM-DD HH:MM[:SS]``;
+* ``YYYY-MM-DD HH:MM[:SS]`` (or just ``YYYY-MM-DD``, midnight);
 * ``+10m``, ``-90s``, ``+2h``, ``+1d``: relative to the current page;
 * ``A``, ``B``...: the start of that recording.
 """
@@ -23,8 +23,9 @@ from ..model.timefmt import from_local, to_datetime
 US = 1_000_000
 HELP_TEXT = (
     "You can type a time of day (14:30), a day and time (day 2 08:00), a date and time "
-    "(2000-01-31 14:30), a move such as +10m, -90s or +2h, or a recording letter (B) "
-    "to go to its start. Press Shift+Enter for the previous occurrence of a time of day."
+    "(2000-01-31 14:30), a date (2000-01-31), a move such as +10m, -90s or +2h, or a "
+    "recording letter (B) to go to its start. Press Shift+Enter for the previous "
+    "occurrence of a time of day."
 )
 
 
@@ -36,6 +37,7 @@ _TIME = r"(\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?"
 _RE_TIME = re.compile(rf"^{_TIME}$")
 _RE_DAY = re.compile(rf"^day\s+(\d+)\s+{_TIME}$", re.IGNORECASE)
 _RE_DATE = re.compile(rf"^(\d{{4}})-(\d{{2}})-(\d{{2}})[ T]{_TIME}$")
+_RE_DATE_ONLY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _RE_REL = re.compile(r"^([+-])\s*(\d+(?:\.\d+)?)\s*([smhd])$", re.IGNORECASE)
 _RE_LETTER = re.compile(r"^[A-Za-z]{1,3}$")
 _UNIT = {"s": US, "m": 60 * US, "h": 3600 * US, "d": 86_400 * US}
@@ -105,6 +107,12 @@ def parse(
         except ValueError:
             raise JumpError("That date does not exist.") from None
         target = _local_us(day, _clock(*m.groups()[3:]), zone)
+    elif (m := _RE_DATE_ONLY.match(s)) is not None:
+        try:
+            day = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            raise JumpError("That date does not exist.") from None
+        target = _local_us(day, time(0, 0), zone)
     elif _RE_LETTER.match(s) and letters is not None and s.upper() in letters:
         return int(letters[s.upper()])
     elif _RE_LETTER.match(s):

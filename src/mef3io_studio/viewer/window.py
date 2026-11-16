@@ -204,6 +204,7 @@ class ViewerWindow(QMainWindow):
         self.perf = performance_from(settings)
         self.controller = ViewController(data, self.perf, parent=self)
         self._chosen: set[str] = set()
+        self._long_actions: list = []
         #: Fit the sensitivity once on the first complete page (not when the
         #: person has chosen a sensitivity before: that one is kept).
         self._auto_open = self.FIT_ON_OPEN and (
@@ -211,6 +212,8 @@ class ViewerWindow(QMainWindow):
         )
         self._last_row: int | None = None
         self._coverage = data.segments_coverage()
+        #: The real stretches with data, once the block index has been read.
+        self._stretches: list[tuple[int, int, int]] = []
         self._boundaries = data.boundaries()
         self._page_set: tuple[int, ...] | None = None
         self.marks: list[vm.Mark] = []
@@ -243,6 +246,7 @@ class ViewerWindow(QMainWindow):
         self.controller.loading_changed.connect(lambda on: self.canvas.set_loading(on))
         self.controller.failed.connect(self._failed)
         self.controller.strip_envelope.connect(lambda env: self.strip.set_envelope(env))
+        self.controller.strip_stretches.connect(self._on_stretches)
         self.setWindowFlag(Qt.WindowType.Window, True)
         em = self.fontMetrics().height()
         self.resize(em * 80, em * 44)
@@ -326,6 +330,17 @@ class ViewerWindow(QMainWindow):
 
     # -- construction ----------
 
+    def _sync_long_buttons(self) -> None:
+        """Hours, days and stretches with data: only offered where the recording
+        is long enough (or gappy enough) for them to mean something."""
+        span = self.data.timeline_end - self.data.timeline_start
+        hour, day = span >= 2 * 3600 * 1_000_000, span >= 2 * 86_400 * 1_000_000
+        stretches = len(self._stretch_starts()) >= 2
+        wanted = (day, hour, hour, day, stretches, stretches)
+        for action, on in zip(self._long_actions, wanted, strict=True):
+            action.setVisible(on)
+        self._long_sep.setVisible(any(wanted))
+
     def _build_toolbars(self) -> None:
         def tool(text: str, tip: str, slot, visible: bool = True) -> QToolButton:
             b = QToolButton(self)
@@ -350,10 +365,38 @@ class ViewerWindow(QMainWindow):
         self.day_box.setMaximum(max(1, self._days()))
         self.day_box.setToolTip("The day of the recording")
         self.time_edit = QLineEdit(self)
-        self.time_edit.setMaximumWidth(self.fontMetrics().height() * 7)
-        self.time_edit.setInputMask("99:99:99")
-        self.time_edit.setToolTip("Time of day (hours:minutes:seconds) in the site time zone")
+        self.time_edit.setMaximumWidth(self.fontMetrics().height() * 13)
+        self.time_edit.setMinimumWidth(self.fontMetrics().height() * 7)
+        self.time_edit.setPlaceholderText("hh:mm:ss or 2000-01-31 14:30")
+        self.time_edit.setToolTip(
+            "Time of day (hours:minutes:seconds) in the site time zone, or a date and time "
+            "such as 2000-01-31 14:30"
+        )
         self.go_button = tool("Go", "Go to this day and time", self._go_clicked)
+        long_tip = "Move through a long recording"
+        self.back_day_button = tool(
+            "−1 day", "One day back (Ctrl+Shift+Left)", lambda: press("day_back")
+        )
+        self.back_hour_button = tool(
+            "−1 h", "One hour back (Ctrl+Left)", lambda: press("hour_back")
+        )
+        self.forward_hour_button = tool(
+            "+1 h", "One hour forward (Ctrl+Right)", lambda: press("hour_forward")
+        )
+        self.forward_day_button = tool(
+            "+1 day", "One day forward (Ctrl+Shift+Right)", lambda: press("day_forward")
+        )
+        self.prev_stretch_button = tool(
+            "◀ Data", "The previous stretch with data (,)", lambda: press("stretch_back")
+        )
+        self.next_stretch_button = tool(
+            "Data ▶", "The next stretch with data, over a gap (.)", lambda: press("stretch_forward")
+        )
+        for b in (
+            self.back_day_button, self.back_hour_button, self.forward_hour_button,
+            self.forward_day_button, self.prev_stretch_button, self.next_stretch_button,
+        ):  # fmt: skip
+            b.setAccessibleDescription(long_tip)
         self.jump_button = tool(
             "Jump…", "Jump to a time, a move or a recording (Ctrl+K)", self.open_jump
         )
@@ -406,6 +449,16 @@ class ViewerWindow(QMainWindow):
         ):
             row1.addWidget(w)
         row1.addSeparator()
+        for w in (
+            self.back_day_button,
+            self.back_hour_button,
+            self.forward_hour_button,
+            self.forward_day_button,
+            self.prev_stretch_button,
+            self.next_stretch_button,
+        ):
+            self._long_actions.append(row1.addWidget(w))
+        self._long_sep = row1.addSeparator()
         for w in (
             self.notes_button,
             self.edit_button,
@@ -477,6 +530,7 @@ class ViewerWindow(QMainWindow):
         row2.addWidget(self.rows_label)
         self.addToolBar(row2)
         self._sync_boxes()
+        self._sync_long_buttons()
 
     def _steps_box(self, steps, fmt: str, tip: str) -> QComboBox:
         box = QComboBox(self)
@@ -562,6 +616,12 @@ class ViewerWindow(QMainWindow):
         h["half_back"] = lambda: self.page(-0.5)
         h["second_forward"] = lambda: self.move_by(1_000_000, 1)
         h["second_back"] = lambda: self.move_by(-1_000_000, -1)
+        h["hour_forward"] = lambda: self.move_by(3600 * 1_000_000, 1)
+        h["hour_back"] = lambda: self.move_by(-3600 * 1_000_000, -1)
+        h["day_forward"] = lambda: self.move_by(86_400 * 1_000_000, 1)
+        h["day_back"] = lambda: self.move_by(-86_400 * 1_000_000, -1)
+        h["stretch_forward"] = lambda: self.go_to_stretch(1)
+        h["stretch_back"] = lambda: self.go_to_stretch(-1)
         h["start"] = lambda: self.go_to_edge(False)
         h["end"] = lambda: self.go_to_edge(True)
         h["sens_up"] = lambda: self.step_sensitivity(-1)
@@ -692,6 +752,45 @@ class ViewerWindow(QMainWindow):
         length = self.page_us()
         self._direction = 1 if end else -1
         self.set_state(t0=self.data.timeline_end - length if end else self.data.timeline_start)
+
+    def _on_stretches(self, stretches) -> None:
+        """The block index of the first channel arrived: the strip and the
+        stretch keys now use the real stretches with data (a pause inside one
+        recording is a gap), each given to the recording that holds it."""
+        if self._closed or not stretches:
+            return
+        cover = sorted(self._coverage)
+        starts = [c[0] for c in cover]
+        out = []
+        for a, b in stretches:
+            i = max(0, bisect.bisect_right(starts, (a + b) // 2) - 1)
+            near = cover[i] if cover else (a, b, 0)
+            out.append((a, b, near[2]))
+        self._stretches = out
+        self.strip.set_timeline(self.data.timeline_start, self.data.timeline_end, out)
+        self._sync_long_buttons()
+
+    def _stretch_starts(self) -> list[int]:
+        """Where each stretch with data begins (any recording), sorted."""
+        starts, last_end = [], None
+        for a, b, _rec in sorted(self._stretches or self._coverage):
+            if last_end is None or a > last_end:
+                starts.append(a)
+            last_end = b if last_end is None else max(last_end, b)
+        return starts
+
+    def go_to_stretch(self, direction: int) -> None:
+        """The next or previous stretch with data: jumps over a gap."""
+        t = vv.stretch_start(self._stretch_starts(), self.state.t0, direction)
+        if t is None:
+            self.status_message.setText(
+                "There is no later stretch with data."
+                if direction > 0
+                else "There is no earlier stretch with data."
+            )
+            return
+        self._direction = 1 if direction > 0 else -1
+        self.go_to(t)
 
     def centre_at(self, t: int) -> None:
         self.set_state(t0=int(t - self.page_us() / 2))
@@ -966,7 +1065,10 @@ class ViewerWindow(QMainWindow):
     def _go_clicked(self) -> None:
         text = self.time_edit.text().strip()
         try:
-            t = self.parse_jump(f"day {self.day_box.value()} {text}")
+            if text[:4].isdigit() and "-" in text[:5]:  # a date (and time) was typed
+                t = self.parse_jump(text)
+            else:
+                t = self.parse_jump(f"day {self.day_box.value()} {text}")
         except jumping.JumpError as exc:
             self.status_message.setText(str(exc))
             return
@@ -1035,7 +1137,10 @@ class ViewerWindow(QMainWindow):
         self._sync_toolbar_time()
         self._update_status_mode()
         self.filter_panel.set_notice(self._notice())
+        first = not self._ready
         self._ready = True
+        if first:  # once the first page is asked for: the strip learns where the data really is
+            QTimer.singleShot(0, self.request_strip_envelope)
         self.page_changed.emit(t0, t0 + length)
 
     def _sync_rows(self, total: int, visible: int, offset: int) -> None:
@@ -1765,6 +1870,9 @@ class ViewerWindow(QMainWindow):
         """After a save: show what is stored now (when the data was reopened)."""
         if reopened:
             self._coverage = self.data.segments_coverage()
+            self._stretches = []
+            self._sync_long_buttons()
+            QTimer.singleShot(0, self.request_strip_envelope)
             self._boundaries = self.data.boundaries()
             self.marks_loaded = False
             self._on_annotations(records, locked)
@@ -2161,7 +2269,7 @@ class ViewerWindow(QMainWindow):
 
     def request_strip_envelope(self) -> None:
         """Draw a faint envelope of the first channel in the strip (index only)."""
-        if self._channels and not self.edit.saving:
+        if self._channels and not self._closed and not self.edit.saving:
             self.controller.request_strip_envelope(self._channels[0])
 
     def changeEvent(self, event) -> None:  # noqa: N802

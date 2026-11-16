@@ -41,7 +41,7 @@ from ..workers.viewer_scheduler import (
     ViewBlockCache,
     data_key_of,
 )
-from .strip import envelope_bins
+from .strip import block_stretches, envelope_bins
 
 
 def default_compute_workers() -> int:
@@ -123,11 +123,14 @@ class ViewController(QObject):
     failed = Signal(str)
     #: The strip's envelope: ``[2, bins]`` normalised.
     strip_envelope = Signal(object)
+    #: The real stretches with data, from the block index: ``[(t0, t1)]``.
+    strip_stretches = Signal(object)
 
     _tile = Signal(object)
     _done = Signal(object, object)  # (job, (outcome, error))
     _error = Signal(object, object, object)  # (tile key, error, generation when it failed)
     _strip = Signal(object)
+    _stretches = Signal(object)
 
     def __init__(self, data, perf: Performance | None = None, parent=None):
         super().__init__(parent)
@@ -180,6 +183,7 @@ class ViewController(QObject):
         self._done.connect(self._on_done)
         self._error.connect(self._on_error)
         self._strip.connect(self.strip_envelope)
+        self._stretches.connect(self.strip_stretches)
 
     # -- worker-thread callbacks: only emit ------------------------------------
 
@@ -688,6 +692,8 @@ class ViewController(QObject):
     # -- the strip ----------
 
     def request_strip_envelope(self, channel: str) -> None:
+        if self._closed:  # a timer that fires after the window closed
+            return
         data = self.data
 
         def work():
@@ -697,12 +703,17 @@ class ViewController(QObject):
                     e["start_uutc"], e["end_uutc"], e["min"], e["max"],
                     (data.timeline_start, data.timeline_end), STRIP_BINS,
                 )  # fmt: skip
+                found = block_stretches(e["start_uutc"], e["end_uutc"])
             except BaseException:  # noqa: BLE001 - the strip simply stays plain
                 return
             if not self._closed:
                 self._strip.emit(env)
+                self._stretches.emit(found)
 
-        self._strip_pool.submit(work)
+        try:
+            self._strip_pool.submit(work)
+        except RuntimeError:  # the pool is already shut down
+            pass
 
     # -- lifecycle ----------
 
