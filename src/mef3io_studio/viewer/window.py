@@ -74,6 +74,8 @@ MAX_LISTED = 5000
 #: More notes than this per 4 pixels (at least DENSE_MIN_MARKS) in view are merged per column.
 DENSE_PX_PER_MARK = 4
 DENSE_MIN_MARKS = 40
+#: In a crowded view this many notes lasting more than a pixel (the longest) keep their band.
+MAX_BANDS = 200
 #: Notes looked through between two events when the side list is filtered.
 LIST_SLICE = 400
 #: Up to this many notes the filtered list is made at once.
@@ -202,11 +204,11 @@ class ViewerWindow(QMainWindow):
         self._times_np = np.zeros(0, dtype=np.int64)
         self._importance_np = np.zeros(0, dtype=np.int64)
         self._drafted: list[int] = []
+        self._ends_np = np.zeros(0, dtype=np.int64)  # a note's end (its time when it has none)
+        self._drafted_np = np.zeros(0, dtype=bool)
         self._list_runner = SlicedRunner(self)
         self._list_runner.done.connect(self._list_ready)
         self._fill_runner = SlicedRunner(self)
-        self._fill_runner.done.connect(self._list_filled)
-        self._fill_note: str | None = None
         self._max_span = 0
         self._privacy_sig: tuple | None = None
         self.export_start: int | None = None
@@ -1310,6 +1312,11 @@ class ViewerWindow(QMainWindow):
         rank = {k: vm.kind_importance(k) for k in set(keys)}
         self._importance_np = np.fromiter((rank[k] for k in keys), dtype=np.int64, count=len(keys))
         self._drafted = [i for i, m in enumerate(keep) if m.state]
+        self._drafted_np = np.zeros(len(keep), dtype=bool)
+        self._drafted_np[self._drafted] = True
+        self._ends_np = np.fromiter(
+            (max(m.end, m.time) if m.end else m.time for m in keep), dtype=np.int64, count=len(keep)
+        )
         self._max_span = max((m.end - m.time for m in keep if m.end), default=0)
 
     def _types_chosen(self, hidden) -> None:
@@ -1366,18 +1373,21 @@ class ViewerWindow(QMainWindow):
         t0, t1 = self.state.t0, self.state.t0 + self.page_us()
         times = self._visible_times
         lo = bisect.bisect_left(times, t0 - self._max_span)
+        start = bisect.bisect_left(times, t0)
         hi = bisect.bisect_right(times, t1)
+        # In view = starts inside the page, or starts before it and still lasts
+        # into it (found by one array compare, never by walking [lo:start]).
+        # The same rule serves the crowded and the sparse path.
+        left = (lo + np.flatnonzero(self._ends_np[lo:start] >= t0)).tolist() if start > lo else []
         pal = self.canvas.palette_
         dark = pal.dark
         width = max(1, int(self.canvas.plot_width))
-        if hi - lo > max(DENSE_MIN_MARKS, width // DENSE_PX_PER_MARK):
-            canvas_marks, chips = self._crowded_marks(t0, t1, lo, hi, width, pal, dark)
+        if hi - start + len(left) > max(DENSE_MIN_MARKS, width // DENSE_PX_PER_MARK):
+            canvas_marks, chips = self._crowded_marks(t0, t1, left, start, hi, width, pal, dark)
         else:
             canvas_marks, chips = [], []
-            for m in self._visible[lo:hi]:
-                if (m.end or m.time) < t0:
-                    continue
-                mark, chip = self._mark_and_chip(m, pal, dark)
+            for i in (*left, *range(start, hi)):
+                mark, chip = self._mark_and_chip(self._visible[i], pal, dark)
                 canvas_marks.append(mark)
                 chips.append(chip)
         self.canvas.marks = canvas_marks
@@ -1386,14 +1396,15 @@ class ViewerWindow(QMainWindow):
         self.chips.set_view(t0, t1, self.canvas.gutter)
         self.chips.set_chips(chips)
 
-    def _crowded_marks(self, t0, t1, lo, hi, width, pal, dark):
+    def _crowded_marks(self, t0, t1, left, start, hi, width, pal, dark):
         """More notes in view than can be told apart: what is built and drawn
-        is bounded by the pixels. Notes merge per pixel column into one tick
-        (a count, the colour of the most important type) and per 8 pixels into
-        one chip; a note of the draft stays a line of its own. Tooltips are
-        made when hovered."""
-        times = self._times_np[lo:hi]
-        rank = self._importance_np[lo:hi]
+        is bounded by the pixels. Notes that start in the page merge per pixel
+        column into one tick (a count, the colour of the most important type)
+        and per 8 pixels into one chip. Left out of the merge, because a tick
+        would lose what they are: a note lasting more than a pixel (a band,
+        the longest ``MAX_BANDS`` of them), one that began before the page,
+        and the draft's own notes, which stay lines of their own. Tooltips of
+        ticks are made when hovered."""
         keys = self._visible_keys
         colours: dict[str, str] = {}
 
@@ -1403,39 +1414,54 @@ class ViewerWindow(QMainWindow):
                 c = colours[key] = vc.legible_on(pal, vm.kind_colour(key, dark))
             return c
 
+        idx = np.arange(start, hi)
+        px_us = max(1, (int(t1) - int(t0)) // width)
+        long_ = idx[self._ends_np[start:hi] - self._times_np[start:hi] > px_us]
+        if len(long_) > MAX_BANDS:  # the longest ones keep their band, the rest merge
+            span = self._ends_np[long_] - self._times_np[long_]
+            long_ = np.sort(long_[np.argsort(span, kind="stable")[-MAX_BANDS:]])
+        single = [*left, *long_.tolist()]
+        single_set = set(single)
+        for i in self._drafted:
+            if start <= i < hi and i not in single_set:
+                single.append(i)
+        keep = ~self._drafted_np[start:hi]
+        keep[long_ - start] = False
+        idx = idx[keep]
+        times = self._times_np[idx]
+        rank = self._importance_np[idx]
+        canvas_marks, chips = [], []
         first, counts, best = vm.merge_columns(times, rank, t0, t1, width)
         canvas_marks = [
-            CanvasMark(int(times[f]), None, colour_of(keys[lo + b]), None, "", "", int(c), True)
+            CanvasMark(int(times[f]), None, colour_of(keys[idx[b]]), None, "", "", int(c), True)
             for f, c, b in zip(first.tolist(), counts.tolist(), best.tolist(), strict=True)
         ]
-        chips = []
         first, counts, best = vm.merge_columns(times, rank, t0, t1, max(1, width // 8))
         for f, c, b in zip(first.tolist(), counts.tolist(), best.tolist(), strict=True):
             t = int(times[f])
             if c == 1:
-                _mark, chip = self._mark_and_chip(self._visible[lo + f], pal, dark)
+                _mark, chip = self._mark_and_chip(self._visible[idx[f]], pal, dark)
             else:
                 when = timefmt.format_time(t, self.zone, 3)
                 tip = f"{c} notes and events from\n{when}\nZoom in to see them one by one."
                 chip = Chip(
                     t,
                     None,
-                    colour_of(keys[lo + b]),
+                    colour_of(keys[idx[b]]),
                     str(c),
                     tip,
                     "",
-                    keys[lo + b],
+                    keys[idx[b]],
                     None,
                     "",
                     None,
                     c,
                 )
             chips.append(chip)
-        for i in self._drafted:  # the draft's own notes stay lines and chips of their own
-            if lo <= i < hi:
-                mark, chip = self._mark_and_chip(self._visible[i], pal, dark)
-                canvas_marks.append(mark)
-                chips.append(chip)
+        for i in single:
+            mark, chip = self._mark_and_chip(self._visible[i], pal, dark)
+            canvas_marks.append(mark)
+            chips.append(chip)
         return canvas_marks, chips
 
     def _refresh_note_list(self) -> None:
@@ -1478,25 +1504,18 @@ class ViewerWindow(QMainWindow):
         if self._closed:
             return
         rows, total = result
-        steps = self.notes_tab.fill_steps(rows, self._shown, self._rec_letter, self.zone)
         note = (
             f"The first {len(rows)} of {total} are listed. Search or choose a type "
             "to narrow the list."
             if total > len(rows)
             else None
         )
+        steps = self.notes_tab.fill_steps(rows, self._shown, self._rec_letter, self.zone, note=note)
         if len(rows) <= LIST_SYNC_LIMIT // 8:  # a short list: at once
             for _ in steps:
                 pass
-            if note:
-                self.notes_tab.count.setText(note)
             return
-        self._fill_note = note
         self._fill_runner.submit(steps)
-
-    def _list_filled(self, _result) -> None:
-        if self._fill_note:
-            self.notes_tab.count.setText(self._fill_note)
 
     def _refresh_hidden_notice(self) -> None:
         with_marks = {m.recording for m in self.marks}

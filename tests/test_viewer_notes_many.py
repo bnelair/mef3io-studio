@@ -146,6 +146,11 @@ def test_merged_columns_count_every_note_and_keep_the_most_important_type():
     assert vm.kind_importance("quick:Seizure onset") == vm.kind_importance("type:Seiz")
 
 
+def wait_list_done(qtbot, win):
+    """Both stages: the notes looked through, then the rows filled in."""
+    qtbot.waitUntil(lambda: not win._list_runner.busy and not win._fill_runner.busy, timeout=10_000)
+
+
 def test_the_side_list_of_a_crowded_view_is_filled_in_slices(make_window, tmp_path, qtbot):
     path, times = write_many(tmp_path / "many.mefd", hours=1, n_notes=3000)
     win = make_window(path)
@@ -154,3 +159,114 @@ def test_the_side_list_of_a_crowded_view_is_filled_in_slices(make_window, tmp_pa
     qtbot.waitUntil(lambda: not win._list_runner.busy, timeout=10_000)
     assert win.notes_tab.rows and all(m.code == "EDFA" for m in win.notes_tab.rows)
     assert len(win.notes_tab.rows) == sum(1 for k in range(3000) if k % 7 == 0)
+
+
+def test_a_long_list_says_it_is_cut_short_from_the_first_row_on(
+    make_window, tmp_path, qtbot, monkeypatch
+):
+    from mef3io_studio.viewer import window as vwin
+
+    monkeypatch.setattr(vwin, "MAX_LISTED", 300)  # more than a short list, fewer than all
+    path, _ = write_many(tmp_path / "many.mefd", hours=1, n_notes=3000)
+    win = make_window(path)
+    wait_marks(qtbot, win)
+    said = []
+    real = win.notes_tab.count.setText
+    win.notes_tab.count.setText = lambda t: (said.append(t), real(t))[1]
+    win.notes_tab.search.setText("note")
+    wait_list_done(qtbot, win)
+    assert len(win.notes_tab.rows) == 300
+    assert said and all(t.startswith("The first 300 of ") for t in said), said
+
+
+def write_notes(path, notes, seconds=3600, fs=10.0):
+    n = int(seconds * fs)
+    t = np.arange(n) / fs
+    with mef3io.Writer(str(path), overwrite=True, units="uV") as w:
+        for k, name in enumerate(("Fp1", "Fp2")):
+            w.write(name, np.round(20 * np.sin(2 * np.pi * (0.5 + k) * t), 2), T0, fs)
+        w.write_annotations(notes)
+    return path
+
+
+def early_notes(n=2000, seed=1):
+    rng = np.random.default_rng(seed)
+    return [
+        {"time": T0 + int(ts) * SEC + 1, "type": "Note", "text": "early"}
+        for ts in sorted(rng.integers(0, 1800, n))
+    ]
+
+
+def test_one_long_note_does_not_make_a_nearly_empty_page_crowded(make_window, tmp_path, qtbot):
+    notes = [{"time": T0, "type": "EDFA", "duration": 3000 * SEC, "text": "long"}, *early_notes()]
+    notes += [
+        {"time": T0 + 2400 * SEC + k * SEC // 2, "type": "Note", "text": f"in view {k}"}
+        for k in range(20)
+    ]
+    win = make_window(write_notes(tmp_path / "long.mefd", notes))
+    wait_marks(qtbot, win)
+    zoom_out_to(win, 10)
+    win.set_state(t0=T0 + 2400 * SEC - SEC)
+    settle(qtbot, win)
+    t0, t1 = win.state.t0, win.state.t0 + win.page_us()
+    real = [m for m in win._visible if m.time <= t1 and (m.end or m.time) >= t0]
+    assert len(real) == 20  # 19 of the twenty fit the page, and the long one lasts into it
+    assert len(real) < 40
+    assert not any(m.tick for m in win.canvas.marks)
+    assert len(win.canvas.marks) == len(real) == len(win.chips.chips)
+    band = [m for m in win.canvas.marks if m.end]
+    assert len(band) == 1 and band[0].time < t0 < band[0].end
+
+
+def test_a_crowded_page_keeps_the_band_of_a_long_note_and_counts_only_notes_in_view(
+    make_window, tmp_path, qtbot
+):
+    notes = [{"time": T0, "type": "EDFA", "duration": 3000 * SEC, "text": "long"}, *early_notes()]
+    notes += [  # a note that starts in view and lasts longer than a pixel
+        {"time": T0 + 2400 * SEC, "type": "EDFA", "duration": 3 * SEC, "text": "wide"}
+    ]
+    notes += [
+        {"time": T0 + 2400 * SEC + k * SEC // 70, "type": "Note", "text": f"in view {k}"}
+        for k in range(1, 600)
+    ]
+    win = make_window(write_notes(tmp_path / "crowd.mefd", notes))
+    wait_marks(qtbot, win)
+    zoom_out_to(win, 10)
+    win.set_state(t0=T0 + 2400 * SEC - SEC)
+    settle(qtbot, win)
+    t0, t1 = win.state.t0, win.state.t0 + win.page_us()
+    marks = win.canvas.marks
+    assert any(m.tick for m in marks)  # it is crowded
+    ticks = [m for m in marks if m.tick]
+    assert all(t0 <= m.time < t1 for m in ticks)  # nothing from before the page
+    bands = [m for m in marks if not m.tick and m.end]
+    assert sorted(b.end - b.time for b in bands) == [3 * SEC, 3000 * SEC]
+    starting_in_view = [m for m in win._visible if t0 <= m.time <= t1]
+    merged = sum(m.count for m in ticks)
+    assert merged == len(starting_in_view) - 1  # all but the wide note, which keeps its band
+    assert sum(c.count for c in win.chips.chips) == len(starting_in_view) + 1  # + the long one
+
+
+def test_a_draft_note_in_a_crowded_view_is_not_counted_twice(make_window, tmp_path, qtbot):
+    notes = [
+        {"time": T0 + 100 * SEC + k * SEC // 40, "type": "Note", "text": f"n{k}"}
+        for k in range(400)
+    ]
+    win = make_window(write_notes(tmp_path / "draft.mefd", notes, seconds=300))
+    wait_marks(qtbot, win)
+    zoom_out_to(win, 20)
+    win.set_state(t0=T0 + 95 * SEC)
+    settle(qtbot, win)
+    win.edit.ask_unsaved = lambda what: "discard"  # a failing test must not wait on a question
+    win.edit_button.click()
+    assert win.edit.on
+    win.edit.add(T0 + 103 * SEC, None, "Spike", "x")
+    settle(qtbot, win)
+    t0, t1 = win.state.t0, win.state.t0 + win.page_us()
+    marks = win.canvas.marks
+    drawn_alone = [m for m in marks if not m.tick]
+    assert len(drawn_alone) == 1 and drawn_alone[0].style == "new"
+    in_view = [m for m in win._visible if t0 <= m.time <= t1]
+    assert len(in_view) == 401
+    assert sum(m.count for m in marks if m.tick) == 400
+    assert sum(c.count for c in win.chips.chips) == 401

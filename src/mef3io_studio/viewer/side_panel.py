@@ -256,14 +256,22 @@ class NotesTab(QWidget):
             pass
 
     def fill_steps(
-        self, marks: Sequence[vm.Mark], shown, letter_of, zone: tzinfo, chunk: int = 200
+        self,
+        marks: Sequence[vm.Mark],
+        shown,
+        letter_of,
+        zone: tzinfo,
+        chunk: int = 200,
+        note: str | None = None,
     ):
         """Fill the table ``chunk`` rows at a time (a generator for
         ``SlicedRunner``: a long list never holds the window up). ``rows`` is
-        the whole list at once; the columns are sized from the first rows."""
+        the whole list at once; the columns are sized from the first rows.
+        ``note`` replaces the count line (a list cut short says so from the
+        first row on, not only when it is full)."""
         self.rows = list(marks)
         self.table.setRowCount(len(marks))
-        self.count.setText(f"{len(marks)} listed" if marks else "Nothing to list.")
+        self.count.setText(note or (f"{len(marks)} listed" if marks else "Nothing to list."))
         for row, m in enumerate(marks):
             if row and row % chunk == 0:
                 if row == chunk:
