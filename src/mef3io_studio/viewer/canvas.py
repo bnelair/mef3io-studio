@@ -290,7 +290,8 @@ class TraceCanvas(QWidget):
 
     @property
     def axis_height(self) -> int:
-        return int(self.fontMetrics().height() * 2.3)
+        # two lines: the time labels, and (small) what the page is (the overview, edges)
+        return int(self.fontMetrics().height() * 2.7)
 
     def plot_rect(self) -> QRectF:
         return QRectF(
@@ -727,6 +728,12 @@ class TraceCanvas(QWidget):
                     y += sfm.height()
                 p.setFont(font)
 
+    def _note_baseline(self, fm, top: float) -> float:
+        """The baseline of the second line under the axis (the overview text, the
+        note about edges): at the bottom of the axis area, a whole line below the
+        time labels, so the two never touch."""
+        return top + self.axis_height - fm.descent() - 2
+
     def _paint_axis(self, p: QPainter, plot: QRectF) -> None:
         pal = self.palette_
         p.setClipping(False)
@@ -766,10 +773,10 @@ class TraceCanvas(QWidget):
             p.setPen(QColor(pal.text))
             text = self.overview_text
             tw = fm.horizontalAdvance(text)
-            p.drawText(QPointF(self.width() - tw - 6, top + 4 + 2 * fm.ascent() - 2), text)
+            p.drawText(QPointF(self.width() - tw - 6, self._note_baseline(fm, top)), text)
         if self.edges_note:
             p.setPen(QColor(pal.muted))
-            p.drawText(QPointF(self.gutter + 6, top + 4 + 2 * fm.ascent() - 2), self.edges_note)
+            p.drawText(QPointF(self.gutter + 6, self._note_baseline(fm, top)), self.edges_note)
 
     # -- the overlay -----------------------------------------------------------------
 

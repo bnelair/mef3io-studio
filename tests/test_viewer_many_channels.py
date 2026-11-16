@@ -189,7 +189,14 @@ def test_fit_all_rows_never_goes_under_a_readable_distance_and_is_remembered(
     win.spacing_box.activated.emit(win.spacing_box.currentIndex())
     settle(qtbot, win)
     assert win.state.fit_rows and win.state.spacing > 7
-    assert win.canvas.visible_rows() >= 10 and not win.row_scroll.isVisible()
+    canvas = win.canvas
+    plot_h = canvas.plot_rect().height()
+    assert canvas.visible_rows() >= 10 and not win.row_scroll.isVisible()
+    # "fit": all ten rows lie wholly inside the plot, and the rows use the plot
+    # (the tenth ends within one row of its bottom edge, not far above it)
+    last_bottom = canvas.row_y(9) + canvas.row_height / 2
+    assert last_bottom <= plot_h + 1e-6 and plot_h - last_bottom < canvas.row_height
+    assert win.state.spacing * canvas.px_per_mm * 10 <= plot_h + 1e-6
     # 120 rows do not fit at a readable distance: the floor holds and the rest scrolls
     big = make_window(many(tmp_path), settings=settings)
     assert big.state.fit_rows is False  # nothing saved yet: the default
@@ -197,7 +204,11 @@ def test_fit_all_rows_never_goes_under_a_readable_distance_and_is_remembered(
     big.spacing_box.activated.emit(big.spacing_box.currentIndex())
     settle(qtbot, big)
     assert big.state.spacing == vv.READABLE_SPACING_MM
-    assert big.canvas.visible_rows() < 120 and big.row_scroll.isVisible()
+    shown = big.canvas.visible_rows()
+    assert shown < 120 and big.row_scroll.isVisible()
+    # as many rows as the plot holds at that distance, and the label names exactly those
+    assert shown == int(big.canvas.plot_rect().height() // big.canvas.row_height)
+    assert big.rows_label.text() == f"Rows 1-{shown} of 120"
     # the choice is remembered
     big.save_preferences()
     assert settings.get("viewer/spacing") == vv.FIT_ALL
@@ -211,17 +222,39 @@ def test_fit_all_rows_never_goes_under_a_readable_distance_and_is_remembered(
 
 def test_the_blocks_asked_for_follow_the_rows_on_screen(make_window, tmp_path, qtbot):
     win = make_window(many(tmp_path, n=200))
-    ctl = win.controller
-    win.scroll_rows(150)
-    settle(qtbot, win)
-    req = ctl._req
-    first, last = req.visible
-    assert first == 150 and last > first
-    visible_plans = {
-        gi for gi, plan in enumerate(req.plans) if any(first <= ri < last for ri in plan.rows)
-    }
-    assert visible_plans and set(req.keys) == visible_plans  # only groups holding rows on screen
-    assert len(visible_plans) < len(req.plans)
+    ctl, canvas = win.controller, win.canvas
+
+    def on_screen():
+        """The rows the canvas draws, worked out from its geometry alone: those
+        whose band meets the plot (the last may be cut by its bottom edge)."""
+        plot_h = canvas.plot_rect().height()
+        return [
+            i
+            for i in range(len(canvas.rows))
+            if canvas.row_y(i) + canvas.row_height / 2 > 0
+            and canvas.row_y(i) - canvas.row_height / 2 < plot_h
+        ]
+
+    for offset in (150, 30, 0):
+        win.scroll_rows(offset - win.state.row_offset)
+        settle(qtbot, win)
+        req = ctl._req
+        seen = on_screen()
+        assert (req.visible[0], req.visible[1] - 1) == (
+            seen[0],
+            seen[-1],
+        )  # what is asked = what is drawn
+        holding = {
+            gi
+            for gi, plan in enumerate(req.plans)
+            if any(seen[0] <= ri <= seen[-1] for ri in plan.rows)
+        }
+        assert holding and set(req.keys) == holding  # only groups holding a row on screen
+        assert len(holding) < len(req.plans)
+        # and the picture agrees: rows of the groups that were not asked for have nothing
+        for gi, plan in enumerate(req.plans):
+            drawn = [canvas.rows[ri].piece is not None for ri in plan.rows]
+            assert all(drawn) if gi in holding else not any(drawn)
 
 
 # --- organisation: leads, channels that are not EEG ----------

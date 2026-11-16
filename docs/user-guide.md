@@ -825,8 +825,8 @@ to see the full list of keys. The main ones:
 | More or less space between rows | Ctrl+Up and Ctrl+Down (on a Mac: Alt+Up and Alt+Down) |
 | Show other channels | Shift+Up and Shift+Down, or Page Up and Page Down |
 | Choose the timebase (10, 15, 30, 60 or 120 mm/s) | Alt+1 to Alt+5 |
-| One hour forward or back | Ctrl+Right and Ctrl+Left |
-| One day forward or back | Ctrl+Shift+Right and Ctrl+Shift+Left |
+| One hour forward or back | Ctrl+Right and Ctrl+Left (on a Mac: Alt+Shift+Right and Alt+Shift+Left) |
+| One day forward or back | Ctrl+Shift+Right and Ctrl+Shift+Left (on a Mac: Command+Option+Right and Command+Option+Left) |
 | Next or previous stretch with data (over a gap) | `.` and `,` |
 | Go to a time | `G` |
 | Jump | Ctrl+K |
@@ -849,7 +849,9 @@ the time zone you chose for the site (see *Times and time zones*).
 
 **Long recordings.** The strip above the traces shows the whole recording:
 the data in colour, the gaps hatched (also a pause inside one recording, once
-the viewer has read where the data is), a line and the date at every midnight.
+the viewer has read where the data is, from one channel of each recording), a
+line and the date at every midnight; the first date also names the time zone
+the dates are in, as the time axis does.
 Move the pointer over it to read the time, the day, and how long a gap is.
 For a recording of days the toolbar offers **−1 day**, **−1 h**, **+1 h**,
 **+1 day** and **◀ Data** and **Data ▶**, which jump to the previous or next
@@ -879,10 +881,14 @@ The **Montage** box in the toolbar chooses how the channels are shown:
   every other channel is shown against. You can also right-click a trace and
   choose **Use as reference**.
 - **Lead bipolar:** each contact shown against the next contact of the same
-  lead (for example A1 against A2).
+  lead (for example LA1 against LA2). Every row is named in full ("LA2 − LA3").
+  Referenced and lead-bipolar rows keep their full names, but the thin line
+  that groups the rows of a lead is drawn in them too.
 
 **Channels** (`C`) opens a list with a search box: tick the channels to show.
-Above the channels are the **leads** (for example LA, made of LA1 to LA12):
+Above the channels are the **leads**. A lead is a name with at least four
+contacts, one of them contact 1 (for example LA, made of LA1 to LA12); scalp
+names such as F3, F4, T3 or A1 are not leads. Tick or untick a whole lead at once:
 tick or untick a whole lead at once; a lead with only some of its channels
 shown is half ticked. Searching finds a lead by its name or by a channel in
 it. Right-clicking a trace can also hide a channel or a whole lead, or show
@@ -895,14 +901,34 @@ In the spacing box, **Fit all rows** puts as many channels on the screen as can
 still be read (never closer than 4 mm) and you scroll to the rest; a larger
 number in the same box gives fewer, larger rows. The viewer remembers the
 choice. Channels of one lead are drawn as a group: a thin line above the
-first, and the lead's name once. Channels that are not EEG (ECG, EMG, DC, SpO2
-and the like) come last, each drawn to fit its own row.
+first, and the lead's name once (the first channel on screen always shows its
+full name, even when the top of its lead is scrolled away). Channels that are not
+EEG (ECG, EMG, DC, SpO2 and the like) come last; a channel that belongs to a lead
+is always taken for EEG, whatever its name (a lead called HR or DC stays with the
+others). Each channel that is not EEG has a sensitivity of its own, chosen from
+the same list as the toolbar's from what it shows when the recording opens (and
+again when you press **Auto**), then kept while you move through the recording.
+It is never more magnified than the toolbar's value, so a disconnected ECG with
+only amplifier noise looks flat, as it is. When a row's sensitivity differs from
+the toolbar's, its name has a small second line ("500 µV/mm") and the status
+bar says it when the pointer is on the row.
 
 **Traces on open.** The viewer fits the sensitivity to the signals when a
-recording opens (a sensitivity you chose before is kept) and draws every trace
-around the middle of its row, so a constant offset does not move it. A trace
-that swings further than a row and a half is cut off there and the cut is marked
-with small arrows; use **Auto**, or choose a larger µV/mm number, to see it whole.
+recording opens (a sensitivity you chose before, in this window or earlier, is
+kept). If the first page cannot tell (flat, empty, or too few values to judge),
+the viewer keeps the default and tries again on the next page, until you choose
+one yourself. It says so in the status line when it changed the number
+("Sensitivity set to 300 µV/mm to fit this recording."), and fits again when you
+zoom into or out of the overview, as long as the number is only the one it
+fitted. **Auto** also works in the overview, and says when it cannot decide. Every
+trace is drawn around a middle level kept for its row: it stays while the level of
+the page stays within half a row of it, so a small step in the level moves the
+trace and a large one starts the middle again; it also starts again after a far
+jump, and when the montage or the filters change. The hover line says what was
+taken off when it is large ("shown 4.0 mV lower"); measurements always read the
+true values. A trace that swings further than a row and a half is cut off there
+and the cut is marked with small arrows, also on the paler picture that stands
+in while a page loads; use **Auto**, or choose a larger µV/mm number, to see it whole.
 
 ### Filters
 

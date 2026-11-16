@@ -337,3 +337,76 @@ def test_a_save_waits_for_the_strip_read_before_the_data_is_reopened(make_window
     qtbot.wait(300)
     assert not seen  # its result was dropped
     del win.data.envelope
+
+
+# --- the axis, the strip's dates and the keys ----------
+
+
+def test_the_overview_text_never_touches_a_time_label(make_window, days_path, qtbot):
+    win = make_window(days_path)
+    win.set_timebase(0.005)  # about a day and an hour on the screen: the overview
+    settle(qtbot, win)
+    canvas = win.canvas
+    assert win.overview() and canvas.overview_text
+
+    def axis_ink(text):
+        canvas.overview_text = text
+        canvas.invalidate()
+        img = canvas.grab_traces().toImage()
+        top = int(canvas.plot_rect().height()) + 3
+        return {
+            y
+            for y in range(top, img.height())
+            for x in range(canvas.gutter, img.width())
+            if img.pixelColor(x, y).lightness() < 150
+        }
+
+    labels = axis_ink("")
+    both = axis_ink("Overview: the lowest and highest value of each stretch")
+    note = both - labels
+    assert note and labels
+    # clear air between the two lines: at least half a line of blank pixel rows
+    assert min(note) - max(labels) - 1 >= canvas.fontMetrics().height() // 2
+    assert max(note) < canvas.height()  # and the note is wholly inside the window
+
+
+def test_the_strips_first_date_names_the_clock_like_the_main_axis(make_window, days_path):
+    from zoneinfo import ZoneInfo
+
+    win = make_window(days_path)
+    win.strip.grab()
+    assert win.strip.drawn_dates and win.strip.drawn_dates[0].endswith("(UTC)")
+    assert win.strip.drawn_dates[0].count("(") == 1 and "(" not in win.strip.drawn_dates[1]
+    assert "(UTC)" in win.strip.readout(40)
+    win.set_zone(ZoneInfo("Europe/Prague"))
+    win.strip.grab()
+    zone = win.canvas.zone
+    from mef3io_studio.model import timefmt
+
+    assert win.strip.drawn_dates[0].endswith(f"({timefmt.zone_label(zone)})")
+    assert "UTC)" not in win.strip.drawn_dates[0] or timefmt.zone_label(zone) == "UTC"
+
+
+def test_the_keys_for_hours_and_days_are_not_ctrl_arrows_on_a_mac():
+    from mef3io_studio.viewer import keymap as km
+
+    pc, mac = km.build_keymap(False), km.build_keymap(True)
+    by = lambda table, action: next(e for e in table if e.action == action).keys  # noqa: E731
+    assert by(pc, "hour_forward") == ("Ctrl+Right",) and by(pc, "day_back") == ("Ctrl+Shift+Left",)
+    assert by(pc, "spacing_up") == ("Ctrl+Up",)
+    assert by(mac, "hour_forward") == ("Alt+Shift+Right",) and by(mac, "hour_back") == (
+        "Alt+Shift+Left",
+    )
+    assert by(mac, "day_forward") == ("Ctrl+Alt+Right",) and by(mac, "day_back") == (
+        "Ctrl+Alt+Left",
+    )
+    for table in (pc, mac):
+        keys = [k for e in table for k in e.keys]
+        assert len(keys) == len(set(keys))  # no key means two things
+    for e in mac:  # on a Mac no bare Ctrl+arrow (Mission Control, Command) is used
+        assert not any(
+            k.startswith("Ctrl+")
+            and k.rsplit("+", 1)[-1] in ("Up", "Down", "Left", "Right")
+            and "Alt" not in k
+            for k in e.keys
+        )

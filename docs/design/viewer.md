@@ -714,24 +714,57 @@ The viewer must not make anyone zoom just to see that channels have signal,
 nor lose their place in hundreds of channels or days of time.
 
 **Traces on open (`viewer/canvas.py`, `viewer/window.py`)**
-- **Centred.** Each row is drawn around the level its trace has on this page
-  (the median of the page; a `_RowShape` carries `centre` and `spread`), so a
-  DC offset or drift of millivolts never moves a trace away from its row.
+
+The guiding rule: the picture must never mislead about amplitude. A dead channel
+looks dead; a trace that is cut, old, re-centred or not at the toolbar's
+sensitivity says so on screen.
+
+- **Centred, and the centre is held.** Each row has a held level at its middle
+  (`TraceCanvas._levels`, keyed by channel and minus channel, in the data's
+  unit): kept while the page's own level (the median, from a sample of at most
+  a thousand points: `_RowShape.centre`) stays within half a row height (at the
+  row's sensitivity) of it, otherwise the page's level is taken. So a small step
+  in the level moves the trace (it is visible) and a big one starts the middle
+  again; a DC offset of millivolts never moves a trace away from its row. The
+  old picture that stands in while a page loads never moves the level, so it
+  and the new picture agree. The levels are forgotten on a far jump (a page more
+  than one page length from the last), when the overview starts or ends, and
+  when the montage, the reference, the filters or the hidden channels change
+  (`reset_levels`); rows that are gone are dropped. What was taken off is said:
+  the hover line of a row (`status_row`) reads "shown 4.0 mV lower" when it is
+  half a millimetre or more (`viewer_view.format_offset`). Measurements
+  (Shift+drag) read the true values of the pieces.
 - **A bounded band.** A trace is cut off at `CLIP_HALF_ROWS` (0.75) row heights
   above and below its middle, and the cut is marked with small arrows in the
   accent colour on that line (every `CLIP_MARK_SPACING_PX`), so a flat run along
-  the line is never mistaken for the signal. The old limit was 40 rows.
-- **Auto on open.** When the first page is complete the sensitivity is fitted
-  once (`_auto_on_open`), unless a sensitivity was saved before (a saved
-  choice stays). Auto itself is the median over the EEG rows in view of each
-  row's 98th percentile distance from its own middle, so one flat or one huge
-  channel does not move it; flat rows are left out, and channels that are not
-  EEG do not take part. It waits for the rows on screen, not for the
-  controller's loading flag (which is still on at that moment).
-- **Channels that are not EEG** (`montage.is_non_eeg`: ECG, EMG, EOG, DC,
-  SpO2, trigger, ...) are placed after the others (`montage.non_eeg_last`,
-  judged by the row's own channel, so `ECG − Cz` is an ECG row) and each is
-  fitted to its own row (`DrawRow.own_scale`), whatever the sensitivity says.
+  the line is never mistaken for the signal. The paler old picture is marked
+  the same way, fainter.
+- **Auto on open.** The sensitivity is fitted (`_auto_on_open`) on a complete
+  page the first time one can be judged, only while the person has not chosen
+  one (`"sensitivity" in _chosen`, or a saved `viewer/sensitivity`). A page that
+  cannot be judged (`_page_spread` is None: flat, only gaps, fewer than
+  `MIN_JUDGE_VALUES` = 200 values per row, `MIN_JUDGE_ENVELOPE` = 20 block
+  extremes in the overview) leaves the default and the next complete page tries
+  again (a page is not tried twice); the first choice ends it. The spread is the
+  98th percentile of the distance from the row's median, over the page's values
+  or, in the overview, the blocks' lowest and highest; the fit is the median
+  over the EEG rows in view. A fitted value is never in `_chosen`, so never
+  saved. When it changed the value, the status line says so once ("Sensitivity
+  set to 300 µV/mm to fit this recording."). Switching between a normal page and
+  the overview (`_refresh`) arms it again while the value is still only fitted.
+  The Auto button works in both, and says in the status line when it cannot
+  decide.
+- **Channels that are not EEG** (`montage.is_non_eeg`: ECG, EMG, EOG, DC, SpO2,
+  trigger, ...; a channel of a real lead is never one) are placed after the
+  others (`montage.non_eeg_last`, judged by the row's own channel, so `ECG − Cz`
+  is an ECG row) and each has a sensitivity of its own (`DrawRow.own_scale`,
+  `own_sens`): a step of the toolbar's list (`SENS_STEPS`) chosen from a robust
+  stretch of its data (`_choose_own_scales`: when the row first has a page it can
+  be judged from, and when Auto is pressed), then held across pages. The row is
+  drawn at the coarser of its own value and the toolbar's
+  (`TraceCanvas.row_sensitivity`), never finer, so a lead-off ECG of 0.2 µV noise
+  is a flat line. Its gutter has a small second line ("500 µV/mm") whenever it
+  differs from the toolbar's, and the hover line says it too.
 
 **Many channels**
 - With more rows than fit, the toolbar says **"Rows 33-64 of 256"** and a
@@ -739,22 +772,33 @@ nor lose their place in hundreds of channels or days of time.
   Page Up / Page Down (already the next / previous screenful) and Shift+wheel
   keep working; the scroll bar and the keys set the same `row_offset`.
 - **Spacing** has a first choice **Fit all rows** (`ViewState.fit_rows`): the
-  distance is worked out from the rows and the window and never goes under
-  `READABLE_SPACING_MM` (4 mm); beyond that the rest is reached by scrolling,
-  never squashed. "Fewer, larger rows" is a larger number in the same box.
+  distance is worked out from the rows and the window (a hair under the exact
+  division, `FIT_MARGIN`, so the rows never add up to more than the plot) and never
+  goes under `READABLE_SPACING_MM` (4 mm); beyond that the rest is reached by
+  scrolling, never squashed. The canvas counts whole rows with the same tolerance
+  (`rows_fitting`), so a fit shows every row and the "Rows a-b of n" label names
+  the rows fully shown. "Fewer, larger rows" is a larger number in the same box.
   Remembered through the existing `viewer/spacing` preference (0 = fit all).
 - Tile reads follow the rows on screen: blocks are asked for with the visible
   priority only for the groups holding rows in view (a test scrolls a
   200-row recording and checks which groups are requested).
 
 **Leads**
-- Rows of one lead in a row (`LA1`, `LA2` ... `LA12`, runs of at least
-  `montage.MIN_GROUP` = 3) are a group: a thin line above it, the lead named
-  once (its first row, bold; the following rows show only the contact
-  number, `DrawRow.short`; the row's real label is unchanged everywhere
-  else). `montage.group_rows` is pure. Referenced and lead-bipolar montages
-  are untouched (their labels are not shortened).
-- The channel chooser lists the **leads** (two or more channels) above the
+- A **lead** (`montage.real_leads`) is a name prefix that, among ALL recorded
+  channels, has at least `MIN_LEAD_CONTACTS` = 4 contacts, contact 1 among them
+  (`LA1` ... `LA12` is one; scalp names `F3 F4 F7 F8`, `T3`-`T6`, `A1 A2`,
+  `Fp1 Fp2` are not). The window computes it once (`_leads`). A channel of a lead
+  is EEG whatever its letters (`HR1`..`HR8`, `CO1`.., `DC1`.., `LOC` as lead names
+  are neither sent to the end nor given a scale of their own).
+- Rows of one lead in a row (runs of at least `montage.MIN_GROUP` = 3) are a
+  group: a thin line above it, the lead named once (its first row, bold; the
+  following rows show only the contact number, `DrawRow.short`; the row's real
+  label is unchanged everywhere else). `montage.group_rows(rows, leads)` is
+  pure. Only a row that is a channel as recorded is shortened: lead-bipolar and
+  referenced labels (`LA2 − LA3`) are never shortened (the thin line stays). The
+  first row on screen is always named in full (`TraceCanvas.row_name`) when its
+  lead's first row is scrolled away.
+- The channel chooser lists the **leads** (by the rule above) over the
   channels: tick or untick a whole lead; a lead with some channels shown is
   half ticked; the search finds a lead by its name or any channel in it.
 
@@ -762,14 +806,24 @@ nor lose their place in hundreds of channels or days of time.
 - **Overview strip.** The data is drawn as pixel runs (`strip.pixel_runs`: at
   most one per pixel column, a few array operations per recording, never a
   loop over stretches). Local midnights are a line through the bar with the
-  date. The **real stretches with data** come from the block index of the first
-  channel (`strip.block_stretches`, read once on the strip's thread after the
-  first page, `controller.strip_stretches`): a pause inside one recording is a
-  gap, which the segment times alone do not tell (until the index has been
-  read the strip uses the segment times). Hover shows the time with its day and
+  date; the first date also names the clock (the zone), as the main axis does, and
+  so does the readout. The **real stretches with data** come from the block index
+  of ONE channel PER RECORDING (the one that recording holds most of,
+  `ViewerWindow._strip_channels`; the union of their stretches,
+  `strip.block_stretches`, read once on the strip's thread after the first page,
+  `controller.strip_stretches` = `(stretches, channels read)`): a pause inside
+  one recording is a gap, which the segment times alone do not tell. Time the
+  channels read do not reach at all (`vv.unreached` of their coverage) keeps the
+  segment coverage, so a recording without the first channel is never "no data";
+  until the index has been read the strip uses the segment times. The read is
+  ended (`controller.drain_strip`, its result dropped) before a save reopens the
+  data, and a save of notes does not read it again when the coverage and the
+  boundaries are as they were. Hover shows the time with its day and
   "There is data here" or "No data: a gap of 3 h" (`readout`, also the tooltip).
 - **Keys and buttons:** Ctrl+Right / Ctrl+Left one hour, Ctrl+Shift+Right /
-  Left one day, `.` / `,` the next / previous stretch with data (a jump over a
+  Left one day (on macOS, where Ctrl+Arrow belongs to the system, the table is
+  built for the platform, `keymap.build_keymap`: Alt+Shift+Right / Left one hour,
+  Ctrl+Alt+Right / Left (Command+Option) one day, Alt+Up / Down for spacing), `.` / `,` the next / previous stretch with data (a jump over a
   gap; `vv.stretch_start`: the first start after the page, the last one before
   it). The six toolbar buttons show only where they mean something (an hour
   needs 2 h of timeline, a day 2 days, stretches two or more stretches).
@@ -778,6 +832,23 @@ nor lose their place in hundreds of channels or days of time.
 - **Go** takes a date and time (`2000-01-31 14:30`) or a date alone
   (`2000-01-31`, midnight) as well as a time of day beside the Day box; Jump
   takes the same.
+
+**Paint speed (`viewer/canvas.py`).** A polygon is built by resizing a `QPolygonF`
+and writing the points into its own memory (shiboken6 pointer, ctypes, a numpy
+view: `_polygon_direct`), not through `QDataStream`; a one-time self-check
+(`_direct_polygon_is_sound`) compares it with the stream build on small arrays
+and falls back to the old way for good on any difference or error. A row's level
+is a partition over a sample of at most a thousand points, and the unused spread
+is gone. Measured on 44 rows at 2560 px: warm trace layer 55 ms -> 39.5 ms, cold
+(shapes rebuilt) 80 ms -> 62 ms. Two experiments were NOT adopted: (1) drawing the
+dense (min/max) rows without antialiasing saved a further 8 ms warm, but the
+traces turn visibly jagged (screenshots compared), which a clinical picture should
+not; (2) painting the next page's trace layer on a worker thread: with the trace
+layer drawn for free (a stub) the held-key bench rows did not improve (3 runs of
+each: the pages asked for rose from 14-16 to 18-20 of 20 and the last press took
+longer to complete, because painting is also what spaces the requests), so a
+prerendered picture cannot help there; it would also have to guess the exact page
+of a held key and copy the canvas state to another thread.
 
 **Notes carried into a page.** Notes that began before the page and last into
 it are drawn one by one only up to `MAX_BANDS` (200); beyond that they are ONE
@@ -788,14 +859,20 @@ note. The counts of everything drawn still add up to the notes in view.
 
 **A save that is stopped.** The save task (`edit_mode._start_save`) is guarded
 from `begin_data_change` to `submit`; a task that ends without an outcome
-(stopped before it ran, or from inside the library before the first write)
-frees the draft and the window (`_save_ended`). The write loop reports its own
-stops and failures with exactly the notes appended, so the notes file is
-either complete for every step it reports (each step is one `write_annotations`
-call, stopped only between calls) or, if the process dies, torn (the existing
-"left unfinished" message). When the stop came after a write may have begun
-and no outcome was reported, the message says some notes may already be
-stored and to reopen before saving again.
+(stopped before it ran, or from inside the library) frees the draft and the
+window (`_save_ended`). The write loop reports its own stops and failures with
+exactly the notes appended, so the notes file is either complete for every step
+it reports (each step is one `write_annotations` call, stopped only between
+calls) or, if the process dies, torn (the existing "left unfinished" message).
+The flag "a write may have begun" is set only once the loop has asked and is
+about to write (a stop answered at that question is before any write). When it
+is set and no outcome was reported, the window stays locked while the recordings
+are reopened and their notes read again off the GUI thread
+(`_look_again`); every new draft item that is stored now (same time, type, text
+and channel, counted against what was stored before: `items_now_stored`) leaves
+the draft, and the window says how many. If that read fails, Save stays off
+(`EditMode.stale`) and the window says in plain words that the recordings must be
+opened again, so nothing is stored twice.
 
 **Held keys.** A held navigation key (auto-repeat) moves the page at every repeat
 but asks for the picture once per batch of repeats

@@ -85,6 +85,8 @@ class OverviewStrip(QWidget):
         self._runs_key: tuple | None = None
         #: The text of the readout under the pointer (also shown as a tooltip).
         self.hover_text = ""
+        #: The date labels drawn by the last paint (for tests and screenshots).
+        self.drawn_dates: list[str] = []
 
     def _pixel_runs(self) -> list[tuple[int, int, int]]:
         key = (self.timeline, self.width(), id(self.coverage), len(self.coverage))
@@ -103,7 +105,7 @@ class OverviewStrip(QWidget):
         day = (
             timefmt.to_datetime(t, self.zone).date() - timefmt.to_datetime(a, self.zone).date()
         ).days + 1
-        head = f"{timefmt.format_time(t, self.zone)}  (day {day})"
+        head = f"{timefmt.format_time(t, self.zone)} ({timefmt.zone_label(self.zone)})  (day {day})"
         spans = sorted(self.coverage)
         starts = [s[0] for s in spans]
         i = bisect.bisect_right(starts, t)
@@ -195,6 +197,7 @@ class OverviewStrip(QWidget):
             b - a, max(2, self.width() // (fm.horizontalAdvance("0000-00-00") + 14))
         )
         last = -1e9
+        self.drawn_dates = []
         midnights = set()
         if b - a > 2 * 3600 * 1_000_000:
             midnights = set(timefmt.axis_ticks(a, b, _DAY_US, self.zone))
@@ -204,11 +207,14 @@ class OverviewStrip(QWidget):
                 p.setPen(QPen(QColor(pal.text), 1))
                 p.drawLine(QPointF(x, bar.top() - 1), QPointF(x, bar.bottom() + 4))
                 label = timefmt.to_datetime(t, self.zone).strftime("%Y-%m-%d")
+                if not self.drawn_dates:  # the first date says which clock all of them are in
+                    label += f" ({timefmt.zone_label(self.zone)})"
                 tw = fm.horizontalAdvance(label)
                 lx = min(max(x + 2, 0.0), self.width() - tw)
                 if lx > last + 4:
                     p.setPen(QColor(pal.text))
                     p.drawText(QPointF(lx, self.height() - 2), label)
+                    self.drawn_dates.append(label)
                     last = lx + tw
                 continue
             p.setPen(QPen(QColor(pal.muted), 1))
