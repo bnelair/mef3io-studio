@@ -56,6 +56,10 @@ class SaveOutcome:
     locked: tuple
     error: UserMessage | None = None
     stopped: bool = False
+    #: The notes were stored, but the signal could not be shown to be unchanged
+    #: (or the notes read back were not the ones written): the window reopens
+    #: the recordings, as it always did.
+    needs_reopen: bool = False
 
 
 class EditMode(QObject):
@@ -903,11 +907,9 @@ class EditMode(QObject):
     def _start_save(self, plan, passwords: dict, then_off: bool, then_close: bool) -> None:
         w = self.win
         data = w.data
-        controller = w.controller
         self.saving = True
         touched = {"writing": False}  # set once a write call is about to be made
         try:
-            w.begin_data_change()
             self._sync_buttons()
 
             def check(ctx):
@@ -923,28 +925,26 @@ class EditMode(QObject):
                     lambda done, total: ctx.report(done, total, "Adding the notes and events"),
                     register_identity,
                 )
-                records, locked, error = None, (), result.error
+                records, locked, again = None, (), False
                 if result.uids:
-                    ctx.report(0, None, "Reading the recordings again")
+                    ctx.report(0, None, "Reading the notes again")
+                    appended = {
+                        i: sum(1 for it in share.items if it.uid in result.uids)
+                        for i, share in plan.by_recording.items()
+                    }
                     try:
-                        controller.scheduler.drain(60.0)
-                        controller.drain_strip(60.0)  # a read of the index must end first
-                        data.reopen()
-                    except Exception:  # noqa: BLE001 - the notes are stored; the window must say so
-                        error = error or UserMessage(
-                            "The notes were added, but they cannot be shown",
-                            "The new notes and events are in the recordings, but the viewer "
-                            "could not read the recordings again. Close this window and open "
-                            "the recordings again.",
-                        )
-                    else:
-                        try:
+                        # the signal did not change: only the notes are read again, and the
+                        # page on screen, the tile cache and the strip stay as they are
+                        if data.refresh_notes({i: n for i, n in appended.items() if n}):
                             records, locked = data.annotations(), tuple(data.annotations_locked)
-                        except Exception:  # noqa: BLE001 - the list then says it could not be read
-                            records, locked = None, ()
+                        else:
+                            again = True
+                    except Exception:  # noqa: BLE001 - the window then reopens, as it always did
+                        again = True
                 return SaveOutcome(
-                    result.written, result.uids, records, locked, error, result.stopped
-                )
+                    result.written, result.uids, records, locked, result.error, result.stopped,
+                    again,
+                )  # fmt: skip
 
             handle = self.jobs.submit("Adding notes and events", work)
         except Exception:  # noqa: BLE001 - the draft must never stay locked
@@ -966,15 +966,21 @@ class EditMode(QObject):
 
     def _saved(self, out: SaveOutcome, plan, then_off: bool, then_close: bool) -> None:
         w = self.win
-        self.saving = False
         if plan.duplicates:  # the same as a stored note: never written, and no longer a draft
             self.draft.written({i.uid for i in plan.duplicates})
         if out.uids:
             # Exactly what was appended leaves the draft (a second save must not add it again).
             self.draft.written(out.uids)
-            w.end_data_change(out.records, out.locked)
-        else:
-            w.end_data_change(None, (), reopened=False)
+        if out.needs_reopen:
+            self._reopen_after_save(out, then_off, then_close)  # the draft stays locked
+            return
+        self.saving = False
+        if out.uids:
+            w.notes_refreshed(out.records, out.locked)
+        self._after_save(out, then_off, then_close)
+
+    def _after_save(self, out: SaveOutcome, then_off: bool, then_close: bool) -> None:
+        w = self.win
         self.select(None)
         self.refresh()
         if out.error is not None:
@@ -989,6 +995,47 @@ class EditMode(QObject):
                 w.close()
         self.save_finished.emit(out)
 
+    def _reopen_after_save(self, out: SaveOutcome, then_off: bool, then_close: bool) -> None:
+        """The notes are stored but the signal could not be shown to be unchanged:
+        the recordings are opened again (the page waits), as every save once did."""
+        w = self.win
+        data, controller = w.data, w.controller
+        w.begin_data_change()
+
+        def work(ctx):
+            ctx.report(0, None, "Reading the recordings again")
+            controller.scheduler.drain(60.0)
+            controller.drain_strip(60.0)  # a read of the index must end first
+            data.reopen()
+            return data.annotations(), tuple(data.annotations_locked)
+
+        def done(result) -> None:
+            self.saving = False
+            out.records, out.locked = result
+            w.end_data_change(out.records, out.locked)
+            self._after_save(out, then_off, then_close)
+
+        def failed(_message=None) -> None:
+            self.saving = False
+            w.end_data_change(None, (), reopened=False)
+            out.error = out.error or UserMessage(
+                "The notes were added, but they cannot be shown",
+                "The new notes and events are in the recordings, but the viewer could not "
+                "read the recordings again. Close this window and open the recordings again.",
+            )
+            self._after_save(out, False, False)
+
+        try:
+            handle = self.jobs.submit("Reading the recordings again", work)
+        except Exception:  # noqa: BLE001
+            log.exception("the recordings could not be read again")
+            failed()
+            return
+        self.last_job = handle
+        handle.succeeded.connect(done)
+        handle.failed.connect(failed)
+        handle.cancelled.connect(failed)
+
     def _save_ended(self, message, writing: bool, stopped: bool = False, started=True) -> None:
         """The task ended without an outcome (failed, or stopped from outside the
         write loop). The loop reports a stop and a failure itself, with exactly
@@ -1000,7 +1047,6 @@ class EditMode(QObject):
             self._look_again(message, stopped)
             return
         self.saving = False
-        self.win.end_data_change(None, (), reopened=False)
         self._sync_buttons()
         if stopped and message is None and started:
             self.win.status_message.setText("The save was stopped. Nothing was added.")
@@ -1015,6 +1061,7 @@ class EditMode(QObject):
         data, controller = w.data, w.controller
         before = list(w.marks)
         self.saving = True  # the draft stays locked while the recordings are read
+        w.begin_data_change()  # they are opened again
         self._sync_buttons()
 
         def work(ctx):

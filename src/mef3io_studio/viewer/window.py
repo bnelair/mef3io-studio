@@ -2031,6 +2031,13 @@ class ViewerWindow(QMainWindow):
         self.canvas.invalidate()
         self._refresh()
 
+    def notes_refreshed(self, records, locked) -> None:
+        """After a save of notes only: show what the recordings hold now. The
+        signal, the page on screen, the tile cache and the strip stay as they
+        are; only the notes, their types, the list and the chips are redone."""
+        self.marks_loaded = False
+        self._on_annotations(records, locked)
+
     def go_to_mark(self, direction: int) -> None:
         """[ and ]: the previous or next note or event (of the types shown)."""
         centre = self.state.t0 + self.page_us() / 2

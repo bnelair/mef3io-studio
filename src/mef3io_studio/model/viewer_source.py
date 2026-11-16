@@ -449,6 +449,57 @@ class ViewerData:
         self._locked = tuple(locked)
         return list(out)
 
+    def refresh_notes(self, appended: dict[int, int]) -> bool:
+        """After notes were APPENDED to recordings (``appended``: recording
+        index -> how many): read only the notes again, keeping the readers, the
+        tile cache (``epoch`` stays) and everything cached about the signal.
+
+        It is done only when it is certain that the signal did not change: each
+        written recording is inspected once more (the fingerprint taken after
+        the write must be the one taken at opening), and the notes read back
+        must hold exactly the notes that were appended (an unlocked recording).
+        Returns False when either fails: nothing is changed then, and the
+        caller reopens the recordings (:meth:`reopen`). A task thread's call;
+        it holds the notes lock like :meth:`annotations`."""
+        import mef3io
+
+        with self._notes_lock:
+            before = self._annotations
+            if before is None or self._closed:
+                return False
+            for i in appended:
+                facts = self._facts[i]
+                baseline = facts[2] if facts is not None else self._prints[i]
+                if baseline is None:
+                    return False
+                try:
+                    with library_warnings_caught():
+                        now = mef3io.inspect(self._paths[i], password=self._passwords[i])
+                except Exception:  # noqa: BLE001 - the caller reopens, and says what fails
+                    return False
+                if fingerprint_of(now) != baseline:
+                    return False
+            old_locked = self._locked
+            counts_before: dict[int, int] = {}
+            for rec in before:
+                counts_before[rec["recording"]] = counts_before.get(rec["recording"], 0) + 1
+            self._annotations = None
+            try:
+                after = self._annotations_locked()
+            except Exception:  # noqa: BLE001
+                self._annotations, self._locked = before, old_locked
+                return False
+            counts_after: dict[int, int] = {}
+            for rec in after:
+                counts_after[rec["recording"]] = counts_after.get(rec["recording"], 0) + 1
+            for i, n in appended.items():
+                if i in self._locked:
+                    continue  # its notes cannot be read at all: nothing to compare
+                if counts_after.get(i, 0) != counts_before.get(i, 0) + n:
+                    self._annotations, self._locked = before, old_locked
+                    return False
+            return True
+
     # -- tiles -------------------------------------------------------------------------------
 
     def _index_of(self, rate: float, t_us: float) -> float:

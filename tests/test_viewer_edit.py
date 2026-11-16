@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 import mef3io
+import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
@@ -257,7 +258,7 @@ def test_save_appends_and_leaves_the_old_notes_untouched(ed, qtbot):
     epoch = win.data.epoch
     finish_save(qtbot, win)
     assert not spy.problems
-    assert win.data.epoch == epoch + 1  # the data was reopened
+    assert win.data.epoch == epoch  # only the notes were read again: nothing was reopened
     after_a, after_b = records(a), records(b)
     # the old ones are all still there, unchanged
     for old, new in ((before_a, after_a), (before_b, after_b)):
@@ -990,7 +991,7 @@ def test_opening_and_paging_never_inspect_but_a_save_does_on_a_task_thread(
     win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
     finish_save(qtbot, win)
     assert not spy.problems and calls and not any(calls)
-    assert not win.data.facts_loaded  # the reopen after the save forgot them again
+    assert win.data.facts_loaded  # nothing was reopened, so what was read stays
 
 
 # --- the save never leaves the draft locked ----------------------------------------------------
@@ -1118,22 +1119,24 @@ def test_a_failure_starting_the_save_frees_the_draft(ed, qtbot, monkeypatch):
     win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
     win.data.read_facts()
     win.edit.ask_save = lambda plan_for: ({}, {})
-    real = win.begin_data_change
+    jobs = win.edit.jobs
+    real = jobs.submit
     calls = []
 
-    def broken():
-        calls.append(1)
-        real()
-        raise RuntimeError("boom")
+    def broken(title, *a, **k):
+        if title == "Adding notes and events":
+            calls.append(1)
+            raise RuntimeError("boom")
+        return real(title, *a, **k)
 
-    monkeypatch.setattr(win, "begin_data_change", broken)
+    monkeypatch.setattr(jobs, "submit", broken)
     win.edit.save()
     assert calls
     _wait_saved(qtbot, win)
     assert len(spy.problems) == 1 and "Nothing was saved" in spy.problems[0].text
 
 
-def test_a_save_of_notes_does_not_read_the_strip_again_and_ends_a_running_read_first(ed, qtbot):
+def test_a_save_of_notes_does_not_read_the_strip_again_nor_interrupt_a_read(ed, qtbot):
     win, spy, _ = ed
     qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
     stretches = list(win._stretches)
@@ -1147,7 +1150,7 @@ def test_a_save_of_notes_does_not_read_the_strip_again_and_ends_a_running_read_f
     win.edit.add(T0 + 30 * SEC, None, "Spike", "once")
     finish_save(qtbot, win)
     qtbot.wait(300)
-    assert order == ["drain", "reopen"]  # the read of the index ends before the data is reopened
+    assert order == []  # nothing is reopened, so no read has to end first
     assert not asked  # only notes were added: the signal is as it was
     assert win._stretches == stretches
 
@@ -1603,3 +1606,167 @@ def test_closing_with_a_draft_still_asks(ed):
     assert win.edit.confirm_close() is False and spy.asked == ["close"]
     spy.answer = "discard"
     assert win.edit.confirm_close() is True
+
+
+# --- saving without starting over -------------------------------------------------------------
+
+
+def watch_the_page(win, monkeypatch, qtbot):
+    """What a save may not do to the page: reopen, read tiles again, blank the canvas.
+    (The banner of edit mode changes the canvas' height once: that settles first.)"""
+    from test_viewer_ui import settle
+
+    settle(qtbot, win)
+    from mef3io_studio.model import viewer_source as vs
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    seen = {"reopen": 0, "open": 0, "tiles": 0, "loading": []}
+    real_reopen, real_tile, real_open = ViewerData.reopen, ViewerData.read_tile, vs.open_recordings
+
+    def reopen(self):
+        seen["reopen"] += 1
+        return real_reopen(self)
+
+    def tile(self, *a, **k):
+        seen["tiles"] += 1
+        return real_tile(self, *a, **k)
+
+    def opened(*a, **k):
+        seen["open"] += 1
+        return real_open(*a, **k)
+
+    monkeypatch.setattr(ViewerData, "reopen", reopen)
+    monkeypatch.setattr(ViewerData, "read_tile", tile)
+    monkeypatch.setattr(vs, "open_recordings", opened)
+    real_loading = win.canvas.set_loading
+    monkeypatch.setattr(
+        win.canvas, "set_loading", lambda v: (seen["loading"].append(v), real_loading(v))[1]
+    )
+    return seen
+
+
+def test_a_save_of_notes_keeps_the_page_the_tile_cache_and_the_readers(ed, qtbot, monkeypatch):
+    win, spy, (a, b) = ed
+    turn_on(win)
+    data = win.data
+    readers, combined = list(data._readers), data._combined
+    info, key0 = data._info, (data.data_id, data.epoch)
+    tiles_cached = len(win.controller.cache)
+    seen = watch_the_page(win, monkeypatch, qtbot)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "kept page")
+    win.edit.add(T0 + 120 * SEC, None, "Note", "in B")
+    finish_save(qtbot, win)
+    assert not spy.problems and not win.edit.draft.dirty
+    assert seen == {"reopen": 0, "open": 0, "tiles": 0, "loading": []}
+    assert (data.data_id, data.epoch) == key0 and win.data is data
+    assert data._readers == readers and data._combined is combined and data._info is info
+    assert len(win.controller.cache) >= tiles_cached  # nothing was thrown away
+    # the new notes are there, stored, no longer drafts
+    texts = [m.text for m in win.marks]
+    assert "Spike: kept page" in texts and "in B" in texts
+    assert [m for m in win.notes_tab.rows if m.state] == []
+    assert win.notes_button.text() == f"Notes and events ({len(win.marks)})"
+    assert len(records(a)) + len(records(b)) == len(win.marks)
+
+
+def test_a_second_save_after_a_notes_only_save_checks_the_recording_as_before(ed, qtbot):
+    win, spy, (a, b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "first")
+    finish_save(qtbot, win)
+    win.edit.add(T0 + 31 * SEC, None, "Spike", "second")
+    finish_save(qtbot, win)
+    stored = [c[4] for c in comparable(records(a))]
+    assert not spy.problems and "Spike: first" in stored and "Spike: second" in stored
+    # a different recording is put where it was: the next save is refused, as it was
+    # after a reopen (the fingerprint of the signal is the one taken at opening)
+    write(Path(a), start=T0 + 1000 * SEC, seconds=10)
+    win.edit.add(T0 + 32 * SEC, None, "Spike", "third")
+    before = tree_hash(a)
+    finish_save(qtbot, win)
+    assert "has changed" in spy.problems[-1].title and win.edit.draft.dirty
+    assert tree_hash(a) == before
+
+
+def test_a_signal_that_changed_during_the_save_makes_the_window_reopen(ed, qtbot, monkeypatch):
+    from mef3io_studio.model import annotation_save as asave
+    from mef3io_studio.model import viewer_source as vs
+
+    win, spy, (a, b) = ed
+    turn_on(win)
+    changed = []
+    real_print = vs.fingerprint_of
+    monkeypatch.setattr(
+        vs, "fingerprint_of", lambda summary: ("changed",) if changed else real_print(summary)
+    )
+    real_write = asave.write_plan
+
+    def write_then_change(*args, **kw):
+        result = real_write(*args, **kw)
+        changed.append(1)  # what the library now reports for the signal differs
+        return result
+
+    monkeypatch.setattr(asave, "write_plan", write_then_change)
+    seen = watch_the_page(win, monkeypatch, qtbot)
+    epoch = win.data.epoch
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored")
+    finish_save(qtbot, win)
+    assert seen["reopen"] == 1 and win.data.epoch == epoch + 1  # shown as it is now
+    assert not spy.problems and not win.edit.draft.dirty
+    assert "Spike: stored" in [m.text for m in win.marks]
+
+
+def test_refresh_notes_refuses_what_it_cannot_prove_and_changes_nothing(ed):
+    win, _spy, (a, b) = ed
+    data = win.data
+    before = data.annotations()
+    # it claims more notes than were written: the read-back does not match
+    assert data.refresh_notes({0: 3}) is False
+    assert data.annotations() == before and data.annotations_locked == ()
+    # one note was appended: it matches
+    with mef3io.Writer(str(a), overwrite=False) as w:
+        w.write_annotations([{"time": T0 + 8 * SEC, "type": "Note", "text": "late"}])
+    assert data.refresh_notes({0: 1}) is True
+    assert len(data.annotations()) == len(before) + 1
+    # a closed or never-read data cannot be refreshed
+    fresh_data = type(data).__new__(type(data))
+    fresh_data._annotations, fresh_data._closed = None, False
+    fresh_data._notes_lock = threading.Lock()
+    assert fresh_data.refresh_notes({0: 1}) is False
+
+
+def test_when_the_notes_cannot_be_proved_the_save_reopens_like_before(ed, qtbot, monkeypatch):
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    win, spy, _ = ed
+    turn_on(win)
+    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended: False)
+    seen = watch_the_page(win, monkeypatch, qtbot)
+    order = []
+    real_drain = win.controller.drain_strip
+    win.controller.drain_strip = lambda *a, **k: (order.append("drain"), real_drain(*a, **k))[1]
+    epoch = win.data.epoch
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "after a reopen")
+    finish_save(qtbot, win)
+    assert order == ["drain"]  # a read of the index ends before the data is reopened
+    assert seen["reopen"] == 1 and win.data.epoch == epoch + 1 and seen["loading"][:1] == [True]
+    assert not spy.problems and not win.edit.draft.dirty and not win.edit.saving
+    assert "Spike: after a reopen" in [m.text for m in win.marks]
+
+
+def test_a_reopen_that_fails_after_the_notes_were_stored_says_so(ed, qtbot, monkeypatch):
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    win, spy, (a, b) = ed
+    turn_on(win)
+    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended: False)
+
+    def broken(self):
+        raise OSError("gone")
+
+    monkeypatch.setattr(ViewerData, "reopen", broken)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored anyway")
+    finish_save(qtbot, win)
+    assert "cannot be shown" in spy.problems[-1].title
+    assert not win.edit.draft.dirty and not win.edit.saving  # stored, so not in the draft
+    assert "Spike: stored anyway" in [c[4] for c in comparable(records(a))]
