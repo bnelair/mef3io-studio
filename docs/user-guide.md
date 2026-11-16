@@ -845,9 +845,17 @@ the time zone you chose for the site (see *Times and time zones*).
 
 **Scales.** The toolbar sets the *sensitivity* (µV per millimetre; **Auto**
 chooses one that fits the signals), the *timebase* (millimetres per second)
-and the *spacing* between rows, in the usual clinical units. A list of
-colours changes the look of the traces. The viewer remembers the scales,
-colours and filters you chose for the next time.
+and the *spacing* between rows, in the usual clinical units. Beside the
+timebase, a grey **= 10 s** says how much time is on the screen. It follows
+the timebase, the size of the window and the screen the window is on: a wider
+window shows more time at the same timebase.
+
+A list of colours changes the look of the traces. Besides the ready-made
+ones, **Your own colours…** asks for a background colour and a trace colour;
+the text, the grid and the other marks are chosen to match. If the two colours
+are too close to read each other (less than 3 to 1 in contrast), the viewer
+says so beside the list and keeps the colours it had. The viewer remembers the
+scales, colours and filters you chose for the next time.
 
 ### Montages and channels
 
@@ -885,6 +893,12 @@ you use one) opens a small window:
   recordings have different sampling rates, you can choose which one to
   draw.
 - **Turn all filters off** puts everything back.
+
+A stretch of signal between two gaps can be too short for the filters to
+settle. It is then drawn paler and shown as recorded, without the filters. When
+the page on the screen holds such a stretch, the Filters window and the status
+line at the bottom say so, with the shortest length that can be filtered with
+the settings you chose.
 
 If you choose settings that cannot work together (for example a slow-drift
 cutoff above the fast-activity one), the window says so and keeps the

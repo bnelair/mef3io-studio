@@ -91,8 +91,20 @@ From top to bottom, as in the clinical viewer:
    (Ctrl/Cmd+K), Annotations (n), the **Edit mode** switch (off),
    **Export start / Export end**, and help (?).
 2. **Toolbar row 2:** Montage, Channels (C), Spacing, Sensitivity + Auto,
-   Timebase, Filters (summary text, opens the filter panel), Colour profile,
+   Timebase and, read only beside it, **how much time is on screen**
+   ("= 10 s"), Filters (summary text, opens the filter panel), Colour profile,
    Types (T).
+   - **The page length label** is `vv.format_length(page_us())`, a plain-words
+     formatter in `model/viewer_view.py`: "800 ms", "2.5 s", "10 s",
+     "4 min 30 s", "12 min", "2 h 10 min", "1 day 6 h" (a tenth of a second
+     under 10 s, whole seconds under 10 min, whole minutes under a day, whole
+     hours after; a value that rounds up into the next unit is written in
+     that unit). It is updated from the page refresh (so by the timebase,
+     Alt+1…5, Ctrl+wheel and a resize), at once from the canvas's resize (before
+     the refresh's 120 ms delay), and when the window moves to a display with
+     another resolution (`QWindow.screenChanged`: the same millimetres hold
+     another number of pixels). It also shows in the overview. Tooltip: what
+     it is, and that a wider window shows more time at the same timebase.
 3. **Overview strip (32 px):** the whole timeline.
    - Data drawn per recording in that recording's colour, with gaps
      hatched.
@@ -119,6 +131,39 @@ From top to bottom, as in the clinical viewer:
 
 Colour profiles: White, Green (paper style with minor/major grid), Dark,
 High contrast. They follow the app theme by default.
+
+**Your own colours…** (the fifth choice, `custom`):
+- Two Qt colour dialogs, in turn: the background, then the trace. Choosing it
+  again offers the colours in use. Stopping either dialog changes nothing.
+- Every other palette field (text, muted text, time grid, gap shading, cursor,
+  selection, dimmed trace and the `dark` flag) is **derived** in
+  `model/viewer_colours.py`, a pure function of the two colours:
+  - `dark` = white reads better on the background than black does;
+  - text = a soft ink if that reaches 7:1, else pure black or white (always at
+    least 4.6:1); muted text keeps 4.5:1 where it can, never below 3:1;
+  - the accent (cursor, selection) is the usual blue, moved towards black or
+    white only as far as 3:1 needs;
+  - the dimmed trace is the trace moved towards the background, but never
+    below 3:1 (so with a trace that is barely 3:1 itself, the pale stretches
+    look like the trace);
+  - the grids and gap shading are quiet shades of the ink on the background.
+- **Two colours closer than 3:1 are refused**, in plain words beside the list
+  ("Too close to read: not applied.", the whole sentence in its tooltip and in
+  the status line), and nothing changes; the list shows the profile in use.
+- **Recording letters, note types and the overview strip** are drawn by
+  `viewer_colours.legible_on(palette, colour)`: on a custom palette a colour
+  under 3:1 is moved towards black or white just far enough; the built-in
+  profiles are never touched (the light variant on a light background, the dark
+  variant on a dark one, by the derived `dark` flag).
+- **A colour choice only repaints.** It does not ask for a page, read a tile or
+  compute a block (`_profile_chosen` sets the state and calls `_apply_profile`;
+  a test counts reads, requests and page refreshes). This holds for the
+  built-in profiles too.
+- **Saved** as two declared preferences, `viewer/custom_background` and
+  `viewer/custom_trace` (`#rrggbb` or empty; colours only, nothing from a
+  recording), and only when the user chose them. On load each is validated
+  (`viewer_colours.clean_pair`, then the 3:1 rule); a pair that is empty,
+  edited into something else, or too close means the **white** profile.
 
 ## Knowing which recording is which
 
@@ -314,6 +359,15 @@ against hand-made channel lists, including the edge cases above.
   - Longer gaps split the channel into runs that are filtered separately.
   - A run shorter than the filter's settling time is drawn unfiltered and
     dimmed. Technical details explain why.
+  - **The explanation on screen:** when the page on screen holds such samples
+    (`ViewPiece.has_unfiltered` over the visible rows and the page's time
+    only), one plain sentence is shown in the filter window and in the status
+    bar: "Paler stretches are too short to filter with these settings (shorter
+    than N s) and are shown as recorded." N is the settling time of the rate of
+    the rows that have such samples (the longest, when several). It is off
+    when the filters are off and in the overview, and it keeps the last
+    sentence while a row of the new page is still loading, so it does not
+    flicker.
 - **Large pages:**
   - Above about 2 million samples per channel (an 8 kHz page past ~4
     minutes), filtering is done in overlap-save chunks with the same
@@ -333,6 +387,11 @@ against hand-made channel lists, including the edge cases above.
     above the new Nyquist is below 0.1%). This loses nothing: the low-pass
     has already removed what the reduced rate could not hold.
   - Pinned by a benchmark test, run on request.
+  - `tests/test_viewer_bench.py` (`MEF3IO_STUDIO_BENCH=1`, prints, asserts no
+    time) measures the window itself: the first complete page, a page forward
+    cold and warm, runs of pages one after another and 30 ms apart (forward and
+    backward), a far jump, a filter change, a montage change and a screenful of
+    channels, and the cache fill. Each run starts from an empty cache.
 
 **Frequency response** (button **Show response** in the filter panel):
 - It plots the combined response of the current settings for the sampling
