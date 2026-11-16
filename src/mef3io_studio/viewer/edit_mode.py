@@ -618,24 +618,45 @@ class EditMode(QObject):
                 lambda _r: self._ask_then_save(data, plan_for, then_off, then_close)
             )
             handle.failed.connect(self._prepare_failed)
+            # A stopped task (or one removed from the queue) ends the same way,
+            # without a message: nothing was asked, nothing was written.
+            handle.cancelled.connect(lambda: self._prepare_failed(None))
             return True
         return self._ask_then_save(data, plan_for, then_off, then_close)
 
-    def _prepare_failed(self, message) -> None:
+    def _prepare_ended(self) -> None:
+        """The save did not start (stopped, refused, failed): the draft is
+        free again and the buttons say so. Same outcome as a cancelled
+        preview always had: nothing is saved, the mode stays as it was and
+        the window stays open (``then_off`` / ``then_close`` do not happen)."""
         self.saving = False
         self._sync_buttons()
+
+    def _prepare_failed(self, message) -> None:
+        self._prepare_ended()
         if message is not None:
             self.show_problem(message)
 
     def _ask_then_save(self, data, plan_for, then_off: bool, then_close: bool) -> bool:
         if data is not self.win.data:  # the window moved on
-            self.saving = False
+            self._prepare_ended()
             return False
-        answer = self.ask_save(plan_for)
-        plan = plan_for(answer[0]) if answer is not None else None
+        try:
+            answer = self.ask_save(plan_for)
+            plan = plan_for(answer[0]) if answer is not None else None
+        except Exception:  # noqa: BLE001 - the draft must never stay locked
+            log.exception("the save preview failed")
+            self._prepare_ended()
+            self.show_problem(
+                UserMessage(
+                    "The notes could not be saved",
+                    "Something went wrong before anything was added. Nothing was saved, and "
+                    "the changes stay in the draft.",
+                )
+            )
+            return False
         if plan is None or not plan.can_save:
-            self.saving = False
-            self._sync_buttons()
+            self._prepare_ended()
             return False
         choices, passwords = answer
         self._start_save(plan, passwords, then_off, then_close)

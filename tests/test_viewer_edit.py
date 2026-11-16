@@ -990,3 +990,72 @@ def test_opening_and_paging_never_inspect_but_a_save_does_on_a_task_thread(
     finish_save(qtbot, win)
     assert not spy.problems and calls and not any(calls)
     assert not win.data.facts_loaded  # the reopen after the save forgot them again
+
+
+# --- the save never leaves the draft locked ----------------------------------------------------
+
+
+def _unlocked(win):
+    assert not win.edit.saving
+    assert win.edit.save_button.isEnabled() and win.edit.draft.dirty
+    assert win.edit.set_on(True) is True
+
+
+def test_a_stopped_facts_task_unlocks_the_draft(ed, qtbot, monkeypatch):
+    from mef3io_studio.model.cancel import JobCancelled
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+
+    def stopped():
+        raise JobCancelled()
+
+    monkeypatch.setattr(win.data, "read_facts", stopped)
+    assert win.edit.save() is True
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
+    _unlocked(win)
+    spy.answer = "stay"
+    assert win.edit.confirm_close() is False  # asks; it is not "busy"
+    assert spy.asked == ["close"]
+    assert not spy.problems
+
+
+def test_a_cancelled_preview_after_the_lazy_read_changes_nothing(ed, qtbot):
+    """Same outcome as a cancelled preview always had: not saved, the mode and
+    the window stay as they were, for a plain save, then_off and then_close."""
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.edit.ask_save = lambda plan_for: None  # the user cancels the preview
+    for kw in ({}, {"then_off": True}, {"then_close": True}):
+        win.data._facts_loaded = False  # the lazy read runs again
+        win.edit.save(**kw)
+        qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
+        _unlocked(win)
+        assert win.edit.on and win.isVisible() and not win._closed
+        assert not spy.problems
+
+
+def test_a_preview_that_raises_unlocks_the_draft(ed, qtbot):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+
+    def broken(plan_for):
+        raise RuntimeError("boom")
+
+    win.edit.ask_save = broken
+    win.edit.save()
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
+    _unlocked(win)
+    assert len(spy.problems) == 1
+
+
+def test_a_window_that_moved_on_unlocks_the_draft(ed, qtbot):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.edit.saving = True  # as save() leaves it while the facts are read
+    assert win.edit._ask_then_save(object(), lambda c: None, False, False) is False
+    _unlocked(win)
