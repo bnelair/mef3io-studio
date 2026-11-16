@@ -464,7 +464,17 @@ mef3io), driven by a scheduler in `workers/`.
     overrides), of which look-ahead takes at most two thirds. A new page
     cancels what was prepared for another direction at once. Idle for a
     second, the look-ahead deepens one page at a time while the cache holds
-    less than half its budget.
+    less than half its budget, and only while the window is shown (not
+    hidden or minimised) and no read has failed since the last page.
+  - After a change of filters, montage or width every block is new work: only
+    then, no look-ahead block is computed while a visible block waits or runs
+    (they share the cores and slowed it down); plain paging is not held back.
+    The decimation step (`dsp.max_out_step`) is designed once per (settings,
+    rate), not for every page and group. Look-ahead blocks are aligned from
+    the page's own start and length, never from the block's (that was 1 us
+    off for an odd length). A block kept for the new page asks for its
+    missing tiles again, so the stale sweep does not cancel them. A tile
+    raised from look-ahead to visible wakes the idle workers.
   - The overview (envelope) reads the indexes of all its channels in one
     library call.
   - A jump or a direction change cancels stale look-ahead through mef3io's
@@ -493,7 +503,11 @@ mef3io), driven by a scheduler in `workers/`.
 - **Drawing:**
   - A page that loads never blanks: each row keeps the picture it had, drawn
     at the times it holds (a row whose channel, montage partner or filters
-    changed keeps nothing); a corner spinner shows only after 400 ms.
+    changed keeps nothing, and neither does a new zoom or width: its min/max
+    bins would look blocky and real); the old picture is drawn faint from its
+    first frame, so it never looks current; a corner spinner shows only after
+    400 ms. A row whose block could not be read shows "This channel could not
+    be read." and no trace.
   - QPainter on a backing pixmap, redrawn only when the view or the data
     changes.
   - One polyline per row: min/max per pixel column when there are more
@@ -538,7 +552,13 @@ mef3io), driven by a scheduler in `workers/`.
   (more than one per 4 pixels), they merge per pixel column into one tick
   with a count and the colour of the most important type, and per 8 pixels
   into one chip; a draft note stays a line of its own. Tooltips are made when
-  hovered, and the side list is filled in slices.
+  hovered, and the side list is filled in slices. "In view" is one rule for
+  both ways of drawing: the note starts in the page, or began before it and
+  lasts into it (an array compare against the notes' ends, never a walk over
+  the look-back). Left out of the merge, because a tick would lose what they
+  are: a note lasting more than a pixel (the 200 longest), a note that began
+  before the page, and the draft's own notes (never counted twice). A side
+  list cut short says "The first N of M" from its first row on.
 - **Side list:**
   - Sorted by time, with search, type filter and recording letter.
   - Click to go there; [ / ] step through.

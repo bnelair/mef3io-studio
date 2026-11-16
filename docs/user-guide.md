@@ -920,11 +920,15 @@ When very many notes fall on the screen (for example hours of a recording
 with thousands of notes), they cannot be told apart, so they are merged: one
 short tick for each pixel column, taller for more notes and in the colour of
 the most important type. Hover a tick to see how many notes it holds; zoom in
-to see them one by one. The list and `[` and `]` still reach every note.
+to see them one by one. A long note keeps its coloured band, and notes of
+your draft stay lines of their own. The list and `[` and `]` still reach every
+note.
 
 While a page is loading, the traces of the page before stay where they
-belong in time, and a small spinner appears in the corner only if it takes
-longer than a moment. Changing the montage does not read the recording
+belong in time, drawn faint so that they never look like the real page, and a
+small spinner appears in the corner only if it takes longer than a moment.
+Zooming or changing the width keeps no old traces. If a channel cannot be
+read, its row says so instead of showing anything old. Changing the montage does not read the recording
 again.
 
 The text of notes can identify a patient. Like patient details in Explore,
