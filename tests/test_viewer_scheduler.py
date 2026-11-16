@@ -146,6 +146,31 @@ def test_visible_tiles_are_read_before_lookahead_before_screens():
         sched.close()
 
 
+def test_no_lookahead_or_screen_read_starts_while_a_visible_one_is_queued_or_running():
+    """The disk serves what is on screen first: with idle workers to spare,
+    look-ahead and neighbour screens still wait for every visible tile."""
+    gate = threading.Event()
+    data = FakeData(gate)
+    sched = TileScheduler(data, TileCache(), workers=4, on_ready=lambda k, a: None)
+    try:
+        sched.request(256.0, ("v",), 0, VISIBLE, 0)  # one visible read runs, three workers idle
+        assert data.started.wait(5)
+        sched.request(256.0, ("l",), 1, LOOKAHEAD, 0)
+        sched.request(256.0, ("s",), 2, SCREENS, 0)
+        sched.request(256.0, ("v",), 3, VISIBLE, 0)  # more visible work, queued behind
+        time.sleep(0.3)
+        started = [c[0] for c, _ in data.order]
+        assert "l" not in started and "s" not in started and "v" in started
+        gate.set()
+        assert sched.wait_idle(10)
+        done = [c[0] for c, _ in data.order]
+        assert sorted(done) == ["l", "s", "v", "v"]
+        assert max(done.index("l"), done.index("s")) > done.index("v")
+        assert done.index("l") > 1 and done.index("s") > 1  # both visible reads came first
+    finally:
+        sched.close()
+
+
 def test_a_later_request_can_raise_the_urgency():
     gate = threading.Event()
     data = FakeData(gate)

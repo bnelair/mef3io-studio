@@ -411,15 +411,26 @@ class TileScheduler:
                 if self._closed:
                     return None
                 while self._heap:
-                    priority, _, key = heapq.heappop(self._heap)
+                    priority, _, key = self._heap[0]
                     job = self._jobs.get(key)
                     if job is None or job.state != "queued" or job.request.priority != priority:
+                        heapq.heappop(self._heap)
                         continue  # cancelled, taken, or a stale heap entry
+                    if priority > VISIBLE and self._visible_running():
+                        break  # look-ahead and neighbour screens wait for the visible tiles
+                    heapq.heappop(self._heap)
                     job.state = "running"
                     job.start_gen = job.request.generation
                     self._active += 1
                     return job
                 self._cv.wait()
+
+    def _visible_running(self) -> bool:
+        """Whether a read for the visible page is under way (caller holds the
+        lock). Queued visible reads come first anyway (the heap's order)."""
+        return any(
+            j.state == "running" and j.request.priority == VISIBLE for j in self._jobs.values()
+        )
 
     def _run(self) -> None:
         while True:
