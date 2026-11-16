@@ -295,11 +295,12 @@ def compute_envelope(
     data, channels: Sequence[str], span: tuple[int, int], cancel: CancelToken | None = None
 ) -> EnvelopePiece:
     """Index-only min/max rows for ``channels`` over ``span`` (as recorded)."""
+    if cancel is not None:
+        cancel.raise_if_cancelled()
+    got = data.envelope_many(list(channels), span[0], span[1])
     rows = []
     for ch in channels:
-        if cancel is not None:
-            cancel.raise_if_cancelled()
-        e = data.envelope(ch, span[0], span[1])
+        e = got[ch]
         rows.append(
             np.vstack(
                 [

@@ -390,6 +390,17 @@ class ViewerData:
         """Min/max per block from the block index alone (never the samples)."""
         return self._combined.block_envelope(channel, int(t0), int(t1))
 
+    def envelope_many(self, channels: Sequence[str], t0: int, t1: int) -> dict[str, dict]:
+        """:meth:`envelope` of several channels in ONE library call, which
+        reads their indexes concurrently (on a network drive each index is
+        several round trips, so this is many times faster than one call per
+        channel). Keyed by channel name; a name given twice is returned once."""
+        names = list(dict.fromkeys(channels))
+        if not names:
+            return {}
+        got = self._combined.block_envelope(names, int(t0), int(t1))
+        return {name: got[name] for name in names}
+
     # -- annotations -----------------------------------------------------------------------
 
     @property
