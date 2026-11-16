@@ -94,6 +94,7 @@ def check_same(data, index: int):
 
     letter = data.recordings[index].letter
     path = data.location_of(index)
+    data.read_facts()  # once, here on the task's thread (a no-op when already read)
     opened = data.facts(index)
     if not os.path.isdir(path) or opened is None:
         raise _refuse(

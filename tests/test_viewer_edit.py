@@ -959,3 +959,34 @@ def test_quick_types_preference_changes_the_keys(make_window, pair, qtbot, tmp_p
     key(win, Qt.Key.Key_3)
     key(win, Qt.Key.Key_4)  # no fourth type: nothing
     assert [i.label for i in win.edit.draft.items] == ["Tremor"]
+
+
+# --- opening never inspects -------------------------------------------------------------------
+
+
+def test_opening_and_paging_never_inspect_but_a_save_does_on_a_task_thread(
+    ed, qtbot, monkeypatch, tmp_path
+):
+    win, spy, (a, b) = ed
+    calls = []
+    real = mef3io.inspect
+
+    def counting(*args, **kw):
+        calls.append(threading.current_thread() is threading.main_thread())
+        return real(*args, **kw)
+
+    monkeypatch.setattr(mef3io, "inspect", counting)
+    # a fresh data object (as the open job makes it) and a reopen: no inspect
+    from mef3io_studio.model.viewer_source import open_recordings
+
+    fresh = open_recordings([a, b])
+    fresh.reopen()
+    fresh.close()
+    win.go_to(T0 + 30 * SEC)
+    assert calls == [] and not win.data.facts_loaded
+    # the first save reads them, off the GUI thread
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    finish_save(qtbot, win)
+    assert not spy.problems and calls and not any(calls)
+    assert not win.data.facts_loaded  # the reopen after the save forgot them again

@@ -152,11 +152,19 @@ _data_ids = itertools.count(1)
 class ViewerData:
     """What the viewer reads from: built by :func:`open_recordings`."""
 
-    def __init__(self, paths, passwords, readers, combined, starts, ends, rec_channels, facts=None):
-        #: Per recording (letter order): ``(encrypted, access, fingerprint)``
-        #: read at opening, or None when it could not be read. Edit mode's
-        #: save compares it with the disk before writing.
-        self._facts = list(facts) if facts is not None else [None] * len(paths)
+    def __init__(
+        self, paths, passwords, readers, combined, starts, ends, rec_channels, prints=None
+    ):
+        #: Per recording (letter order): the fingerprint as it was when the
+        #: recording was opened, taken from what opening read anyway (no extra
+        #: file access), or None when unknown.
+        self._prints = list(prints) if prints is not None else [None] * len(paths)
+        #: Per recording: ``(encrypted, access, fingerprint)``, read only when
+        #: edit mode's save first needs it (:meth:`read_facts`, a task thread),
+        #: never at opening and never by :meth:`reopen`.
+        self._facts: list = [None] * len(paths)
+        self._facts_loaded = False
+        self._facts_lock = threading.Lock()
         self._paths = list(paths)  # in recording order (letters)
         self._passwords = list(passwords)
         self._readers = list(readers)
@@ -198,10 +206,34 @@ class ViewerData:
         the save task only; never logged."""
         return self._passwords[index]
 
+    @property
+    def facts_loaded(self) -> bool:
+        """Whether :meth:`read_facts` has run (what :meth:`facts` answers)."""
+        return self._facts_loaded
+
     def facts(self, index: int):
-        """``(encrypted, access, fingerprint)`` of recording ``index`` as it was
-        when opened ("access": "full", "level-1", ...), or None."""
+        """``(encrypted, access, fingerprint)`` of recording ``index`` ("access":
+        "full", "level-1", ...), with the fingerprint of the recording as it was
+        when opened, or None (not read yet, or it cannot be read). Only what
+        :meth:`read_facts` stored: it never touches the disk, so the window's
+        thread may call it."""
         return self._facts[index]
+
+    def read_facts(self) -> None:
+        """Read the facts of every recording, once (a task thread, never the
+        window's). It inspects each recording: edit mode's save needs it, so
+        opening and paging never do."""
+        with self._facts_lock:
+            if self._facts_loaded:
+                return
+            # A recording that could not be read is asked again next time (it
+            # may have come back); the ones read stay.
+            for i, (p, w, fp) in enumerate(
+                zip(self._paths, self._passwords, self._prints, strict=True)
+            ):
+                if self._facts[i] is None:
+                    self._facts[i] = _facts_of(p, w, fp)
+            self._facts_loaded = all(f is not None for f in self._facts)
 
     def is_archive(self, index: int) -> bool:
         """Whether recording ``index`` is a single-file archive (.mefd.tar)."""
@@ -596,14 +628,37 @@ def fingerprint_of(summary) -> tuple:
     )
 
 
-def _facts_of(path: str, password: str):
+def fingerprint_from_infos(infos) -> tuple:
+    """The same fingerprint as :func:`fingerprint_of`, from ``Reader.info``
+    dicts of the channels (name -> info), which opening has read anyway."""
+    return tuple(
+        sorted(
+            (
+                str(name),
+                int(i["start_time"]),
+                int(i["end_time"]),
+                int(i["number_of_samples"]),
+            )
+            for name, i in infos.items()
+        )
+    )
+
+
+def _facts_of(path: str, password: str, opened_print=None):
+    """Encryption and access from one inspect; the fingerprint is the one taken
+    when the recording was opened (so a change since then is seen), else the
+    inspect's own."""
     import mef3io
 
     try:
         with library_warnings_caught():
             summary = mef3io.inspect(path, password=password)
         enc = summary.encryption
-        return (bool(enc["encrypted"]), str(enc["access"]), fingerprint_of(summary))
+        return (
+            bool(enc["encrypted"]),
+            str(enc["access"]),
+            opened_print if opened_print is not None else fingerprint_of(summary),
+        )
     except Exception:  # noqa: BLE001 - edit mode then refuses to save
         return None
 
@@ -644,11 +699,15 @@ def open_recordings(
                 if cancel is not None:
                     cancel.raise_if_cancelled()
                 opened.append(mef3io.Reader(path, pwd))
-            starts, ends, rec_channels = [], [], []
+            starts, ends, rec_channels, prints = [], [], [], []
             for r in opened:
                 chans = list(r.channels)
                 infos = [r.info(c) for c in chans]
                 rec_channels.append(chans)
+                try:
+                    prints.append(fingerprint_from_infos(dict(zip(chans, infos, strict=True))))
+                except Exception:  # noqa: BLE001 - a missing key: the inspect's own is used
+                    prints.append(None)
                 starts.append(min((int(i["start_time"]) for i in infos), default=None))
                 ends.append(max((int(i["end_time"]) for i in infos), default=None))
             # recordings without data sort last, so the letters of the others hold
@@ -659,6 +718,7 @@ def open_recordings(
             starts = [starts[i] for i in order]
             ends = [ends[i] for i in order]
             rec_channels = [rec_channels[i] for i in order]
+            prints = [prints[i] for i in order]
             letters = [_letter(i) for i in range(len(readers))]
             empty = [letters[i] for i, st in enumerate(starts) if st is None]
             if empty:
@@ -685,8 +745,7 @@ def open_recordings(
                     if refusal is None:
                         raise
                     raise refusal from exc
-        facts = [_facts_of(p, w) for p, w in zip(paths_o, pwds_o, strict=True)]
-        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels, facts)
+        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels, prints)
         opened = []  # owned by `data` now
     finally:
         for r in opened:

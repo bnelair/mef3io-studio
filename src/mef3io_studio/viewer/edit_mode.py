@@ -608,13 +608,36 @@ class EditMode(QObject):
                 )
             )
             return False
+        if not data.facts_loaded:
+            # What the preview needs (which recordings are protected) is read
+            # once, on a task thread: opening and paging never inspect.
+            self.saving = True  # the draft is locked from here (reading the facts, the preview)
+            self._sync_buttons()
+            handle = self.jobs.submit("Checking the recordings", lambda ctx: data.read_facts())
+            handle.succeeded.connect(
+                lambda _r: self._ask_then_save(data, plan_for, then_off, then_close)
+            )
+            handle.failed.connect(self._prepare_failed)
+            return True
+        return self._ask_then_save(data, plan_for, then_off, then_close)
+
+    def _prepare_failed(self, message) -> None:
+        self.saving = False
+        self._sync_buttons()
+        if message is not None:
+            self.show_problem(message)
+
+    def _ask_then_save(self, data, plan_for, then_off: bool, then_close: bool) -> bool:
+        if data is not self.win.data:  # the window moved on
+            self.saving = False
+            return False
         answer = self.ask_save(plan_for)
-        if answer is None:
+        plan = plan_for(answer[0]) if answer is not None else None
+        if plan is None or not plan.can_save:
+            self.saving = False
+            self._sync_buttons()
             return False
         choices, passwords = answer
-        plan = plan_for(choices)
-        if not plan.can_save:
-            return False
         self._start_save(plan, passwords, then_off, then_close)
         return True
 
