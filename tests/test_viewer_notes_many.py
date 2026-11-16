@@ -11,7 +11,7 @@ import time
 import mef3io
 import numpy as np
 import pytest
-from PySide6.QtCore import QPoint, QPointF
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
 from test_viewer_marks_ui import wait_marks
 from test_viewer_ui import make_window, settle  # noqa: F401
@@ -270,3 +270,80 @@ def test_a_draft_note_in_a_crowded_view_is_not_counted_twice(make_window, tmp_pa
     assert len(in_view) == 401
     assert sum(m.count for m in marks if m.tick) == 400
     assert sum(c.count for c in win.chips.chips) == 401
+
+
+def carried_study(tmp_path, n_before=700, n_long_inside=300):
+    """``n_before`` notes that began before the page and last into it, and
+    ``n_long_inside`` long ones that start inside it."""
+    notes = [
+        {
+            "time": T0 + 1000 * SEC + k * SEC // 4,
+            "type": "EDFA",
+            "duration": 2000 * SEC,
+            "text": f"c{k}",
+        }
+        for k in range(n_before)
+    ]
+    notes += [
+        {
+            "time": T0 + 2400 * SEC + k * SEC // 200,
+            "type": "EDFA",
+            "duration": 3 * SEC,
+            "text": f"l{k}",
+        }
+        for k in range(n_long_inside)
+    ]
+    return write_notes(tmp_path / "carried.mefd", notes)
+
+
+def test_notes_carried_into_a_page_are_bounded_by_pixels_and_counted_once(
+    make_window, tmp_path, qtbot
+):
+    win = make_window(carried_study(tmp_path))
+    wait_marks(qtbot, win)
+    zoom_out_to(win, 10)
+    win.set_state(t0=T0 + 2400 * SEC - SEC)
+    settle(qtbot, win)
+    t0, t1 = win.state.t0, win.state.t0 + win.page_us()
+    in_view = [m for m in win._visible if m.time <= t1 and (m.end or m.time) >= t0]
+    before = [m for m in in_view if m.time < t0]
+    assert len(before) == 700 and len(in_view) == 1000
+    marks, chips = win.canvas.marks, win.chips.chips
+    width = int(win.canvas.plot_width)
+    assert len(marks) <= width + 201 and len(chips) <= width // 8 + 201 + 1
+    group = [m for m in marks if m.tick and m.time == t0 and m.count == 700]
+    assert len(group) == 1
+    # everything is counted exactly once, on the canvas and on the chips row
+    assert sum(m.count for m in marks) == 1000
+    assert sum(c.count for c in chips) == 1000
+    assert sum(1 for m in marks if m.end and not m.tick) == 200  # the capped bands
+
+
+def test_the_carried_group_answers_hover_click_and_step(make_window, tmp_path, qtbot):
+    win = make_window(carried_study(tmp_path))
+    wait_marks(qtbot, win)
+    zoom_out_to(win, 10)
+    win.set_state(t0=T0 + 2400 * SEC - SEC)
+    settle(qtbot, win)
+    t0 = win.state.t0
+    group = next(m for m in win.canvas.marks if m.tick and m.count == 700)
+    plot = win.canvas.plot_rect()
+    found = win.canvas.mark_at(QPointF(win.canvas.x_of(t0) + 1, plot.top() + 10))
+    assert found is group
+    tip = win.canvas.tip_for(found)
+    assert "700 notes and events continue from before this page" in tip
+    assert tip.count("\n") <= 10  # the list is capped
+    # click on its chip goes to the latest of them
+    chip_row = win.chips
+    rect, chip, _ = next(d for d in chip_row.drawn if d[1].count == 700)
+    QTest.mouseClick(chip_row, Qt.MouseButton.LeftButton, pos=rect.center().toPoint())
+    settle(qtbot, win)
+    latest = max(m.time for m in win._visible if m.text.startswith("c"))
+    assert abs((win.state.t0 + win.page_us() / 2) - latest) < SEC
+    # stepping reaches a note of the group like any other (a page holding only them)
+    win.set_state(t0=T0 + 2100 * SEC)
+    settle(qtbot, win)
+    assert any(m.tick and m.count == 700 for m in win.canvas.marks)
+    win.go_to_mark(-1)
+    settle(qtbot, win)
+    assert abs((win.state.t0 + win.page_us() / 2) - latest) < SEC

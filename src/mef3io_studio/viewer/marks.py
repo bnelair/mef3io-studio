@@ -48,6 +48,9 @@ class Chip:
     mark: object = None
     #: A merged chip (crowded view): how many notes it stands for.
     count: int = 1
+    #: Where a click goes, when that is not ``time`` (the group of notes that
+    #: continue from before the page sits at the left edge and leads to them).
+    jump: int | None = None
 
 
 class ChipsRow(QWidget):
@@ -142,7 +145,7 @@ class ChipsRow(QWidget):
         chip = self.chip_at(event.position())
         if chip is not None and event.button() == Qt.MouseButton.LeftButton:
             self.picked.emit(chip)
-            self.clicked.emit(chip.time)
+            self.clicked.emit(chip.time if chip.jump is None else chip.jump)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         pal = self.palette_

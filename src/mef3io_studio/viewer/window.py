@@ -76,6 +76,8 @@ DENSE_PX_PER_MARK = 4
 DENSE_MIN_MARKS = 40
 #: In a crowded view this many notes lasting more than a pixel (the longest) keep their band.
 MAX_BANDS = 200
+#: How many of the notes carried into the page the group's tooltip lists.
+GROUP_LISTED = 8
 #: Notes looked through between two events when the side list is filtered.
 LIST_SLICE = 400
 #: Up to this many notes the filtered list is made at once.
@@ -1432,12 +1434,18 @@ class ViewerWindow(QMainWindow):
                 c = colours[key] = vc.legible_on(pal, vm.kind_colour(key, dark))
             return c
 
+        canvas_marks, chips = [], []
         idx = np.arange(start, hi)
         px_us = max(1, (int(t1) - int(t0)) // width)
         long_ = idx[self._ends_np[start:hi] - self._times_np[start:hi] > px_us]
         if len(long_) > MAX_BANDS:  # the longest ones keep their band, the rest merge
             span = self._ends_np[long_] - self._times_np[long_]
             long_ = np.sort(long_[np.argsort(span, kind="stable")[-MAX_BANDS:]])
+        if len(left) > MAX_BANDS:  # too many to draw one by one: ONE group at the left edge
+            group = self._carried_group(t0, left, colour_of)
+            canvas_marks.append(group[0])
+            chips.append(group[1])
+            left = []
         single = [*left, *long_.tolist()]
         single_set = set(single)
         for i in self._drafted:
@@ -1448,9 +1456,8 @@ class ViewerWindow(QMainWindow):
         idx = idx[keep]
         times = self._times_np[idx]
         rank = self._importance_np[idx]
-        canvas_marks, chips = [], []
         first, counts, best = vm.merge_columns(times, rank, t0, t1, width)
-        canvas_marks = [
+        canvas_marks += [
             CanvasMark(int(times[f]), None, colour_of(keys[idx[b]]), None, "", "", int(c), True)
             for f, c, b in zip(first.tolist(), counts.tolist(), best.tolist(), strict=True)
         ]
@@ -1481,6 +1488,44 @@ class ViewerWindow(QMainWindow):
             canvas_marks.append(mark)
             chips.append(chip)
         return canvas_marks, chips
+
+    def _carried_group(self, t0, left, colour_of) -> tuple[CanvasMark, Chip]:
+        """The notes that began before the page and last into it, when there
+        are more than ``MAX_BANDS``: one marker at the left edge with their
+        count. Hover lists the nearest few; a click on its chip goes to the
+        latest of them; ``[`` steps to them like to any note."""
+        n = len(left)
+        arr = np.asarray(left)
+        best = int(arr[int(np.argmax(self._importance_np[arr]))])
+        colour = colour_of(self._visible_keys[best])
+        nearest = left[-GROUP_LISTED:][::-1]
+        lines = [f"{n} notes and events continue from before this page."]
+        for i in nearest:
+            m = self._visible[i]
+            text = self._mark_text(m, self._shown(m.recording))
+            lines.append(f"{timefmt.format_time(m.time, self.zone, 0)}  {text}")
+        if n > len(nearest):
+            lines.append(f"and {n - len(nearest)} more. Click to go to the latest, or step with [.")
+        else:
+            lines.append("Click to go to the latest, or step with [.")
+        tip = "\n".join(lines)
+        mark = CanvasMark(int(t0), None, colour, None, tip, "", n, True)
+        latest = int(self._times_np[left[-1]])
+        chip = Chip(
+            int(t0),
+            None,
+            colour,
+            f"{n} from before",
+            tip,
+            "",
+            self._visible_keys[best],
+            None,
+            "",
+            None,
+            n,
+            latest,
+        )
+        return mark, chip
 
     def _refresh_note_list(self) -> None:
         """The side list. Without a type or a search it is the first rows at
