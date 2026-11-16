@@ -76,6 +76,8 @@ DENSE_PX_PER_MARK = 4
 DENSE_MIN_MARKS = 40
 #: In a crowded view this many notes lasting more than a pixel (the longest) keep their band.
 MAX_BANDS = 200
+#: A held key asks for its page this long after the first repeat of a batch.
+REPEAT_FRAME_MS = 12
 #: How many of the notes carried into the page the group's tooltip lists.
 GROUP_LISTED = 8
 #: Notes looked through between two events when the side list is filtered.
@@ -283,6 +285,11 @@ class ViewerWindow(QMainWindow):
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(120)
         self._debounce.timeout.connect(self._refresh)
+        self._repeating = False
+        self._repeat_timer = QTimer(self)
+        self._repeat_timer.setSingleShot(True)
+        self._repeat_timer.setInterval(REPEAT_FRAME_MS)
+        self._repeat_timer.timeout.connect(self._refresh)
         self.canvas.setFocus()
         self._install_handlers()
         self.context_hooks.append(self._export_context)
@@ -574,6 +581,18 @@ class ViewerWindow(QMainWindow):
         if event.isAutoRepeat() and entry.action not in NAVIGATION_ACTIONS:
             event.accept()
             return
+        if event.isAutoRepeat():
+            # A held key: the position follows every repeat, but the picture is
+            # asked for once per batch of repeats (see ``set_state``).
+            self._repeating = True
+            try:
+                self._key_pressed(event, entry)
+            finally:
+                self._repeating = False
+            return
+        self._key_pressed(event, entry)
+
+    def _key_pressed(self, event: QKeyEvent, entry) -> None:
         self.last_key_text = event.text()
         if self.canvas.active_edge and entry.action in ("page_forward", "page_back"):
             self.nudge_edge(1 if entry.action == "page_forward" else -1)
@@ -602,7 +621,25 @@ class ViewerWindow(QMainWindow):
 
     def set_state(self, **changes) -> None:
         self.state = self.state.with_(**changes)
+        if self._repeating:
+            self._refresh_soon()
+            return
+        self._repeat_timer.stop()
         self._refresh()
+
+    def _refresh_soon(self) -> None:
+        """A repeat of a held key: the state is already where the key put it
+        (kept inside the recording), the page for it is asked for after the
+        repeats that arrived together, once. The window can be busy painting
+        for longer than the key's period; then the repeats queue up, and one
+        request per repeat would read and compute pages nobody sees."""
+        t0 = vv.clamp_start(
+            self.state.t0, self.page_us(), self.data.timeline_start, self.data.timeline_end
+        )
+        if t0 != self.state.t0:
+            self.state = self.state.with_(t0=t0)
+        if not self._repeat_timer.isActive():
+            self._repeat_timer.start()
 
     def move_by(self, delta_us: float, direction: int = 1) -> None:
         self._direction = 1 if direction >= 0 else -1
@@ -2099,6 +2136,7 @@ class ViewerWindow(QMainWindow):
             self.edit.dispose()
             self._closed = True
             self._debounce.stop()
+            self._repeat_timer.stop()
             self.save_preferences()
             self.controller.close()  # cancels at once; the stopping happens off this thread
             threading.Thread(target=self._shut_down, daemon=True).start()

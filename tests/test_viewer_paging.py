@@ -291,3 +291,78 @@ def test_a_kept_lookahead_block_keeps_its_tile_requests_when_the_page_moves_on(
     finally:
         gate.set()
     settle(qtbot, win)
+
+
+def test_a_visible_block_that_gives_up_lets_the_held_lookahead_go_at_once(
+    make_window, tmp_path, qtbot, monkeypatch
+):
+    """After a change of filter the look-ahead waits for the visible blocks. A
+    visible block that is given up (its tile was lost too often) ends that
+    wait in the same pump, not at the next 250 ms watch tick."""
+    win = make_window(write(tmp_path / "m.mefd", NAMES, seconds=600))
+    win.set_state(t0=T0 + 100 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
+    settle(qtbot, win)
+    ctl = win.controller
+    ctl.wait_idle(20)
+    ctl._watch.stop()  # the tick must not be what does it
+    gate = hold_reads(win, monkeypatch)  # nothing reaches the cache while we look
+    win.set_state(filters=dsp.FilterSettings(1.0, 40.0))
+    assert ctl._state_change
+    visible = [j for j in ctl._jobs.values() if j.priority == 0]
+    ahead = [j for j in ctl._jobs.values() if j.priority > 0]
+    assert visible and ahead
+    lost = {id(j) for j in visible}
+    real_missing = ctl._missing
+    monkeypatch.setattr(ctl, "_missing", lambda j: [("lost", 0)] if id(j) in lost else [])
+    monkeypatch.setattr(ctl.scheduler, "pending", lambda: 0)
+    for j in visible:
+        j.retries = ctlmod.MAX_RETRIES
+    submitted = []
+    monkeypatch.setattr(ctl._pool, "submit", lambda fn, job, *a, **k: submitted.append(job))
+    ctl._pump()
+    assert not [j for j in ctl._jobs.values() if j.priority == 0]  # given up
+    assert submitted and all(j.priority > 0 for j in submitted)  # and the look-ahead went on
+    gate.set()
+    monkeypatch.setattr(ctl, "_missing", real_missing)
+
+
+def key_repeat(win, key, n):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    for _ in range(n):
+        ev = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "", True, 1)
+        QApplication.sendEvent(win, ev)
+
+
+def test_a_held_page_key_moves_at_every_repeat_but_asks_for_the_newest_page_only(
+    make_window, tmp_path, qtbot
+):
+    """Repeats that arrive together (the window was busy painting) move the
+    page one by one, so the position keeps the key's pace, but only the page
+    where they end is asked for: nothing is read or computed for the pages
+    that were passed."""
+    from PySide6.QtCore import Qt
+
+    win = make_window(write(tmp_path / "m.mefd", NAMES, seconds=600))
+    win.set_state(t0=T0 + 20 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
+    settle(qtbot, win)
+    ctl = win.controller
+    ctl.wait_idle(20)
+    page = win.page_us()
+    start, gen = win.state.t0, ctl.generation
+    key_repeat(win, Qt.Key.Key_Right, 8)
+    assert win.state.t0 == start + 8 * page  # the position kept every repeat
+    qtbot.waitUntil(lambda: ctl.generation > gen, timeout=2000)
+    settle(qtbot, win)
+    assert ctl.generation - gen <= 2  # one page asked for, not eight
+    assert abs(ctl._req.page_start - (start + 8 * page)) < 1
+    # a single press (not a repeat) is still shown at once
+    gen = ctl.generation
+    win.page(1)
+    assert ctl.generation == gen + 1
+    # the end of the recording stops a held key
+    key_repeat(win, Qt.Key.Key_Right, 400)
+    assert win.state.t0 + page <= win.data.timeline_end + 1
+    qtbot.waitUntil(lambda: ctl._req is not None and not ctl.loading, timeout=10_000)

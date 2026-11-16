@@ -452,6 +452,7 @@ class ViewController(QObject):
         # and the look-ahead ones slow the visible ones down (they share the
         # cores): they wait until the visible blocks are done, then go on.
         hold_ahead = self._state_change and any(j.priority == VISIBLE for j in self._jobs.values())
+        gave_up = False
         for job in waiting:
             if inflight >= self.max_compute:
                 break
@@ -464,6 +465,7 @@ class ViewController(QObject):
                     # a tile is neither here nor on its way (lost): ask again
                     if job.retries >= MAX_RETRIES:
                         self._give_up(job)
+                        gave_up = True
                         continue
                     job.retries += 1
                     job.last_ask = now
@@ -479,6 +481,10 @@ class ViewController(QObject):
             ahead += job.priority > VISIBLE
             self._pool.submit(self._compute, job)
         self._collect()
+        if gave_up:
+            # a visible block that is gone ends the hold on the look-ahead: go on now,
+            # not at the next watch tick (each pass gives up at most the jobs it holds)
+            self._pump()
 
     def _give_up(self, job: _Job) -> None:
         job.token.cancel()

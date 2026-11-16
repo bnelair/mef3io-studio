@@ -33,6 +33,7 @@ import time
 import mef3io
 import numpy as np
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from mef3io_studio.common.settings import Settings
@@ -123,21 +124,43 @@ def run_paced_by_completion(win, step, pages: int) -> tuple[float, float, int]:
     return total, worst, placeholders
 
 
-def run_paced_by_time(win, step, pages: int, gap_s: float = 0.030) -> tuple[int, float]:
-    """Key presses 30 ms apart. Returns (pages complete when shown, seconds from
-    the last press until complete)."""
-    ready = 0
-    last = time.perf_counter()
+def run_paced_by_time(win, step, pages: int, gap_s: float = 0.030) -> tuple[int, float, int]:
+    """Key presses ``gap_s`` apart, measured by the WALL CLOCK from the previous
+    press (not from when the previous one returned: a press that takes 15 ms
+    must not stretch a 30 ms rhythm). Returns (pages complete before the next
+    press, seconds from the last press until complete, pages asked for)."""
+    ctl = win.controller
+    gen0 = ctl.generation
+    done = 0
+    pending = False  # the last press has not been seen complete yet
+    next_press = time.perf_counter()
+    last = next_press
     for _ in range(pages):
-        step()
-        ready += complete(win)
-        last = time.perf_counter()
-        end = last + gap_s
-        while time.perf_counter() < end:
+        while time.perf_counter() < next_press:
             QApplication.processEvents()
+            if pending and complete(win):
+                done, pending = done + 1, False
             time.sleep(0.0005)
+        last = time.perf_counter()
+        next_press = last + gap_s
+        step()
+        pending = not complete(win)  # an earlier page still loading is given up for this one
+        done += not pending
     wait_complete(win)
-    return ready, time.perf_counter() - last
+    asked = ctl.generation - gen0
+    return done, time.perf_counter() - last, asked
+
+
+def held_key(win, key, pages: int):
+    """The same presses as auto-repeat key events (a held key)."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    def press() -> None:
+        ev = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, "", True, 1)
+        QApplication.sendEvent(win, ev)
+
+    return press
 
 
 def test_the_viewer_speed_baseline(qapp, tmp_path):
@@ -198,17 +221,28 @@ def test_the_viewer_speed_baseline(qapp, tmp_path):
             f"{shown:>5} of {pages}"
         )
 
-        # 20 pages, a key press every 30 ms
-        from_start()
-        ready, tail = run_paced_by_time(win, lambda: win.page(1), pages)
-        out[f"{pages} pages forward, 30 ms apart: complete when shown"] = f"{ready:>5} of {pages}"
-        out[f"{pages} pages forward, 30 ms apart: last press until complete"] = ms(tail)
-
-        # a key press every 100 ms (the pace the 30 ms run had while a page took ~80 ms to show)
-        from_start()
-        ready, tail = run_paced_by_time(win, lambda: win.page(1), pages, gap_s=0.100)
-        out[f"{pages} pages forward, 100 ms apart: complete when shown"] = f"{ready:>5} of {pages}"
-        out[f"{pages} pages forward, 100 ms apart: last press until complete"] = ms(tail)
+        # 20 pages, one key press every 30 / 40 / 60 / 100 ms (wall clock), each
+        # as a plain call, then 40 and 60 ms as a HELD key (auto-repeat events)
+        for gap in (30, 40, 60, 100):
+            from_start()
+            ready, tail, asked = run_paced_by_time(
+                win, lambda: win.page(1), pages, gap_s=gap / 1000
+            )
+            label = f"{pages} pages forward, {gap} ms apart"
+            out[f"{label}: complete before the next press"] = f"{ready:>5} of {pages}"
+            out[f"{label}: last press until complete"] = ms(tail)
+        for gap in (40, 60):
+            from_start()
+            at = win.state.t0
+            ready, tail, asked = run_paced_by_time(
+                win, held_key(win, Qt.Key.Key_Right, pages), pages, gap_s=gap / 1000
+            )
+            label = f"{pages} pages forward, held key, {gap} ms apart"
+            out[f"{label}: pages asked for"] = f"{asked:>5} of {pages}"
+            out[f"{label}: position ended {(win.state.t0 - at) / length:.1f} pages on"] = (
+                f"{'right' if abs(win.state.t0 - at - pages * length) < 2 else 'WRONG':>8}"
+            )
+            out[f"{label}: last press until complete"] = ms(tail)
 
         # the same backwards, from the end
         def from_end() -> None:
@@ -224,8 +258,10 @@ def test_the_viewer_speed_baseline(qapp, tmp_path):
             f"{shown:>5} of {pages}"
         )
         from_end()
-        ready, tail = run_paced_by_time(win, lambda: win.page(-1), pages)
-        out[f"{pages} pages backward, 30 ms apart: complete when shown"] = f"{ready:>5} of {pages}"
+        ready, tail, _ = run_paced_by_time(win, lambda: win.page(-1), pages)
+        out[f"{pages} pages backward, 30 ms apart: complete before the next press"] = (
+            f"{ready:>5} of {pages}"
+        )
         out[f"{pages} pages backward, 30 ms apart: last press until complete"] = ms(tail)
 
         # a jump to a far time (the cache keeps what the runs left)
