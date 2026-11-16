@@ -343,6 +343,18 @@ def format_measure(dt_us: float, vmin: float | None, vmax: float | None, units: 
     return " · ".join(parts)
 
 
+def format_offset(level: float, units: str) -> str:
+    """What a row's centring took off, in plain words: "shown 4.0 mV lower" (the
+    trace really sits 4 mV higher than where it is drawn), "shown 250 µV higher"."""
+    word = "lower" if level > 0 else "higher"
+    v = abs(level)
+    if display_units(units) in ("µV", ""):
+        amount = f"{v / 1000:.1f} mV" if v >= 1000 else f"{v:.0f} µV"
+    else:
+        amount = f"{v:.3g} {display_units(units)}"
+    return f"shown {amount} {word}"
+
+
 @dataclass(frozen=True)
 class Performance:
     """The viewer's performance settings; 0 = automatic (where it applies)."""

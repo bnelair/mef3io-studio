@@ -316,3 +316,108 @@ def test_half_a_hertz_over_days_does_not_end_with_every_row_cut_off(make_window,
     assert win.overview()
     shown = [i for i in range(len(win.canvas.rows)) if win.canvas.rows[i].piece is not None]
     assert shown and not any(any(win.canvas.clipped_rows.get(i, (0, 0))) for i in shown)
+
+
+# --- 4: the centre of a row is held, and what was taken off is said ----------
+
+
+def mean_y(win, channel) -> float:
+    """The vertical position (pixels) of the middle of the drawn trace of ``channel``."""
+    canvas = win.canvas
+    i = index_of(win, channel)
+    img = canvas.grab_traces().toImage()
+    yc, half = canvas.row_y(i), canvas.row_height / 2
+    ys = [
+        y
+        for y in range(int(yc - half), int(yc + half))
+        for x in range(canvas.gutter + 4, canvas.width() - 4, 2)
+        if img.pixelColor(x, y).lightness() < 80
+    ]
+    return float(np.mean(ys))
+
+
+def with_step(size):
+    def sig(t, rng):
+        return 20 * np.sin(2 * np.pi * 10 * t) + size * (t > 100) + 2 * rng.normal(size=t.size)
+
+    return sig
+
+
+def walk(win, t_from, t_to, step=5):
+    for s in range(t_from, t_to, step):
+        win.go_to(T0 + s * SEC)
+        settle_rows(win)
+
+
+def test_a_small_step_in_the_level_moves_the_trace_instead_of_re_centring_it(make_window, tmp_path):
+    win = make_window(write_signals(tmp_path / "step.mefd", {"LA1": with_step(100.0)}, 200, 256))
+    win.set_state(sensitivity=70)
+    win.go_to(T0 + 60 * SEC)
+    settle_rows(win)
+    before = mean_y(win, "LA1")
+    walk(win, 65, 150)  # page by page, over the step and on
+    after = mean_y(win, "LA1")
+    shift = 100 / 70 * win.canvas.px_per_mm  # 100 uV is 1.4 mm, well inside half a row
+    assert before - after == pytest.approx(shift, abs=2.0)  # higher on screen: it did rise
+
+
+def test_a_big_step_re_centres_so_the_trace_stays_in_its_row(make_window, tmp_path):
+    win = make_window(write_signals(tmp_path / "big.mefd", {"LA1": with_step(900.0)}, 200, 256))
+    win.set_state(sensitivity=70)
+    win.go_to(T0 + 60 * SEC)
+    settle_rows(win)
+    walk(win, 65, 150)
+    assert win.canvas.clipped_rows[0] == (False, False)
+    row = win.canvas.row_y(0)
+    assert abs(mean_y(win, "LA1") - row) < win.canvas.row_height / 4
+
+
+def test_a_far_jump_starts_the_centre_again(make_window, tmp_path):
+    win = make_window(write_signals(tmp_path / "far.mefd", {"LA1": with_step(100.0)}, 400, 256))
+    win.set_state(sensitivity=70)
+    win.go_to(T0 + 60 * SEC)
+    settle_rows(win)
+    held = win.canvas.row_level(0)
+    win.go_to(T0 + 300 * SEC)  # nothing in common with the last page
+    settle_rows(win)
+    assert win.canvas.row_level(0) - held == pytest.approx(100, abs=10)
+
+
+def test_the_old_picture_and_the_new_one_share_the_centre(make_window, tmp_path):
+    win = make_window(write_signals(tmp_path / "old.mefd", {"LA1": with_step(100.0)}, 200, 256))
+    win.set_state(sensitivity=70)
+    win.go_to(T0 + 95 * SEC)
+    settle_rows(win)
+    held = win.canvas.row_level(0)
+    win.controller.cache.clear()
+    win.move_by(3 * SEC, 1)  # the page now holds the step, its data has not arrived
+    win.canvas.grab_traces()
+    assert win.canvas.rows[0].piece is None and win.canvas.rows[0].stale is not None
+    assert win.canvas.row_level(0) == held
+
+
+def test_a_level_that_was_taken_off_is_said_when_the_pointer_is_on_the_row(make_window, tmp_path):
+    dc = {"LA1": None, "LB1": lambda t, r: 4000 + 5 * r.normal(size=t.size)}
+    win = make_window(write_signals(tmp_path / "dc.mefd", dc))
+    win.set_state(sensitivity=10)
+    settle_rows(win)
+    win._pointer(T0 + 10 * SEC, index_of(win, "LB1"))
+    assert "shown 4.0 mV lower" in win.status_row.text()
+    win._pointer(T0 + 10 * SEC, index_of(win, "LA1"))
+    assert "shown" not in win.status_row.text()
+
+
+def test_a_measurement_reads_true_values_whatever_was_taken_off(make_window, tmp_path):
+    from PySide6.QtCore import QPointF
+
+    dc = {"LB1": lambda t, r: 4000 + 5 * np.sin(2 * np.pi * 3 * t)}
+    win = make_window(write_signals(tmp_path / "dc2.mefd", dc))
+    win.set_state(sensitivity=10)
+    settle_rows(win)
+    c = win.canvas
+    y = c.row_y(0)
+    c._measure_from = QPointF(c.gutter + 20, y)
+    c._pointer = QPointF(c.gutter + 600, y)
+    text = c.measurement()
+    assert "399" in text or "400" in text  # 3995.x to 4005.x
+    assert "µV" in text

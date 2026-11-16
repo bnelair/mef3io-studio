@@ -33,7 +33,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..model import timefmt
 from ..model.montage import OTHER_GROUP
-from ..model.viewer_view import Palette, display_units, format_measure
+from ..model.viewer_view import Palette, display_units, format_measure, format_offset
 from ..workers.viewer_pipeline import EnvelopePiece, ViewPiece, envelope_columns
 
 
@@ -197,6 +197,11 @@ class TraceCanvas(QWidget):
         #: Rows whose trace was cut off at the top / bottom of its band (for tests).
         self.clipped_rows: dict[int, tuple[bool, bool]] = {}
         self._shapes: dict = {}
+        #: (channel, minus) -> the level (in the data's unit) that sits at the
+        #: middle of the row: HELD while the page's own level stays within half a
+        #: row of it, so a step in the level moves the trace and an old picture
+        #: and the new one agree. Cleared on a far jump and when the rows change.
+        self._levels: dict[tuple, float] = {}
         self._pm_key = None
         self._wheel_rows = 0.0
         #: Labelled lines where the recordings change: (time, label).
@@ -276,13 +281,26 @@ class TraceCanvas(QWidget):
         self.invalidate()
 
     def set_view(self, t0: int, t1: int, sens: float, spacing_mm: float, row_offset: int) -> None:
+        span = self.t1 - self.t0
+        if t1 < self.t0 - span or t0 > self.t1 + span:  # nothing in common with the last page
+            self._levels.clear()
         self.t0, self.t1 = t0, max(t1, t0 + 1)
         self.sens, self.spacing_mm, self.row_offset = sens, spacing_mm, row_offset
+        self.invalidate()
+
+    def reset_levels(self) -> None:
+        """Forget the held centres (the montage, a filter or the channels changed)."""
+        self._levels.clear()
         self.invalidate()
 
     def set_rows(self, rows: Sequence[DrawRow], overview: bool, multi: bool) -> None:
         self.rows = list(rows)
         self._shapes.clear()
+        if overview != self.overview:
+            self._levels.clear()
+        else:  # other rows (another montage, hidden channels): only theirs are kept
+            keep = {(r.channel, r.minus) for r in self.rows}
+            self._levels = {k: v for k, v in self._levels.items() if k in keep}
         self.overview = overview
         self.multi = multi
         self.invalidate()
@@ -450,13 +468,14 @@ class TraceCanvas(QWidget):
                 p.drawRect(QRectF(plot.left() + a, yc - half, b - a, self.row_height))
             limit = self.row_height * CLIP_HALF_ROWS
             row_px = self.px_per_mm / self.row_sensitivity(i)
+            level = self._level(i, shape, stale)
             total = 0
             marks_up: list[float] = []
             marks_down: list[float] = []
             for xs, ys, seg_dim in shape.segments:
-                # centred on the row: the level the trace sits at on this page
-                # is where the row's middle is (a DC offset never moves it away)
-                y = yc - (ys - shape.centre) * row_px
+                # centred on the row: the held level is where the row's middle
+                # is (a DC offset never moves the trace away)
+                y = yc - (ys - level) * row_px
                 up, down = y < yc - limit, y > yc + limit
                 if up.any():
                     marks_up.extend(xs[up].tolist())
@@ -483,6 +502,34 @@ class TraceCanvas(QWidget):
         if row.own_scale and row.own_sens > self.sens:
             return row.own_sens
         return max(1e-9, self.sens)
+
+    def _level(self, i: int, shape, stale: bool) -> float:
+        """The level at the middle of row ``i``: the held one, unless the page's
+        own level (its median) is more than half a row away from it, which
+        takes the page's. An old picture never moves it."""
+        row = self.rows[i]
+        key = (row.channel, row.minus)
+        held = self._levels.get(key)
+        here = shape.centre
+        if not math.isfinite(here):
+            return held if held is not None else 0.0
+        half_row = 0.5 * self.spacing_mm * self.row_sensitivity(i)
+        if held is None or (not stale and abs(here - held) > half_row):
+            held = self._levels[key] = here
+        return held
+
+    def row_level(self, i: int) -> float | None:
+        """The level at the middle of row ``i`` (None before it was drawn)."""
+        row = self.rows[i]
+        return self._levels.get((row.channel, row.minus))
+
+    def row_offset_text(self, i: int) -> str:
+        """ "shown 4.0 mV lower" when centring took off a level worth a half
+        millimetre or more from row ``i``, else ''."""
+        level = self.row_level(i)
+        if level is None or abs(level) < 0.5 * self.row_sensitivity(i):
+            return ""
+        return format_offset(level, self.rows[i].units)
 
     def row_scale_text(self, i: int) -> str:
         """ "500 µV/mm" when row ``i`` is not at the toolbar's sensitivity, else ''."""
@@ -1049,23 +1096,20 @@ class _RowShape:
     segments: list
     #: pixel ranges without data
     gaps: list
-    #: The level the trace sits at (the median over the page) and how far it
-    #: usually swings from it (98th percentile of the distance), in the data's unit.
-    centre: float = 0.0
-    spread: float = 0.0
+    _centre: float | None = None
 
-
-def _with_levels(segments: list, gaps: list) -> _RowShape:
-    """A row shape with its level and swing, robust to a few spikes."""
-    if not segments:
-        return _RowShape(segments, gaps)
-    ys = np.concatenate([s[1] for s in segments])
-    ys = ys[np.isfinite(ys)]
-    if not ys.size:
-        return _RowShape(segments, gaps)
-    centre = float(np.median(ys))
-    spread = float(np.percentile(np.abs(ys - centre), 98))
-    return _RowShape(segments, gaps, centre, spread)
+    @property
+    def centre(self) -> float:
+        """The level the trace sits at (its median, from a sample of at most a
+        couple of thousand points: made only when a row is drawn); NaN when
+        there is nothing to draw."""
+        if self._centre is None:
+            n = sum(len(sg[1]) for sg in self.segments)
+            step = max(1, n // 2048)
+            ys = np.concatenate([sg[1][::step] for sg in self.segments]) if n else np.zeros(0)
+            ys = ys[np.isfinite(ys)]
+            self._centre = float(np.median(ys)) if ys.size else float("nan")
+        return self._centre
 
 
 def _columns_shape(mn, mx, dimmed) -> _RowShape:
@@ -1081,7 +1125,7 @@ def _columns_shape(mn, mx, dimmed) -> _RowShape:
         ys[1::2] = np.where(flip, lo, hi)
         xs = np.repeat(np.arange(a, b) + 0.5, 2)
         segments.append((xs, ys, bool(dimmed[a:b].mean() > 0.5)))
-    return _with_levels(segments, _runs(~ok))
+    return _RowShape(segments, _runs(~ok))
 
 
 def _reduce_columns(x, lo, hi, um, w) -> _RowShape:
@@ -1125,7 +1169,7 @@ def _exact_shape(x, y, um, dx, w) -> _RowShape:
         lo, hi = max(0.0, left), min(float(w), right)
         if hi > lo:
             gaps.append((lo, hi))
-    return _with_levels(segments, gaps)
+    return _RowShape(segments, gaps)
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:

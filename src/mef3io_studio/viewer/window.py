@@ -218,6 +218,8 @@ class ViewerWindow(QMainWindow):
         self._auto_open = self.FIT_ON_OPEN and not self._sens_stored
         #: The last complete page the fit looked at (it is not tried twice on one).
         self._fit_tried: tuple | None = None
+        #: The montage, reference, filters and hidden channels the held centres are for.
+        self._look: tuple | None = None
         #: Whether the page was an overview the last time ``_refresh`` looked.
         self._was_overview: bool | None = None
         self._last_row: int | None = None
@@ -1193,6 +1195,10 @@ class ViewerWindow(QMainWindow):
                 self._auto_open = True
             self._was_overview = overview
         s = self.state
+        look = (s.montage, s.reference, s.filters, s.hidden)
+        if look != self._look:  # other rows or other filtering: the held centres are void
+            self._look = look
+            self.canvas.reset_levels()
         self.canvas.overview_text = (
             "Overview: the lowest and highest value of each stretch" if overview else ""
         )
@@ -1506,11 +1512,13 @@ class ViewerWindow(QMainWindow):
         self.status_row.setText(self._row_note(row))
 
     def _row_note(self, row: int | None) -> str:
-        """What the pointer's row says about its size: its own scale."""
+        """What the pointer's row says about its size: its own scale, and a
+        level that was taken off to centre it."""
         if row is None or not 0 <= row < len(self.canvas.rows):
             return ""
-        scale = self.canvas.row_scale_text(row)
-        return f"{self.canvas.rows[row].label}: {scale}" if scale else ""
+        c = self.canvas
+        parts = [t for t in (c.row_scale_text(row), c.row_offset_text(row)) if t]
+        return f"{c.rows[row].label}: {'; '.join(parts)}" if parts else ""
 
     # -- which recording is which: band, boundaries, banner ----------
 
