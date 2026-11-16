@@ -578,6 +578,7 @@ class ViewController(QObject):
             for gi, k in req.keys.items():
                 if k in keys:
                     req.failed.add(gi)
+            self.pieces_changed.emit()  # a failed row is drawn as failed, not as an old picture
         self.failed.emit("Part of the signal could not be read. Nothing was changed.")
         self._set_loading(self._visible_pending(req) if req else False)
 
@@ -624,6 +625,13 @@ class ViewController(QObject):
             piece = req.pieces.get(gi)
             out.append(None if piece is None else (piece, local))
         return out
+
+    def failed_rows(self) -> set[int]:
+        """Rows of the current request whose block could not be made."""
+        req = self._req
+        if req is None or not req.failed:
+            return set()
+        return {ri for ri, (gi, _local) in req.location.items() if gi in req.failed}
 
     def wait_idle(self, timeout: float = 30.0) -> bool:
         """Block until the scheduler and compute pool are idle (tests)."""

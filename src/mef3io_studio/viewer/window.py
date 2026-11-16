@@ -938,9 +938,17 @@ class ViewerWindow(QMainWindow):
         self.canvas.set_rows(self._draw_rows(rows, [None] * len(rows)), self.overview(), self.multi)
 
     def _row_ident(self, row) -> tuple:
-        """What a row's picture is of: another channel, montage partner, filter
-        or the overview's other kind of picture never stands in for it."""
-        return (row.plus, row.minus, self.state.filters, self.overview())
+        """What a row's picture is of: another channel, montage partner, filter,
+        zoom or width, or the overview's other kind of picture never stands in
+        for it (its min/max bins would be drawn blocky and look real)."""
+        return (
+            row.plus,
+            row.minus,
+            self.state.filters,
+            self.overview(),
+            self.state.timebase,
+            int(self.canvas.plot_width),
+        )
 
     def _apply_pieces(self) -> None:
         if self._closed:
@@ -949,14 +957,22 @@ class ViewerWindow(QMainWindow):
         pieces = self.controller.current_pieces()
         if len(pieces) != len(rows):
             return
-        self.canvas.set_rows(self._draw_rows(rows, pieces), self.overview(), self.multi)
+        self.canvas.set_rows(
+            self._draw_rows(rows, pieces, failed=self.controller.failed_rows()),
+            self.overview(),
+            self.multi,
+        )
         self.canvas.set_loading(self.controller.loading)
         self._sync_short_stretches(rows, pieces)
         # what is drawn now stands in for these rows while the next page loads
-        self._stale = {
-            self._row_ident(row): (pc if pc is not None else self._stale.get(self._row_ident(row)))
-            for row, pc in zip(rows, pieces, strict=True)
-        }
+        # (a row that failed has nothing to stand in: it says so)
+        failed = self.controller.failed_rows()
+        kept = {}
+        for i, row in enumerate(rows):
+            if i not in failed:
+                ident = self._row_ident(row)
+                kept[ident] = pieces[i] if pieces[i] is not None else self._stale.get(ident)
+        self._stale = kept
         self._stale = {k: v for k, v in self._stale.items() if v is not None}
 
     def short_stretch_seconds(self, rows, pieces) -> float | None:
@@ -993,7 +1009,7 @@ class ViewerWindow(QMainWindow):
         self.status_short.setText(text)
         self.status_short.setToolTip(text)
 
-    def _draw_rows(self, rows, pieces) -> list[DrawRow]:
+    def _draw_rows(self, rows, pieces, failed=frozenset()) -> list[DrawRow]:
         data = self.data
         t0, t1 = self.state.t0, self.state.t0 + self.page_us()
         out = []
@@ -1014,9 +1030,10 @@ class ViewerWindow(QMainWindow):
         # A letter tag is only worth its space where rows differ (recordings
         # side by side); with recordings in turn the band says it.
         keep_tags = len(set(tags)) > 1
-        for row, pc, tag in zip(rows, pieces, tags, strict=True):
+        for i, (row, pc, tag) in enumerate(zip(rows, pieces, tags, strict=True)):
             tag = tag if keep_tags else ""
-            old = None if pc is not None else self._stale.get(self._row_ident(row))
+            bad = i in failed
+            old = None if pc is not None or bad else self._stale.get(self._row_ident(row))
             out.append(
                 DrawRow(
                     row.label,
@@ -1029,6 +1046,7 @@ class ViewerWindow(QMainWindow):
                     row.minus,
                     None if old is None else old[0],
                     0 if old is None else old[1],
+                    bad,
                 )
             )
         return out

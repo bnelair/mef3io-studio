@@ -53,6 +53,9 @@ class DrawRow:
     #: where it holds nothing, the row is simply empty until the data arrives).
     stale: ViewPiece | EnvelopePiece | None = None
     stale_local: int = 0
+    #: The block of this row could not be read: the row says so and shows no
+    #: trace (an old picture never stands in for a failure).
+    failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -96,12 +99,19 @@ def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
     return poly
 
 
-def _trace_pen(colour: str) -> QPen:
+#: A row showing the picture of an earlier page (while the new one loads) is
+#: drawn this faint (0-255), from its first frame: an old trace never looks current.
+STALE_ALPHA = 80
+
+
+def _trace_pen(colour: str, alpha: int = 255) -> QPen:
     """One device pixel wide at any screen scale. Qt draws such a line on a
     fast path; any wider pen (1.2 px, or 1 px on a 2x screen) is stroked as
     an outline, about 100x slower, which made each page take seconds. On a
     2x screen the trace is drawn twice instead (``_paint_gaps_and_traces``)."""
-    pen = QPen(QColor(colour), 1)
+    c = QColor(colour)
+    c.setAlpha(alpha)
+    pen = QPen(c, 1)
     pen.setCosmetic(True)
     return pen
 
@@ -376,6 +386,7 @@ class TraceCanvas(QWidget):
         w = max(1, int(plot.width()))
         pen = _trace_pen(pal.trace)
         dim = _trace_pen(pal.trace_dim)
+        old_pen = _trace_pen(pal.trace, STALE_ALPHA)
         px_uv = self.px_per_mm / max(1e-9, self.sens)
         half = self.row_height / 2
         # On a 2x screen a one-device-pixel line is a hairline: draw it again
@@ -385,6 +396,10 @@ class TraceCanvas(QWidget):
         for i in range(first, last):
             row = self.rows[i]
             yc = self.row_y(i)
+            if row.failed:
+                p.setPen(QColor(pal.muted))
+                p.drawText(QPointF(plot.left() + 8, yc + 4), "This channel could not be read.")
+                continue
             stale = row.piece is None
             if stale and row.stale is None:
                 continue  # nothing to show yet: the row stays empty
@@ -401,7 +416,7 @@ class TraceCanvas(QWidget):
             total = 0
             for xs, ys, seg_dim in shape.segments:
                 ys = np.clip(yc - ys * px_uv, yc - limit, yc + limit)
-                p.setPen(dim if seg_dim else pen)
+                p.setPen(old_pen if stale else (dim if seg_dim else pen))
                 poly = _polygon(plot.left() + xs, ys)
                 p.drawPolyline(poly)
                 if echo:
