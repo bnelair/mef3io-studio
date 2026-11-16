@@ -157,6 +157,12 @@ def keys_text(entry: KeyEntry) -> str:
     ) + ("  ..." if len(entry.keys) > 3 else "")
 
 
+def key_hint(action: str) -> str:
+    """The first key of ``action`` as this platform writes it (for a tooltip)."""
+    entry = next(e for e in KEYMAP if e.action == action)
+    return QKeySequence(entry.keys[0]).toString(QKeySequence.SequenceFormat.NativeText)
+
+
 class HelpOverlay(QWidget):
     """The key table as a panel over the traces, generated from KEYMAP."""
 

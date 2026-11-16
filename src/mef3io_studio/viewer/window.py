@@ -64,7 +64,14 @@ from .dialogs import JumpDialog
 from .edit_mode import EditMode
 from .export_range import IDENTIFYING_NOTE, RangeListDialog
 from .filters import FilterPanel, ResponseDialog
-from .keymap import KEYMAP, NAVIGATION_ACTIONS, TIMEBASE_ACTIONS, HelpOverlay, entry_for
+from .keymap import (
+    KEYMAP,
+    NAVIGATION_ACTIONS,
+    TIMEBASE_ACTIONS,
+    HelpOverlay,
+    entry_for,
+    key_hint,
+)
 from .marks import Chip, ChipsRow, TypesPanel
 from .montage_bar import ChannelChooser, MontageBar
 from .recordings import Banner, RecordingBand
@@ -389,16 +396,16 @@ class ViewerWindow(QMainWindow):
         self.go_button = tool("Go", "Go to this day and time", self._go_clicked)
         long_tip = "Move through a long recording"
         self.back_day_button = tool(
-            "−1 day", "One day back (Ctrl+Shift+Left)", lambda: press("day_back")
+            "−1 day", f"One day back ({key_hint('day_back')})", lambda: press("day_back")
         )
         self.back_hour_button = tool(
-            "−1 h", "One hour back (Ctrl+Left)", lambda: press("hour_back")
+            "−1 h", f"One hour back ({key_hint('hour_back')})", lambda: press("hour_back")
         )
         self.forward_hour_button = tool(
-            "+1 h", "One hour forward (Ctrl+Right)", lambda: press("hour_forward")
+            "+1 h", f"One hour forward ({key_hint('hour_forward')})", lambda: press("hour_forward")
         )
         self.forward_day_button = tool(
-            "+1 day", "One day forward (Ctrl+Shift+Right)", lambda: press("day_forward")
+            "+1 day", f"One day forward ({key_hint('day_forward')})", lambda: press("day_forward")
         )
         self.prev_stretch_button = tool(
             "◀ Data", "The previous stretch with data (,)", lambda: press("stretch_back")
