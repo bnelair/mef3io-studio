@@ -6,6 +6,7 @@ as outlines and made each page take seconds)."""
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QColor, QImage, QPolygonF
 from test_viewer_ui import make_window, one  # noqa: F401
@@ -101,3 +102,48 @@ def test_a_fractional_scale_does_not_re_render_on_each_paint(one, qtbot, monkeyp
     for _ in range(3):
         one.canvas.repaint()
     assert len(renders) == 1
+
+
+# --- building a polygon by writing into its memory ----------
+
+
+def test_the_direct_polygon_is_the_stream_polygon_point_for_point(qapp):
+    from mef3io_studio.viewer import canvas as cv
+
+    rng = np.random.default_rng(3)
+    for n in (0, 1, 2, 3, 100, 5000):
+        xs, ys = rng.uniform(-3e3, 3e3, n), rng.uniform(-3e3, 3e3, n)
+        a, b = cv._polygon_stream(xs, ys), cv._polygon_direct(xs, ys)
+        assert a.size() == b.size() == n
+        assert all(a.at(i) == b.at(i) for i in range(n))
+    assert cv._direct_polygon_is_sound() is True
+
+
+def test_a_direct_polygon_that_differs_or_fails_is_dropped_for_good(qapp, monkeypatch):
+    from mef3io_studio.viewer import canvas as cv
+
+    real = cv._polygon_direct
+    monkeypatch.setattr(cv, "_use_direct", None)
+    monkeypatch.setattr(cv, "_polygon_direct", lambda xs, ys: real(xs + 1.0, ys))  # a wrong one
+    assert cv._direct_polygon_is_sound() is False
+    poly = cv._polygon(np.array([1.0, 2.0]), np.array([3.0, 4.0]))  # decides, uses the stream
+    assert cv._use_direct is False and poly.at(1).x() == 2.0
+
+    def broken(xs, ys):
+        raise OSError("no such layout")
+
+    monkeypatch.setattr(cv, "_use_direct", None)
+    monkeypatch.setattr(cv, "_polygon_direct", broken)
+    assert cv._direct_polygon_is_sound() is False
+    assert cv._polygon(np.array([5.0]), np.array([6.0])).at(0).y() == 6.0
+
+
+def test_the_level_of_a_shape_is_its_median_from_a_sample():
+    from mef3io_studio.viewer.canvas import _RowShape
+
+    rng = np.random.default_rng(5)
+    ys = rng.normal(40, 10, 20_000)
+    shape = _RowShape([(np.arange(ys.size), ys, False)], [])
+    assert shape.centre == pytest.approx(np.median(ys), abs=1.5)
+    nan = _RowShape([(np.arange(3.0), np.full(3, np.nan), False)], [])
+    assert np.isnan(nan.centre) and np.isnan(_RowShape([], []).centre)

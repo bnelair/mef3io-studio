@@ -14,12 +14,14 @@ Widgets here never import mef3io: the data arrives as ready-to-draw pieces
 
 from __future__ import annotations
 
+import ctypes
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, tzinfo
 
 import numpy as np
+import shiboken6
 from PySide6.QtCore import QByteArray, QDataStream, QLineF, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
@@ -106,7 +108,7 @@ TICK_HIT_PX = 30
 SPINNER_DELAY_MS = 400
 
 
-def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
+def _polygon_stream(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
     """Built in one step from QPolygonF's stream form (a big-endian point
     count, then x, y as big-endian doubles): about 40x faster than one
     QPointF per point, which cost ~11 ms per row."""
@@ -117,6 +119,53 @@ def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
     poly = QPolygonF()
     QDataStream(QByteArray(np.array([n], dtype=">u4").tobytes() + pts.tobytes())) >> poly
     return poly
+
+
+def _polygon_direct(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
+    """Built by writing the points into the polygon's own memory (a QPointF is
+    two doubles): the stream form above costs about ten times as much."""
+    n = len(xs)
+    poly = QPolygonF()
+    if n == 0:
+        return poly
+    poly.resize(n)
+    address = shiboken6.getCppPointer(poly.data())[0]
+    view = np.frombuffer((ctypes.c_double * (2 * n)).from_address(address), dtype="<f8")
+    view = view.reshape(n, 2)
+    view[:, 0] = xs
+    view[:, 1] = ys
+    return poly
+
+
+def _direct_polygon_is_sound() -> bool:
+    """Checked once: the direct build gives exactly what the stream build gives,
+    on small arrays, and the polygon stays usable. Anything else (another Qt
+    layout, a binding without ``data()``) and the stream build is used for good."""
+    try:
+        rng = np.random.default_rng(7)
+        for n in (1, 2, 5, 64):
+            xs, ys = rng.uniform(-1e4, 1e4, n), rng.uniform(-1e4, 1e4, n)
+            a, b = _polygon_stream(xs, ys), _polygon_direct(xs, ys)
+            if a.size() != b.size() or a != b:
+                return False
+            moved = b.translated(0.5, -0.5)
+            if moved.size() != n or moved.at(n - 1) != QPointF(xs[-1] + 0.5, ys[-1] - 0.5):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - any trouble: the old way
+        return False
+
+
+_use_direct: bool | None = None
+
+
+def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
+    """A QPolygonF of the points ``(xs, ys)``: written into its own memory when a
+    one-time self-check says that gives the same polygon, else by stream."""
+    global _use_direct
+    if _use_direct is None:
+        _use_direct = _direct_polygon_is_sound()
+    return (_polygon_direct if _use_direct else _polygon_stream)(xs, ys)
 
 
 #: A row showing the picture of an earlier page (while the new one loads) is
@@ -1114,15 +1163,26 @@ class _RowShape:
 
     @property
     def centre(self) -> float:
-        """The level the trace sits at (its median, from a sample of at most a
-        couple of thousand points: made only when a row is drawn); NaN when
-        there is nothing to draw."""
+        """The level the trace sits at (about its median, from a sample of at most
+        a thousand points: made only when a row is drawn); NaN when there is
+        nothing to draw."""
         if self._centre is None:
-            n = sum(len(sg[1]) for sg in self.segments)
-            step = max(1, n // 2048)
-            ys = np.concatenate([sg[1][::step] for sg in self.segments]) if n else np.zeros(0)
-            ys = ys[np.isfinite(ys)]
-            self._centre = float(np.median(ys)) if ys.size else float("nan")
+            segs = self.segments
+            n = sum(len(sg[1]) for sg in segs)
+            step = max(1, n // 1024)
+            ys = (
+                segs[0][1][::step]
+                if len(segs) == 1
+                else np.concatenate([sg[1][::step] for sg in segs])
+                if n
+                else None
+            )
+            if ys is not None:
+                ys = ys[np.isfinite(ys)]
+            if ys is None or not ys.size:
+                self._centre = float("nan")
+            else:
+                self._centre = float(np.partition(ys, ys.size // 2)[ys.size // 2])
         return self._centre
 
 
