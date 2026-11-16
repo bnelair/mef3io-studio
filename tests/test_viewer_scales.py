@@ -140,3 +140,34 @@ def vv_steps():
     from mef3io_studio.model import viewer_view as vv
 
     return vv.SENS_STEPS
+
+
+# --- 2: an old picture that is cut off says so too ----------
+
+
+def arrow_pixels(canvas) -> int:
+    img = canvas.grab_traces().toImage()
+    sel = canvas.palette_.selection.lstrip("#")
+    want = tuple(int(sel[k : k + 2], 16) for k in (0, 2, 4))
+    return sum(
+        1
+        for y in range(0, img.height(), 2)
+        for x in range(canvas.gutter, img.width(), 2)
+        if sum(abs(a - b) for a, b in zip(img.pixelColor(x, y).getRgb()[:3], want, strict=False))
+        < 120
+    )
+
+
+def test_the_old_picture_is_marked_where_it_is_cut_off(make_window, tmp_path):
+    win = make_window(write_signals(tmp_path / "old.mefd", eeg(4), seconds=120))
+    win.set_state(sensitivity=2)  # 20 uV waves at 2 uV/mm: cut off
+    settle_rows(win)
+    canvas = win.canvas
+    complete = arrow_pixels(canvas)
+    assert complete > 20
+    win.controller.cache.clear()
+    win.move_by(2_000_000, 1)  # a new page whose data has not arrived: the old picture stands in
+    old_rows = [r for r in canvas.rows[: canvas.visible_rows()] if r.piece is None]
+    assert old_rows and all(r.stale is not None for r in old_rows)
+    assert any(any(v) for v in canvas.clipped_rows.values())
+    assert arrow_pixels(canvas) > 25  # paler is fine, absent is not

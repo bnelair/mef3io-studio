@@ -469,8 +469,9 @@ class TraceCanvas(QWidget):
                 if echo:
                     p.drawPolyline(poly.translated(echo, echo))
                 total += xs.size
-            if not stale and (marks_up or marks_down):
-                self._paint_clipped(p, plot.left(), yc, limit, marks_up, marks_down)
+            if marks_up or marks_down:  # an old picture says so too, only fainter
+                alpha = STALE_ALPHA + 60 if stale else 255
+                self._paint_clipped(p, plot.left(), yc, limit, marks_up, marks_down, alpha)
             self.clipped_rows[i] = (len(marks_up) > 0, len(marks_down) > 0)
             self.drawn_points[i] = total
 
