@@ -916,6 +916,17 @@ channel or the whole recording) and the text. You can search it, show one
 type only, and click a row to go there. `[` and `]` step to the previous and
 next one. **Types** (`T`) chooses which types are shown.
 
+When very many notes fall on the screen (for example hours of a recording
+with thousands of notes), they cannot be told apart, so they are merged: one
+short tick for each pixel column, taller for more notes and in the colour of
+the most important type. Hover a tick to see how many notes it holds; zoom in
+to see them one by one. The list and `[` and `]` still reach every note.
+
+While a page is loading, the traces of the page before stay where they
+belong in time, and a small spinner appears in the corner only if it takes
+longer than a moment. Changing the montage does not read the recording
+again.
+
 The text of notes can identify a patient. Like patient details in Explore,
 it is **hidden until you show it**: the viewer follows what you chose in
 Explore for each recording, and the **Show** button in the list shows it for
@@ -988,7 +999,7 @@ written until you choose **Add them to the recordings**.
 **File → Settings** has a *Signal viewer* section for big recordings and
 big screens. The three settings for loading and filtering and the memory
 setting are **Automatic** (0) unless you change them; *Pages loaded ahead*
-starts at 2 (0 to 8). A change applies to viewer windows you open
+starts at 4 (0 to 8). A change applies to viewer windows you open
 afterwards:
 
 - *Loading in parallel*, *Parts decoded at once, per read* and *Filtering in
@@ -996,7 +1007,8 @@ afterwards:
   fast disks and with many cores, and often on network drives, at the cost of
   memory.
 - *Pages loaded ahead*: how many pages in the direction you are moving are
-  read before you get there.
+  read and filtered before you get there. When you stop for a second, the
+  viewer keeps looking further ahead, as far as a share of the memory allows.
 - *Memory for loaded data (MB)*: how much memory the viewer may use for
   loaded data. Automatic is 512 MB; you can choose from 128 MB to 16 GB.
 

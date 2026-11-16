@@ -63,6 +63,10 @@ rule), and all signal processing runs in numpy beside mef3io.
   annotations, each tagged with its recording. The combined reads go
   through the MultiReader. With mef3io 2.0's parallel open the extra opens
   cost little, and the opens are one job with one progress bar.
+- **Nothing is inspected at opening or reopening.** Edit mode's save reads
+  what it needs (protected or not, access level) once, on a task thread, when
+  the save is first asked for; the fingerprint it compares with is taken at
+  opening from what the Readers already read.
 - **Passwords:** the explorer's, per recording. `MultiReader` takes one
   password for all of them. If the recordings need different passwords,
   the viewer says so and offers to open them one at a time; per-recording
@@ -434,9 +438,12 @@ mef3io), driven by a scheduler in `workers/`.
   - Seams are tested at 256 Hz, 1000/3 Hz and 8 kHz: no duplicated or
     dropped sample, and a page read across tiles equals one `read()` of
     the page.
-  - Channels are fetched in groups of 16. The montage's **reference channel
-    and bipolar partners are always fetched with the group** that needs
-    them.
+  - Channels are read and cached in **fixed groups of 16** of the recording's
+    own channel order (per sampling rate), whatever the montage
+    (`viewer_pipeline.fixed_groups`). A view block lists the fixed groups
+    holding its rows and their reference or bipolar partners, so a montage
+    change finds its tiles in the cache and reads at most the fixed groups it
+    has not read yet.
   - Read with `dtype="float32"` (scaled by mef3io, NaN gaps included).
 - **Two levels:**
   - **Samples** (`read`): used while samples per pixel ≤ 64.
@@ -448,9 +455,18 @@ mef3io), driven by a scheduler in `workers/`.
 - **Scheduler:**
   - A priority queue on a small thread pool (default: half the cores, at
     most 6).
-  - Priorities: the visible page first, then the look-ahead (2 pages in the
-    direction of travel, 1 behind), then the channel screens above and
-    below.
+  - Priorities: the visible page first, then the look-ahead (the
+    `viewer/lookahead_pages` pages in the direction of travel, default 4,
+    nearest first, and 1 behind), then the channel screens above and below.
+    **No look-ahead or screen read starts while a visible read is queued or
+    running.** The filtered blocks of the look-ahead pages are prepared too,
+    on a compute pool of half the cores (2 to 8; `viewer/filter_workers`
+    overrides), of which look-ahead takes at most two thirds. A new page
+    cancels what was prepared for another direction at once. Idle for a
+    second, the look-ahead deepens one page at a time while the cache holds
+    less than half its budget.
+  - The overview (envelope) reads the indexes of all its channels in one
+    library call.
   - A jump or a direction change cancels stale look-ahead through mef3io's
     `CancelToken`.
   - A newer page that needs a tile already being read joins that read. If
@@ -475,6 +491,9 @@ mef3io), driven by a scheduler in `workers/`.
   - Changing a filter re-filters from the cached raw tiles without reading
     again.
 - **Drawing:**
+  - A page that loads never blanks: each row keeps the picture it had, drawn
+    at the times it holds (a row whose channel, montage partner or filters
+    changed keeps nothing); a corner spinner shows only after 400 ms.
   - QPainter on a backing pixmap, redrawn only when the view or the data
     changes.
   - One polyline per row: min/max per pixel column when there are more
@@ -515,6 +534,11 @@ mef3io), driven by a scheduler in `workers/`.
   - The known MEF types (Note, EDFA, Seiz, SyLg, Epoc, Curs, CSti, ESti,
     LNTP) get fixed colours. Unknown types are grey.
   - The types panel hides or shows types per window.
+- **Many notes:** when more notes fall in the view than can be told apart
+  (more than one per 4 pixels), they merge per pixel column into one tick
+  with a count and the colour of the most important type, and per 8 pixels
+  into one chip; a draft note stays a line of its own. Tooltips are made when
+  hovered, and the side list is filled in slices.
 - **Side list:**
   - Sorted by time, with search, type filter and recording letter.
   - Click to go there; [ / ] step through.
