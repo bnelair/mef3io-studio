@@ -304,8 +304,12 @@ def _smooth_step(k: int) -> int:
     return _SMOOTH[bisect.bisect_right(_SMOOTH, k) - 1]
 
 
+@lru_cache(maxsize=64)
 def max_out_step(settings: FilterSettings, fs: float) -> int:
     """Largest decimation step the low-pass allows (1 = none), 5-smooth only.
+    Designing the filter takes milliseconds and the answer depends only on
+    the settings and the rate, so it is made once per pair (the viewer asks
+    for it for every page and group it looks at).
 
     A step is allowed when the applied response above the new Nyquist
     ``fs / (2 * step)`` is below 1e-3, so dropping those frequencies is free."""

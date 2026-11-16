@@ -135,3 +135,72 @@ def test_the_block_prepared_ahead_is_the_block_the_next_page_asks_for(
         settle(qtbot, win)
         ctl.wait_idle(20)
         prepared |= {k[2] for k in view_keys(win)}
+
+
+def test_the_decimation_step_is_designed_once_per_settings_and_rate(
+    make_window, tmp_path, qtbot, monkeypatch
+):
+    """Looking ahead asks for the step of every page and group; the filter is
+    not designed again for each of them (it costs milliseconds on the GUI thread)."""
+    win = make_window(write(tmp_path / "m.mefd", NAMES, seconds=600))
+    calls = []
+    real = dsp.applied_response
+
+    def counting(settings, fs, freqs):
+        if len(freqs) == 4097:  # the step search's grid (the filtering itself uses others)
+            calls.append((settings, fs))
+        return real(settings, fs, freqs)
+
+    monkeypatch.setattr(dsp, "applied_response", counting)
+    dsp.max_out_step.cache_clear()
+    settings = dsp.FilterSettings(0.5, 61.0)  # not used by any other test
+    win.set_state(t0=T0 + 100 * SEC, filters=settings)
+    settle(qtbot, win)
+    for _ in range(3):
+        win.page(1)
+        settle(qtbot, win)
+    assert win.controller._req is not None
+    assert settings in [c[0] for c in calls]
+    # once per pair (two threads may miss together at the very start; it was ~50)
+    assert len(calls) <= 3, len(calls)
+
+
+def _submitted_while_visible_work_remains(win, monkeypatch):
+    """Record every look-ahead block handed to the compute pool while a visible
+    block was still waiting or running."""
+    ctl = win.controller
+    seen: list[tuple[int, int]] = []
+    real = ctl._pool.submit
+
+    def submit(fn, job, *a, **k):
+        visible_left = any(j.priority == 0 for j in ctl._jobs.values())
+        seen.append((job.priority, int(visible_left)))
+        return real(fn, job, *a, **k)
+
+    monkeypatch.setattr(ctl._pool, "submit", submit)
+    return seen
+
+
+def test_after_a_change_of_filter_look_ahead_waits_for_the_visible_blocks(
+    make_window, tmp_path, qtbot, monkeypatch
+):
+    win = make_window(write(tmp_path / "m.mefd", NAMES, seconds=600))
+    win.set_state(t0=T0 + 100 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
+    settle(qtbot, win)
+    win.controller.wait_idle(20)
+    seen = _submitted_while_visible_work_remains(win, monkeypatch)
+    win.set_state(filters=dsp.FilterSettings(1.0, 40.0))
+    settle(qtbot, win)
+    win.controller.wait_idle(20)
+    ahead = [v for p, v in seen if p > 0]
+    assert ahead, "the change should have looked ahead too"
+    assert not any(ahead), seen  # none started while a visible block was unfinished
+
+
+def test_plain_paging_is_not_held_back_by_that_rule(make_window, tmp_path, qtbot, monkeypatch):
+    win = make_window(write(tmp_path / "m.mefd", NAMES, seconds=600))
+    win.set_state(t0=T0 + 100 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
+    settle(qtbot, win)
+    win.controller.wait_idle(20)
+    win.page(1)
+    assert not win.controller._state_change  # same filters, rows and width: no hold

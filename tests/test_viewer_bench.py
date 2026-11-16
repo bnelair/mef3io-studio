@@ -204,6 +204,12 @@ def test_the_viewer_speed_baseline(qapp, tmp_path):
         out[f"{pages} pages forward, 30 ms apart: complete when shown"] = f"{ready:>5} of {pages}"
         out[f"{pages} pages forward, 30 ms apart: last press until complete"] = ms(tail)
 
+        # a key press every 100 ms (the pace the 30 ms run had while a page took ~80 ms to show)
+        from_start()
+        ready, tail = run_paced_by_time(win, lambda: win.page(1), pages, gap_s=0.100)
+        out[f"{pages} pages forward, 100 ms apart: complete when shown"] = f"{ready:>5} of {pages}"
+        out[f"{pages} pages forward, 100 ms apart: last press until complete"] = ms(tail)
+
         # the same backwards, from the end
         def from_end() -> None:
             ctl.cache.clear()

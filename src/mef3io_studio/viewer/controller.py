@@ -164,6 +164,8 @@ class ViewController(QObject):
         self._direction = 1
         self.idle_before_deepening = IDLE_BEFORE_DEEPENING
         self._req: _Request | None = None
+        self._sig: tuple | None = None
+        self._state_change = False
         self._loading = False
         self._closed = False
         self._watch = QTimer(self)  # a waiting job is looked at again now and then
@@ -223,6 +225,17 @@ class ViewController(QObject):
         self._shown_at = time.monotonic()
         self._direction = direction
         data = self.data
+        # A page made with other filters, rows or width than the last one:
+        # its blocks all have to be made new, so for now only the visible
+        # ones are computed (see ``_pump``). Plain paging is never held back.
+        sig = (
+            settings if not overview else None,
+            tuple((r.plus, r.minus) for r in rows),
+            plot_px,
+            overview,
+        )
+        self._state_change = self._req is not None and sig != self._sig
+        self._sig = sig
         length = max(1, page[1] - page[0])
         span = aligned_block(page[0], length, data.timeline_start)
         if overview:
@@ -422,10 +435,14 @@ class ViewController(QObject):
         ahead = sum(
             1 for j in self._jobs.values() if j.state == "computing" and j.priority > VISIBLE
         )
+        # After a change of filters, montage or width every block is new work
+        # and the look-ahead ones slow the visible ones down (they share the
+        # cores): they wait until the visible blocks are done, then go on.
+        hold_ahead = self._state_change and any(j.priority == VISIBLE for j in self._jobs.values())
         for job in waiting:
             if inflight >= self.max_compute:
                 break
-            if job.priority > VISIBLE and ahead >= ahead_cap:
+            if job.priority > VISIBLE and (ahead >= ahead_cap or hold_ahead):
                 continue
             missing = self._missing(job)
             if missing:
@@ -553,6 +570,7 @@ class ViewController(QObject):
             del self._jobs[k]
         self._update_needed()
         self._fail_keys(broken)
+        self._pump()  # look-ahead held back for the failed visible block may go now
 
     def _fail_keys(self, keys: set) -> None:
         req = self._req
