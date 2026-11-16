@@ -35,6 +35,8 @@ DEFAULT_SPACING = 7
 #: rows cannot be read, so with more rows than fit at this distance the rest
 #: are reached by scrolling (and the window says which rows are on screen).
 READABLE_SPACING_MM = 4.0
+#: How much under the exact division "fit all rows" stays (relative).
+FIT_MARGIN = 1e-9
 #: The remembered spacing that means "fit all rows" (a real spacing is never 0).
 FIT_ALL = 0.0
 #: Pages longer than this many seconds are drawn as an overview.
@@ -77,9 +79,10 @@ def fit_spacing(plot_height_px: float, px_per_mm: float, n_rows: int) -> float:
     under :data:`READABLE_SPACING_MM` and never over the largest choice."""
     if n_rows <= 0 or px_per_mm <= 0 or plot_height_px <= 0:
         return float(DEFAULT_SPACING)
-    return float(
-        min(SPACING_STEPS[-1], max(READABLE_SPACING_MM, plot_height_px / px_per_mm / n_rows))
-    )
+    # A hair under the exact division: the rows then add up to no more than the
+    # plot however the floating point rounds (an exact fit once showed n - 1 rows).
+    exact = plot_height_px / px_per_mm / n_rows * (1 - FIT_MARGIN)
+    return float(min(SPACING_STEPS[-1], max(READABLE_SPACING_MM, exact)))
 
 
 def stretch_start(starts, t0: int, direction: int, eps: int = 1) -> int | None:
@@ -123,6 +126,14 @@ def unreached(
         if t < b:
             out.append((t, b, rec))
     return out
+
+
+def rows_fitting(plot_height_px: float, row_height_px: float) -> int:
+    """How many whole rows fit in the plot (at least one). The same rounding
+    tolerance as :func:`fit_spacing`, so a fit is never one row short."""
+    if row_height_px <= 0:
+        return 1
+    return max(1, int(plot_height_px / row_height_px + 1e-6))
 
 
 def rows_text(first: int, shown: int, total: int) -> str:

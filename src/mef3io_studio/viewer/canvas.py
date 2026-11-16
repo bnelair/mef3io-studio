@@ -33,7 +33,13 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..model import timefmt
 from ..model.montage import OTHER_GROUP
-from ..model.viewer_view import Palette, display_units, format_measure, format_offset
+from ..model.viewer_view import (
+    Palette,
+    display_units,
+    format_measure,
+    format_offset,
+    rows_fitting,
+)
 from ..workers.viewer_pipeline import EnvelopePiece, ViewPiece, envelope_columns
 
 
@@ -254,7 +260,7 @@ class TraceCanvas(QWidget):
         return self.spacing_mm * self.px_per_mm
 
     def visible_rows(self) -> int:
-        return max(1, int(self.plot_rect().height() // self.row_height))
+        return rows_fitting(self.plot_rect().height(), self.row_height)
 
     def row_y(self, i: int) -> float:
         """Vertical centre of row ``i``."""

@@ -328,3 +328,71 @@ def test_the_fit_on_open_also_happens_when_many_channels_load_in_groups(make_win
     after the last block arrived. It must not wait for that."""
     win = make_window(many(tmp_path, n=120, name="fit_many.mefd"))
     assert win.state.sensitivity != 100 and win._auto_open is False
+
+
+# --- "Fit all rows" really fits, whatever the height, the count and the screen ----------
+
+
+def test_fit_all_rows_fits_at_every_height_row_count_and_screen_scale(qapp, monkeypatch):
+    """The distance 'Fit all rows' works out and the number of rows the canvas
+    says fit must agree to the last pixel: a float rounding once gave n - 1 rows
+    and a scroll bar at about 45% of window heights."""
+    from mef3io_studio.model import viewer_view as vv
+    from mef3io_studio.viewer.canvas import TraceCanvas
+
+    canvas = TraceCanvas(vv.PROFILES["white"])
+    bad = []
+    for px_per_mm in (
+        3.7795275590551185,
+        3.5433070866141736,
+        4.0,
+        5.118110236220472,
+        7.559055118110236,
+    ):
+        monkeypatch.setattr(TraceCanvas, "px_per_mm", property(lambda _s, v=px_per_mm: v))
+        for height in range(240, 2200, 3):
+            canvas.resize(900, height)
+            plot_h = canvas.plot_rect().height()
+            for n in (2, 3, 5, 8, 13, 16, 21, 32, 43, 50, 64, 100):
+                spacing = vv.fit_spacing(plot_h, px_per_mm, n)
+                canvas.spacing_mm = spacing
+                if vv.READABLE_SPACING_MM < spacing < vv.SPACING_STEPS[-1] and (
+                    canvas.visible_rows() < n
+                ):
+                    bad.append((px_per_mm, height, n))
+    assert not bad, bad[:5]
+
+
+def test_fit_all_rows_shows_every_row_and_no_scroll_bar_in_the_window(make_window, tmp_path, qtbot):
+    from mef3io_studio.model import viewer_view as vv
+
+    win = make_window(write_kinds(tmp_path / "thirteen.mefd", eeg_names(13)))
+    win.spacing_box.setCurrentIndex(win.spacing_box.findData(vv.FIT_ALL))
+    win.spacing_box.activated.emit(win.spacing_box.currentIndex())
+    for height in range(520, 1000, 19):
+        win.resize(1200, height)
+        settle(qtbot, win)
+        win._refresh()
+        canvas = win.canvas
+        plot_h = canvas.plot_rect().height()
+        shown = sum(
+            1 for i in range(13) if canvas.row_y(i) + canvas.row_height / 2 <= plot_h + 1e-6
+        )
+        assert shown == 13, (height, shown)
+        assert win.rows_label.text() == "" and not win.row_scroll.isVisible(), height
+
+
+def test_the_rows_label_names_the_rows_that_are_fully_on_screen(make_window, tmp_path, qtbot):
+    win = make_window(many(tmp_path, n=40, name="forty.mefd"))
+    win.set_state(spacing=9.3)
+    for height in range(520, 900, 37):
+        win.resize(1200, height)
+        settle(qtbot, win)
+        win._refresh()
+        canvas = win.canvas
+        plot_h = canvas.plot_rect().height()
+        first = win.state.row_offset
+        whole = [
+            i for i in range(first, 40) if canvas.row_y(i) + canvas.row_height / 2 <= plot_h + 1e-6
+        ]
+        assert win.rows_label.text() == f"Rows {first + 1}-{whole[-1] + 1} of 40", height
