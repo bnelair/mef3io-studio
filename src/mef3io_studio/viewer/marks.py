@@ -46,6 +46,8 @@ class Chip:
     state: str = ""
     #: What edit mode selects: the mark behind the chip.
     mark: object = None
+    #: A merged chip (crowded view): how many notes it stands for.
+    count: int = 1
 
 
 class ChipsRow(QWidget):

@@ -252,9 +252,23 @@ class NotesTab(QWidget):
             self.show_buttons[index] = button
 
     def set_rows(self, marks: Sequence[vm.Mark], shown, letter_of, zone: tzinfo) -> None:
+        for _ in self.fill_steps(marks, shown, letter_of, zone, chunk=max(1, len(marks))):
+            pass
+
+    def fill_steps(
+        self, marks: Sequence[vm.Mark], shown, letter_of, zone: tzinfo, chunk: int = 200
+    ):
+        """Fill the table ``chunk`` rows at a time (a generator for
+        ``SlicedRunner``: a long list never holds the window up). ``rows`` is
+        the whole list at once; the columns are sized from the first rows."""
         self.rows = list(marks)
         self.table.setRowCount(len(marks))
+        self.count.setText(f"{len(marks)} listed" if marks else "Nothing to list.")
         for row, m in enumerate(marks):
+            if row and row % chunk == 0:
+                if row == chunk:
+                    self.table.resizeColumnsToContents()
+                yield
             ok = shown(m.recording)
             _, label = vm.kind_for(m, ok)
             where = m.channel if m.channel else "Whole recording"
@@ -280,7 +294,6 @@ class NotesTab(QWidget):
                         item.setText(text + ("  (new)" if m.state == "new" else "  (changed)"))
                 self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
-        self.count.setText(f"{len(marks)} listed" if marks else "Nothing to list.")
 
     def cell_text(self, row: int, col: int) -> str:
         item = self.table.item(row, col)

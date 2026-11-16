@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, tzinfo
 
 import numpy as np
-from PySide6.QtCore import QByteArray, QDataStream, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QDataStream, QLineF, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -68,10 +68,17 @@ class CanvasMark:
     #: Edit mode: "" | "new" (a draft note, dashed) | "removed" (a stored note
     #: the draft takes out, dotted and faint).
     style: str = ""
+    #: A merged tick: how many notes share this pixel column of a crowded view
+    #: (``tick``), drawn short at the top in the colour of the most important
+    #: one. Its tooltip is made only when it is hovered (``TraceCanvas.tip_for``).
+    count: int = 1
+    tick: bool = False
 
 
 #: The export range's colour (light, dark): black or white, with a dashed edge.
 EDGE_GRAB_PX = 5
+#: A merged tick answers the pointer within this many pixels of the plot's top.
+TICK_HIT_PX = 30
 #: A page not complete after this long shows the small spinner in a corner.
 SPINNER_DELAY_MS = 400
 
@@ -606,12 +613,22 @@ class TraceCanvas(QWidget):
     def _paint_marks(self, p: QPainter, plot: QRectF) -> None:
         p.save()
         p.setClipRect(plot)
+        ticks: dict[tuple[str, float], list[QLineF]] = {}
+        left, scale = plot.left(), plot.width() / max(1.0, self.t1 - self.t0)
         for m in self.marks:
             end = m.end if m.end is not None and m.end > m.time else None
             if m.time > self.t1 or (end or m.time) < self.t0:
                 continue
+            if m.tick:  # a crowded view: thousands of ticks, batched by colour and height
+                x = left + (m.time - self.t0) * scale
+                h = min(plot.height(), 6.0 + 3.0 * math.log2(max(1, m.count)))
+                ticks.setdefault((m.colour, round(h)), []).append(QLineF(x, 0.0, x, h))
+                continue
             for top, height in self._row_spans(m.channel, plot):
                 self._paint_mark(p, m, end, top, height)
+        for (colour, _h), lines in ticks.items():
+            p.setPen(QPen(QColor(colour), 1.6))
+            p.drawLines(lines)
         p.restore()
 
     def _paint_mark(self, p: QPainter, m: CanvasMark, end, top: float, height: float) -> None:
@@ -735,6 +752,15 @@ class TraceCanvas(QWidget):
             p.drawText(box, Qt.AlignmentFlag.AlignCenter, self.export_text)
         p.restore()
 
+    def tip_for(self, m: CanvasMark) -> str:
+        """The tooltip of a mark; a merged tick's is made now, not when built."""
+        if m.tip or not m.tick:
+            return m.tip
+        when = timefmt.format_time(m.time, self.zone, 3)
+        if m.count == 1:
+            return f"1 note or event\n{when}"
+        return f"{m.count} notes and events from\n{when}\nZoom in to see them one by one."
+
     def mark_at(self, pos: QPointF) -> CanvasMark | None:
         """The note or event under ``pos`` (a line within 4 pixels, or a
         band), for the tooltip."""
@@ -748,7 +774,10 @@ class TraceCanvas(QWidget):
             if not any(a <= pos.y() <= a + h for a, h in self._row_spans(m.channel, plot)):
                 continue
             end = m.end if m.end is not None and m.end > m.time else None
-            if end is not None and m.time - 3 * px <= t <= end + 3 * px:
+            if m.tick:
+                if pos.y() <= plot.top() + TICK_HIT_PX and abs(t - m.time) <= 3 * px:
+                    return m
+            elif end is not None and m.time - 3 * px <= t <= end + 3 * px:
                 best = best or m
             elif end is None and abs(t - m.time) <= 4 * px:
                 return m
@@ -790,7 +819,7 @@ class TraceCanvas(QWidget):
         near = self._edge_near(pos)
         self.setCursor(Qt.CursorShape.SizeHorCursor if near else Qt.CursorShape.ArrowCursor)
         mark = self.mark_at(pos) if near is None and self._drag is None else None
-        self.setToolTip(mark.tip if mark is not None else "")
+        self.setToolTip(self.tip_for(mark) if mark is not None else "")
         if self._measure_from is not None:
             self.measure_text = self.measurement()
         elif self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
