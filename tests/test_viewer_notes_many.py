@@ -156,7 +156,7 @@ def test_the_side_list_of_a_crowded_view_is_filled_in_slices(make_window, tmp_pa
     win = make_window(path)
     wait_marks(qtbot, win)
     win.notes_tab.search.setText("event")
-    qtbot.waitUntil(lambda: not win._list_runner.busy, timeout=10_000)
+    wait_list_done(qtbot, win)
     assert win.notes_tab.rows and all(m.code == "EDFA" for m in win.notes_tab.rows)
     assert len(win.notes_tab.rows) == sum(1 for k in range(3000) if k % 7 == 0)
 
