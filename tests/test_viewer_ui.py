@@ -87,12 +87,14 @@ def one(make_window, tmp_path):
 
 
 def test_opens_on_one_recording(one):
-    assert one.row_labels() == sorted(
+    natural = sorted(
         CHANNELS,
         key=lambda n: (
             [int(p) if p.isdigit() else p.lower() for p in __import__("re").split(r"(\d+)", n)]
         ),
     )
+    # the channels that are not EEG (ECG) come after the others
+    assert one.row_labels() == [n for n in natural if n != "ECG"] + ["ECG"]
     assert one.canvas.drawn_points and all(n > 0 for n in one.canvas.drawn_points.values())
     assert not one.multi and one.windowTitle() == "Signal viewer"
     assert one.status_mode.text() == "As recorded; No filters"

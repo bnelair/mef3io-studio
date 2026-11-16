@@ -54,6 +54,77 @@ def lead_and_contact(name: str) -> tuple[str, int | None]:
     return name, None
 
 
+#: Channels that are not EEG, by their name without digits and signs (``EMG1``,
+#: ``SpO2``, ``DC3``): another unit and another size, so a view of many EEG
+#: channels puts them last and scales each by itself.
+NON_EEG = frozenset(
+    "ecg ekg emg eog loc roc dc spo sao osat trig trigger resp respiration pleth ppg photic "
+    "pulse hr snore flow airflow effort thorax abdomen temp bp event co etco ptt".split()
+)
+
+
+def is_non_eeg(name: str) -> bool:
+    key = re.sub(r"[^a-z]", "", name.casefold())
+    return key in NON_EEG or key.startswith(("ecg", "ekg", "emg", "eog"))
+
+
+def non_eeg_last(rows: Sequence[Row]) -> list[Row]:
+    """The rows with the channels that are not EEG (ECG, EMG, DC, SpO2 ...) after
+    the others, each group in its own order (judged by the row's own channel:
+    ``ECG - Cz`` is an ECG row)."""
+    eeg = [r for r in rows if not is_non_eeg(r.plus)]
+    rest = [r for r in rows if is_non_eeg(r.plus)]
+    return eeg + rest if rest and eeg else list(rows)
+
+
+#: A run of at least this many rows of one lead is drawn as a group.
+MIN_GROUP = 3
+OTHER_GROUP = "\0other"
+
+
+@dataclass(frozen=True)
+class RowGroup:
+    """How one row sits among the others: ``group`` names its run (a lead, or
+    the channels that are not EEG), ``first`` marks the start of a run that is
+    drawn as a group (a thin line above it and the lead named once), ``short``
+    is the label without the lead's name for the rows after the first ("" = the
+    label as it is)."""
+
+    group: str = ""
+    first: bool = False
+    short: str = ""
+
+
+def group_rows(rows: Sequence[Row]) -> list[RowGroup]:
+    """Group consecutive rows of one lead (``LA1``, ``LA2`` ...); a run of fewer
+    than :data:`MIN_GROUP` rows (Fp1, Fp2 ...) is not a group and keeps its
+    labels. Rows of channels that are not EEG form one group at the end."""
+    keys: list[str] = []
+    for r in rows:
+        if is_non_eeg(r.plus):
+            keys.append(OTHER_GROUP)
+        else:
+            lead, contact = lead_and_contact(r.plus)
+            keys.append(lead if contact is not None else "")
+    out = [RowGroup(k) for k in keys]
+    i = 0
+    while i < len(rows):
+        j = i
+        while j < len(rows) and keys[j] == keys[i]:
+            j += 1
+        if keys[i] and j - i >= (1 if keys[i] == OTHER_GROUP else MIN_GROUP):
+            for k in range(i, j):
+                short = ""
+                if keys[i] != OTHER_GROUP and k > i and rows[k].label.startswith(keys[i]):
+                    rest = rows[k].label[len(keys[i]) :].lstrip(" _-")
+                    short = rest if rest and not rest[0].isalpha() else ""
+                out[k] = RowGroup(keys[i], k == i, short)
+        else:
+            out[i:j] = [RowGroup("") for _ in range(j - i)]
+        i = j
+    return out
+
+
 def natural_key(name: str) -> list:
     return [int(t) if t.isdigit() else t.lower() for t in _NATURAL.split(name)]
 

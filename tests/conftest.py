@@ -124,6 +124,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "allow_network_attempt: the test deliberately triggers the network guard"
     )
+    config.addinivalue_line(
+        "markers", "fits_on_open: the viewer fits its sensitivity to the signals on open"
+    )
 
 
 @pytest.fixture
@@ -198,3 +201,14 @@ def clean_identities():
     privacy.identities.clear()
     yield
     privacy.identities.clear()
+
+
+@pytest.fixture(autouse=True)
+def viewer_keeps_its_default_sensitivity(request, monkeypatch):
+    """The viewer fits its sensitivity to the signals when it opens (a saved
+    choice aside). Most tests assert on the plain default, so it stays off
+    here; the tests of that fit switch it on with ``@pytest.mark.fits_on_open``."""
+    from mef3io_studio.viewer.window import ViewerWindow
+
+    on = request.node.get_closest_marker("fits_on_open") is not None
+    monkeypatch.setattr(ViewerWindow, "FIT_ON_OPEN", on, raising=False)

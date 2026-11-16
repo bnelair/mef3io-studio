@@ -29,6 +29,12 @@ TIMEBASE_KEYS = (10, 15, 30, 60, 120)
 DEFAULT_SENSITIVITY = 100
 DEFAULT_TIMEBASE = 30
 DEFAULT_SPACING = 7
+#: The least distance between rows that "Fit all rows" goes down to: closer
+#: rows cannot be read, so with more rows than fit at this distance the rest
+#: are reached by scrolling (and the window says which rows are on screen).
+READABLE_SPACING_MM = 4.0
+#: The remembered spacing that means "fit all rows" (a real spacing is never 0).
+FIT_ALL = 0.0
 #: Pages longer than this many seconds are drawn as an overview.
 OVERVIEW_PAGE_S = 300.0
 
@@ -62,6 +68,24 @@ def step_value(steps, current: float, delta: int) -> float:
 
 def nearest_step(steps, value: float) -> float:
     return min(steps, key=lambda s: abs(s - value))
+
+
+def fit_spacing(plot_height_px: float, px_per_mm: float, n_rows: int) -> float:
+    """The distance between rows (mm) that puts ``n_rows`` into the plot, never
+    under :data:`READABLE_SPACING_MM` and never over the largest choice."""
+    if n_rows <= 0 or px_per_mm <= 0 or plot_height_px <= 0:
+        return float(DEFAULT_SPACING)
+    return float(
+        min(SPACING_STEPS[-1], max(READABLE_SPACING_MM, plot_height_px / px_per_mm / n_rows))
+    )
+
+
+def rows_text(first: int, shown: int, total: int) -> str:
+    """ "Rows 33-64 of 256" (empty when all rows are on screen)."""
+    if total <= 0 or shown >= total:
+        return ""
+    last = min(total, first + shown)
+    return f"Rows {first + 1}-{last} of {total}"
 
 
 def page_us(plot_px: float, px_per_mm: float, timebase: float) -> int:
@@ -143,6 +167,8 @@ class ViewState:
     filters: FilterSettings = field(default_factory=FilterSettings)
     #: First visible row (rows scroll in whole rows).
     row_offset: int = 0
+    #: "Fit all rows": ``spacing`` is worked out from the rows and the window.
+    fit_rows: bool = False
     profile: str = "auto"
     #: The background and trace colours (``#rrggbb``) of the "custom" profile.
     custom: tuple[str, str] | None = None

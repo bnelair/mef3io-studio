@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..model.montage import lead_and_contact
 from ..model.viewer_view import MONTAGE_NAMES, MONTAGE_REFERENCE, MONTAGES
 
 
@@ -85,7 +86,9 @@ class MontageBar(QWidget):
 
 
 class ChannelChooser(QWidget):
-    """Tick the channels to show; search; Show all."""
+    """Tick the channels to show; search; Show all. Above the channels, the
+    leads (``LA1`` ... ``LA12`` are the lead ``LA``): tick or untick a whole
+    lead at once; a lead with only some of its channels shown is half ticked."""
 
     hidden_changed = Signal(object)  # frozenset of hidden channel names
 
@@ -95,12 +98,20 @@ class ChannelChooser(QWidget):
         self.search = QLineEdit(self)
         self.search.setPlaceholderText("Search channels")
         self.search.setClearButtonEnabled(True)
+        self.leads = QListWidget(self)
+        self.leads.setToolTip("Tick or untick all the channels of a lead")
+        self.leads.setMaximumHeight(self.fontMetrics().height() * 9)
+        self.leads_heading = QLabel("Leads", self)
+        self.leads_heading.setObjectName("Muted")
         self.list = QListWidget(self)
         self.show_all = QPushButton("Show all", self)
         self.count = QLabel("", self)
         self.count.setObjectName("Muted")
         box = QVBoxLayout(self)
         box.addWidget(self.search)
+        box.addWidget(self.leads_heading)
+        box.addWidget(self.leads)
+        box.addWidget(QLabel("Channels", self))
         box.addWidget(self.list, 1)
         row = QHBoxLayout()
         row.addWidget(self.count, 1)
@@ -110,7 +121,9 @@ class ChannelChooser(QWidget):
         self._busy = False
         self.search.textChanged.connect(self._filter)
         self.list.itemChanged.connect(self._item_changed)
+        self.leads.itemChanged.connect(self._lead_changed)
         self.show_all.clicked.connect(self._show_all)
+        self._lead_members: dict[str, list[str]] = {}
 
     def set_channels(self, names: Sequence[str], hidden: frozenset) -> None:
         self._busy = True
@@ -120,9 +133,60 @@ class ChannelChooser(QWidget):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Unchecked if n in hidden else Qt.CheckState.Checked)
             self.list.addItem(item)
+        members: dict[str, list[str]] = {}
+        for n in names:
+            lead, contact = lead_and_contact(n)
+            if contact is not None:
+                members.setdefault(lead, []).append(n)
+        self._lead_members = {k: v for k, v in members.items() if len(v) >= 2}
+        self.leads.clear()
+        for lead, chans in self._lead_members.items():
+            item = QListWidgetItem(f"{lead}  ({len(chans)} channels)")
+            item.setData(Qt.ItemDataRole.UserRole, lead)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            self.leads.addItem(item)
+        self._sync_leads()
+        self.leads.setVisible(bool(self._lead_members))
+        self.leads_heading.setVisible(bool(self._lead_members))
         self._busy = False
         self._filter(self.search.text())
         self._count()
+
+    def _sync_leads(self) -> None:
+        """Each lead's box: ticked (all shown), unticked (none), half (some)."""
+        hidden = self.hidden()
+        for i in range(self.leads.count()):
+            item = self.leads.item(i)
+            chans = self._lead_members[item.data(Qt.ItemDataRole.UserRole)]
+            gone = sum(1 for c in chans if c in hidden)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if gone == 0
+                else Qt.CheckState.Unchecked
+                if gone == len(chans)
+                else Qt.CheckState.PartiallyChecked
+            )
+
+    def set_lead(self, lead: str, shown: bool) -> None:
+        """Show or hide every channel of ``lead`` (as a click on its box does)."""
+        chans = set(self._lead_members.get(lead, ()))
+        self._busy = True
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item.text() in chans:
+                item.setCheckState(Qt.CheckState.Checked if shown else Qt.CheckState.Unchecked)
+        self._sync_leads()
+        self._busy = False
+        self._count()
+        self.hidden_changed.emit(self.hidden())
+
+    def _lead_changed(self, item) -> None:
+        if self._busy:
+            return
+        state = item.checkState()
+        if state == Qt.CheckState.PartiallyChecked:
+            return
+        self.set_lead(item.data(Qt.ItemDataRole.UserRole), state == Qt.CheckState.Checked)
 
     def hidden(self) -> frozenset:
         return frozenset(
@@ -141,10 +205,20 @@ class ChannelChooser(QWidget):
         for i in range(self.list.count()):
             item = self.list.item(i)
             item.setHidden(bool(needle) and needle not in item.text().casefold())
+        for i in range(self.leads.count()):  # a lead matches by its name or any of its channels
+            item = self.leads.item(i)
+            lead = item.data(Qt.ItemDataRole.UserRole)
+            found = needle in lead.casefold() or any(
+                needle in c.casefold() for c in self._lead_members[lead]
+            )
+            item.setHidden(bool(needle) and not found)
 
     def _item_changed(self, _item) -> None:
         if self._busy:
             return
+        self._busy = True
+        self._sync_leads()
+        self._busy = False
         self._count()
         self.hidden_changed.emit(self.hidden())
 
@@ -152,6 +226,7 @@ class ChannelChooser(QWidget):
         self._busy = True
         for i in range(self.list.count()):
             self.list.item(i).setCheckState(Qt.CheckState.Checked)
+        self._sync_leads()
         self._busy = False
         self._count()
         self.hidden_changed.emit(frozenset())

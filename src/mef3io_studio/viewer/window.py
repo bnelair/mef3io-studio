@@ -32,11 +32,13 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QScrollBar,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -76,6 +78,8 @@ DENSE_PX_PER_MARK = 4
 DENSE_MIN_MARKS = 40
 #: In a crowded view this many notes lasting more than a pixel (the longest) keep their band.
 MAX_BANDS = 200
+#: Auto makes the typical trace this share of the distance between rows.
+CLIP_FILL = 0.9
 #: A held key asks for its page this long after the first repeat of a batch.
 REPEAT_FRAME_MS = 12
 #: How many of the notes carried into the page the group's tooltip lists.
@@ -92,7 +96,9 @@ def default_state(settings, timeline_start: int) -> ViewState:
     """The starting view: the saved defaults, else the clinical ones."""
     sens = vv.nearest_step(vv.SENS_STEPS, settings.get("viewer/sensitivity") if settings else 100)
     tb = vv.nearest_step(vv.TIMEBASE_STEPS, settings.get("viewer/timebase") if settings else 30)
-    sp = vv.nearest_step(vv.SPACING_STEPS, settings.get("viewer/spacing") if settings else 7)
+    saved_sp = settings.get("viewer/spacing") if settings else 7
+    fit_rows = saved_sp == vv.FIT_ALL
+    sp = vv.nearest_step(vv.SPACING_STEPS, vv.DEFAULT_SPACING if fit_rows else saved_sp)
     profile = settings.get("viewer/profile") if settings else "auto"
     custom = None
     if settings:
@@ -117,6 +123,7 @@ def default_state(settings, timeline_start: int) -> ViewState:
         sensitivity=sens,
         timebase=tb,
         spacing=sp,
+        fit_rows=fit_rows,
         profile=profile,
         custom=custom,
         filters=filters,
@@ -139,6 +146,9 @@ def performance_from(settings) -> vv.Performance:
 
 class ViewerWindow(QMainWindow):
     """Shows ``data`` (a ``ViewerData``) in a window of its own."""
+
+    #: Fit the sensitivity to the signals when a recording opens (tests switch it off).
+    FIT_ON_OPEN = True
 
     closed = Signal()
     #: Hooks for what comes next: (what, time in µs). what = "start" | "end".
@@ -194,6 +204,11 @@ class ViewerWindow(QMainWindow):
         self.perf = performance_from(settings)
         self.controller = ViewController(data, self.perf, parent=self)
         self._chosen: set[str] = set()
+        #: Fit the sensitivity once on the first complete page (not when the
+        #: person has chosen a sensitivity before: that one is kept).
+        self._auto_open = self.FIT_ON_OPEN and (
+            settings is None or "viewer/sensitivity" not in settings.stored_keys()
+        )
         self._last_row: int | None = None
         self._coverage = data.segments_coverage()
         self._boundaries = data.boundaries()
@@ -261,7 +276,17 @@ class ViewerWindow(QMainWindow):
         box.addWidget(self.edit.banner)
         for w in (self.strip, self.band_slot, self.chips_slot):
             box.addWidget(w)
-        box.addWidget(self.canvas, 1)
+        self.row_scroll = QScrollBar(Qt.Orientation.Vertical, self)
+        self.row_scroll.setToolTip("Scroll the channels")
+        self.row_scroll.setAccessibleName("Channels scroll bar")
+        self.row_scroll.setVisible(False)
+        self._syncing_rows = False
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self.canvas, 1)
+        body.addWidget(self.row_scroll)
+        box.addLayout(body, 1)
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.splitter.addWidget(left)
         self.splitter.addWidget(self.side_panel)
@@ -403,6 +428,19 @@ class ViewerWindow(QMainWindow):
             "Channels", "Choose the channels to show (C)", self.toggle_channels
         )
         self.spacing_box = self._steps_box(vv.SPACING_STEPS, "{:g} mm", "Distance between rows")
+        self.spacing_box.insertItem(0, "Fit all rows", vv.FIT_ALL)
+        self.spacing_box.setToolTip(
+            'Distance between rows. "Fit all rows" puts as many channels on screen as can '
+            f"be read (not closer than {vv.READABLE_SPACING_MM:g} mm); the rest are reached "
+            "by scrolling."
+        )
+        # Which rows of how many are on screen, when not all of them are.
+        self.rows_label = QLabel("", self)
+        self.rows_label.setObjectName("Muted")
+        self.rows_label.setAccessibleName("Rows on screen")
+        self.rows_label.setToolTip(
+            "The channels on screen. Scroll with Page Up and Page Down, Shift+wheel or the bar."
+        )
         self.sens_box = self._steps_box(vv.SENS_STEPS, "{:g} µV/mm", "Sensitivity")
         self.auto_button = tool(
             "Auto", "Choose the sensitivity that fits the signals", self.auto_sensitivity
@@ -436,6 +474,7 @@ class ViewerWindow(QMainWindow):
         self._colour_note_action = row2.addWidget(self.colour_note)
         self._colour_note_action.setVisible(False)
         row2.addWidget(self.types_button)
+        row2.addWidget(self.rows_label)
         self.addToolBar(row2)
         self._sync_boxes()
 
@@ -467,6 +506,7 @@ class ViewerWindow(QMainWindow):
         c.size_changed.connect(self._sync_length)  # at once, before the page is refreshed
         c.pointer_changed.connect(self._pointer)
         c.wheel_time.connect(lambda n: self.move_by(-n * self.page_us() / 10, direction=-n))
+        self.row_scroll.valueChanged.connect(self._row_scrolled)
         c.wheel_rows.connect(lambda n: self.scroll_rows(-1 if n > 0 else 1))
         c.wheel_zoom.connect(self.zoom_at)
         c.panned.connect(self._panned)
@@ -691,7 +731,9 @@ class ViewerWindow(QMainWindow):
 
     def step_spacing(self, delta: int) -> None:
         self._chosen.add("spacing")
-        self.set_state(spacing=vv.step_value(vv.SPACING_STEPS, self.state.spacing, delta))
+        self.set_state(
+            spacing=vv.step_value(vv.SPACING_STEPS, self.state.spacing, delta), fit_rows=False
+        )
 
     def go_to_boundary(self, direction: int) -> None:
         centre = self.state.t0 + self.page_us() / 2
@@ -849,25 +891,45 @@ class ViewerWindow(QMainWindow):
 
     def _box_chose(self, field: str, box: QComboBox) -> None:
         self._chosen.add(field)
-        self.set_state(**{field: box.currentData()})
+        value = box.currentData()
+        if field == "spacing":
+            if value == vv.FIT_ALL:
+                self.set_state(fit_rows=True, row_offset=0)
+            else:
+                self.set_state(spacing=value, fit_rows=False)
+        else:
+            self.set_state(**{field: value})
         self.canvas.setFocus()
 
-    def auto_sensitivity(self) -> None:
+    def auto_sensitivity(self) -> bool:
+        """Choose the sensitivity from the signals on screen: the typical swing
+        (98th percentile of the distance from each trace's own middle, so a DC
+        offset or a drift does not count) of the typical channel. Robust: the
+        MEDIAN over the EEG channels in view, so one flat channel or one huge
+        one does not move it; channels that are not EEG (ECG, EMG, DC, SpO2)
+        have their own scale and do not take part. Returns whether it could
+        decide (False while the rows still load)."""
         first = self.state.row_offset
         last = first + self.canvas.visible_rows()
-        peaks = []
+        peaks, others = [], []
         for r in self.canvas.rows[first:last]:
             if r.piece is None or isinstance(r.piece, EnvelopePiece):
                 continue
             w = r.piece.window(r.local, self.state.t0, self.state.t0 + self.page_us())
             w = w[np.isfinite(w)]
-            if w.size:
-                peaks.append(float(np.percentile(np.abs(w - np.median(w)), 98)))
+            if not w.size:
+                continue
+            peak = float(np.percentile(np.abs(w - np.median(w)), 98))
+            if peak <= 0:  # a flat channel says nothing about the others
+                continue
+            (others if r.own_scale else peaks).append(peak)
+        peaks = peaks or others
         if not peaks:
-            return
-        wanted = 2 * float(np.median(peaks)) / (0.9 * self.state.spacing)
+            return False
+        wanted = 2 * float(np.median(peaks)) / (CLIP_FILL * self.state.spacing)
         larger = [s for s in vv.SENS_STEPS if s >= wanted]
         self.set_state(sensitivity=larger[0] if larger else vv.SENS_STEPS[-1])
+        return True
 
     # -- jump ----------
 
@@ -930,7 +992,7 @@ class ViewerWindow(QMainWindow):
         overview = self.overview()
         key = vv.MONTAGE_RECORDED if overview else self.state.montage
         rows = self._rows_for(key, self.state.reference)
-        return [r for r in rows if r.plus not in self.state.hidden]
+        return montage.non_eeg_last([r for r in rows if r.plus not in self.state.hidden])
 
     def _refresh(self) -> None:
         if self._closed or self.canvas.width() < 10 or self.edit.saving:
@@ -938,6 +1000,11 @@ class ViewerWindow(QMainWindow):
         length = self.page_us()
         t0 = vv.clamp_start(self.state.t0, length, self.data.timeline_start, self.data.timeline_end)
         rows = self.current_rows()
+        if self.state.fit_rows:
+            fit = vv.fit_spacing(self.canvas.plot_rect().height(), self.canvas.px_per_mm, len(rows))
+            if fit != self.state.spacing:
+                self.state = self.state.with_(spacing=fit)
+        self.canvas.spacing_mm = self.state.spacing  # the rows that fit depend on it
         visible = self.canvas.visible_rows()
         offset = max(0, min(self.state.row_offset, max(0, len(rows) - visible)))
         if (t0, offset) != (self.state.t0, self.state.row_offset):
@@ -964,11 +1031,32 @@ class ViewerWindow(QMainWindow):
         )
         self._apply_pieces()
         self._sync_boxes()
+        self._sync_rows(len(rows), visible, offset)
         self._sync_toolbar_time()
         self._update_status_mode()
         self.filter_panel.set_notice(self._notice())
         self._ready = True
         self.page_changed.emit(t0, t0 + length)
+
+    def _sync_rows(self, total: int, visible: int, offset: int) -> None:
+        """ "Rows 33-64 of 256" and the scroll bar, when not every row fits."""
+        text = vv.rows_text(offset, visible, total)
+        self.rows_label.setText(text)
+        self.rows_label.setVisible(bool(text))
+        bar = self.row_scroll
+        self._syncing_rows = True
+        try:
+            bar.setRange(0, max(0, total - visible))
+            bar.setPageStep(max(1, visible))
+            bar.setSingleStep(1)
+            bar.setValue(offset)
+        finally:
+            self._syncing_rows = False
+        bar.setVisible(total > visible)
+
+    def _row_scrolled(self, value: int) -> None:
+        if not self._syncing_rows and value != self.state.row_offset:
+            self.set_state(row_offset=value)
 
     def _set_rows_loading(self, rows) -> None:
         """A new page asked for: each row keeps the picture it had (drawn at
@@ -1002,6 +1090,7 @@ class ViewerWindow(QMainWindow):
             self.multi,
         )
         self.canvas.set_loading(self.controller.loading)
+        self._auto_on_open()
         self._sync_short_stretches(rows, pieces)
         # what is drawn now stands in for these rows while the next page loads
         # (a row that failed has nothing to stand in: it says so)
@@ -1013,6 +1102,18 @@ class ViewerWindow(QMainWindow):
                 kept[ident] = pieces[i] if pieces[i] is not None else self._stale.get(ident)
         self._stale = kept
         self._stale = {k: v for k, v in self._stale.items() if v is not None}
+
+    def _auto_on_open(self) -> None:
+        """Once, when the first page is complete: fit the sensitivity to the
+        signals, unless the person chose one before (a saved choice stays)."""
+        if not self._auto_open or self.overview():
+            return
+        first = self.state.row_offset
+        shown = self.canvas.rows[first : first + self.canvas.visible_rows()]
+        if not shown or any(r.piece is None and not r.failed for r in shown):
+            return
+        self._auto_open = False
+        self.auto_sensitivity()
 
     def short_stretch_seconds(self, rows, pieces) -> float | None:
         """How long a stretch must be to be filtered with these settings, when
@@ -1069,6 +1170,9 @@ class ViewerWindow(QMainWindow):
         # A letter tag is only worth its space where rows differ (recordings
         # side by side); with recordings in turn the band says it.
         keep_tags = len(set(tags)) > 1
+        groups = (
+            montage.group_rows(rows) if not self.overview() else [montage.RowGroup()] * len(rows)
+        )
         for i, (row, pc, tag) in enumerate(zip(rows, pieces, tags, strict=True)):
             tag = tag if keep_tags else ""
             bad = i in failed
@@ -1086,6 +1190,10 @@ class ViewerWindow(QMainWindow):
                     None if old is None else old[0],
                     0 if old is None else old[1],
                     bad,
+                    montage.is_non_eeg(row.plus),
+                    groups[i].first,
+                    groups[i].short,
+                    groups[i].group,
                 )
             )
         return out
@@ -1107,7 +1215,7 @@ class ViewerWindow(QMainWindow):
     def _sync_boxes(self) -> None:
         s = self.state
         for box, value in (
-            (self.spacing_box, s.spacing),
+            (self.spacing_box, vv.FIT_ALL if s.fit_rows else s.spacing),
             (self.sens_box, s.sensitivity),
             (self.timebase_box, s.timebase),
         ):
@@ -2090,7 +2198,7 @@ class ViewerWindow(QMainWindow):
         if "sensitivity" in self._chosen:
             s.set("viewer/sensitivity", float(st.sensitivity))
         if "spacing" in self._chosen:
-            s.set("viewer/spacing", float(st.spacing))
+            s.set("viewer/spacing", vv.FIT_ALL if st.fit_rows else float(st.spacing))
         if "timebase" in self._chosen and st.timebase in vv.TIMEBASE_CLINICAL:
             s.set("viewer/timebase", float(st.timebase))
         if "profile" in self._chosen:

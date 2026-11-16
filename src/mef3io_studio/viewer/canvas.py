@@ -32,6 +32,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..model import timefmt
+from ..model.montage import OTHER_GROUP
 from ..model.viewer_view import Palette, format_measure
 from ..workers.viewer_pipeline import EnvelopePiece, ViewPiece, envelope_columns
 
@@ -56,6 +57,15 @@ class DrawRow:
     #: The block of this row could not be read: the row says so and shows no
     #: trace (an old picture never stands in for a failure).
     failed: bool = False
+    #: Not an EEG channel (ECG, EMG, DC, SpO2 ...): drawn fitted to its own row,
+    #: whatever the sensitivity says, since its units and size differ.
+    own_scale: bool = False
+    #: Where the row sits among its lead's rows (see ``montage.group_rows``).
+    group_first: bool = False
+    #: The label for the rows after a lead's first row: the lead is named once.
+    short: str = ""
+    #: A group of rows (a lead, or the channels that are not EEG) starts at this row.
+    group: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,6 +112,15 @@ def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
 #: A row showing the picture of an earlier page (while the new one loads) is
 #: drawn this faint (0-255), from its first frame: an old trace never looks current.
 STALE_ALPHA = 80
+
+
+#: A trace may swing this many row heights above and below its row's centre;
+#: what is beyond is cut off at that line and marked (see ``_paint_gaps_and_traces``).
+CLIP_HALF_ROWS = 0.75
+#: A trace fitted to its own row fills this share of the row (peak to peak).
+OWN_SCALE_FILL = 0.7
+#: Marks on a clipped trace are drawn at most this many pixels apart.
+CLIP_MARK_SPACING_PX = 16
 
 
 def _trace_pen(colour: str, alpha: int = 255) -> QPen:
@@ -173,6 +192,8 @@ class TraceCanvas(QWidget):
         self.measure_text = ""
         #: Painted traces per row, for tests: row -> number of polyline points.
         self.drawn_points: dict[int, int] = {}
+        #: Rows whose trace was cut off at the top / bottom of its band (for tests).
+        self.clipped_rows: dict[int, tuple[bool, bool]] = {}
         self._shapes: dict = {}
         self._pm_key = None
         self._wheel_rows = 0.0
@@ -326,9 +347,11 @@ class TraceCanvas(QWidget):
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.drawn_points = {}
+        self.clipped_rows = {}
         plot = self.plot_rect()
         self._paint_grid(p, plot)
         self._paint_gap_spans(p, plot)
+        self._paint_group_lines(p, plot)
         p.save()
         p.setClipRect(plot)
         self._paint_gaps_and_traces(p, plot)
@@ -372,6 +395,18 @@ class TraceCanvas(QWidget):
                 if x1 > x0:
                     p.drawRect(QRectF(x0, 0, x1 - x0, plot.height()))
 
+    def _paint_group_lines(self, p: QPainter, plot: QRectF) -> None:
+        """A thin line above the first row of every group but the first on screen."""
+        first = self.row_offset
+        last = min(len(self.rows), first + self.visible_rows() + 1)
+        pen = QPen(QColor(self.palette_.muted), 1)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        for i in range(first + 1, last):
+            if self.rows[i].group_first:
+                y = round(self.row_y(i) - self.row_height / 2) + 0.5
+                p.drawLine(QPointF(0, y), QPointF(plot.right(), y))
+
     def _ticks(self) -> tuple[list[int], int]:
         span = int(self.t1 - self.t0)
         step = timefmt.tick_step(
@@ -412,17 +447,55 @@ class TraceCanvas(QWidget):
             p.setBrush(QColor(pal.gap))
             for a, b in () if stale else shape.gaps:
                 p.drawRect(QRectF(plot.left() + a, yc - half, b - a, self.row_height))
-            limit = self.row_height * 40
+            limit = self.row_height * CLIP_HALF_ROWS
+            row_px = px_uv
+            if row.own_scale and shape.spread > 0:  # fitted to its own row
+                row_px = OWN_SCALE_FILL * self.row_height / 2 / shape.spread
             total = 0
+            marks_up: list[float] = []
+            marks_down: list[float] = []
             for xs, ys, seg_dim in shape.segments:
-                ys = np.clip(yc - ys * px_uv, yc - limit, yc + limit)
+                # centred on the row: the level the trace sits at on this page
+                # is where the row's middle is (a DC offset never moves it away)
+                y = yc - (ys - shape.centre) * row_px
+                up, down = y < yc - limit, y > yc + limit
+                if up.any():
+                    marks_up.extend(xs[up].tolist())
+                if down.any():
+                    marks_down.extend(xs[down].tolist())
+                ys = np.clip(y, yc - limit, yc + limit)
                 p.setPen(old_pen if stale else (dim if seg_dim else pen))
                 poly = _polygon(plot.left() + xs, ys)
                 p.drawPolyline(poly)
                 if echo:
                     p.drawPolyline(poly.translated(echo, echo))
                 total += xs.size
+            if not stale and (marks_up or marks_down):
+                self._paint_clipped(p, plot.left(), yc, limit, marks_up, marks_down)
+            self.clipped_rows[i] = (len(marks_up) > 0, len(marks_down) > 0)
             self.drawn_points[i] = total
+
+    def _paint_clipped(self, p, left, yc, limit, up, down) -> None:
+        """Small arrows on the line where a trace was cut off, every few pixels:
+        the trace goes on beyond it, and a flat run along that line is not the
+        signal."""
+        p.save()
+        pen = QPen(QColor(self.palette_.selection), 1.6)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        lines = []
+        for xs, edge, sign in ((up, yc - limit, 1.0), (down, yc + limit, -1.0)):
+            last = -1e9
+            for x in sorted(set(round(v) for v in xs)):
+                if x - last < CLIP_MARK_SPACING_PX:
+                    continue
+                last = x
+                a = left + x
+                # a small arrowhead on the line, pointing the way the trace went
+                lines.append(QLineF(a - 3, edge + sign * 4, a, edge))
+                lines.append(QLineF(a + 3, edge + sign * 4, a, edge))
+        p.drawLines(lines)
+        p.restore()
 
     def _row_shape(self, piece, local: int, w: int) -> _RowShape:
         """What to draw for a row: polylines (x in pixels from the plot's
@@ -479,12 +552,20 @@ class TraceCanvas(QWidget):
             if yc - self.row_height / 2 > plot.height():
                 break
             p.setPen(QColor(pal.text))
-            label = fm.elidedText(
-                row.label,
+            indent = fm.horizontalAdvance("AA") if row.short else 0
+            bold = row.group_first and row.group != OTHER_GROUP
+            if bold:
+                f = QFont(font)
+                f.setBold(True)
+                p.setFont(f)
+            label = (p.fontMetrics() if bold else fm).elidedText(
+                row.short or row.label,
                 Qt.TextElideMode.ElideRight,
-                self.gutter - 8 - (fm.horizontalAdvance("AA") if row.tag else 0),
+                self.gutter - 8 - indent - (fm.horizontalAdvance("AA") if row.tag else 0),
             )
-            p.drawText(QPointF(4, yc + fm.ascent() / 2 - 1), label)
+            p.drawText(QPointF(4 + indent, yc + fm.ascent() / 2 - 1), label)
+            if bold:
+                p.setFont(font)
             if row.tag:
                 tw = fm.horizontalAdvance(row.tag)
                 x = self.gutter - tw - 4
@@ -934,6 +1015,23 @@ class _RowShape:
     segments: list
     #: pixel ranges without data
     gaps: list
+    #: The level the trace sits at (the median over the page) and how far it
+    #: usually swings from it (98th percentile of the distance), in the data's unit.
+    centre: float = 0.0
+    spread: float = 0.0
+
+
+def _with_levels(segments: list, gaps: list) -> _RowShape:
+    """A row shape with its level and swing, robust to a few spikes."""
+    if not segments:
+        return _RowShape(segments, gaps)
+    ys = np.concatenate([s[1] for s in segments])
+    ys = ys[np.isfinite(ys)]
+    if not ys.size:
+        return _RowShape(segments, gaps)
+    centre = float(np.median(ys))
+    spread = float(np.percentile(np.abs(ys - centre), 98))
+    return _RowShape(segments, gaps, centre, spread)
 
 
 def _columns_shape(mn, mx, dimmed) -> _RowShape:
@@ -949,7 +1047,7 @@ def _columns_shape(mn, mx, dimmed) -> _RowShape:
         ys[1::2] = np.where(flip, lo, hi)
         xs = np.repeat(np.arange(a, b) + 0.5, 2)
         segments.append((xs, ys, bool(dimmed[a:b].mean() > 0.5)))
-    return _RowShape(segments, _runs(~ok))
+    return _with_levels(segments, _runs(~ok))
 
 
 def _reduce_columns(x, lo, hi, um, w) -> _RowShape:
@@ -993,7 +1091,7 @@ def _exact_shape(x, y, um, dx, w) -> _RowShape:
         lo, hi = max(0.0, left), min(float(w), right)
         if hi > lo:
             gaps.append((lo, hi))
-    return _RowShape(segments, gaps)
+    return _with_levels(segments, gaps)
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
