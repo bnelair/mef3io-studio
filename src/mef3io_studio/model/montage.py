@@ -68,7 +68,11 @@ def real_leads(names: Sequence[str]) -> frozenset[str]:
         lead, contact = lead_and_contact(n)
         if contact is not None:
             contacts.setdefault(lead, set()).add(contact)
-    return frozenset(lead for lead, c in contacts.items() if len(c) >= MIN_LEAD_CONTACTS and 1 in c)
+    return frozenset(
+        lead
+        for lead, c in contacts.items()
+        if len(c) >= MIN_LEAD_CONTACTS and 1 in c and not _surely_not_eeg(lead)
+    )
 
 
 def lead_of(name: str, leads: Collection[str]) -> str | None:
@@ -77,23 +81,38 @@ def lead_of(name: str, leads: Collection[str]) -> str | None:
     return lead if contact is not None and lead in leads else None
 
 
-#: Channels that are not EEG, by their name without digits and signs (``EMG1``,
-#: ``SpO2``, ``DC3``): another unit and another size, so a view of many EEG
-#: channels puts them last and gives each its own sensitivity.
-NON_EEG = frozenset(
-    "ecg ekg emg eog loc roc dc spo sao osat trig trigger resp respiration pleth ppg photic "
-    "pulse hr snore flow airflow effort thorax abdomen temp bp event co etco ptt".split()
+#: Channels that are not EEG whatever else is true of the name (``ECG1`` ... ``ECG4``,
+#: ``EMG1``, ``DC3``, ``SpO2``, triggers): never a lead, always after the EEG.
+SURELY_NOT_EEG = frozenset(
+    "ecg ekg emg eog dc spo sao osat trig trigger resp respiration pleth ppg photic "
+    "pulse airflow thorax abdomen snore etco ptt".split()
 )
+
+#: Short keys that are not EEG when alone (``HR``, ``CO``, ``TEMP``) but that a depth
+#: lead may be called: they count as EEG when they form a lead (:func:`real_leads`).
+AMBIGUOUS_NON_EEG = frozenset("loc roc hr co bp temp flow effort event".split())
+
+#: Both together: channels that are not EEG, by their name without digits and signs.
+NON_EEG = SURELY_NOT_EEG | AMBIGUOUS_NON_EEG
+
+_SURE_PREFIXES = ("ecg", "ekg", "emg", "eog")
+
+
+def _surely_not_eeg(name: str) -> bool:
+    key = re.sub(r"[^a-z]", "", name.casefold())
+    return key in SURELY_NOT_EEG or key.startswith(_SURE_PREFIXES)
 
 
 def is_non_eeg(name: str, leads: Collection[str] = ()) -> bool:
-    """Whether the channel is, by its name, not EEG. A channel that belongs to a
-    lead (``leads``: see :func:`real_leads`) is EEG whatever its letters: a depth
-    lead may be called ``HR`` or ``CO``."""
+    """Whether the channel is, by its name, not EEG. ECG, EMG, EOG, DC, SpO2,
+    pulse, breathing and trigger channels always are. An ambiguous short name
+    (``HR``, ``CO``, ``LOC``, ``TEMP`` ...) is EEG when it belongs to a lead (see
+    :func:`real_leads`): a depth lead may be called ``HR`` or ``CO``."""
+    if _surely_not_eeg(name):
+        return True
     if lead_of(name, leads) is not None:
         return False
-    key = re.sub(r"[^a-z]", "", name.casefold())
-    return key in NON_EEG or key.startswith(("ecg", "ekg", "emg", "eog"))
+    return re.sub(r"[^a-z]", "", name.casefold()) in AMBIGUOUS_NON_EEG
 
 
 def non_eeg_last(rows: Sequence[Row], leads: Collection[str] = ()) -> list[Row]:

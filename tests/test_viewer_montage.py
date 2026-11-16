@@ -144,11 +144,11 @@ def test_scalp_names_are_never_grouped_or_shortened():
 
 
 def test_a_channel_of_a_lead_is_eeg_whatever_its_letters():
-    names = [f"{p}{i}" for p in ("HR", "CO", "DC", "LOC", "ROC") for i in range(1, 5)]
+    names = [f"{p}{i}" for p in ("HR", "CO", "LOC", "ROC", "TEMP", "BP") for i in range(1, 5)]
     leads = m.real_leads(names)
-    assert leads == {"HR", "CO", "DC", "LOC", "ROC"}
+    assert leads == {"HR", "CO", "LOC", "ROC", "TEMP", "BP"}
     assert not any(m.is_non_eeg(n, leads) for n in names)
-    assert all(m.is_non_eeg(n) for n in ("HR1", "CO1", "DC3"))  # alone, by their letters
+    assert all(m.is_non_eeg(n) for n in ("HR1", "CO1", "TEMP2"))  # alone, by their letters
     rows = m.as_recorded(["Fz", *names, "ECG1", "ECG2", "Cz"])
     ordered = [r.plus for r in m.non_eeg_last(rows, leads)]
     assert ordered == ["Fz", *names, "Cz", "ECG1", "ECG2"]  # only the ECG goes to the end
@@ -163,3 +163,19 @@ def test_derived_labels_are_never_shortened():
         groups = m.group_rows(rows, leads)
         assert any(g.group == "LA" for g in groups)  # the thin line may stay
         assert all(g.short == "" for g in groups)  # but "LA2 − LA3" is never "2 − LA3"
+
+
+def test_a_sure_non_brain_signal_is_never_a_lead_nor_eeg():
+    names = [
+        f"{p}{i}"
+        for p in ("ECG", "EMG", "EOG", "DC", "SpO", "Trig", "Resp", "Pulse")
+        for i in range(1, 17)
+    ]
+    assert m.real_leads(names) == frozenset()  # four contacts, still not leads
+    both = names + [f"LA{i}" for i in range(1, 6)]
+    leads = m.real_leads(both)
+    assert leads == {"LA"}
+    assert all(m.is_non_eeg(n, leads) for n in names)
+    assert not any(m.is_non_eeg(f"LA{i}", leads) for i in range(1, 6))
+    rows = m.non_eeg_last(m.as_recorded(["ECG1", "EOG2", "LA1", "Cz"]), leads)
+    assert [r.plus for r in rows] == ["LA1", "Cz", "ECG1", "EOG2"]
