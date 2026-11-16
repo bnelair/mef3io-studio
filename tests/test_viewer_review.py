@@ -350,7 +350,7 @@ def test_blocks_are_computed_in_chunks_with_the_same_result(one, monkeypatch):
     settings = dsp.FilterSettings(0.5, 70.0)
 
     def tile_of(plan):
-        return lambda k: data.read_tile(list(plan.channels), plan.rate, k)
+        return lambda group, k: data.read_tile(list(group), plan.rate, k)
 
     plan = plans[0]
     whole = pipe.compute_piece(data, tile_of(plan), plan, rows, span, settings, 1000)

@@ -69,7 +69,8 @@ class _Job:
     state: str = "waiting"  # waiting | computing
     token: CancelToken = field(default_factory=CancelToken)
     seq: int = 0
-    tile_numbers: list = field(default_factory=list)
+    #: ``(fixed tile group, tile number)`` of every tile the block reads
+    tile_refs: list = field(default_factory=list)
     retries: int = 0
     last_ask: float = field(default_factory=time.monotonic)
     arrays: dict = field(default_factory=dict)
@@ -258,13 +259,14 @@ class ViewController(QObject):
             seq=next(self._seq),
         )
         if not req.overview:
-            for k in pipe.tiles_needed(self.data, plan.rate, span, settings):
-                job.tile_numbers.append(k)
-                job.tile_keys.append(TileScheduler.key_of(plan.rate, plan.channels, k, dk))
+            for group in plan.sources:
+                for k in pipe.tiles_needed(self.data, plan.rate, span, settings):
+                    job.tile_refs.append((group, k))
+                    job.tile_keys.append(TileScheduler.key_of(plan.rate, group, k, dk))
             with self._held_lock:  # before asking: a fast tile must be kept
                 self._needed.update(job.tile_keys)
-            for k in job.tile_numbers:
-                self.scheduler.request(plan.rate, plan.channels, k, priority, req.generation)
+            for group, k in job.tile_refs:
+                self.scheduler.request(plan.rate, group, k, priority, req.generation)
         self._jobs[key] = job
         self._update_needed()
         return key
@@ -294,9 +296,14 @@ class ViewController(QObject):
         page in the direction of travel; the screens above and below."""
         length = req.span[1] - req.span[0]
         page_len = int(length / 1.5)
-        groups = [
-            ChannelGroup(p.rate, p.channels) for gi, p in enumerate(req.plans) if gi in req.keys
-        ]
+        groups = list(
+            dict.fromkeys(
+                ChannelGroup(p.rate, g)
+                for gi, p in enumerate(req.plans)
+                if gi in req.keys
+                for g in p.sources
+            )
+        )
         t0 = req.span[0]
         plan = self.scheduler.prefetch_plan(
             t0,
@@ -347,9 +354,9 @@ class ViewController(QObject):
                         continue
                     job.retries += 1
                     job.last_ask = now
-                    for k in missing:
+                    for group, k in missing:
                         self.scheduler.request(
-                            job.plan.rate, job.plan.channels, k, job.priority, job.generation
+                            job.plan.rate, group, k, job.priority, job.generation
                         )
                 continue
             self._take_tiles(job)
@@ -373,12 +380,12 @@ class ViewController(QObject):
                 if key in self._held:
                     job.arrays[key] = self._held[key]
 
-    def _missing(self, job: _Job) -> list[int]:
+    def _missing(self, job: _Job) -> list[tuple]:
         out = []
         with self._held_lock:
-            for k, key in zip(job.tile_numbers, job.tile_keys, strict=True):
+            for ref, key in zip(job.tile_refs, job.tile_keys, strict=True):
                 if key not in self._held and key not in self.cache:
-                    out.append(k)
+                    out.append(ref)
         return out
 
     def _compute(self, job: _Job) -> None:
@@ -391,14 +398,14 @@ class ViewController(QObject):
             else:
                 dk = data_key_of(data)
 
-                def get_tile(k: int):
-                    key = TileScheduler.key_of(plan.rate, plan.channels, k, dk)
+                def get_tile(group, k: int):
+                    key = TileScheduler.key_of(plan.rate, group, k, dk)
                     tile = job.arrays.get(key)
                     if tile is None:
                         tile = cache.get(key)
                     if tile is None:  # lost meanwhile: read it here
                         job.token.raise_if_cancelled()
-                        tile = data.read_tile(list(plan.channels), plan.rate, k, job.token)
+                        tile = data.read_tile(list(group), plan.rate, k, job.token)
                         cache.put(key, tile)
                     return tile
 
@@ -452,8 +459,8 @@ class ViewController(QObject):
             if j.generation > generation:
                 if j.state != "waiting" or tile_key in j.arrays:
                     continue  # it already has the tile
-                tile = j.tile_numbers[j.tile_keys.index(tile_key)]
-                self.scheduler.request(j.plan.rate, j.plan.channels, tile, j.priority, j.generation)
+                group, tile = j.tile_refs[j.tile_keys.index(tile_key)]
+                self.scheduler.request(j.plan.rate, group, tile, j.priority, j.generation)
             else:
                 broken.add(k)
         if not broken:
