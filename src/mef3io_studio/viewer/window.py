@@ -214,9 +214,12 @@ class ViewerWindow(QMainWindow):
         self._long_actions: list = []
         #: Fit the sensitivity once on the first complete page (not when the
         #: person has chosen a sensitivity before: that one is kept).
-        self._auto_open = self.FIT_ON_OPEN and (
-            settings is None or "viewer/sensitivity" not in settings.stored_keys()
-        )
+        self._sens_stored = settings is not None and "viewer/sensitivity" in settings.stored_keys()
+        self._auto_open = self.FIT_ON_OPEN and not self._sens_stored
+        #: The last complete page the fit looked at (it is not tried twice on one).
+        self._fit_tried: tuple | None = None
+        #: Whether the page was an overview the last time ``_refresh`` looked.
+        self._was_overview: bool | None = None
         self._last_row: int | None = None
         self._coverage = data.segments_coverage()
         #: The real stretches with data, once the block index has been read.
@@ -1063,14 +1066,10 @@ class ViewerWindow(QMainWindow):
             self.canvas.invalidate()
         return chosen
 
-    def auto_sensitivity(self) -> bool:
-        """Choose the sensitivity from the signals on screen: the typical swing
-        (98th percentile of the distance from each trace's own middle, so a DC
-        offset or a drift does not count) of the typical channel. Robust: the
-        MEDIAN over the EEG channels in view, so one flat channel or one huge
-        one does not move it; channels that are not EEG (ECG, EMG, DC, SpO2)
-        have their own sensitivity (chosen again here) and do not take part.
-        Returns whether it could decide (False while the rows still load)."""
+    def _fit_sensitivity(self) -> float | None:
+        """The sensitivity that fits the EEG rows on screen, or None when the
+        page cannot tell (rows still loading, flat, only gaps, too few values).
+        Nothing is changed here."""
         first = self.state.row_offset
         last = first + self.canvas.visible_rows()
         peaks, others = [], []
@@ -1078,11 +1077,31 @@ class ViewerWindow(QMainWindow):
             peak = self._page_spread(r)
             if peak is not None:
                 (others if r.own_scale else peaks).append(peak)
-        self._choose_own_scales(force=True)
         peaks = peaks or others
         if not peaks:
+            return None
+        return self._sensitivity_for(float(np.median(peaks)))
+
+    def auto_sensitivity(self, announce: bool = True) -> bool:
+        """Choose the sensitivity from the signals on screen: the typical swing
+        (98th percentile of the distance from each trace's own middle, so a DC
+        offset or a drift does not count) of the typical channel, from the
+        values on the page, or from the blocks' lowest and highest in the
+        overview. Robust: the MEDIAN over the EEG channels in view, so one flat
+        channel or one huge one does not move it; channels that are not EEG
+        (ECG, EMG, DC, SpO2) have their own sensitivity (chosen again here) and
+        do not take part. Returns whether it could decide; when it cannot and
+        ``announce`` (the button), the status line says so."""
+        value = self._fit_sensitivity()
+        self._choose_own_scales(force=True)
+        if value is None:
+            if announce:
+                self.status_message.setText(
+                    "Could not choose a sensitivity: the channels on screen are flat, "
+                    "empty or still loading. Go to a page with signal and try again."
+                )
             return False
-        self.set_state(sensitivity=self._sensitivity_for(float(np.median(peaks))))
+        self.set_state(sensitivity=value)
         return True
 
     # -- jump ----------
@@ -1167,6 +1186,12 @@ class ViewerWindow(QMainWindow):
         if (t0, offset) != (self.state.t0, self.state.row_offset):
             self.state = self.state.with_(t0=t0, row_offset=offset)
         overview = vv.is_overview(length)
+        if overview != self._was_overview:
+            # Zooming out into the overview (or back) changes what the page shows:
+            # a sensitivity that was only fitted, never chosen, is fitted again.
+            if self._was_overview is not None and self._fit_allowed():
+                self._auto_open = True
+            self._was_overview = overview
         s = self.state
         self.canvas.overview_text = (
             "Overview: the lowest and highest value of each stretch" if overview else ""
@@ -1264,17 +1289,38 @@ class ViewerWindow(QMainWindow):
         self._stale = kept
         self._stale = {k: v for k, v in self._stale.items() if v is not None}
 
+    def _fit_allowed(self) -> bool:
+        """The sensitivity may be fitted: the person has not chosen one (neither
+        in this window nor, earlier, saved)."""
+        return self.FIT_ON_OPEN and "sensitivity" not in self._chosen and not self._sens_stored
+
     def _auto_on_open(self) -> None:
-        """Once, when the first page is complete: fit the sensitivity to the
-        signals, unless the person chose one before (a saved choice stays)."""
-        if not self._auto_open or self.overview():
+        """When a page is complete: fit the sensitivity to the signals, unless the
+        person chose one (this window or saved earlier). A page that cannot be
+        judged (flat, gaps, too few values) leaves the default and the next
+        complete page tries again; once the person chooses, it never tries
+        again. Says so once in the status line when it changed the value."""
+        if not self._auto_open:
+            return
+        if not self._fit_allowed():
+            self._auto_open = False
             return
         first = self.state.row_offset
         shown = self.canvas.rows[first : first + self.canvas.visible_rows()]
         if not shown or any(r.piece is None and not r.failed for r in shown):
             return
+        page = (self.state.t0, self.page_us(), tuple(id(r.piece) for r in shown))
+        if page == self._fit_tried:  # the same complete page: nothing new to learn
+            return
+        self._fit_tried = page
+        before = self.state.sensitivity
+        if not self.auto_sensitivity(announce=False):
+            return
         self._auto_open = False
-        self.auto_sensitivity()
+        if self.state.sensitivity != before:
+            self.status_message.setText(
+                f"Sensitivity set to {self.state.sensitivity:g} µV/mm to fit this recording."
+            )
 
     def short_stretch_seconds(self, rows, pieces) -> float | None:
         """How long a stretch must be to be filtered with these settings, when

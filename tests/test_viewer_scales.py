@@ -171,3 +171,148 @@ def test_the_old_picture_is_marked_where_it_is_cut_off(make_window, tmp_path):
     assert old_rows and all(r.stale is not None for r in old_rows)
     assert any(any(v) for v in canvas.clipped_rows.values())
     assert arrow_pixels(canvas) > 25  # paler is fine, absent is not
+
+
+# --- 3: the fit on open ----------
+
+import pytest  # noqa: E402
+
+from mef3io_studio.common.settings import Settings  # noqa: E402
+from mef3io_studio.model.montage import Row  # noqa: E402,F401
+from mef3io_studio.viewer.window import ViewerWindow  # noqa: E402
+
+
+def open_unsettled(qtbot, path, settings=None, width=1200, choose=False):
+    """A window whose first page has not completed yet (as a person can act
+    in that moment)."""
+    from mef3io_studio.model.viewer_source import open_recordings
+
+    data = open_recordings([str(path)])
+    for ch in data.channels:
+        data.rate(ch), data.units(ch), data.ownership(ch)
+    win = ViewerWindow(data, settings=settings)
+    qtbot.addWidget(win)
+    win.resize(width, 700)
+    win.step_sensitivity(-1) if choose else None
+    win.show()
+    qtbot.waitUntil(lambda: win._ready, timeout=10_000)
+    return win
+
+
+@pytest.mark.fits_on_open
+def test_a_sensitivity_the_person_chose_is_never_fitted_over(qtbot, tmp_path):
+    # chosen before the first page is complete
+    win = open_unsettled(qtbot, write_signals(tmp_path / "a.mefd", eeg(5), seconds=60), choose=True)
+    chosen = win.state.sensitivity
+    settle(qtbot, win)
+    assert win.state.sensitivity == chosen
+    assert win._auto_open is False
+    win.close()
+
+
+@pytest.mark.fits_on_open
+def test_a_fitted_sensitivity_is_not_saved_as_a_choice(make_window, tmp_path):
+    settings = Settings(tmp_path / "s.ini")
+    win = make_window(write_signals(tmp_path / "a.mefd", eeg(5)), settings=settings)
+    assert win.state.sensitivity != 100  # it was fitted
+    win.auto_sensitivity()  # and the button too
+    win.close()
+    assert "viewer/sensitivity" not in settings.stored_keys()
+
+
+def flat_then_signal(t, rng):
+    return np.where(t < 30, 7.0, 80 * np.sin(2 * np.pi * 8 * t) + 8 * rng.normal(size=t.size))
+
+
+@pytest.mark.fits_on_open
+def test_a_page_that_cannot_be_judged_is_tried_again_on_the_next(make_window, tmp_path):
+    flat = {f"LA{i}": flat_then_signal for i in range(1, 5)}
+    win = make_window(write_signals(tmp_path / "f.mefd", flat, seconds=120))
+    assert win.state.sensitivity == 100 and win._auto_open  # flat: left at the default, still armed
+    win.go_to(T0 + 60 * SEC)
+    settle_rows(win)
+    assert win.state.sensitivity != 100 and not win._auto_open
+    assert win.status_message.text() == (
+        f"Sensitivity set to {win.state.sensitivity:g} µV/mm to fit this recording."
+    )
+
+
+@pytest.mark.fits_on_open
+def test_after_the_person_chooses_a_flat_page_is_not_tried_again(make_window, tmp_path):
+    flat = {f"LA{i}": flat_then_signal for i in range(1, 5)}
+    win = make_window(write_signals(tmp_path / "f2.mefd", flat, seconds=120))
+    win.step_sensitivity(1)
+    chosen = win.state.sensitivity
+    win.go_to(T0 + 60 * SEC)
+    settle_rows(win)
+    assert win.state.sensitivity == chosen
+
+
+def slow(tmp_path, name="slow.mefd", fs=64.0, seconds=7200):
+    """Two hours at 64 Hz: 30 uV for the first minute, 300 uV after it."""
+
+    def sig(t, rng):
+        return np.where(t < 60, 30.0, 300.0) * np.sin(2 * np.pi * 1.0 * t) + rng.normal(size=t.size)
+
+    return write_signals(tmp_path / name, {f"LA{i}": sig for i in range(1, 5)}, seconds, fs)
+
+
+@pytest.mark.fits_on_open
+def test_the_fit_follows_a_switch_into_the_overview_and_back(make_window, tmp_path):
+    win = make_window(slow(tmp_path))
+    first = win.state.sensitivity
+    assert first < 100  # the first page holds 30 uV waves
+    win.set_state(timebase=0.5)  # a page of ten minutes: the overview
+    settle_rows(win)
+    assert win.overview()
+    in_overview = win.state.sensitivity
+    assert in_overview > first  # the blocks' highest values are 300 uV
+    assert not any(any(v) for v in win.canvas.clipped_rows.values())  # nothing cut off
+    assert "sensitivity" not in win._chosen
+    win.set_state(timebase=30)
+    settle_rows(win)
+    assert not win.overview() and win.state.sensitivity == first
+
+
+@pytest.mark.fits_on_open
+def test_a_chosen_sensitivity_is_not_fitted_again_in_the_overview(make_window, tmp_path):
+    win = make_window(slow(tmp_path, "slow2.mefd"))
+    win.step_sensitivity(1)
+    chosen = win.state.sensitivity
+    win.set_state(timebase=0.5)
+    settle_rows(win)
+    assert win.state.sensitivity == chosen
+
+
+def test_auto_works_in_the_overview_and_says_when_it_cannot_decide(make_window, tmp_path):
+    win = make_window(slow(tmp_path, "slow3.mefd"))
+    win.set_state(timebase=0.5, sensitivity=5)
+    settle_rows(win)
+    assert win.overview() and win.canvas.rows[0].piece is not None
+    assert win.auto_sensitivity() is True
+    assert win.state.sensitivity > 5
+    flat = {f"LA{i}": (lambda t, r: np.full(t.size, 3.0)) for i in range(1, 4)}
+    win2 = make_window(write_signals(tmp_path / "flat.mefd", flat, seconds=7200, fs=64))
+    win2.set_state(timebase=0.5)
+    settle_rows(win2)
+    assert win2.auto_sensitivity() is False
+    assert "Could not choose a sensitivity" in win2.status_message.text()
+
+
+@pytest.mark.fits_on_open
+def test_half_a_hertz_over_days_does_not_end_with_every_row_cut_off(make_window, tmp_path):
+    fs = 0.5
+    n = int(3 * 86400 * fs)
+    rng = np.random.default_rng(4)
+    tt = np.arange(n) / fs
+    path = tmp_path / "days.mefd"
+    with mef3io.Writer(str(path), overwrite=True, units="uV") as w:
+        for i in range(1, 5):
+            x = 1200 * np.sin(2 * np.pi * tt / 3600) + 5 * rng.normal(size=n)
+            w.write(f"LA{i}", np.round(x, 2), T0, fs)
+    win = make_window(path)
+    win.set_state(timebase=0.005)  # the whole stretch in one screen
+    settle_rows(win)
+    assert win.overview()
+    shown = [i for i in range(len(win.canvas.rows)) if win.canvas.rows[i].piece is not None]
+    assert shown and not any(any(win.canvas.clipped_rows.get(i, (0, 0))) for i in shown)
