@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import threading
 
+import pytest
 from test_viewer_ui import SEC, T0, make_window, settle, write  # noqa: F401
 
 from mef3io_studio.model import dsp
@@ -111,3 +112,26 @@ def test_compute_workers_scale_with_the_machine_and_the_preference_overrides():
     cores = os.cpu_count() or 2
     assert 2 <= ctlmod.default_compute_workers() <= 8
     assert ctlmod.default_compute_workers() == max(2, min(8, cores // 2))
+
+
+@pytest.mark.parametrize("length", [10_000_000, 10_000_001, 7_654_321, 9_999_999])
+def test_the_block_prepared_ahead_is_the_block_the_next_page_asks_for(
+    make_window, tmp_path, qtbot, length
+):
+    """Whatever the page length in microseconds (odd ones too), the look-ahead
+    blocks are the very blocks the following pages ask for."""
+    win = make_window(write(tmp_path / "m.mefd", NAMES, seconds=600))
+    win.page_us = lambda: length
+    win.set_state(t0=T0 + 100 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
+    settle(qtbot, win)
+    ctl = win.controller
+    ctl._watch.stop()
+    assert ctl.wait_idle(20)
+    prepared = {k[2] for k in view_keys(win)}
+    for step in (1, 2, 3):
+        win.set_state(t0=win.state.t0 + length)
+        wanted = ctl._req.span
+        assert wanted in prepared, (step, wanted)
+        settle(qtbot, win)
+        ctl.wait_idle(20)
+        prepared |= {k[2] for k in view_keys(win)}

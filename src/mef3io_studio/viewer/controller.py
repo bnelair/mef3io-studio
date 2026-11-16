@@ -102,6 +102,11 @@ class _Request:
     span: tuple[int, int]
     plot_px: int
     visible: tuple[int, int]
+    #: The page itself: where it starts and its real length in microseconds.
+    #: The visible block and every look-ahead block come from these two
+    #: (``ViewController._block``), never from the block's own length.
+    page_start: int = 0
+    page_len: int = 1
     #: plan index -> job/cache keys
     keys: dict[int, tuple] = field(default_factory=dict)
     pieces: dict[int, object] = field(default_factory=dict)
@@ -231,7 +236,9 @@ class ViewController(QObject):
                 self.failed.emit("These channels cannot be shown together this way.")
                 self._set_loading(False)
                 return
-        req = _Request(gen, list(rows), plans, overview, settings, span, plot_px, visible)
+        req = _Request(
+            gen, list(rows), plans, overview, settings, span, plot_px, visible, page[0], length
+        )
         for gi, plan in enumerate(plans):
             for local, ri in enumerate(plan.rows):
                 req.location[ri] = (gi, local)
@@ -325,8 +332,7 @@ class ViewController(QObject):
         """Raw tiles for the pages ahead and one behind; the filtered blocks of
         the next ``lookahead_pages`` pages in the direction of travel (nearest
         first) and of one page behind; the screens above and below."""
-        length = req.span[1] - req.span[0]
-        page_len = int(length / 1.5)
+        page_len = req.page_len
         depth = self.perf.lookahead_pages + self._deeper
         groups = list(
             dict.fromkeys(
@@ -350,7 +356,7 @@ class ViewController(QObject):
         tl = self.data.timeline_start
         pages = [(sign * i, i) for i in range(1, depth + 1)] + [(-sign, 2)]
         for j, rank in pages:
-            nxt = aligned_block(t0 + j * page_len, page_len, tl)
+            nxt = aligned_block(req.page_start + j * page_len, page_len, tl)
             if nxt[0] >= tl - page_len and nxt[0] < self.data.timeline_end:
                 for gi in list(req.keys):
                     self._ensure(req, gi, nxt, LOOKAHEAD, wanted, rank)
@@ -370,7 +376,7 @@ class ViewController(QObject):
     def _page_bytes(self, req: _Request) -> int:
         """About what one more page ahead holds in the cache: a block like the
         visible ones, and the raw tiles of its groups."""
-        page_s = max(1, req.span[1] - req.span[0]) / 1.5 / 1e6
+        page_s = max(1, req.page_len) / 1e6
         blocks = sum(int(getattr(p, "nbytes", 0)) for p in req.pieces.values())
         sources = {(p.rate, g) for p in req.plans for g in p.sources}
         raw = sum(len(g) * 4 * r * page_s for r, g in sources)
