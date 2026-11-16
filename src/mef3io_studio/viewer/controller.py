@@ -123,7 +123,7 @@ class ViewController(QObject):
     failed = Signal(str)
     #: The strip's envelope: ``[2, bins]`` normalised.
     strip_envelope = Signal(object)
-    #: The real stretches with data, from the block index: ``[(t0, t1)]``.
+    #: The real stretches with data, from the block index: ``([(t0, t1)], channels read)``.
     strip_stretches = Signal(object)
 
     _tile = Signal(object)
@@ -151,6 +151,9 @@ class ViewController(QObject):
         self.max_compute = perf.filter_workers or MAX_COMPUTE
         self._pool = ThreadPoolExecutor(self.max_compute, thread_name_prefix="viewer-compute")
         self._strip_pool = ThreadPoolExecutor(1, thread_name_prefix="viewer-strip")
+        self._strip_futures: list = []
+        #: Bumped by ``drain_strip``: a read of an older epoch never reports.
+        self._strip_epoch = 0
         #: Tiles handed over by the scheduler that a waiting job still needs
         #: (the cache may evict, or refuse, a big one).
         self._held: dict[tuple, np.ndarray] = {}
@@ -691,29 +694,59 @@ class ViewController(QObject):
 
     # -- the strip ----------
 
-    def request_strip_envelope(self, channel: str) -> None:
-        if self._closed:  # a timer that fires after the window closed
+    def request_strip_envelope(self, channels) -> None:
+        """Read the block index of ``channels`` (a name or several: one that each
+        recording has) for the strip's faint picture and the real stretches with
+        data (their union). Emits ``strip_stretches`` as ``(stretches, channels)``."""
+        names = [channels] if isinstance(channels, str) else list(dict.fromkeys(channels))
+        if self._closed or not names:  # a timer that fires after the window closed
             return
         data = self.data
+        epoch = self._strip_epoch
 
         def work():
+            if epoch != self._strip_epoch:  # drained before it started
+                return
+            tl = (data.timeline_start, data.timeline_end)
             try:
-                e = data.envelope(channel, data.timeline_start, data.timeline_end)
-                env = envelope_bins(
-                    e["start_uutc"], e["end_uutc"], e["min"], e["max"],
-                    (data.timeline_start, data.timeline_end), STRIP_BINS,
-                )  # fmt: skip
-                found = block_stretches(e["start_uutc"], e["end_uutc"])
+                if len(names) == 1:
+                    got = {names[0]: data.envelope(names[0], *tl)}
+                else:
+                    got = data.envelope_many(names, *tl)
+                parts = [got[n] for n in names]
+                starts = np.concatenate([np.asarray(e["start_uutc"]) for e in parts])
+                ends = np.concatenate([np.asarray(e["end_uutc"]) for e in parts])
+                mins = np.concatenate([np.asarray(e["min"]) for e in parts])
+                maxs = np.concatenate([np.asarray(e["max"]) for e in parts])
+                env = envelope_bins(starts, ends, mins, maxs, tl, STRIP_BINS)
+                found = block_stretches(starts, ends)
             except BaseException:  # noqa: BLE001 - the strip simply stays plain
                 return
-            if not self._closed:
+            if not self._closed and epoch == self._strip_epoch:
                 self._strip.emit(env)
-                self._stretches.emit(found)
+                self._stretches.emit((found, names))
 
         try:
-            self._strip_pool.submit(work)
+            future = self._strip_pool.submit(work)
         except RuntimeError:  # the pool is already shut down
-            pass
+            return
+        self._strip_futures = [f for f in self._strip_futures if not f.done()] + [future]
+
+    def drain_strip(self, timeout: float | None = None) -> bool:
+        """Stop the strip's read and wait for one that is running to end; its
+        result is dropped. Call (off the GUI thread) before ``data.reopen()``,
+        which fails reads that are running. False on timeout."""
+        self._strip_epoch += 1
+        futures, self._strip_futures = self._strip_futures, []
+        for f in futures:
+            f.cancel()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for f in futures:
+            try:
+                f.result(None if deadline is None else max(0.0, deadline - time.monotonic()))
+            except BaseException:  # noqa: BLE001 - cancelled, timed out or failed: either way over
+                pass
+        return all(f.done() for f in futures)
 
     # -- lifecycle ----------
 

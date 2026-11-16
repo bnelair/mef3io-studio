@@ -690,6 +690,7 @@ class EditMode(QObject):
                     ctx.report(0, None, "Reading the recordings again")
                     try:
                         controller.scheduler.drain(60.0)
+                        controller.drain_strip(60.0)  # a read of the index must end first
                         data.reopen()
                     except Exception:  # noqa: BLE001 - the notes are stored; the window must say so
                         error = error or UserMessage(

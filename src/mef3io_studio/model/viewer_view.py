@@ -8,6 +8,7 @@ logical resolution, so a second is the same length on every screen.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 from .dsp import FilterSettings
@@ -92,6 +93,36 @@ def stretch_start(starts, t0: int, direction: int, eps: int = 1) -> int | None:
         return starts[i] if i < len(starts) else None
     i = bisect.bisect_left(starts, t0 - eps)
     return starts[i - 1] if i > 0 else None
+
+
+def unreached(
+    spans: Sequence[tuple[int, int, int]], reached: Sequence[tuple[int, int, int]]
+) -> list[tuple[int, int, int]]:
+    """The parts of ``spans`` (``(t0, t1, recording)``) that no span of ``reached``
+    covers: the time the strip's block-index read says nothing about, which
+    keeps what the segment coverage says."""
+    union: list[list[int]] = []
+    for a, b, *_ in sorted(reached):
+        if union and a <= union[-1][1]:
+            union[-1][1] = max(union[-1][1], b)
+        else:
+            union.append([a, b])
+    out = []
+    for a, b, rec in spans:
+        t = a
+        for ua, ub in union:
+            if ub <= t:
+                continue
+            if ua >= b:
+                break
+            if ua > t:
+                out.append((t, ua, rec))
+            t = max(t, ub)
+            if t >= b:
+                break
+        if t < b:
+            out.append((t, b, rec))
+    return out
 
 
 def rows_text(first: int, shown: int, total: int) -> str:

@@ -767,10 +767,15 @@ class ViewerWindow(QMainWindow):
         self._direction = 1 if end else -1
         self.set_state(t0=self.data.timeline_end - length if end else self.data.timeline_start)
 
-    def _on_stretches(self, stretches) -> None:
-        """The block index of the first channel arrived: the strip and the
+    def _on_stretches(self, payload) -> None:
+        """The block index of one channel per recording arrived: the strip and the
         stretch keys now use the real stretches with data (a pause inside one
-        recording is a gap), each given to the recording that holds it."""
+        recording is a gap), each given to the recording that holds it. Time that
+        the channels read do not reach at all (a recording that lacks them, a
+        part of the recording they were not in) keeps what the segment coverage
+        says: it is never shown as "no data" by the index of a channel that was
+        not there."""
+        stretches, names = payload
         if self._closed or not stretches:
             return
         cover = sorted(self._coverage)
@@ -780,6 +785,9 @@ class ViewerWindow(QMainWindow):
             i = max(0, bisect.bisect_right(starts, (a + b) // 2) - 1)
             near = cover[i] if cover else (a, b, 0)
             out.append((a, b, near[2]))
+        reached = [c for ch in names for c in self.data.segments_coverage(ch)]
+        out.extend(vv.unreached(cover, reached))
+        out.sort()
         self._stretches = out
         self.strip.set_timeline(self.data.timeline_start, self.data.timeline_end, out)
         self._sync_long_buttons()
@@ -1988,11 +1996,15 @@ class ViewerWindow(QMainWindow):
     def end_data_change(self, records, locked, reopened: bool = True) -> None:
         """After a save: show what is stored now (when the data was reopened)."""
         if reopened:
-            self._coverage = self.data.segments_coverage()
-            self._stretches = []
-            self._sync_long_buttons()
-            QTimer.singleShot(0, self.request_strip_envelope)
-            self._boundaries = self.data.boundaries()
+            coverage, boundaries = self.data.segments_coverage(), self.data.boundaries()
+            if (coverage, boundaries) != (self._coverage, self._boundaries):
+                # the signal is not what it was: the stretches are looked for again
+                # (a save of notes leaves it as it was, and the strip as it is)
+                self._coverage = coverage
+                self._stretches = []
+                self._sync_long_buttons()
+                QTimer.singleShot(0, self.request_strip_envelope)
+            self._boundaries = boundaries
             self.marks_loaded = False
             self._on_annotations(records, locked)
         self.canvas.invalidate()
@@ -2386,10 +2398,31 @@ class ViewerWindow(QMainWindow):
     def row_labels(self) -> list[str]:
         return [r.label for r in self.canvas.rows]
 
+    def _strip_channels(self) -> list[str]:
+        """One channel per recording, the one that recording holds most of: the
+        first channel alone would leave a recording without it unreachable."""
+        chosen: list[str] = []
+        for rec in self.data.recordings:
+            best, best_cover = None, -1
+            for ch in self._channels:
+                cover = sum(
+                    min(b, rec.end_us) - max(a, rec.start_us)
+                    for a, b, i in self.data.ownership(ch)
+                    if i == rec.index and b > rec.start_us and a < rec.end_us
+                )
+                if cover > best_cover:
+                    best, best_cover = ch, cover
+                if cover >= rec.end_us - rec.start_us:
+                    break
+            if best is not None and best_cover > 0 and best not in chosen:
+                chosen.append(best)
+        return chosen or self._channels[:1]
+
     def request_strip_envelope(self) -> None:
-        """Draw a faint envelope of the first channel in the strip (index only)."""
+        """Draw a faint envelope in the strip and find the real stretches with
+        data (index only), from one channel of each recording."""
         if self._channels and not self._closed and not self.edit.saving:
-            self.controller.request_strip_envelope(self._channels[0])
+            self.controller.request_strip_envelope(self._strip_channels())
 
     def changeEvent(self, event) -> None:  # noqa: N802
         super().changeEvent(event)

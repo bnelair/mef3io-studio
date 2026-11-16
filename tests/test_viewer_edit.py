@@ -1130,3 +1130,22 @@ def test_a_failure_starting_the_save_frees_the_draft(ed, qtbot, monkeypatch):
     assert calls
     _wait_saved(qtbot, win)
     assert len(spy.problems) == 1 and "Nothing was saved" in spy.problems[0].text
+
+
+def test_a_save_of_notes_does_not_read_the_strip_again_and_ends_a_running_read_first(ed, qtbot):
+    win, spy, _ = ed
+    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
+    stretches = list(win._stretches)
+    order, asked = [], []
+    ctl = win.controller
+    real_drain, real_reopen, real_ask = ctl.drain_strip, win.data.reopen, ctl.request_strip_envelope
+    ctl.drain_strip = lambda *a, **k: (order.append("drain"), real_drain(*a, **k))[1]
+    win.data.reopen = lambda: (order.append("reopen"), real_reopen())[1]
+    ctl.request_strip_envelope = lambda *a, **k: (asked.append(a), real_ask(*a, **k))[1]
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "once")
+    finish_save(qtbot, win)
+    qtbot.wait(300)
+    assert order == ["drain", "reopen"]  # the read of the index ends before the data is reopened
+    assert not asked  # only notes were added: the signal is as it was
+    assert win._stretches == stretches

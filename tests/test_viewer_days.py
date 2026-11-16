@@ -248,3 +248,92 @@ def test_a_late_request_for_the_strip_after_the_window_closed_does_nothing(make_
     win.controller._closed = False
     win.controller.request_strip_envelope(win._channels[0])  # a pool that is gone: no raise
     win.controller._closed = True
+
+
+# --- the strip when the first channel is not in every recording ----------
+
+
+def write_two(tmp_path, names_a, names_b, gap_h=1):
+    """Recording A (10 min) and, ``gap_h`` hours after it, recording B (10 min)."""
+    rng = np.random.default_rng(1)
+    paths = []
+    for tag, names, start in (
+        ("a", names_a, T0),
+        ("b", names_b, T0 + 10 * 60 * SEC + gap_h * HOUR),
+    ):
+        path = tmp_path / f"{tag}.mefd"
+        with mef3io.Writer(str(path), overwrite=True, units="uV") as w:
+            for name in names:
+                w.write(name, np.round(rng.normal(0, 30, 64 * 600), 2), start, 64.0)
+        paths.append(path)
+    return paths
+
+
+def test_a_recording_without_the_first_channel_is_still_found_on_the_strip(
+    make_window, tmp_path, qtbot
+):
+    a, b = write_two(tmp_path, ["Cz", "Fz", "Pz"], ["Fz", "Pz"])  # B lacks the first channel, Cz
+    win = make_window(a, b)
+    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
+    b_start = T0 + 10 * 60 * SEC + HOUR
+    assert any(abs(s - b_start) < 2 * SEC for s, _e, _r in win._stretches)
+    assert any(abs(s - b_start) < 2 * SEC for s in win._stretch_starts())  # and "." reaches it
+    win.go_to(T0)
+    win.go_to_stretch(1)
+    assert abs(win.state.t0 - b_start) < 2 * SEC
+
+
+def test_time_the_index_read_does_not_reach_keeps_the_segment_coverage(make_window, tmp_path):
+    a, b = write_two(tmp_path, ["Cz", "Fz", "Pz"], ["Fz", "Pz"])
+    win = make_window(a, b)
+    # the read was of Cz only, which recording B does not have: B is not "no data"
+    win._on_stretches(([(T0, T0 + 10 * 60 * SEC)], ["Cz"]))
+    b_start = T0 + 10 * 60 * SEC + HOUR
+    assert any(
+        r == 1 and s <= b_start + SEC and e > b_start + 60 * SEC for s, e, r in win._stretches
+    )
+    assert any(r == 1 for _s, _e, r in win.strip.coverage)
+
+
+def test_the_unreached_pieces_are_what_no_read_channel_covers():
+    spans = [(0, 100, 0), (200, 300, 1)]
+    assert vv.unreached(spans, [(0, 100, 0)]) == [(200, 300, 1)]
+    assert vv.unreached(spans, [(20, 40, 0), (60, 250, 0)]) == [
+        (0, 20, 0),
+        (40, 60, 0),
+        (250, 300, 1),
+    ]
+    assert vv.unreached(spans, []) == spans
+
+
+def test_a_save_waits_for_the_strip_read_before_the_data_is_reopened(make_window, tmp_path, qtbot):
+    a, _b = write_two(tmp_path, ["Cz", "Fz"], ["Fz"])
+    win = make_window(a)
+    import threading
+
+    started, release, running = threading.Event(), threading.Event(), []
+    real = win.data.envelope
+
+    def slow(*args, **kw):
+        running.append(1)
+        started.set()
+        release.wait(5)
+        out = real(*args, **kw)
+        running.pop()
+        return out
+
+    win.data.envelope = slow
+    win.controller.request_strip_envelope("Cz")
+    assert started.wait(5)
+    t = threading.Thread(target=lambda: win.controller.drain_strip(10))
+    t.start()
+    t.join(0.3)
+    assert t.is_alive() and running  # it waits for the read that runs
+    release.set()
+    t.join(5)
+    assert not t.is_alive() and not running
+    seen = []
+    win.controller.strip_stretches.connect(seen.append)
+    qtbot.wait(300)
+    assert not seen  # its result was dropped
+    del win.data.envelope
