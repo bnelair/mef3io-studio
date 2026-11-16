@@ -164,6 +164,10 @@ class ViewController(QObject):
         self._direction = 1
         self.idle_before_deepening = IDLE_BEFORE_DEEPENING
         self._req: _Request | None = None
+        #: False while the window is hidden or minimised (no idle deepening then).
+        self.active = True
+        #: A read failed since the last page: idle deepening waits for the next one.
+        self._read_failed = False
         self._sig: tuple | None = None
         self._state_change = False
         self._loading = False
@@ -222,6 +226,7 @@ class ViewController(QObject):
         self._generation += 1
         gen = self._generation
         self._deeper = 0
+        self._read_failed = False
         self._shown_at = time.monotonic()
         self._direction = direction
         data = self.data
@@ -294,6 +299,12 @@ class ViewController(QObject):
             job.priority = min(job.priority, priority)
             job.rank = min(job.rank, rank)
             job.generation = req.generation
+            if job.state == "waiting":
+                # the tiles it still needs are asked for again with the new
+                # generation (and priority): the stale sweep that follows
+                # cancels every tile request older than this page's
+                for group, k in self._missing(job):
+                    self.scheduler.request(plan.rate, group, k, job.priority, req.generation)
             return key
         job = _Job(
             key,
@@ -401,6 +412,8 @@ class ViewController(QObject):
         req = self._req
         if (
             self._closed
+            or not self.active
+            or self._read_failed
             or req is None
             or req.overview
             or self._jobs
@@ -573,13 +586,20 @@ class ViewController(QObject):
         self._pump()  # look-ahead held back for the failed visible block may go now
 
     def _fail_keys(self, keys: set) -> None:
+        self._read_failed = True  # no idle deepening until the next navigation
         req = self._req
+        on_screen = False
         if req is not None:
             for gi, k in req.keys.items():
                 if k in keys:
                     req.failed.add(gi)
-            self.pieces_changed.emit()  # a failed row is drawn as failed, not as an old picture
-        self.failed.emit("Part of the signal could not be read. Nothing was changed.")
+                    on_screen = True
+        if on_screen:
+            # a failed row is drawn as failed, not as an old picture; a failed
+            # look-ahead block that is not on screen says nothing: the page
+            # that needs it asks again
+            self.pieces_changed.emit()
+            self.failed.emit("Part of the signal could not be read. Nothing was changed.")
         self._set_loading(self._visible_pending(req) if req else False)
 
     # -- results ----------

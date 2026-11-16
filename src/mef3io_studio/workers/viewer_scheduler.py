@@ -276,6 +276,9 @@ class TileScheduler:
                 )
                 if job.state == "queued" and not job.deferred and req.priority < old.priority:
                     heapq.heappush(self._heap, (req.priority, next(self._seq), key))
+                    # idle workers wait while look-ahead is held back by a
+                    # running visible read: a job raised to visible must wake them
+                    self._cv.notify()
                 return key
             job = _Job(key, req, next(self._seq))
             self._jobs[key] = job

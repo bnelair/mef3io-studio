@@ -204,3 +204,90 @@ def test_plain_paging_is_not_held_back_by_that_rule(make_window, tmp_path, qtbot
     win.controller.wait_idle(20)
     win.page(1)
     assert not win.controller._state_change  # same filters, rows and width: no hold
+
+
+def _ready_to_deepen(win):
+    ctl = win.controller
+    ctl._watch.stop()  # the timer would deepen on its own: step by hand
+    ctl.idle_before_deepening = 0.0
+    return ctl
+
+
+def test_an_idle_viewer_does_not_look_ahead_while_hidden_or_minimised(make_window, tmp_path, qtbot):
+    win = make_window(write(tmp_path / "m.mefd", NAMES, seconds=600))
+    win.set_state(t0=T0 + 100 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
+    settle(qtbot, win)
+    ctl = _ready_to_deepen(win)
+    win.hide()
+    assert not ctl.active and not ctl._maybe_deepen()
+    win.show()
+    assert ctl.active
+    win.showMinimized()
+    qtbot.waitUntil(lambda: not ctl.active, timeout=3000)
+    assert not ctl._maybe_deepen()
+    win.showNormal()
+    qtbot.waitUntil(lambda: ctl.active, timeout=3000)
+    settle(qtbot, win)
+    ctl.wait_idle(20)
+    assert ctl._maybe_deepen()
+
+
+def test_a_failed_read_stops_idle_deepening_until_the_next_page(
+    make_window, tmp_path, qtbot, monkeypatch
+):
+    win = make_window(write(tmp_path / "m.mefd", NAMES, seconds=600))
+    win.set_state(t0=T0 + 100 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
+    settle(qtbot, win)
+    ctl = _ready_to_deepen(win)
+    ctl.wait_idle(20)
+    heard = []
+    ctl.failed.connect(heard.append)
+    # a block that is not on screen fails: no message, but no more deepening
+    ctl._fail_keys({("view", "somewhere else")})
+    assert heard == [] and not ctl._maybe_deepen()
+    win.page(1)  # the next navigation lifts it
+    settle(qtbot, win)
+    ctl.wait_idle(20)
+    assert ctl._maybe_deepen()
+    # a block on screen fails: the message, and the same stop
+    ctl._fail_keys({next(iter(ctl._req.keys.values()))})
+    assert len(heard) == 1 and not ctl._maybe_deepen()
+
+
+def _unrequested_tiles(ctl):
+    """Tiles a waiting block needs that the scheduler has no request for."""
+    sched = ctl.scheduler
+    lost = []
+    with sched._cv:
+        for job in ctl._jobs.values():
+            if job.state != "waiting":
+                continue
+            for key in job.tile_keys:
+                if key in ctl._held or key in ctl.cache:
+                    continue
+                sj = sched._jobs.get(key)
+                if sj is None or sj.state not in ("queued", "running"):
+                    lost.append((job.priority, job.rank))
+    return lost
+
+
+def test_a_kept_lookahead_block_keeps_its_tile_requests_when_the_page_moves_on(
+    make_window, tmp_path, qtbot, monkeypatch
+):
+    """The block the old page looked ahead to and the new page still wants keeps
+    its running work: its tiles must still be wanted by the scheduler, not
+    cancelled as stale (the block would then wait for a retry)."""
+    names = [f"E{i}" for i in range(40)]  # three groups: the screens above and below too
+    win = make_window(write(tmp_path / "m.mefd", names, seconds=900))
+    win.set_state(t0=T0 + 100 * SEC, filters=dsp.FilterSettings(0.5, 70.0))
+    settle(qtbot, win)
+    gate = hold_reads(win, monkeypatch)
+    ctl = win.controller
+    ctl._watch.stop()
+    try:
+        for step in (0.1, 0.1, 1, 1, 1, -1, 1, 0.5, 0.5, 1):
+            win.page(step)
+            assert not _unrequested_tiles(ctl), step
+    finally:
+        gate.set()
+    settle(qtbot, win)

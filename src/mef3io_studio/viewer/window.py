@@ -1978,9 +1978,20 @@ class ViewerWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
             self.refresh_privacy()  # details may have been shown or hidden in Explore
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_active()
+
+    def _sync_active(self) -> None:
+        """Idle look-ahead deepening only runs while the window can be seen."""
+        self.controller.active = self.isVisible() and not self.isMinimized()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._sync_active()
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        self._sync_active()
         handle = self.windowHandle()
         if handle is not None and not self._screen_hooked:
             self._screen_hooked = True
