@@ -69,6 +69,9 @@ class EditMode(QObject):
         self.draft = ad.Draft()
         self.on = False
         self.saving = False
+        #: A save ended not knowing what it wrote and the recordings could not be
+        #: read again: Save stays off, so nothing is added twice.
+        self.stale = False
         #: The selected display Mark (a draft one, or a stored one).
         self.selected = None
         self.last_job = None
@@ -220,7 +223,7 @@ class EditMode(QObject):
             b.setEnabled(not self.saving)
         self.undo_button.setEnabled(d.can_undo and not self.saving)
         self.redo_button.setEnabled(d.can_redo and not self.saving)
-        self.save_button.setEnabled(d.dirty and not self.saving)
+        self.save_button.setEnabled(d.dirty and not self.saving and not self.stale)
         self.discard_button.setEnabled(d.dirty and not self.saving)
         n_add = len(d.additions())
         n_copy = d.stored_changes
@@ -231,7 +234,10 @@ class EditMode(QObject):
             )
         if n_copy:
             parts.append(f"{timefmt.format_count(n_copy, 'change')} to stored notes")
-        self.count_label.setText(", ".join(parts) if parts else "No changes yet")
+        text = ", ".join(parts) if parts else "No changes yet"
+        if self.stale:
+            text += ". Saving is off: open the recordings again."
+        self.count_label.setText(text)
 
     def select(self, mark) -> None:
         self.selected = mark
@@ -588,7 +594,7 @@ class EditMode(QObject):
         """Preview, confirm, then append the draft's new notes and events to
         their recordings as one task. Returns whether a save was started."""
         w = self.win
-        if self.saving or not self.draft.dirty:
+        if self.saving or self.stale or not self.draft.dirty:
             return False
         data = w.data
 
@@ -667,14 +673,14 @@ class EditMode(QObject):
         data = w.data
         controller = w.controller
         self.saving = True
-        touched = {"writing": False}  # set when the first write may have started
+        touched = {"writing": False}  # set once a write call is about to be made
         try:
             w.begin_data_change()
             self._sync_buttons()
 
             def check(ctx):
+                ctx.check_cancelled()  # a stop here is before the write: nothing was written
                 touched["writing"] = True
-                ctx.check_cancelled()
 
             def work(ctx):
                 result = asave.write_plan(
@@ -752,23 +758,89 @@ class EditMode(QObject):
     def _save_ended(self, message, writing: bool, stopped: bool = False, started=True) -> None:
         """The task ended without an outcome (failed, or stopped from outside the
         write loop). The loop reports a stop and a failure itself, with exactly
-        what was appended; getting here means that report was lost. The draft is
-        free again. When a write may have begun, the recordings may hold notes
-        the draft still lists, so the window says to look before saving again."""
+        what was appended; getting here means that report was lost. When a write
+        may have begun, the recordings may hold notes the draft still lists: they
+        are read again (off the GUI thread), what is stored now leaves the draft,
+        and only then is saving possible again."""
+        if writing and started:
+            self._look_again(message, stopped)
+            return
         self.saving = False
         self.win.end_data_change(None, (), reopened=False)
         self._sync_buttons()
-        if writing and started:
-            message = UserMessage(
-                "The save ended in an unexpected place" if not stopped else "The save was stopped",
-                "Some notes and events may already have been added to the recordings. They "
-                "are still in the draft, so close this window and open the recordings again "
-                "to see what is stored before saving again.",
-            )
-        elif stopped and message is None and started:
+        if stopped and message is None and started:
             self.win.status_message.setText("The save was stopped. Nothing was added.")
         if message is not None:
             self.show_problem(message)
+        self.save_finished.emit(None)
+
+    def _look_again(self, message, stopped: bool) -> None:
+        """After a save that ended in an unknown place: reopen and read the notes
+        again, then drop from the draft every item that is stored now."""
+        w = self.win
+        data, controller = w.data, w.controller
+        before = list(w.marks)
+        self.saving = True  # the draft stays locked while the recordings are read
+        self._sync_buttons()
+
+        def work(ctx):
+            ctx.report(0, None, "Reading the recordings again")
+            controller.scheduler.drain(60.0)
+            controller.drain_strip(60.0)
+            data.reopen()
+            return data.annotations(), tuple(data.annotations_locked)
+
+        try:
+            handle = self.jobs.submit("Reading the recordings again", work)
+        except Exception:  # noqa: BLE001 - the window must say what is left to do
+            log.exception("the recordings could not be read again")
+            self._not_looked(stopped)
+            return
+        self.last_job = handle
+        handle.succeeded.connect(lambda out: self._looked(out, before, stopped))
+        handle.failed.connect(lambda _m: self._not_looked(stopped))
+        handle.cancelled.connect(lambda: self._not_looked(stopped))
+
+    def _looked(self, out, before, stopped: bool) -> None:
+        w = self.win
+        records, locked = out
+        marks = vm.build_marks(records)
+        uids = ad.items_now_stored(self.draft.additions(), before, marks)
+        self.draft.written(uids)
+        self.saving = False
+        w.end_data_change(records, locked)
+        self.select(None)
+        self.refresh()
+        n = len(uids)
+        said = (
+            f"{timefmt.format_count(n, 'note or event', 'notes and events')} had already been "
+            "added to the recordings and left the draft."
+            if n
+            else "Nothing had been added to the recordings."
+        )
+        rest = " The others stay in the draft." if self.draft.dirty else ""
+        self.show_problem(
+            UserMessage(
+                "The save was stopped" if stopped else "The save ended in an unexpected place",
+                said + rest,
+            )
+        )
+        self.save_finished.emit(None)
+
+    def _not_looked(self, stopped: bool) -> None:
+        """The recordings could not be read again: what they hold is not known."""
+        self.saving = False
+        self.stale = True
+        self.win.end_data_change(None, (), reopened=False)
+        self._sync_buttons()
+        self.show_problem(
+            UserMessage(
+                "The save was stopped" if stopped else "The save ended in an unexpected place",
+                "Some notes and events may already have been added to the recordings, and the "
+                "viewer could not read them again to see. Saving is switched off so that "
+                "nothing is added twice. Close this window and open the recordings again.",
+            )
+        )
         self.save_finished.emit(None)
 
     def _job_failed(self, message) -> None:

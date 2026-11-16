@@ -157,6 +157,33 @@ class DraftItem:
         return rec
 
 
+def items_now_stored(items: Sequence[DraftItem], before, after) -> list[int]:
+    """The uids of the draft's new items that the recordings hold now, though
+    nothing said so (a save that ended without telling what it had written):
+    the same time, type, text and channel, counted against what the recordings
+    held ``before`` (the marks of the stored notes then) and ``after`` (now), so
+    a note that was already there is not taken for ours, and equal items are
+    taken only as often as the recordings gained them."""
+
+    def key(time, code, text, channel):
+        return (int(time), code, text or "", channel or None)
+
+    gained: dict[tuple, int] = {}
+    for m in after:
+        k = key(m.time, m.code, m.text, m.channel)
+        gained[k] = gained.get(k, 0) + 1
+    for m in before:
+        k = key(m.time, m.code, m.text, m.channel)
+        gained[k] = gained.get(k, 0) - 1
+    out = []
+    for it in items:
+        k = key(it.time, it.code, it.stored_text, it.channel)
+        if gained.get(k, 0) > 0:
+            gained[k] -= 1
+            out.append(it.uid)
+    return out
+
+
 @dataclass(frozen=True)
 class _Snapshot:
     items: tuple[DraftItem, ...]

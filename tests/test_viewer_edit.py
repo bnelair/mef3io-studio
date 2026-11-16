@@ -1089,9 +1089,7 @@ def test_a_save_task_that_is_stopped_frees_the_draft_and_the_window(ed, qtbot, m
     assert win.edit.set_on(True) is True
 
 
-def test_a_stop_after_the_first_write_began_says_to_look_before_saving_again(
-    ed, qtbot, monkeypatch
-):
+def test_a_stop_after_the_first_write_began_reads_the_recordings_again(ed, qtbot, monkeypatch):
     from mef3io_studio.model.cancel import JobCancelled
 
     win, spy, _ = ed
@@ -1107,8 +1105,11 @@ def test_a_stop_after_the_first_write_began_says_to_look_before_saving_again(
     monkeypatch.setattr(edit_mode.asave, "write_plan", stopped_in_the_middle)
     win.edit.save()
     _wait_saved(qtbot, win)
+    qtbot.waitUntil(lambda: bool(spy.problems), timeout=20_000)
     assert len(spy.problems) == 1
-    assert "may already have been added" in spy.problems[0].text
+    # the recordings were read again: nothing was stored, so the item is still the draft's
+    assert "Nothing had been added" in spy.problems[0].text
+    assert win.edit.draft.dirty and win.edit.save_button.isEnabled()
 
 
 def test_a_failure_starting_the_save_frees_the_draft(ed, qtbot, monkeypatch):
@@ -1149,3 +1150,90 @@ def test_a_save_of_notes_does_not_read_the_strip_again_and_ends_a_running_read_f
     assert order == ["drain", "reopen"]  # the read of the index ends before the data is reopened
     assert not asked  # only notes were added: the signal is as it was
     assert win._stretches == stretches
+
+
+def _count(path, text):
+    return sum(1 for r in records(path) if r.get("text") == text)
+
+
+def test_a_save_that_ends_after_writing_does_not_store_the_notes_twice(ed, qtbot, monkeypatch):
+    """The write happened but the task's report was lost (here: it raises after
+    the real write). The recordings are read again, what is stored leaves the
+    draft, and a second save cannot add it again."""
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored once")
+    win.edit.add(T0 + 31 * SEC, None, "Spike", "stored once")  # the same twice: both are ours
+    win.data.read_facts()
+    real = edit_mode.asave.write_plan
+
+    def write_then_lose_the_report(*args, **kw):
+        real(*args, **kw)
+        raise RuntimeError("the report was lost")
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", write_then_lose_the_report)
+    win.edit.save()
+    qtbot.waitUntil(lambda: bool(spy.problems), timeout=30_000)
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    assert _count(a, "Spike: stored once") == 2
+    assert "2 notes and events had already been added" in spy.problems[0].text
+    assert not win.edit.draft.dirty  # nothing left to save: a second save cannot duplicate
+    assert win.edit.save() is False
+    monkeypatch.setattr(edit_mode.asave, "write_plan", real)
+    assert win.edit.save() is False
+    assert _count(a, "Spike: stored once") == 2
+    assert len(win.marks) == len(records(a)) + len(records(_b))  # and the list shows them
+
+
+def test_a_save_whose_recordings_cannot_be_read_again_stays_off(ed, qtbot, monkeypatch):
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "maybe stored")
+    win.data.read_facts()
+    real = edit_mode.asave.write_plan
+
+    def write_then_lose_the_report(*args, **kw):
+        real(*args, **kw)
+        raise RuntimeError("the report was lost")
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", write_then_lose_the_report)
+
+    def cannot():
+        raise OSError("gone")
+
+    monkeypatch.setattr(win.data, "reopen", cannot)
+    win.edit.save()
+    qtbot.waitUntil(lambda: bool(spy.problems), timeout=30_000)
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    assert "open the recordings again" in spy.problems[0].text
+    assert BANNED_RE.search(spy.problems[0].text) is None
+    assert win.edit.draft.dirty and not win.edit.save_button.isEnabled()  # saving is off
+    assert win.edit.save() is False
+    assert "Saving is off" in win.edit.count_label.text()
+    assert win.edit.discard_button.isEnabled()  # the window can still be left
+
+
+def test_a_stop_before_any_write_is_not_taken_for_a_stop_after_one(ed, qtbot, monkeypatch):
+    """The loop asks before each write; a stop answered THERE is before the
+    write, so it is not "may already have been added"."""
+    import time
+
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "never written")
+    win.data.read_facts()
+
+    def late(data, plan, pw, check, *rest):
+        time.sleep(0.4)  # the stop arrives while it waits ...
+        check()  # ... and is answered here, before any write
+        raise AssertionError("not reached")
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", late)
+    before = len(records(a))
+    win.edit.save()
+    win.edit.last_job.cancel()
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    assert len(records(a)) == before
+    assert win.edit.draft.dirty and win.edit.save_button.isEnabled() and not win.edit.stale
+    assert win.status_message.text() == "The save was stopped. Nothing was added."
+    assert not spy.problems
