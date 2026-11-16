@@ -33,7 +33,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..model import timefmt
 from ..model.montage import OTHER_GROUP
-from ..model.viewer_view import Palette, format_measure
+from ..model.viewer_view import Palette, display_units, format_measure
 from ..workers.viewer_pipeline import EnvelopePiece, ViewPiece, envelope_columns
 
 
@@ -57,8 +57,8 @@ class DrawRow:
     #: The block of this row could not be read: the row says so and shows no
     #: trace (an old picture never stands in for a failure).
     failed: bool = False
-    #: Not an EEG channel (ECG, EMG, DC, SpO2 ...): drawn fitted to its own row,
-    #: whatever the sensitivity says, since its units and size differ.
+    #: Not an EEG channel (ECG, EMG, DC, SpO2 ...): it has a sensitivity of its
+    #: own (``own_sens``), since its units and size differ.
     own_scale: bool = False
     #: Where the row sits among its lead's rows (see ``montage.group_rows``).
     group_first: bool = False
@@ -66,6 +66,10 @@ class DrawRow:
     short: str = ""
     #: A group of rows (a lead, or the channels that are not EEG) starts at this row.
     group: str = ""
+    #: The row's own sensitivity (units per mm), chosen once from a robust
+    #: stretch of its data (``ViewerWindow._choose_own_scales``) and held; 0 =
+    #: not chosen yet. The row never draws finer than the toolbar's value.
+    own_sens: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -117,8 +121,6 @@ STALE_ALPHA = 80
 #: A trace may swing this many row heights above and below its row's centre;
 #: what is beyond is cut off at that line and marked (see ``_paint_gaps_and_traces``).
 CLIP_HALF_ROWS = 0.75
-#: A trace fitted to its own row fills this share of the row (peak to peak).
-OWN_SCALE_FILL = 0.7
 #: Marks on a clipped trace are drawn at most this many pixels apart.
 CLIP_MARK_SPACING_PX = 16
 
@@ -422,7 +424,6 @@ class TraceCanvas(QWidget):
         pen = _trace_pen(pal.trace)
         dim = _trace_pen(pal.trace_dim)
         old_pen = _trace_pen(pal.trace, STALE_ALPHA)
-        px_uv = self.px_per_mm / max(1e-9, self.sens)
         half = self.row_height / 2
         # On a 2x screen a one-device-pixel line is a hairline: draw it again
         # one device pixel down and right (still the fast path, ~1 ms a row).
@@ -448,9 +449,7 @@ class TraceCanvas(QWidget):
             for a, b in () if stale else shape.gaps:
                 p.drawRect(QRectF(plot.left() + a, yc - half, b - a, self.row_height))
             limit = self.row_height * CLIP_HALF_ROWS
-            row_px = px_uv
-            if row.own_scale and shape.spread > 0:  # fitted to its own row
-                row_px = OWN_SCALE_FILL * self.row_height / 2 / shape.spread
+            row_px = self.px_per_mm / self.row_sensitivity(i)
             total = 0
             marks_up: list[float] = []
             marks_down: list[float] = []
@@ -475,12 +474,40 @@ class TraceCanvas(QWidget):
             self.clipped_rows[i] = (len(marks_up) > 0, len(marks_down) > 0)
             self.drawn_points[i] = total
 
-    def _paint_clipped(self, p, left, yc, limit, up, down) -> None:
+    def row_sensitivity(self, i: int) -> float:
+        """The sensitivity (units per mm) row ``i`` is drawn at: the toolbar's,
+        or, for a row with a scale of its own, that one when it is coarser (a
+        row is never drawn finer than the toolbar says)."""
+        row = self.rows[i]
+        if row.own_scale and row.own_sens > self.sens:
+            return row.own_sens
+        return max(1e-9, self.sens)
+
+    def row_scale_text(self, i: int) -> str:
+        """ "500 µV/mm" when row ``i`` is not at the toolbar's sensitivity, else ''."""
+        scale = self.row_sensitivity(i)
+        if scale == max(1e-9, self.sens):
+            return ""
+        return f"{scale:g} {display_units(self.rows[i].units) or 'µV'}/mm"
+
+    def gutter_lines(self, i: int) -> list[str]:
+        """The texts of row ``i``'s gutter: its name, then (small) what is
+        special about it, in this order."""
+        row = self.rows[i]
+        lines = [row.short or row.label]
+        for extra in (self.row_scale_text(i), row.note and "as recorded"):
+            if extra:
+                lines.append(extra)
+        return lines
+
+    def _paint_clipped(self, p, left, yc, limit, up, down, alpha: int = 255) -> None:
         """Small arrows on the line where a trace was cut off, every few pixels:
         the trace goes on beyond it, and a flat run along that line is not the
         signal."""
         p.save()
-        pen = QPen(QColor(self.palette_.selection), 1.6)
+        colour = QColor(self.palette_.selection)
+        colour.setAlpha(alpha)
+        pen = QPen(colour, 1.6)
         pen.setCosmetic(True)
         p.setPen(pen)
         lines = []
@@ -575,12 +602,18 @@ class TraceCanvas(QWidget):
                     p.setPen(QColor(colour) if colour else QColor(pal.muted))
                     p.drawText(QPointF(x, y), ch)
                     x += fm.horizontalAdvance(ch)
-            if row.note:
+            extra = self.gutter_lines(i)[1:]
+            if extra:
                 p.setPen(QColor(pal.muted))
                 small = QFont(font)
                 small.setPointSizeF(font.pointSizeF() * 0.8)
                 p.setFont(small)
-                p.drawText(QPointF(4, yc + fm.ascent() + 2), "as recorded")
+                sfm = p.fontMetrics()
+                y = yc + fm.ascent() / 2 + 1 + sfm.ascent()
+                for line in extra:
+                    shown = sfm.elidedText(line, Qt.TextElideMode.ElideRight, self.gutter - 8)
+                    p.drawText(QPointF(4, y), shown)
+                    y += sfm.height()
                 p.setFont(font)
 
     def _paint_axis(self, p: QPainter, plot: QRectF) -> None:

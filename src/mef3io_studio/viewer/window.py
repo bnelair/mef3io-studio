@@ -80,6 +80,10 @@ DENSE_MIN_MARKS = 40
 MAX_BANDS = 200
 #: Auto makes the typical trace this share of the distance between rows.
 CLIP_FILL = 0.9
+#: A page must hold at least this many values of a trace (ordinary pieces; the
+#: overview's block extremes: ``MIN_JUDGE_ENVELOPE``) for its size to be judged.
+MIN_JUDGE_VALUES = 200
+MIN_JUDGE_ENVELOPE = 20
 #: A held key asks for its page this long after the first repeat of a batch.
 REPEAT_FRAME_MS = 12
 #: How many of the notes carried into the page the group's tooltip lists.
@@ -204,6 +208,9 @@ class ViewerWindow(QMainWindow):
         self.perf = performance_from(settings)
         self.controller = ViewController(data, self.perf, parent=self)
         self._chosen: set[str] = set()
+        #: (channel, minus) -> the sensitivity a row that is not EEG was given
+        #: (chosen once, held across pages; see ``_choose_own_scales``).
+        self._own_sens: dict[tuple, float] = {}
         self._long_actions: list = []
         #: Fit the sensitivity once on the first complete page (not when the
         #: person has chosen a sensitivity before: that one is kept).
@@ -546,7 +553,9 @@ class ViewerWindow(QMainWindow):
         self.status_recording = QLabel("", self)
         self.status_mode = QLabel("", self)
         self.status_message = QLabel("", self)
-        for w in (self.status_time, self.status_recording):
+        #: What is special about the row under the pointer (its own scale).
+        self.status_row = QLabel("", self)
+        for w in (self.status_time, self.status_recording, self.status_row):
             bar.addWidget(w)
         bar.addWidget(self.status_message, 1)
         #: Why some stretches are paler (empty = none on this page).
@@ -1000,34 +1009,80 @@ class ViewerWindow(QMainWindow):
             self.set_state(**{field: value})
         self.canvas.setFocus()
 
+    def _page_spread(self, r) -> float | None:
+        """How far the trace of row ``r`` usually swings from its own middle on
+        the page (98th percentile of the distance from the median, so a DC
+        offset, a drift or a few spikes do not count), or None when the page
+        cannot tell: not loaded, flat, only gaps, or too few values."""
+        piece = r.piece
+        if piece is None:
+            return None
+        t0, t1 = self.state.t0, self.state.t0 + self.page_us()
+        if isinstance(piece, EnvelopePiece):  # the overview: the blocks' lowest and highest
+            a = piece.rows[r.local]
+            sel = (a[1] > t0) & (a[0] < t1)
+            w = np.concatenate((a[2][sel], a[3][sel]))
+            least = MIN_JUDGE_ENVELOPE
+        else:
+            w = piece.window(r.local, t0, t1)
+            least = MIN_JUDGE_VALUES
+        w = w[np.isfinite(w)]
+        if w.size < least:
+            return None
+        spread = float(np.percentile(np.abs(w - np.median(w)), 98))
+        return spread if spread > 0 else None
+
+    def _sensitivity_for(self, spread: float) -> float:
+        """The step of the toolbar's list at which a swing of ``spread`` fills
+        the row's band (the next coarser step when none fits exactly)."""
+        wanted = 2 * spread / (CLIP_FILL * self.state.spacing)
+        larger = [s for s in vv.SENS_STEPS if s >= wanted]
+        return larger[0] if larger else vv.SENS_STEPS[-1]
+
+    def _choose_own_scales(self, force: bool = False) -> int:
+        """Give each row on screen that is not EEG its own sensitivity, from the
+        same list as the toolbar's, taken from the page on screen. Chosen once
+        (when the row first has a page it can be judged from, and when Auto is
+        pressed: ``force``) and then held across pages, so a trace that gets
+        smaller looks smaller. A row is never drawn finer than the toolbar
+        (the canvas takes the coarser of the two). Returns how many were chosen."""
+        first = self.state.row_offset
+        chosen = 0
+        for r in self.canvas.rows[first : first + self.canvas.visible_rows() + 1]:
+            if not r.own_scale or r.piece is None:
+                continue
+            key = (r.channel, r.minus)
+            if key in self._own_sens and not force:
+                continue
+            spread = self._page_spread(r)
+            if spread is None:
+                continue
+            self._own_sens[key] = r.own_sens = self._sensitivity_for(spread)
+            chosen += 1
+        if chosen:
+            self.canvas.invalidate()
+        return chosen
+
     def auto_sensitivity(self) -> bool:
         """Choose the sensitivity from the signals on screen: the typical swing
         (98th percentile of the distance from each trace's own middle, so a DC
         offset or a drift does not count) of the typical channel. Robust: the
         MEDIAN over the EEG channels in view, so one flat channel or one huge
         one does not move it; channels that are not EEG (ECG, EMG, DC, SpO2)
-        have their own scale and do not take part. Returns whether it could
-        decide (False while the rows still load)."""
+        have their own sensitivity (chosen again here) and do not take part.
+        Returns whether it could decide (False while the rows still load)."""
         first = self.state.row_offset
         last = first + self.canvas.visible_rows()
         peaks, others = [], []
         for r in self.canvas.rows[first:last]:
-            if r.piece is None or isinstance(r.piece, EnvelopePiece):
-                continue
-            w = r.piece.window(r.local, self.state.t0, self.state.t0 + self.page_us())
-            w = w[np.isfinite(w)]
-            if not w.size:
-                continue
-            peak = float(np.percentile(np.abs(w - np.median(w)), 98))
-            if peak <= 0:  # a flat channel says nothing about the others
-                continue
-            (others if r.own_scale else peaks).append(peak)
+            peak = self._page_spread(r)
+            if peak is not None:
+                (others if r.own_scale else peaks).append(peak)
+        self._choose_own_scales(force=True)
         peaks = peaks or others
         if not peaks:
             return False
-        wanted = 2 * float(np.median(peaks)) / (CLIP_FILL * self.state.spacing)
-        larger = [s for s in vv.SENS_STEPS if s >= wanted]
-        self.set_state(sensitivity=larger[0] if larger else vv.SENS_STEPS[-1])
+        self.set_state(sensitivity=self._sensitivity_for(float(np.median(peaks))))
         return True
 
     # -- jump ----------
@@ -1195,6 +1250,7 @@ class ViewerWindow(QMainWindow):
             self.multi,
         )
         self.canvas.set_loading(self.controller.loading)
+        self._choose_own_scales()
         self._auto_on_open()
         self._sync_short_stretches(rows, pieces)
         # what is drawn now stands in for these rows while the next page loads
@@ -1299,6 +1355,7 @@ class ViewerWindow(QMainWindow):
                     groups[i].first,
                     groups[i].short,
                     groups[i].group,
+                    self._own_sens.get((row.plus, row.minus), 0.0),
                 )
             )
         return out
@@ -1400,6 +1457,14 @@ class ViewerWindow(QMainWindow):
             if owner:
                 text = " and ".join(self.recording_label(i) for i in owner)
         self.status_recording.setText(text)
+        self.status_row.setText(self._row_note(row))
+
+    def _row_note(self, row: int | None) -> str:
+        """What the pointer's row says about its size: its own scale."""
+        if row is None or not 0 <= row < len(self.canvas.rows):
+            return ""
+        scale = self.canvas.row_scale_text(row)
+        return f"{self.canvas.rows[row].label}: {scale}" if scale else ""
 
     # -- which recording is which: band, boundaries, banner ----------
 
