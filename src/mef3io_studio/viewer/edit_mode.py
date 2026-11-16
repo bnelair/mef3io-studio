@@ -262,6 +262,14 @@ class EditMode(QObject):
         if self.stale:
             text += ". Saving is off: open the recordings again."
         self.count_label.setText(text)
+        # the quiet reminder in the status bar: what is not in the recordings yet
+        n_all = n_add + n_copy
+        label = getattr(self.win, "status_draft", None)  # not built yet at construction
+        if label is not None:
+            label.setText(
+                f"{timefmt.format_count(n_all, 'note', 'notes')} not saved yet" if n_all else ""
+            )
+            label.setVisible(bool(n_all))
 
     def select(self, mark) -> None:
         self.selected = mark
@@ -733,12 +741,56 @@ class EditMode(QObject):
             return None
         return "basic password" if facts[1] == "full" else "full-access password"
 
+    def quick_save_text(self, plan) -> str | None:
+        """The one line asked before a save that ONLY ADDS notes to recordings
+        that need no password typed: how many, and into which recording. None
+        when the save needs the full preview (a choice of recording, a note
+        outside every recording, changes to stored notes, a password)."""
+        if plan.count == 0 or plan.ambiguous or plan.refused or plan.needs_copy:
+            return None
+        if any(self.other_password_label(i) for i in plan.by_recording):
+            return None
+        w = self.win
+        where = vm.join_letters([w.recording_label(i) for i in sorted(plan.by_recording)])
+        n = plan.count
+        return (
+            f"Save {timefmt.format_count(n, 'new note', 'new notes')} into {where}? "
+            "Saved notes cannot be taken out again in this version."
+        )
+
+    def ask_quick_save(self, text: str) -> bool:
+        """One line, Save or Cancel (replaced in tests)."""
+        box = QMessageBox(
+            QMessageBox.Icon.Question,
+            "Save the new notes?",
+            text,
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+            self.win,
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Save)
+        box.exec()
+        return box.standardButton(box.clickedButton()) == QMessageBox.StandardButton.Save
+
+    def save_key(self) -> None:
+        """Ctrl+S."""
+        if self.inline.is_open:  # the note being written is kept first
+            self.inline.keep_now(save=True)
+            return
+        if not self.draft.dirty:
+            self.win.status_message.setText("There are no new notes to save.")
+            return
+        self.save()
+
     def ask_save(self, plan_for):
         """Show what will be written and ask (replaced in tests): returns
         ``(choices, passwords)`` - the choices for whole-recording notes that
         fall where several recordings hold data, and the other password of
-        each protected recording - or None to stop."""
+        each protected recording - or None to stop. A save that only adds notes
+        is one line (:meth:`quick_save_text`); anything else shows the preview."""
         w = self.win
+        line = self.quick_save_text(plan_for({}))
+        if line is not None:
+            return ({}, {}) if self.ask_quick_save(line) else None
         dialog = SavePreview(
             plan_for, w.recording_label, w._rec_letter, w.zone, w, self.other_password_label
         )

@@ -153,6 +153,10 @@ class InlineNote(QFrame):
             self.hint_buttons.append(button)
         self.hint_box.setVisible(bool(hints))
 
+    def keep_now(self, save: bool = False) -> None:
+        """Keep what is typed as if Enter was pressed (Ctrl+S: and save)."""
+        self._keep(save)
+
     def close_field(self) -> None:
         self._done = True
         self.hide()

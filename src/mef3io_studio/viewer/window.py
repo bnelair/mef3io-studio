@@ -574,6 +574,11 @@ class ViewerWindow(QMainWindow):
         bar.addWidget(self.status_message, 1)
         #: Why some stretches are paler (empty = none on this page).
         self.status_short = QLabel("", self)
+        #: "3 notes not saved yet" while the draft holds something (quiet, no alert).
+        self.status_draft = QLabel("", self)
+        self.status_draft.setObjectName("Muted")
+        self.status_draft.setVisible(False)
+        bar.addPermanentWidget(self.status_draft)
         bar.addPermanentWidget(self.status_short)
         bar.addPermanentWidget(self.status_mode)
 
@@ -672,6 +677,7 @@ class ViewerWindow(QMainWindow):
         h["note_list"] = self.toggle_side_panel
         h["add_note"] = self._add_key
         h["new_note"] = self.edit.quick_note
+        h["save_notes"] = self.edit.save_key
         h["undo"] = self.edit.undo
         h["redo"] = self.edit.redo
 

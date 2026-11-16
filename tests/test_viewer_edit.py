@@ -1438,3 +1438,168 @@ def test_n_is_in_the_key_table_and_the_help(ed):
     clashes = [e.action for e in keymap.KEYMAP if "N" in e.keys]
     assert clashes == ["new_note"]
     assert not BANNED_RE.search(entry.text)
+
+
+# --- saving fast: Ctrl+S and one line -------------------------------------------------------------
+
+
+class Line:
+    """Answers the one-line question of a save and records what it said."""
+
+    def __init__(self, win, answer=True):
+        self.said: list[str] = []
+        self.answer = answer
+        del win.edit.ask_save  # the real one (the Spy replaced it)
+        win.edit.ask_quick_save = self.ask
+
+        def no_preview(*a, **k):
+            raise AssertionError("the full preview must not open for a save that only adds")
+
+        self._real = edit_mode.SavePreview
+        edit_mode.SavePreview = no_preview
+
+    def ask(self, text):
+        self.said.append(text)
+        return self.answer
+
+    def restore(self):
+        edit_mode.SavePreview = self._real
+
+
+@pytest.fixture
+def line(ed):
+    win, spy, pr = ed
+    made = Line(win)
+    yield win, spy, pr, made
+    made.restore()
+
+
+def test_ctrl_s_saves_a_draft_that_only_adds_with_one_line(line, qtbot):
+    win, spy, (a, b), asked = line
+    before = len(records(a))
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "Spike: one")
+    press(win, Qt.Key.Key_Return)
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    assert win.status_draft.isVisible() and win.status_draft.text() == "2 notes not saved yet"
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        key(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    (said,) = asked.said
+    assert said.startswith("Save 2 new notes into Recording A: Alpha_case?")
+    assert "\n" not in said
+    assert not spy.problems and not win.edit.draft.dirty
+    assert len(records(a)) == before + 2
+    assert not win.status_draft.isVisible()  # nothing is waiting any more
+
+
+def test_stopping_the_one_line_stores_nothing_and_keeps_the_draft(line, qtbot):
+    win, spy, (a, b), asked = line
+    asked.answer = False
+    win.edit.set_on(True)
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    snap = tree_hash(a)
+    assert win.edit.save() is True
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert len(asked.said) == 1 and tree_hash(a) == snap and win.edit.draft.dirty
+
+
+def test_ctrl_s_in_the_text_field_keeps_the_note_and_saves_it(line, qtbot):
+    win, spy, (a, b), asked = line
+    before = len(records(a))
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "straight to the recording")
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        press(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert len(asked.said) == 1 and len(records(a)) == before + 1
+
+
+def test_ctrl_s_without_a_draft_says_so(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    key(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    assert win.status_message.text() == "There are no new notes to save."
+
+
+def test_the_line_names_the_recordings_by_letter_while_hidden(make_window, pair, qtbot):
+    win = make_window(*pair)  # nothing shown: names are hidden
+    wait_marks(qtbot, win)
+    wide(win)
+    spy = Spy(win)
+    made = Line(win)
+    try:
+        win.edit.set_on(True)
+        win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+        win.edit.add(T0 + 120 * SEC, None, "Note", "three")
+        win.edit.save()
+        qtbot.waitUntil(lambda: not win.edit.saving)
+        assert made.said[0].startswith("Save 2 new notes into Recording A and Recording B? ")
+        assert "Alpha" not in made.said[0] and "Beta" not in made.said[0]
+        assert not spy.problems
+    finally:
+        made.restore()
+
+
+def test_anything_but_additions_keeps_the_full_preview(line, qtbot, monkeypatch):
+    win, spy, (a, b), asked = line
+    win.edit.set_on(True)
+    stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
+    win.edit.draft.remove(stored)  # a change to a stored note
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    plan = win.edit.draft.save_plan(win.data.holders_at, {})
+    assert win.edit.quick_save_text(plan) is None  # needs the copy sentence
+    plan = ad.SavePlan()
+    assert win.edit.quick_save_text(plan) is None  # nothing to add
+    win.edit.draft.clear()
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    plan = win.edit.draft.save_plan(win.data.holders_at, {})
+    assert win.edit.quick_save_text(plan)
+    monkeypatch.setattr(win.edit, "other_password_label", lambda i: "basic password")
+    assert win.edit.quick_save_text(plan) is None  # a password has to be typed: the preview
+    monkeypatch.undo()
+    # a note falling where two recordings hold data needs a choice: the preview
+    ambiguous = ad.make_plan(win.edit.draft.additions(), 0, lambda ch, t: [0, 1])
+    assert ambiguous.ambiguous and win.edit.quick_save_text(ambiguous) is None
+
+
+def test_the_refusals_of_a_save_still_stand_after_the_one_line(line, qtbot):
+    win, spy, (a, b), asked = line
+    win.edit.set_on(True)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    moved = Path(a).with_name("Renamed.mefd")
+    Path(a).rename(moved)
+    assert win.edit.save()
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert len(asked.said) == 1
+    assert "not where it was opened" in spy.problems[-1].title
+    assert not Path(a).exists() and win.edit.draft.dirty
+
+
+def test_the_one_line_has_plain_words_and_the_indicator_follows_the_draft(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    assert not win.status_draft.isVisible()
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    assert win.status_draft.text() == "1 note not saved yet"
+    win.edit.undo()
+    assert not win.status_draft.isVisible()
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    win.edit.discard()
+    assert not win.status_draft.isVisible()
+    plan = win.edit.draft.save_plan(win.data.holders_at, {})
+    assert not BANNED_RE.search(win.edit.quick_save_text(plan) or "x")
+
+
+def test_closing_with_a_draft_still_asks(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "unsaved")
+    press(win, Qt.Key.Key_Return)
+    spy.answer = "stay"
+    assert win.edit.confirm_close() is False and spy.asked == ["close"]
+    spy.answer = "discard"
+    assert win.edit.confirm_close() is True

@@ -104,6 +104,13 @@ def _entries(spacing, hour, day):
             False,
             "edit",
         ),
+        KeyEntry(
+            "save_notes",
+            ("Ctrl+S",),
+            "Save the new notes into the recordings (edit mode only)",
+            False,
+            "edit",
+        ),
         KeyEntry("escape", ("Esc",), "Clear the selection and close panels"),
         KeyEntry("help", ("?", "Shift+/"), "Show this help"),
     )
