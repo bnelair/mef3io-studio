@@ -197,6 +197,11 @@ class FilterPanel(QWidget):
         self.notice = QLabel("", self)
         self.notice.setObjectName("Muted")
         self.notice.setWordWrap(True)
+        # Only when the page on screen holds stretches too short to filter.
+        self.short_note = QLabel("", self)
+        self.short_note.setObjectName("Muted")
+        self.short_note.setWordWrap(True)
+        self.short_note.setVisible(False)
         self.summary = QLabel("", self)
         self.summary.setObjectName("Caption")
         self.show_response = QPushButton("Show response…", self)
@@ -223,6 +228,7 @@ class FilterPanel(QWidget):
         box.addWidget(self.as_recorder)
         box.addWidget(self.message)
         box.addWidget(self.notice)
+        box.addWidget(self.short_note)
         box.addWidget(self.summary)
         buttons = QHBoxLayout()
         buttons.addWidget(self.show_response)
@@ -303,6 +309,11 @@ class FilterPanel(QWidget):
 
     def set_notice(self, text: str) -> None:
         self.notice.setText(text)
+
+    def set_short_note(self, text: str) -> None:
+        """Why some stretches are drawn paler (empty = there are none)."""
+        self.short_note.setText(text)
+        self.short_note.setVisible(bool(text))
 
 
 # --- the response plot -------------------------------------------------------

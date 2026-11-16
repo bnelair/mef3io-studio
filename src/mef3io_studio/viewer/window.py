@@ -26,9 +26,10 @@ from datetime import UTC, tzinfo
 
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QColorDialog,
     QComboBox,
     QFileDialog,
     QLabel,
@@ -48,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from ..common.theme import LIGHT, Theme
 from ..model import dsp, montage, timefmt
+from ..model import viewer_colours as vc
 from ..model import viewer_marks as vm
 from ..model import viewer_view as vv
 from ..model.viewer_view import ViewState
@@ -78,6 +80,17 @@ def default_state(settings, timeline_start: int) -> ViewState:
     tb = vv.nearest_step(vv.TIMEBASE_STEPS, settings.get("viewer/timebase") if settings else 30)
     sp = vv.nearest_step(vv.SPACING_STEPS, settings.get("viewer/spacing") if settings else 7)
     profile = settings.get("viewer/profile") if settings else "auto"
+    custom = None
+    if settings:
+        # What is stored may have been edited by hand: only two real colours
+        # that can be told apart count; anything else is the white profile.
+        pair = vc.clean_pair(
+            settings.get("viewer/custom_background"), settings.get("viewer/custom_trace")
+        )
+        if pair is not None and vc.problem(*pair) is None:
+            custom = pair
+    if profile == vc.PROFILE_CUSTOM and custom is None:
+        profile = "white"
     filters = dsp.FilterSettings()
     if settings:
         try:
@@ -91,6 +104,7 @@ def default_state(settings, timeline_start: int) -> ViewState:
         timebase=tb,
         spacing=sp,
         profile=profile,
+        custom=custom,
         filters=filters,
     )
 
@@ -157,6 +171,7 @@ class ViewerWindow(QMainWindow):
         self._ready = False
         self._pan_base: int | None = None
         self._closed = False
+        self._screen_hooked = False
         self._rate_of = data.rate
         self._channels = list(data.channels)
         self._rates = sorted({float(data.rate(c)) for c in self._channels}) or [256.0]
@@ -193,7 +208,7 @@ class ViewerWindow(QMainWindow):
         self.resize(em * 80, em * 44)
         self.setMinimumSize(em * 36, em * 22)
 
-        palette = vv.resolve_profile(self.state.profile, theme.dark)
+        palette = vc.resolve_palette(self.state.profile, theme.dark, self.state.custom)
         self.canvas = TraceCanvas(palette, self)
         self.canvas.zone = zone
         self.strip = OverviewStrip(palette, self)
@@ -368,6 +383,14 @@ class ViewerWindow(QMainWindow):
         for key in PROFILE_ORDER:
             self.profile_box.addItem(vv.PROFILE_NAMES[key], key)
         self.profile_box.setToolTip("Colours")
+        # How much time the screen holds (read only), beside the timebase.
+        self.length_label = QLabel("", self)
+        self.length_label.setObjectName("Muted")
+        self.length_label.setToolTip(vv.LENGTH_TIP)
+        self.length_label.setAccessibleName("Time on screen")
+        # Why "Your own colours" was not applied (empty = nothing to say).
+        self.colour_note = QLabel("", self)
+        self.colour_note.setObjectName("Danger")
         self.types_button = tool("Types", "Types of notes and events (T)", lambda: press("types"))
         row2.addWidget(self.montage_bar)
         row2.addWidget(self.channels_button)
@@ -377,8 +400,11 @@ class ViewerWindow(QMainWindow):
         row2.addWidget(self.auto_button)
         row2.addWidget(QLabel("Timebase", self))
         row2.addWidget(self.timebase_box)
+        row2.addWidget(self.length_label)
         row2.addWidget(self.filters_button)
         row2.addWidget(self.profile_box)
+        self._colour_note_action = row2.addWidget(self.colour_note)
+        self._colour_note_action.setVisible(False)
         row2.addWidget(self.types_button)
         self.addToolBar(row2)
         self._sync_boxes()
@@ -400,11 +426,15 @@ class ViewerWindow(QMainWindow):
         for w in (self.status_time, self.status_recording):
             bar.addWidget(w)
         bar.addWidget(self.status_message, 1)
+        #: Why some stretches are paler (empty = none on this page).
+        self.status_short = QLabel("", self)
+        bar.addPermanentWidget(self.status_short)
         bar.addPermanentWidget(self.status_mode)
 
     def _connect(self) -> None:
         c = self.canvas
         c.size_changed.connect(self._schedule)
+        c.size_changed.connect(self._sync_length)  # at once, before the page is refreshed
         c.pointer_changed.connect(self._pointer)
         c.wheel_time.connect(lambda n: self.move_by(-n * self.page_us() / 10, direction=-n))
         c.wheel_rows.connect(lambda n: self.scroll_rows(-1 if n > 0 else 1))
@@ -697,9 +727,65 @@ class ViewerWindow(QMainWindow):
         dlg.raise_()
 
     def _profile_chosen(self, _i: int) -> None:
+        key = self.profile_box.currentData()
+        if key == vc.PROFILE_CUSTOM:
+            if not self.choose_own_colours():  # stopped or refused: the list shows what is used
+                self.profile_box.setCurrentIndex(PROFILE_ORDER.index(self.state.profile))
+            self.canvas.setFocus()
+            return
         self._chosen.add("profile")
-        self.set_state(profile=self.profile_box.currentData())
+        self._show_colour_note("")
+        # Colours only repaint: no page is asked for again.
+        self.state = self.state.with_(profile=key)
+        self._apply_profile()
         self.canvas.setFocus()
+
+    def pick_colour(self, title: str, initial: str) -> str | None:
+        """Ask for a colour (replaced in tests): ``#rrggbb``, or None when the
+        person stopped."""
+        chosen = QColorDialog.getColor(QColor(initial), self, title)
+        return chosen.name() if chosen.isValid() else None
+
+    def choose_own_colours(self) -> bool:
+        """ "Your own colours…": ask for the background, then the trace.
+        True when they were applied."""
+        pal = self.canvas.palette_
+        bg0, trace0 = self.state.custom or (pal.background, pal.trace)
+        background = self.pick_colour("Background colour", bg0)
+        if background is None:
+            return False
+        trace = self.pick_colour("Trace colour", trace0)
+        if trace is None:
+            return False
+        return self.set_custom_colours(background, trace)
+
+    def set_custom_colours(self, background: str, trace: str) -> bool:
+        """Use these two colours (``#rrggbb``) for the background and the
+        traces. Colours that are too close to read are refused with a sentence
+        and nothing changes. Only repaints: no signal is read again."""
+        why = vc.problem(background, trace)
+        if why is not None:
+            self._show_colour_note(why)
+            return False
+        self._chosen.update(("profile", "colours"))
+        self._show_colour_note("")
+        self.state = self.state.with_(
+            profile=vc.PROFILE_CUSTOM, custom=vc.clean_pair(background, trace)
+        )
+        self.profile_box.setCurrentIndex(PROFILE_ORDER.index(vc.PROFILE_CUSTOM))
+        self._apply_profile()
+        return True
+
+    def _show_colour_note(self, why: str) -> None:
+        """The reason colours were not used, beside the colour choice (short)
+        and in the status line (whole); empty clears both."""
+        self.colour_note.setText("Too close to read: not applied." if why else "")
+        self.colour_note.setToolTip(why)
+        self._colour_note_action.setVisible(bool(why))
+        if why:
+            self.status_message.setText(why)
+        elif self.status_message.text() == vc.TOO_CLOSE:
+            self.status_message.setText("")
 
     def _box_chose(self, field: str, box: QComboBox) -> None:
         self._chosen.add(field)
@@ -836,6 +922,41 @@ class ViewerWindow(QMainWindow):
             return
         self.canvas.set_rows(self._draw_rows(rows, pieces), self.overview(), self.multi)
         self.canvas.set_loading(self.controller.loading)
+        self._sync_short_stretches(rows, pieces)
+
+    def short_stretch_seconds(self, rows, pieces) -> float | None:
+        """How long a stretch must be to be filtered with these settings, when
+        the page on screen holds samples that were too short (drawn paler);
+        None when it holds none (or this is not yet known: a row still loads)."""
+        first = self.state.row_offset
+        last = first + self.canvas.visible_rows() + 1
+        t0, t1 = self.state.t0, self.state.t0 + self.page_us()
+        rates = set()
+        for row, pc in zip(rows[first:last], pieces[first:last], strict=True):
+            if pc is None:
+                return None
+            piece, local = pc
+            if not isinstance(piece, EnvelopePiece) and piece.has_unfiltered(local, t0, t1):
+                rates.add(float(self._rate_of(row.plus)))
+        if not rates:
+            return 0.0
+        return max(dsp.settling_samples(self.state.filters, r)[0] / r for r in rates)
+
+    def _sync_short_stretches(self, rows, pieces) -> None:
+        """One plain sentence, in the filter window and the status bar, when
+        the page holds stretches too short to filter (they are drawn paler)."""
+        if self.state.filters.is_off or self.overview():
+            self._set_short_note("")
+            return
+        seconds = self.short_stretch_seconds(rows, pieces)
+        if seconds is None:  # still loading: say what was said until it is known
+            return
+        self._set_short_note(vv.short_stretch_text(seconds * 1e6) if seconds > 0 else "")
+
+    def _set_short_note(self, text: str) -> None:
+        self.filter_panel.set_short_note(text)
+        self.status_short.setText(text)
+        self.status_short.setToolTip(text)
 
     def _draw_rows(self, rows, pieces) -> list[DrawRow]:
         data = self.data
@@ -900,11 +1021,24 @@ class ViewerWindow(QMainWindow):
                 box.setCurrentIndex(i)
         self.profile_box.setCurrentIndex(PROFILE_ORDER.index(s.profile))
         self._apply_profile()
+        self._sync_length()
         overview = self.overview()
         self.filters_button.setText(
             "Overview: as recorded, no filters" if overview else s.filters.summary()
         )
         self.montage_bar.setEnabled(not overview)
+
+    def _sync_length(self) -> None:
+        """ "= 10 s": how much time the screen holds now (also in the overview)."""
+        text = f"= {vv.format_length(self.page_us())}"
+        if self.length_label.text() != text:
+            self.length_label.setText(text)
+
+    def _screen_changed(self, *_args) -> None:
+        """The window moved to a display with another resolution: the same
+        millimetres hold another number of pixels, so another length of time."""
+        self._sync_length()
+        self._schedule()
 
     def _sync_toolbar_time(self) -> None:
         t = self.state.t0
@@ -931,8 +1065,8 @@ class ViewerWindow(QMainWindow):
         self.status_mode.setText(text)
 
     def _apply_profile(self) -> None:
-        palette = vv.resolve_profile(self.state.profile, self.theme.dark)
-        if palette is not self.canvas.palette_:
+        palette = vc.resolve_palette(self.state.profile, self.theme.dark, self.state.custom)
+        if palette != self.canvas.palette_:  # equal colours need no repaint
             self.canvas.set_palette(palette)
             self.strip.set_palette(palette)
             self._recolour()
@@ -962,7 +1096,8 @@ class ViewerWindow(QMainWindow):
     # -- which recording is which: band, boundaries, banner ----------
 
     def _rec_colour(self, i: int) -> str:
-        return vv.recording_colour(i, self.canvas.palette_.dark)
+        pal = self.canvas.palette_
+        return vc.legible_on(pal, vv.recording_colour(i, pal.dark))
 
     def _rec_letter(self, i: int) -> str:
         return self.data.recordings[i].letter
@@ -1156,14 +1291,15 @@ class ViewerWindow(QMainWindow):
         times = self._visible_times
         lo = bisect.bisect_left(times, t0 - self._max_span)
         hi = bisect.bisect_right(times, t1)
-        dark = self.canvas.palette_.dark
+        pal = self.canvas.palette_
+        dark = pal.dark
         canvas_marks, chips = [], []
         for m in self._visible[lo:hi]:
             if (m.end or m.time) < t0:
                 continue
             ok = self._shown(m.recording)
             key, _label = vm.kind_for(m, ok)
-            colour = vm.kind_colour(key, dark)
+            colour = vc.legible_on(pal, vm.kind_colour(key, dark))
             tip = self._mark_tip(m)
             style = {"new": "new", "changed": "new", "removed": "removed"}.get(m.state, "")
             canvas_marks.append(CanvasMark(m.time, m.end, colour, m.channel, tip, style))
@@ -1652,6 +1788,10 @@ class ViewerWindow(QMainWindow):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        handle = self.windowHandle()
+        if handle is not None and not self._screen_hooked:
+            self._screen_hooked = True
+            handle.screenChanged.connect(self._screen_changed)
         QTimer.singleShot(0, self._refresh)
 
     def save_preferences(self) -> None:
@@ -1669,6 +1809,9 @@ class ViewerWindow(QMainWindow):
             s.set("viewer/timebase", float(st.timebase))
         if "profile" in self._chosen:
             s.set("viewer/profile", st.profile)
+        if "colours" in self._chosen and st.custom is not None:
+            s.set("viewer/custom_background", st.custom[0])
+            s.set("viewer/custom_trace", st.custom[1])
         if "filters" in self._chosen:
             f = st.filters
             s.set(

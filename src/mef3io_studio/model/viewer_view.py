@@ -49,6 +49,8 @@ PROFILE_NAMES = {
     "green": "Green (paper grid)",
     "dark": "Dark",
     "contrast": "High contrast",
+    # Colours the user picked (model/viewer_colours.py derives the rest).
+    "custom": "Your own colours…",
 }
 
 
@@ -73,6 +75,60 @@ def is_overview(length_us: float) -> bool:
     return length_us > OVERVIEW_PAGE_S * 1e6
 
 
+def format_length(length_us: float) -> str:
+    """How long a stretch is, in plain words and few figures: "800 ms",
+    "2.5 s", "10 s", "4 min 30 s", "12 min", "2 h 10 min", "1 day 6 h".
+
+    Rounded to what is worth reading at that size (a tenth of a second under
+    ten seconds, whole seconds under ten minutes, whole minutes under a day,
+    whole hours after that); a value that rounds up into the next unit is
+    written in that unit ("59.7 s" is "1 min")."""
+    s = max(0.0, float(length_us) / 1e6)
+    if s < 1:
+        ms = max(1, round(s * 1000))
+        if ms < 1000:
+            return f"{ms} ms"
+    if s < 10:
+        r = round(s, 1)
+        if r < 10:
+            return f"{r:g} s"
+    if s < 60:
+        r = round(s)
+        if r < 60:
+            return f"{r} s"
+    if s < 600:
+        total = round(s)
+        if total < 600:
+            m, sec = divmod(total, 60)
+            return f"{m} min" + (f" {sec} s" if sec else "")
+    if s < 3600:
+        m = round(s / 60)
+        if m < 60:
+            return f"{m} min"
+    if s < 86400:
+        total_m = round(s / 60)
+        if total_m < 1440:
+            h, m = divmod(total_m, 60)
+            return f"{h} h" + (f" {m} min" if m else "")
+    total_h = round(s / 3600)
+    d, h = divmod(total_h, 24)
+    return f"{d} {'day' if d == 1 else 'days'}" + (f" {h} h" if h else "")
+
+
+LENGTH_TIP = (
+    "How much time fits on the screen at this timebase. A wider window shows more time "
+    "at the same timebase."
+)
+
+
+def short_stretch_text(settling_us: float) -> str:
+    """The sentence for stretches too short to filter (drawn paler)."""
+    return (
+        "Paler stretches are too short to filter with these settings "
+        f"(shorter than {format_length(settling_us)}) and are shown as recorded."
+    )
+
+
 @dataclass(frozen=True)
 class ViewState:
     """What the user chose. Kept per window while it is open."""
@@ -88,6 +144,8 @@ class ViewState:
     #: First visible row (rows scroll in whole rows).
     row_offset: int = 0
     profile: str = "auto"
+    #: The background and trace colours (``#rrggbb``) of the "custom" profile.
+    custom: tuple[str, str] | None = None
 
     def with_(self, **changes) -> ViewState:
         return replace(self, **changes)

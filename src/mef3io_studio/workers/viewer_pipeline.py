@@ -70,6 +70,19 @@ class ViewPiece:
             return None
         return float(w.min()), float(w.max())
 
+    def has_unfiltered(self, row: int, ta: float, tb: float) -> bool:
+        """Whether the row has samples in [ta, tb] that were too short a stretch
+        to filter (shown as recorded)."""
+        lo, hi = (ta, tb) if ta <= tb else (tb, ta)
+        n = self.n_points
+        j0 = max(0, math.ceil((lo - self.t_first_us) / self.dt_us))
+        j1 = min(n, math.floor((hi - self.t_first_us) / self.dt_us) + 1)
+        if j1 <= j0:
+            return False
+        if self.paired:
+            return bool(self.unfiltered[row, 2 * j0 : 2 * j1].any())
+        return bool(self.unfiltered[row, j0:j1].any())
+
 
 def reduce_pairs(
     values: np.ndarray, mask: np.ndarray, t_first: float, dt: float, bins_wanted: int

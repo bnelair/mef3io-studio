@@ -54,7 +54,13 @@ PREFERENCES: dict[str, Preference] = {
         Preference("viewer/sensitivity", 100.0, float),
         Preference("viewer/timebase", 30.0, float),
         Preference("viewer/spacing", 7.0, float),
-        Preference("viewer/profile", "auto", str, ("auto", "white", "green", "dark", "contrast")),
+        Preference(
+            "viewer/profile", "auto", str, ("auto", "white", "green", "dark", "contrast", "custom")
+        ),
+        # The two colours of "Your own colours": "#rrggbb" or "" (none). A value
+        # that is not a colour is ignored when read (the viewer then uses white).
+        Preference("viewer/custom_background", "", str),
+        Preference("viewer/custom_trace", "", str),
         # The default filters as JSON (cutoffs, mains, steepness, timing).
         Preference("viewer/filters", "", str),
         # The quick types of edit mode (keys 1-9), one label per line; "" =

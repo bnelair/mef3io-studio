@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..model import timefmt
+from ..model.viewer_colours import legible_on
 from ..model.viewer_view import STRIP_DATA, STRIP_GAP, Palette, recording_colour
 
 STRIP_HEIGHT = 32
@@ -92,7 +93,7 @@ class OverviewStrip(QWidget):
         bar = QRectF(0, 3, self.width(), 14)
         # gaps: hatched background over the whole timeline
         shade = 1 if pal.dark else 0
-        hatch = QColor(STRIP_GAP[shade])
+        hatch = QColor(legible_on(pal, STRIP_GAP[shade]))
         p.fillRect(bar, QColor(pal.gap))
         p.setPen(QPen(hatch, 1))
         for x in range(-14, self.width(), 5):
@@ -101,7 +102,9 @@ class OverviewStrip(QWidget):
         for t0, t1, rec in self.coverage:
             x0, x1 = self.x_of(t0), self.x_of(t1)
             r = QRectF(x0, bar.top(), max(1.5, x1 - x0), bar.height())
-            colour = self._colour_of(rec, dark) if self.multi else STRIP_DATA[shade]
+            colour = (
+                self._colour_of(rec, dark) if self.multi else legible_on(pal, STRIP_DATA[shade])
+            )
             p.fillRect(r, QColor(colour))
         if self.envelope is not None and self.envelope.shape[1] > 1:
             n = self.envelope.shape[1]
