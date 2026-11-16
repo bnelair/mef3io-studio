@@ -167,6 +167,8 @@ class ViewerWindow(QMainWindow):
         self._pointer_t: int | None = None
         self._pointer_row: int | None = None
         self._row_cache: dict[tuple, list[montage.Row]] = {}
+        #: row identity -> (piece, local row) last drawn: stands in while a page loads
+        self._stale: dict[tuple, tuple] = {}
         self._direction = 1
         self._ready = False
         self._pan_base: int | None = None
@@ -911,7 +913,15 @@ class ViewerWindow(QMainWindow):
         self.page_changed.emit(t0, t0 + length)
 
     def _set_rows_loading(self, rows) -> None:
+        """A new page asked for: each row keeps the picture it had (drawn at
+        the times it holds, so where the pages overlap it does not move) until
+        its block arrives; rows without one stay empty."""
         self.canvas.set_rows(self._draw_rows(rows, [None] * len(rows)), self.overview(), self.multi)
+
+    def _row_ident(self, row) -> tuple:
+        """What a row's picture is of: another channel, montage partner, filter
+        or the overview's other kind of picture never stands in for it."""
+        return (row.plus, row.minus, self.state.filters, self.overview())
 
     def _apply_pieces(self) -> None:
         if self._closed:
@@ -923,6 +933,12 @@ class ViewerWindow(QMainWindow):
         self.canvas.set_rows(self._draw_rows(rows, pieces), self.overview(), self.multi)
         self.canvas.set_loading(self.controller.loading)
         self._sync_short_stretches(rows, pieces)
+        # what is drawn now stands in for these rows while the next page loads
+        self._stale = {
+            self._row_ident(row): (pc if pc is not None else self._stale.get(self._row_ident(row)))
+            for row, pc in zip(rows, pieces, strict=True)
+        }
+        self._stale = {k: v for k, v in self._stale.items() if v is not None}
 
     def short_stretch_seconds(self, rows, pieces) -> float | None:
         """How long a stretch must be to be filtered with these settings, when
@@ -981,6 +997,7 @@ class ViewerWindow(QMainWindow):
         keep_tags = len(set(tags)) > 1
         for row, pc, tag in zip(rows, pieces, tags, strict=True):
             tag = tag if keep_tags else ""
+            old = None if pc is not None else self._stale.get(self._row_ident(row))
             out.append(
                 DrawRow(
                     row.label,
@@ -991,6 +1008,8 @@ class ViewerWindow(QMainWindow):
                     tag,
                     row.note,
                     row.minus,
+                    None if old is None else old[0],
+                    0 if old is None else old[1],
                 )
             )
         return out
@@ -1376,6 +1395,7 @@ class ViewerWindow(QMainWindow):
     def begin_data_change(self) -> None:
         """Before the recordings are reopened: nothing else asks them for data."""
         self.controller.abandon_all()
+        self._stale = {}  # the recordings are read again: no old picture stands in
         self.canvas.set_loading(True)
 
     def end_data_change(self, records, locked, reopened: bool = True) -> None:

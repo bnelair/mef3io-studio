@@ -48,6 +48,11 @@ class DrawRow:
     tag: str = ""  # recording letters, only when rows come from different recordings
     note: str | None = None
     minus: str | None = None  # the channel subtracted (reference and bipolar rows)
+    #: While ``piece`` is None: the picture of the page before, which this row
+    #: keeps showing where its time overlaps the new page (never gap-shaded:
+    #: where it holds nothing, the row is simply empty until the data arrives).
+    stale: ViewPiece | EnvelopePiece | None = None
+    stale_local: int = 0
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,8 @@ class CanvasMark:
 
 #: The export range's colour (light, dark): black or white, with a dashed edge.
 EDGE_GRAB_PX = 5
+#: A page not complete after this long shows the small spinner in a corner.
+SPINNER_DELAY_MS = 400
 
 
 def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
@@ -138,6 +145,13 @@ class TraceCanvas(QWidget):
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(80)
         self._spin_timer.timeout.connect(self._tick_spinner)
+        #: The corner spinner shows only when a page is still not complete
+        #: after this long: a quick page never flashes it.
+        self.spinner_delay_ms = SPINNER_DELAY_MS
+        self.spinner_shown = False
+        self._spin_delay = QTimer(self)
+        self._spin_delay.setSingleShot(True)
+        self._spin_delay.timeout.connect(self._show_spinner)
         #: Last measurement text (for tests and the status line).
         self.measure_text = ""
         #: Painted traces per row, for tests: row -> number of polyline points.
@@ -238,10 +252,18 @@ class TraceCanvas(QWidget):
             return
         self.loading = loading
         if loading:
-            self._spin_timer.start()
+            self._spin_delay.start(self.spinner_delay_ms)
         else:
+            self._spin_delay.stop()
             self._spin_timer.stop()
+            self.spinner_shown = False
         self.update()
+
+    def _show_spinner(self) -> None:
+        if self.loading:
+            self.spinner_shown = True
+            self._spin_timer.start()
+            self.update()
 
     def invalidate(self) -> None:
         self._dirty = True
@@ -356,14 +378,17 @@ class TraceCanvas(QWidget):
         for i in range(first, last):
             row = self.rows[i]
             yc = self.row_y(i)
-            if row.piece is None:
-                p.setPen(QPen(QColor(pal.time_grid), 1, Qt.PenStyle.DashLine))
-                p.drawLine(QPointF(plot.left(), yc), QPointF(plot.right(), yc))
-                continue
-            shape = self._row_shape(row, w)
+            stale = row.piece is None
+            if stale and row.stale is None:
+                continue  # nothing to show yet: the row stays empty
+            shape = (
+                self._row_shape(row.stale, row.stale_local, w)
+                if stale
+                else self._row_shape(row.piece, row.local, w)
+            )
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(pal.gap))
-            for a, b in shape.gaps:
+            for a, b in () if stale else shape.gaps:
                 p.drawRect(QRectF(plot.left() + a, yc - half, b - a, self.row_height))
             limit = self.row_height * 40
             total = 0
@@ -377,17 +402,16 @@ class TraceCanvas(QWidget):
                 total += xs.size
             self.drawn_points[i] = total
 
-    def _row_shape(self, row: DrawRow, w: int) -> _RowShape:
+    def _row_shape(self, piece, local: int, w: int) -> _RowShape:
         """What to draw for a row: polylines (x in pixels from the plot's
         left edge, y in microvolts) and gap bands (pixel ranges). Built from
         the pieces' prepared arrays (already about one (min, max) pair per
         pixel), cached by (piece, row, page, width)."""
-        piece = row.piece
-        key = (id(piece), row.local, self.t0, self.t1, w)
+        key = (id(piece), local, self.t0, self.t1, w)
         hit = self._shapes.get(key)
         if hit is not None:
             return hit
-        shape = self._build_shape(piece, row.local, w)
+        shape = self._build_shape(piece, local, w)
         if len(self._shapes) > 256:
             self._shapes.clear()
         self._shapes[key] = shape
@@ -549,22 +573,21 @@ class TraceCanvas(QWidget):
                 p.drawRoundedRect(tb, 3, 3)
                 p.setPen(QColor(pal.text))
                 p.drawText(tb, Qt.AlignmentFlag.AlignCenter, self.measure_text)
-        if self.loading:
-            c = plot.center()
-            r = min(plot.width(), plot.height()) * 0.05 + 10
+        if self.loading and self.spinner_shown:
+            # small, in the top right corner: the traces stay readable
+            r = 9.0
+            cx, cy = plot.right() - r - 12, plot.top() + r + 12
             p.setBrush(Qt.BrushStyle.NoBrush)
             for k in range(12):
                 alpha = int(255 * (((k - self._spin) % 12) / 12.0))
                 col = QColor(pal.text)
                 col.setAlpha(max(25, alpha))
-                p.setPen(QPen(col, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.setPen(QPen(col, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 ang = 2 * math.pi * k / 12
                 p.drawLine(
-                    QPointF(c.x() + r * 0.6 * math.cos(ang), c.y() + r * 0.6 * math.sin(ang)),
-                    QPointF(c.x() + r * math.cos(ang), c.y() + r * math.sin(ang)),
+                    QPointF(cx + r * 0.55 * math.cos(ang), cy + r * 0.55 * math.sin(ang)),
+                    QPointF(cx + r * math.cos(ang), cy + r * math.sin(ang)),
                 )
-            p.setPen(QColor(pal.muted))
-            p.drawText(QPointF(c.x() - 30, c.y() + r + p.fontMetrics().height()), "Loading…")
 
     def _row_spans(self, channel: str | None, plot: QRectF) -> list[tuple[float, float]]:
         """Top and height of everything a mark bound to ``channel`` covers:
