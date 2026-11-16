@@ -216,5 +216,6 @@ def test_a_row_that_could_not_be_read_says_so_and_shows_no_old_trace(
     win.page(0.5)  # half of the old picture would still fit
     qtbot.waitUntil(lambda: all(r.failed for r in win.canvas.rows), timeout=10_000)
     assert all(r.piece is None and r.stale is None for r in win.canvas.rows)
+    win.canvas.grab_traces()  # drawn now, whatever the last paint was
     assert all(v == 0 for v in win.canvas.drawn_points.values())
     assert "could not be read" in win.status_message.text()
