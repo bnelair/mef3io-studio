@@ -125,26 +125,27 @@ def check_same(data, index: int):
     return now
 
 
-#: The notes files of a recording (session and channel level): the only files a save may change.
-_NOTES_SUFFIXES = (".rdat", ".ridx")
-
-
 def signal_snapshot(path: str) -> dict[str, tuple[int, int]]:
-    """Every file of the recording folder that is not a notes file, as ``name -> (size,
-    mtime_ns)``, from ONE directory walk (``os.scandir``: names and file information, no file is
-    opened or read). A save appends notes only, so the signal files must be the same before and
-    after it; a difference (or a file that appeared or went) means they may not be. Raises
-    ``OSError`` when the folder cannot be walked."""
+    """The files that hold a recording's SIGNAL, as ``name -> (size, mtime_ns)``, from ONE
+    directory walk (``os.scandir``: names and file information, no file is opened or read).
+
+    They are found by where they sit, not by what they are called: a recording is a folder of
+    channel folders, and a channel folder holds one folder per segment with the signal in it;
+    the notes of the whole recording lie beside the channel folders and the notes of one channel
+    inside its own folder, one level above the segments. A save appends notes only, so the
+    files below the channel folders must be the same before and after it; a difference (or a
+    file that appeared or went) means they may not be. Raises ``OSError`` when the folder
+    cannot be walked."""
     out: dict[str, tuple[int, int]] = {}
-    pending = [("", path)]
+    pending = [("", path, 0)]  # name prefix, folder, how deep below the recording folder
     while pending:
-        prefix, folder = pending.pop()
+        prefix, folder, depth = pending.pop()
         with os.scandir(folder) as entries:
             for entry in entries:
                 name = f"{prefix}{entry.name}"
                 if entry.is_dir(follow_symlinks=False):
-                    pending.append((name + "/", entry.path))
-                elif not entry.name.endswith(_NOTES_SUFFIXES):
+                    pending.append((name + "/", entry.path, depth + 1))
+                elif depth >= 2:  # below the channel folders: the signal, never the notes
                     st = entry.stat(follow_symlinks=False)
                     out[name] = (int(st.st_size), int(st.st_mtime_ns))
     return out

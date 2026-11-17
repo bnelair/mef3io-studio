@@ -625,8 +625,8 @@ The honest steps for one note, from "I see something" to "it is stored":
   fingerprint taken at opening, and the notes read back must be exactly the ones appended.
   The proof is no longer a third inspect after the write: `write_plan` takes
   `annotation_save.signal_snapshot` of each recording right after its check against the
-  fingerprint of opening (every file that is not a notes file, as name, size and mtime_ns,
-  from ONE `os.scandir` walk, no file opened) and again right after its write; `WriteResult.
+  fingerprint of opening (the files below the channel folders, where the signal lies, as name, size
+  and mtime_ns, found by depth and never by name; ONE `os.scandir` walk, no file opened) and again right after its write; `WriteResult.
   signals_same` says whether they are equal, and `refresh_notes(appended, signals_same)` skips
   the inspect for those (False = reopen as before; a recording not in the dict is inspected as
   before). The two checks before the write (`prepare` and the one right before the write) are

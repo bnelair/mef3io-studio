@@ -172,7 +172,7 @@ def test_the_signal_snapshot_sees_signal_files_only_and_opens_nothing(tmp_path, 
     )
     before = asave.signal_snapshot(str(path))
     assert opened == []
-    assert before and not any(k.endswith((".rdat", ".ridx")) for k in before)
+    assert before and all(k.count("/") >= 2 for k in before)  # below the channel folders
     assert any(k.endswith(".tdat") for k in before)
     assert asave.signal_snapshot(str(path)) == before
     tdat = next(path.rglob("*.tdat"))
