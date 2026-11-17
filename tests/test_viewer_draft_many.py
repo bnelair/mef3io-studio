@@ -162,3 +162,29 @@ def key(win, k, mods=Qt.KeyboardModifier.NoModifier):
     from PySide6.QtTest import QTest
 
     QTest.keyClick(win.canvas, k, mods)
+
+
+def test_the_cached_search_text_finds_exactly_what_the_slow_rule_finds(
+    make_window, tmp_path, qtbot
+):
+    notes = [
+        {"time": T0 + k * SEC, "type": "Note", "text": text}
+        for k, text in enumerate(["Alpha Note", "Spike: Sharp", "plain", "ÄÖ ünï", ""] * 8)
+    ]
+    shown = {0: False}
+    win = make_window(
+        write_notes(tmp_path / "s.mefd", notes, seconds=120), reveal=lambda i: shown[i]
+    )
+    wait_marks(qtbot, win)
+    for flag in (False, True):  # hidden: the text is not searched; shown: it is
+        shown[0] = flag
+        win._refresh_hidden_notice()
+        win._rebuild_types()
+        for query in ("", "alpha", "ALPHA ", "sharp", "spike", "ünï", "Whole", "a", "zzz"):
+            mine = [
+                m
+                for m in win._visible
+                if not query.strip() or query.strip().casefold() in win._haystack(m)
+            ]
+            rule = [m for m in win._visible if vm.matches(m, query, win._shown(m.recording), "A")]
+            assert mine == rule, (flag, query)

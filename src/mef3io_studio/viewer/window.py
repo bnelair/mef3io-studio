@@ -257,6 +257,8 @@ class ViewerWindow(QMainWindow):
         self._stored_for = None  # the marks _stored was made from
         self._stored_flags: tuple = ()
         self._shape: tuple | None = None
+        self._hay: dict[vm.Mark, str] = {}  # folded search text per note (see _haystack)
+        self._hay_flags: tuple = ()
         self._privacy_sig: tuple | None = None
         self.export_start: int | None = None
         self.export_end: int | None = None
@@ -1691,6 +1693,7 @@ class ViewerWindow(QMainWindow):
             self._stored = vd.Stored(self.marks, self._shown)
             self._stored_for, self._stored_flags = self.marks, flags
             self._shape = None
+            self._hay = {}
         d = self.edit.draft
         hidden = self.hidden_kinds
         stamp = (d.version, hidden)
@@ -1955,13 +1958,29 @@ class ViewerWindow(QMainWindow):
             return
         self._list_runner.submit(steps)
 
+    def _haystack(self, m: vm.Mark) -> str:
+        """What a search looks through for one note (:func:`vm.matches`: its type, the
+        recording's letter, its channel and, only when that recording is shown, its text),
+        folded once and kept until the notes are read again: a longer search then costs
+        one substring test per note, not a fresh look at every note."""
+        found = self._hay.get(m)
+        if found is None:
+            ok = self._shown(m.recording)
+            _key, label = vm.kind_for(m, ok)
+            found = "\0".join(
+                (label, self._rec_letter(m.recording), m.channel or "", m.text if ok else "")
+            ).casefold()
+            self._hay[m] = found
+        return found
+
     def _list_steps(self, wanted, query, marks, keys):
         rows, total = [], 0
+        q = query.strip().casefold()
+        flags = tuple(bool(self._shown(r.index)) for r in self.data.recordings)
+        if flags != self._hay_flags:  # a recording was shown or hidden since
+            self._hay, self._hay_flags = {}, flags
         for i, m in enumerate(marks):
-            ok = self._shown(m.recording)
-            if (wanted is None or keys[i] == wanted) and vm.matches(
-                m, query, ok, self._rec_letter(m.recording)
-            ):
+            if (wanted is None or keys[i] == wanted) and (not q or q in self._haystack(m)):
                 total += 1
                 if len(rows) < MAX_LISTED or m.state:  # a draft note is always listed
                     rows.append(m)
