@@ -1770,3 +1770,164 @@ def test_a_reopen_that_fails_after_the_notes_were_stored_says_so(ed, qtbot, monk
     assert "cannot be shown" in spy.problems[-1].title
     assert not win.edit.draft.dirty and not win.edit.saving  # stored, so not in the draft
     assert "Spike: stored anyway" in [c[4] for c in comparable(records(a))]
+
+
+# --- removing and changing: a draft note yes, a stored note not yet ------------------------------
+
+
+def entries(menu):
+    return {a.text(): a for a in menu.actions() if a.text()}
+
+
+def test_delete_removes_a_draft_note_and_undo_brings_it_back(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "to be removed")
+    press(win, Qt.Key.Key_Return)
+    (item,) = win.edit.draft.items
+    win.edit.select_item(item)
+    key(win, Qt.Key.Key_Delete)
+    assert not win.edit.draft.dirty and "left the draft" in win.status_message.text()
+    assert not [m for m in win.notes_tab.rows if m.state]
+    key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert [i.text for i in win.edit.draft.items] == ["to be removed"]
+    # without a selection Delete says what to do
+    win.edit.select(None)
+    key(win, Qt.Key.Key_Delete)
+    assert win.status_message.text() == "Select a note or event first."
+
+
+def test_the_menu_on_a_draft_note_removes_it_and_changes_its_text_in_the_field(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    item = win.edit.add(T0 + 12 * SEC, None, "Note", "first words")
+    mark = next(m for m in win.notes_tab.rows if m.state == "new")
+    from PySide6.QtWidgets import QMenu
+
+    menu = QMenu()
+    win.edit.note_menu(menu, mark)
+    found = entries(menu)
+    assert set(found) == {"Change the text", "Remove this note (Delete)"}
+    assert all(a.isEnabled() for a in found.values())
+    found["Change the text"].trigger()
+    inline = win.edit.inline
+    assert inline.isVisible() and inline.field.text() == "first words"
+    assert "Change the note" in inline.head.text()
+    inline.field.setText("better words")
+    press(win, Qt.Key.Key_Return)
+    assert [(i.uid, i.text) for i in win.edit.draft.items] == [(item.uid, "better words")]
+    mark = next(m for m in win.notes_tab.rows if m.state == "new")
+    menu = QMenu()
+    win.edit.note_menu(menu, mark)
+    entries(menu)["Remove this note (Delete)"].trigger()
+    assert not win.edit.draft.dirty
+
+
+def test_changing_the_text_into_a_copy_is_refused(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 12 * SEC, None, "Note", "one")
+    other = win.edit.add(T0 + 12 * SEC, None, "Note", "two")
+    win.edit.change_text(other.uid)
+    win.edit.inline.field.setText("one")
+    press(win, Qt.Key.Key_Return)
+    assert win.status_message.text() == ad.DUPLICATE_DRAFT
+    assert win.edit.draft.get(other.uid).text == "two"
+
+
+def test_the_menu_on_a_stored_note_shows_remove_disabled_with_the_reason(ed):
+    from PySide6.QtWidgets import QMenu
+
+    from mef3io_studio.model import annotation_save as asave
+
+    win, spy, _ = ed
+    stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
+    for edit_on in (False, True):  # findable from the normal view too
+        if edit_on:
+            turn_on(win)
+        menu = QMenu()
+        win.edit.note_menu(menu, stored)
+        found = entries(menu)
+        remove = found["Remove this note"]
+        assert not remove.isEnabled() and remove.toolTip() == asave.STORED_REMOVAL_REASON
+        assert found[asave.STORED_REMOVAL_REASON].isEnabled() is False  # the reason is on show
+    assert asave.STORED_REMOVAL_REASON == "A stored note cannot be removed yet in this version."
+    assert not BANNED_RE.search(asave.STORED_REMOVAL_REASON)
+    # the key says the same and changes nothing
+    win.edit.select(stored)
+    key(win, Qt.Key.Key_Delete)
+    assert win.status_message.text() == asave.STORED_REMOVAL_REASON and not win.edit.draft.dirty
+
+
+def test_a_right_click_on_a_chip_and_on_a_list_row_opens_that_menu(ed, qtbot):
+    win, spy, _ = ed
+    from PySide6.QtCore import QPoint
+
+    win.edit.add(T0 + 12 * SEC, None, "Note", "draft")  # (turns nothing on: add works)
+    rect = next(r for r, c, _l in win.chips.drawn if c.state == "new")
+    QTest.mouseClick(
+        win.chips,
+        Qt.MouseButton.RightButton,
+        Qt.KeyboardModifier.NoModifier,
+        rect.center().toPoint(),
+    )
+    assert "Remove this note (Delete)" in entries(win._menu)
+    win._menu.close()
+    row = next(i for i, m in enumerate(win.notes_tab.rows) if m.text == "Alpha plain note")
+    table = win.notes_tab.table
+    pos = table.visualItemRect(table.item(row, 0)).center()
+    win.notes_tab._row_menu(QPoint(pos.x(), pos.y()))
+    assert not entries(win._menu)["Remove this note"].isEnabled()
+    win._menu.close()
+    # on the traces: right-click on the drawn mark of a stored note
+    from PySide6.QtCore import QPointF
+
+    mark = next(
+        m for m in win.canvas.marks if m.source is not None and m.source.text == "Alpha plain note"
+    )
+    win.canvas._pointer = QPointF(win.canvas.x_of(mark.time), win.canvas.plot_rect().top() + 5)
+    win._context_menu(0, mark.time, win.canvas.mapToGlobal(QPoint(5, 5)), False)
+    assert "Remove this note" in entries(win._menu)
+    win._menu.close()
+
+
+def test_the_seam_raises_a_plain_not_supported_result_today(ed):
+    from mef3io_studio.model import annotation_save as asave
+
+    win, _spy, _ = ed
+    assert asave.stored_removal_reason() == asave.STORED_REMOVAL_REASON
+    with pytest.raises(asave.StoredRemovalNotSupported) as err:
+        asave.remove_stored_notes(win.data, win.marks[:1])
+    assert err.value.user_message.text == asave.STORED_REMOVAL_REASON
+    # nothing in this module can rewrite a recording: its only write is the append
+    import inspect as _inspect
+
+    source = _inspect.getsource(asave)
+    assert source.count("mef3io.Writer(") == 1 and "write_annotations" in source
+    for word in ("unlink", "os.remove", "shutil", "truncate", "os.rename", "os.replace"):
+        assert word not in source
+
+
+def test_a_later_library_call_plugs_in_at_the_one_place(ed, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMenu
+
+    from mef3io_studio.model import annotation_save as asave
+
+    win, spy, _ = ed
+    asked = []
+    monkeypatch.setattr(
+        asave, "_REMOVE_STORED", lambda data, marks, pw: (asked.append(marks), 1)[1]
+    )
+    stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
+    assert asave.stored_removal_reason() is None
+    menu = QMenu()
+    win.edit.note_menu(menu, stored)
+    remove = entries(menu)["Remove this note"]
+    assert remove.isEnabled() and len(entries(menu)) == 1  # no reason line any more
+    epoch = win.data.epoch
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        remove.trigger()
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert [m[0].text for m in asked] == ["Alpha plain note"]
+    assert win.data.epoch == epoch + 1 and not spy.problems  # the recordings were read again

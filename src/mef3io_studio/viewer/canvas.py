@@ -17,7 +17,7 @@ from __future__ import annotations
 import ctypes
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, tzinfo
 
 import numpy as np
@@ -98,6 +98,8 @@ class CanvasMark:
     #: one. Its tooltip is made only when it is hovered (``TraceCanvas.tip_for``).
     count: int = 1
     tick: bool = False
+    #: The note behind it (a ``Mark``), for the menu on a note.
+    source: object = field(default=None, compare=False, repr=False)
 
 
 #: The export range's colour (light, dark): black or white, with a dashed edge.
@@ -1103,6 +1105,7 @@ class TraceCanvas(QWidget):
                 span = (self.t1 - self.t0) / self.plot_rect().width()
                 self._drag = (pos, span, self.row_offset)
         elif event.button() == Qt.MouseButton.RightButton:
+            self._pointer = pos
             row = self.row_at(pos.y())
             self.context_requested.emit(
                 -1 if row is None else row,

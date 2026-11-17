@@ -29,6 +29,10 @@ from . import timefmt
 from .annotation_draft import SavePlan
 from .errors import UserMessage, describe_error
 
+#: Why a note that is already stored in a recording cannot be taken out. ONE sentence,
+#: shown beside the disabled "Remove" entry and when a key asks for it.
+STORED_REMOVAL_REASON = "A stored note cannot be removed yet in this version."
+
 BOTH_PASSWORDS = "To add notes to a password-protected recording, both its passwords are needed."
 
 
@@ -246,3 +250,37 @@ def write_plan(
             done += len(items)
             report(done, total)
     return result
+
+
+# --- removing a STORED note: the one place a later library call plugs in ----------------------
+#
+# Nothing here rewrites a recording: the installed library only appends notes. When it can
+# remove one, the call goes into ``_REMOVE_STORED`` (or the body of ``remove_stored_notes``) and
+# nowhere else; the window asks :func:`stored_removal_reason` (None = available) and calls
+# :func:`remove_stored_notes` as a task. Until then every ask ends in
+# :class:`StoredRemovalNotSupported`, whose message is the plain sentence.
+
+#: ``fn(data, marks, passwords) -> int`` (how many notes were removed), or None while the library
+#: cannot do it. Set by the code that adds the library call, never by the window.
+_REMOVE_STORED: Callable | None = None
+
+
+class StoredRemovalNotSupported(Exception):
+    """Removing a stored note is not possible in this version."""
+
+    def __init__(self) -> None:
+        super().__init__("stored notes cannot be removed")
+        self.user_message = UserMessage("A stored note cannot be removed", STORED_REMOVAL_REASON)
+
+
+def stored_removal_reason() -> str | None:
+    """The sentence that says why a stored note cannot be removed, or None when it can."""
+    return STORED_REMOVAL_REASON if _REMOVE_STORED is None else None
+
+
+def remove_stored_notes(data, marks, passwords: dict[int, str] | None = None) -> int:
+    """Remove the stored notes ``marks`` from their recordings; returns how many were
+    removed. Raises :class:`StoredRemovalNotSupported` while the library cannot do it."""
+    if _REMOVE_STORED is None:
+        raise StoredRemovalNotSupported
+    return int(_REMOVE_STORED(data, list(marks), passwords or {}))

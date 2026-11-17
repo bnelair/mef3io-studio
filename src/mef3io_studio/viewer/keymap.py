@@ -111,6 +111,13 @@ def _entries(spacing, hour, day):
             False,
             "edit",
         ),
+        KeyEntry(
+            "remove_note",
+            ("Delete", "Backspace"),
+            "Remove the selected note from the draft (edit mode only)",
+            False,
+            "edit",
+        ),
         KeyEntry("escape", ("Esc",), "Clear the selection and close panels"),
         KeyEntry("help", ("?", "Shift+/"), "Show this help"),
     )

@@ -583,6 +583,80 @@ class EditMode(QObject):
         self.select_item(item)
         return item
 
+    def remove_note(self) -> bool:
+        """The key Delete and the menu entry: a note of the DRAFT leaves it (Ctrl+Z brings
+        it back). A STORED note cannot be removed in this version: the sentence says so, and
+        the one place a later library call plugs in (:func:`asave.remove_stored_notes`) is
+        asked."""
+        if self._busy():
+            return False
+        m = self._target()
+        if m is None:
+            return False
+        return self.remove_mark(m)
+
+    def remove_mark(self, m) -> bool:
+        w = self.win
+        if m.state in ("new", "changed"):
+            item = self.draft.get(m.uid)
+            if item is None:
+                return False
+            self.draft.remove(m.uid)
+            self.select(None)
+            self.refresh()
+            w.status_message.setText("The note left the draft. Ctrl+Z brings it back.")
+            return True
+        reason = asave.stored_removal_reason()
+        if reason is not None:
+            w.last_refusal = reason
+            w.status_message.setText(reason)
+            return False
+        self._remove_stored(m)
+        return True
+
+    def _remove_stored(self, m) -> None:
+        """The day the library can do it: one task, then the recordings are read again."""
+        w = self.win
+        data = w.data
+        self.saving = True
+        self._sync_buttons()
+
+        def work(ctx):
+            ctx.report(0, None, "Removing the note")
+            return asave.remove_stored_notes(data, [m], {})
+
+        def done(_n) -> None:
+            self._reopen_after_save(SaveOutcome([], set(), None, ()), False, False)
+
+        def failed(message=None) -> None:
+            self.saving = False
+            self._sync_buttons()
+            if message is not None:
+                self.show_problem(message)
+
+        handle = self.jobs.submit("Removing a note", work)
+        self.last_job = handle
+        handle.succeeded.connect(done)
+        handle.failed.connect(failed)
+        handle.cancelled.connect(failed)
+
+    def note_menu(self, menu, mark) -> None:
+        """The entries of the menu on a note (right-click on its chip, its row in the
+        list, or its mark on the traces)."""
+        if self.on and not self.saving:
+            self.select(mark)
+        if mark.state in ("new", "changed"):
+            menu.addAction("Change the text", lambda: self.change_text(mark.uid))
+            menu.addAction("Remove this note (Delete)", lambda: self.remove_mark(mark))
+            return
+        remove = menu.addAction("Remove this note", lambda: self.remove_mark(mark))
+        reason = asave.stored_removal_reason()
+        remove.setEnabled(reason is None and not self.saving and mark.state != "removed")
+        if reason is not None:
+            remove.setToolTip(reason)
+            note = menu.addAction(reason)  # the reason is read without hovering
+            note.setEnabled(False)
+
     def remove_selected(self) -> bool:
         if self._busy():
             return False

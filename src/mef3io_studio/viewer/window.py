@@ -602,6 +602,8 @@ class ViewerWindow(QMainWindow):
         c.edge_dragged.connect(self._edge_dragged)
         c.size_changed.connect(self.banner.place)
         self.chips.picked.connect(self.edit.on_chip)
+        self.chips.menu_requested.connect(self._note_menu)
+        self.notes_tab.menu_requested.connect(self._note_menu)
         self.chips.clicked.connect(self._chip_clicked)
         self.types_panel.hidden_changed.connect(self._types_chosen)
         self.recordings_tab.go_to.connect(self.go_to)
@@ -682,6 +684,7 @@ class ViewerWindow(QMainWindow):
         h["add_note"] = self._add_key
         h["new_note"] = self.edit.quick_note
         h["save_notes"] = self.edit.save_key
+        h["remove_note"] = self.edit.remove_note
         h["undo"] = self.edit.undo
         h["redo"] = self.edit.redo
 
@@ -1773,7 +1776,7 @@ class ViewerWindow(QMainWindow):
         style = {"new": "new", "changed": "new", "removed": "removed"}.get(m.state, "")
         text = self._mark_text(m, ok)
         letter = self._rec_letter(m.recording) if self.multi else ""
-        mark = CanvasMark(m.time, m.end, colour, m.channel, tip, style)
+        mark = CanvasMark(m.time, m.end, colour, m.channel, tip, style, source=m)
         chip = Chip(
             m.time,
             m.end,
@@ -2342,8 +2345,22 @@ class ViewerWindow(QMainWindow):
 
     # -- context menu ----------
 
+    def _note_menu(self, mark, pos) -> None:
+        """Right-click on a note (a chip, a row of the list, a mark on the traces)."""
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        self.edit.note_menu(menu, mark)
+        self._menu = menu
+        menu.popup(pos)
+
     def _context_menu(self, row: int, t: int, pos, on_name: bool) -> None:
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        pointer = self.canvas._pointer
+        found = self.canvas.mark_at(pointer) if pointer is not None and not on_name else None
+        if found is not None and found.source is not None:
+            self.edit.note_menu(menu, found.source)
+            menu.addSeparator()
         if 0 <= row < len(self.canvas.rows):
             ch = self.canvas.rows[row].channel
             menu.addAction("Use as reference", lambda: self.use_as_reference(ch))

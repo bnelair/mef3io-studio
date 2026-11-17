@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from datetime import tzinfo
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -105,6 +105,8 @@ class NotesTab(QWidget):
     remove_requested = Signal()
     import_requested = Signal()
     export_requested = Signal(str, str)  # kind ("csv" | "json"), scope ("listed" | "all")
+    #: Right-click on a row: (the Mark, global position).
+    menu_requested = Signal(object, object)
 
     COLUMNS = ("Time", "Rec.", "Type", "Where", "Text")
 
@@ -182,6 +184,8 @@ class NotesTab(QWidget):
             lambda _i: None if self._busy else self.changed.emit()
         )
         self.table.cellClicked.connect(self._clicked)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._row_menu)
         self.add_button.clicked.connect(self.add_requested)
         self.edit_button.clicked.connect(self.edit_requested)
         self.remove_button.clicked.connect(self.remove_requested)
@@ -309,6 +313,11 @@ class NotesTab(QWidget):
     def cell_text(self, row: int, col: int) -> str:
         item = self.table.item(row, col)
         return item.text() if item else ""
+
+    def _row_menu(self, pos) -> None:
+        row = self.table.rowAt(pos.y())
+        if 0 <= row < len(self.rows):
+            self.menu_requested.emit(self.rows[row], self.table.viewport().mapToGlobal(pos))
 
     def _clicked(self, row: int, _col: int) -> None:
         if 0 <= row < len(self.rows):
