@@ -35,6 +35,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..model import timefmt
 from ..model.montage import OTHER_GROUP
+from ..model.sampling import bounded_sample
 from ..model.viewer_view import (
     Palette,
     display_units,
@@ -1183,19 +1184,20 @@ class _RowShape:
     @property
     def centre(self) -> float:
         """The level the trace sits at (about its median, from a sample of at most
-        a thousand points: made only when a row is drawn); NaN when there is
-        nothing to draw."""
+        a thousand points at fixed pseudo-random positions, so a periodic signal
+        cannot be read at one phase only: made only when a row is drawn); NaN when
+        there is nothing to draw."""
         if self._centre is None:
             segs = self.segments
             n = sum(len(sg[1]) for sg in segs)
-            step = max(1, n // 1024)
-            ys = (
-                segs[0][1][::step]
-                if len(segs) == 1
-                else np.concatenate([sg[1][::step] for sg in segs])
-                if n
-                else None
-            )
+            if not n:
+                ys = None
+            elif len(segs) == 1:
+                ys = bounded_sample(segs[0][1], 1024)
+            else:
+                ys = np.concatenate(
+                    [bounded_sample(sg[1], max(1, round(1024 * len(sg[1]) / n))) for sg in segs]
+                )
             if ys is not None:
                 ys = ys[np.isfinite(ys)]
             if ys is None or not ys.size:

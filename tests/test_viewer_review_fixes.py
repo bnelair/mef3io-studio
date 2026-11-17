@@ -108,3 +108,29 @@ def test_typed_texts_are_offered_only_while_details_are_shown(ed):
     win._reveal = shown
     assert ("text", "patient-detail-xyz") in [(h.kind, h.value) for h in win.edit.hints()]
     assert "patient-detail-xyz" not in repr(Hint("text", "patient-detail-xyz"))
+
+
+# --- 5. the held-centre estimate cannot lock to a period ---------------------------------------
+
+
+@pytest.mark.parametrize("period", [40, 32, 64, 41, 100, 512, 1024, 2048])
+def test_the_centre_of_a_periodic_trace_is_near_zero_whatever_the_period(period):
+    from mef3io_studio.viewer.canvas import _RowShape
+
+    n = 40_960
+    ys = 500.0 * np.cos(2 * np.pi * np.arange(n) / period)  # read at one phase: 500
+    shape = _RowShape([(np.arange(n) + 0.5, ys, False)], [])
+    assert abs(shape.centre) < 150, (period, shape.centre)
+    # the same trace in several pieces
+    parts = [(np.arange(2048) + 0.5, ys[i : i + 2048], False) for i in range(0, 8192, 2048)]
+    assert abs(_RowShape(parts, []).centre) < 150
+
+
+def test_the_sample_is_the_same_every_time_and_short_arrays_are_kept_whole():
+    from mef3io_studio.model.sampling import bounded_sample
+
+    a = np.arange(100_000.0)
+    assert np.array_equal(bounded_sample(a, 1024), bounded_sample(a, 1024))
+    assert bounded_sample(a, 1024).size == 1024
+    b = np.arange(500.0)
+    assert bounded_sample(b, 1024) is b
