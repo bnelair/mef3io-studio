@@ -134,3 +134,48 @@ def test_the_sample_is_the_same_every_time_and_short_arrays_are_kept_whole():
     assert bounded_sample(a, 1024).size == 1024
     b = np.arange(500.0)
     assert bounded_sample(b, 1024) is b
+
+
+# --- 6. the cost of a save: no inspect after the write ---------------------------------------
+
+
+def test_a_save_inspects_each_recording_twice_before_the_write_and_never_after(
+    ed, qtbot, monkeypatch
+):
+    import mef3io
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.data.read_facts()
+    calls = []
+    real = mef3io.inspect
+    monkeypatch.setattr(mef3io, "inspect", lambda *a, **k: (calls.append(a[0]), real(*a, **k))[1])
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "in A")
+    win.edit.add(T0 + 120 * SEC, None, "Note", "in B")
+    finish_save(qtbot, win)
+    assert not spy.problems and not win.edit.draft.dirty
+    # prepare + the look right before the write, per recording; none to prove it afterwards
+    assert len(calls) == 4, calls
+
+
+def test_the_signal_snapshot_sees_signal_files_only_and_opens_nothing(tmp_path, monkeypatch):
+    import builtins
+    import os
+
+    from mef3io_studio.model import annotation_save as asave
+
+    path = write(tmp_path / "S.mefd")
+    opened = []
+    real_open = builtins.open
+    monkeypatch.setattr(
+        builtins, "open", lambda *a, **k: (opened.append(a[0]), real_open(*a, **k))[1]
+    )
+    before = asave.signal_snapshot(str(path))
+    assert opened == []
+    assert before and not any(k.endswith((".rdat", ".ridx")) for k in before)
+    assert any(k.endswith(".tdat") for k in before)
+    assert asave.signal_snapshot(str(path)) == before
+    tdat = next(path.rglob("*.tdat"))
+    st = tdat.stat()
+    os.utime(tdat, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert asave.signal_snapshot(str(path)) != before

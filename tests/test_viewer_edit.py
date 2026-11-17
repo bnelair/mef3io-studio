@@ -1689,24 +1689,22 @@ def test_a_second_save_after_a_notes_only_save_checks_the_recording_as_before(ed
 
 
 def test_a_signal_that_changed_during_the_save_makes_the_window_reopen(ed, qtbot, monkeypatch):
-    from mef3io_studio.model import annotation_save as asave
-    from mef3io_studio.model import viewer_source as vs
+    import os
 
     win, spy, (a, b) = ed
     turn_on(win)
-    changed = []
-    real_print = vs.fingerprint_of
-    monkeypatch.setattr(
-        vs, "fingerprint_of", lambda summary: ("changed",) if changed else real_print(summary)
-    )
-    real_write = asave.write_plan
 
-    def write_then_change(*args, **kw):
-        result = real_write(*args, **kw)
-        changed.append(1)  # what the library now reports for the signal differs
-        return result
+    class Touching(mef3io.Writer):
+        """A writer after which a signal file of the recording differs (another program)."""
 
-    monkeypatch.setattr(asave, "write_plan", write_then_change)
+        def __exit__(self, *exc):
+            out = super().__exit__(*exc)
+            tdat = next(Path(a).rglob("*.tdat"))
+            st = tdat.stat()
+            os.utime(tdat, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+            return out
+
+    monkeypatch.setattr(mef3io, "Writer", Touching)
     seen = watch_the_page(win, monkeypatch, qtbot)
     epoch = win.data.epoch
     win.edit.add(T0 + 30 * SEC, None, "Spike", "stored")
@@ -1740,7 +1738,7 @@ def test_when_the_notes_cannot_be_proved_the_save_reopens_like_before(ed, qtbot,
 
     win, spy, _ = ed
     turn_on(win)
-    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended: False)
+    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended, *rest: False)
     seen = watch_the_page(win, monkeypatch, qtbot)
     order = []
     real_drain = win.controller.drain_strip
@@ -1759,7 +1757,7 @@ def test_a_reopen_that_fails_after_the_notes_were_stored_says_so(ed, qtbot, monk
 
     win, spy, (a, b) = ed
     turn_on(win)
-    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended: False)
+    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended, *rest: False)
 
     def broken(self):
         raise OSError("gone")

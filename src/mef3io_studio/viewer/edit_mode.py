@@ -1025,7 +1025,9 @@ class EditMode(QObject):
                     try:
                         # the signal did not change: only the notes are read again, and the
                         # page on screen, the tile cache and the strip stay as they are
-                        if data.refresh_notes({i: n for i, n in appended.items() if n}):
+                        if data.refresh_notes(
+                            {i: n for i, n in appended.items() if n}, result.signals_same
+                        ):
                             records, locked = data.annotations(), tuple(data.annotations_locked)
                         else:
                             again = True

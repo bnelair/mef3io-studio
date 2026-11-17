@@ -125,6 +125,31 @@ def check_same(data, index: int):
     return now
 
 
+#: The notes files of a recording (session and channel level): the only files a save may change.
+_NOTES_SUFFIXES = (".rdat", ".ridx")
+
+
+def signal_snapshot(path: str) -> dict[str, tuple[int, int]]:
+    """Every file of the recording folder that is not a notes file, as ``name -> (size,
+    mtime_ns)``, from ONE directory walk (``os.scandir``: names and file information, no file is
+    opened or read). A save appends notes only, so the signal files must be the same before and
+    after it; a difference (or a file that appeared or went) means they may not be. Raises
+    ``OSError`` when the folder cannot be walked."""
+    out: dict[str, tuple[int, int]] = {}
+    pending = [("", path)]
+    while pending:
+        prefix, folder = pending.pop()
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                name = f"{prefix}{entry.name}"
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append((name + "/", entry.path))
+                elif not entry.name.endswith(_NOTES_SUFFIXES):
+                    st = entry.stat(follow_symlinks=False)
+                    out[name] = (int(st.st_size), int(st.st_mtime_ns))
+    return out
+
+
 def prepare(data, index: int, other_password: str = "") -> tuple[str, str]:
     """Check recording ``index`` and return the ``(basic, full-access)``
     passwords to write with (``("", "")`` for a recording without any).
@@ -171,6 +196,10 @@ class WriteResult:
     uids: set[int] = field(default_factory=set)
     error: UserMessage | None = None
     stopped: bool = False
+    #: Per recording that was written to: whether its signal files (see
+    #: :func:`signal_snapshot`) are exactly as they were just before the write. A recording
+    #: missing here (or False) is not known to be unchanged.
+    signals_same: dict[int, bool] = field(default_factory=dict)
 
 
 def write_plan(
@@ -224,31 +253,42 @@ def write_plan(
                 exc.user_message.detail,
             )
             return result
-        for items, channel in steps:
-            try:
-                check_cancelled()
-                with mef3io.Writer(path, overwrite=False, password1=p1, password2=p2) as writer:
-                    writer.write_annotations([i.record() for i in items], channel=channel)
-            except BaseException as exc:  # noqa: BLE001 - every library error becomes a plain one
-                if is_stop(exc):
-                    result.stopped = True
-                    result.error = UserMessage(
-                        "Stopped",
-                        "The save was stopped."
-                        + _added_text(data, added)
-                        + " Everything not yet added remains in the draft.",
-                    )
-                elif isinstance(exc, Exception):
-                    result.error = _plain(exc, letter, data, added).user_message
-                else:
-                    raise
-                return result
-            result.uids.update(i.uid for i in items)
-            added[index] = added.get(index, 0) + len(items)
-            if index not in result.written:
-                result.written.append(index)
-            done += len(items)
-            report(done, total)
+        try:  # what the signal files are right before the write (names, sizes, times only)
+            before = signal_snapshot(path)
+        except OSError:
+            before = None
+        try:
+            for items, channel in steps:
+                try:
+                    check_cancelled()
+                    with mef3io.Writer(path, overwrite=False, password1=p1, password2=p2) as writer:
+                        writer.write_annotations([i.record() for i in items], channel=channel)
+                except BaseException as exc:  # noqa: BLE001 - every library error becomes a plain one
+                    if is_stop(exc):
+                        result.stopped = True
+                        result.error = UserMessage(
+                            "Stopped",
+                            "The save was stopped."
+                            + _added_text(data, added)
+                            + " Everything not yet added remains in the draft.",
+                        )
+                    elif isinstance(exc, Exception):
+                        result.error = _plain(exc, letter, data, added).user_message
+                    else:
+                        raise
+                    return result
+                result.uids.update(i.uid for i in items)
+                added[index] = added.get(index, 0) + len(items)
+                if index not in result.written:
+                    result.written.append(index)
+                done += len(items)
+                report(done, total)
+        finally:  # right after the write (or the failed one): the same files, or not
+            if before is not None and index in result.written:
+                try:
+                    result.signals_same[index] = signal_snapshot(path) == before
+                except OSError:
+                    result.signals_same[index] = False
     return result
 
 

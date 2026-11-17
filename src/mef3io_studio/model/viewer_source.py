@@ -449,15 +449,21 @@ class ViewerData:
         self._locked = tuple(locked)
         return list(out)
 
-    def refresh_notes(self, appended: dict[int, int]) -> bool:
+    def refresh_notes(
+        self, appended: dict[int, int], signals_same: dict[int, bool] | None = None
+    ) -> bool:
         """After notes were APPENDED to recordings (``appended``: recording
         index -> how many): read only the notes again, keeping the readers, the
         tile cache (``epoch`` stays) and everything cached about the signal.
 
-        It is done only when it is certain that the signal did not change: each
-        written recording is inspected once more (the fingerprint taken after
-        the write must be the one taken at opening), and the notes read back
-        must hold exactly the notes that were appended (an unlocked recording).
+        It is done only when it is certain that the signal did not change: for each
+        written recording either the caller says its signal files are exactly as they
+        were just before the write (``signals_same``: names, sizes and times from one
+        directory walk, taken after the check against the fingerprint of opening, so
+        nothing is opened), False meaning "reopen"; or, without that, the recording is
+        inspected once more (the fingerprint after the write must be the one taken at
+        opening). The notes read back must hold exactly the notes that were appended
+        (an unlocked recording).
         Returns False when either fails: nothing is changed then, and the
         caller reopens the recordings (:meth:`reopen`). A task thread's call;
         it holds the notes lock like :meth:`annotations`."""
@@ -467,7 +473,12 @@ class ViewerData:
             before = self._annotations
             if before is None or self._closed:
                 return False
+            same = signals_same or {}
             for i in appended:
+                if i in same:
+                    if not same[i]:
+                        return False
+                    continue
                 facts = self._facts[i]
                 baseline = facts[2] if facts is not None else self._prints[i]
                 if baseline is None:
