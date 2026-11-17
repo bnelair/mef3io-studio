@@ -89,3 +89,22 @@ def test_depth_leads_beside_a_scalp_set_are_still_leads():
 def test_without_a_midline_name_the_rule_does_not_change():
     # no midline name: a four-contact prefix of scalp letters is taken for a lead, as before
     assert m.real_leads([f"F{i}" for i in range(1, 9)]) == {"F"}
+
+
+# --- 3. hidden details: no typed text offered ----------------------------------------------------
+
+
+def test_typed_texts_are_offered_only_while_details_are_shown(ed):
+    from mef3io_studio.viewer.inline_note import Hint
+
+    win, spy, _ = ed
+    win.edit.remember_text("patient-detail-xyz")
+    assert ("text", "patient-detail-xyz") in [(h.kind, h.value) for h in win.edit.hints()]
+    shown = win._reveal
+    win._reveal = lambda i: False  # details hidden again
+    assert all(h.kind != "text" for h in win.edit.hints())
+    win._reveal = lambda i: i == 0  # one recording still hidden
+    assert all(h.kind != "text" for h in win.edit.hints())
+    win._reveal = shown
+    assert ("text", "patient-detail-xyz") in [(h.kind, h.value) for h in win.edit.hints()]
+    assert "patient-detail-xyz" not in repr(Hint("text", "patient-detail-xyz"))

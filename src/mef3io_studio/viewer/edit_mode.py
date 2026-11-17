@@ -94,6 +94,7 @@ class EditMode(QObject):
         self._inline_for: tuple | None = None
         self._types_of: list | None = None
         self._types: list[str] = []
+        self._types_shown: tuple = ()
         self._jobs: JobManager | None = None
         self.banner = QFrame(window)
         self.banner.setObjectName("EditBanner")
@@ -419,10 +420,12 @@ class EditMode(QObject):
         """The types of note the recordings already hold (their quick labels:
         what the type list shows), most used first, then the quick types."""
         marks = self.win.marks
-        if marks is not self._types_of:
+        shown = self._all_shown_state()
+        if marks is not self._types_of or shown != self._types_shown:
             counts = vm.type_counts(marks, self.win._shown)
             self._types = [label for key, label, _n in counts if key.startswith(vm.QUICK_PREFIX)]
             self._types_of = marks
+            self._types_shown = shown
         out = list(self._types)
         for label in self.quick_types():
             if label.casefold() != ad.PLAIN.casefold() and label.casefold() not in {
@@ -431,10 +434,20 @@ class EditMode(QObject):
                 out.append(label)
         return out
 
+    def _all_shown_state(self) -> tuple:
+        w = self.win
+        return tuple(bool(w._shown(i)) for i in range(len(w.data.recordings)))
+
+    def _details_shown(self) -> bool:
+        """Whether the details of every recording are shown (no hidden text can be near)."""
+        return all(self._all_shown_state())
+
     def hints(self) -> list[Hint]:
         """What the inline field offers for one key: the last texts typed, then
         types (about six in all, the texts first but at most four)."""
-        out = [Hint("text", t) for t in self.recent_texts[:4]]
+        # texts typed while details were shown are offered only while they are shown
+        texts = self.recent_texts[:4] if self._details_shown() else []
+        out = [Hint("text", t) for t in texts]
         for label in self._recording_types():
             if len(out) >= 6:
                 break

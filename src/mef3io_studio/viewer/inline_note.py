@@ -11,7 +11,7 @@ here can identify a patient: nothing is logged or stored.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QKeyEvent
@@ -29,7 +29,7 @@ class Hint:
     "type" (the label before a colon, kept in front of the rest)."""
 
     kind: str
-    value: str
+    value: str = field(repr=False)  # a typed text can identify a patient: not in any repr
 
 
 class _Field(QLineEdit):
