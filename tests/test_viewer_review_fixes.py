@@ -54,3 +54,38 @@ def test_the_anchor_is_never_off_the_page(ed):
     t, end = win.edit._anchor()
     assert win.state.t0 <= t < win.state.t0 + win.page_us() and end is None
     assert t == win.state.t0 + win.page_us() // 2
+
+
+# --- 2. the lead rule on a 10-10 cap ----------------------------------------------------------
+
+from mef3io_studio.model import montage as m  # noqa: E402
+
+TEN_TWENTY = "Fp1 Fp2 F3 F4 F7 F8 C3 C4 T3 T4 T5 T6 P3 P4 O1 O2 Fz Cz Pz A1 A2".split()
+TEN_TEN = (
+    [f"F{i}" for i in range(1, 9)]
+    + [f"FC{i}" for i in range(1, 5)]
+    + [f"C{i}" for i in range(1, 7)]
+    + [f"P{i}" for i in range(1, 9)]
+    + ["Cz", "Fz", "Pz"]
+)
+DEPTH = [f"LA{i}" for i in range(1, 13)] + [f"RB{i}" for i in range(1, 9)]
+
+
+def test_a_ten_ten_cap_has_no_leads_whatever_the_case_or_prefix():
+    assert m.real_leads(TEN_TWENTY) == frozenset()
+    assert m.real_leads(TEN_TEN) == frozenset()
+    assert m.real_leads([f"EEG {n}" for n in TEN_TEN]) == frozenset()
+    assert m.real_leads([n.lower() for n in TEN_TEN]) == frozenset()
+    for mid in ("Fpz", "AFz", "FCz", "CPz", "POz", "Oz", "EEG Oz"):
+        assert m.real_leads([f"P{i}" for i in range(1, 9)] + [mid]) == frozenset()
+
+
+def test_depth_leads_beside_a_scalp_set_are_still_leads():
+    assert m.real_leads(DEPTH) == {"LA", "RB"}
+    assert m.real_leads(TEN_TEN + DEPTH) == {"LA", "RB"}
+    assert m.real_leads(["EEG " + n for n in TEN_TEN] + DEPTH) == {"LA", "RB"}
+
+
+def test_without_a_midline_name_the_rule_does_not_change():
+    # no midline name: a four-contact prefix of scalp letters is taken for a lead, as before
+    assert m.real_leads([f"F{i}" for i in range(1, 9)]) == {"F"}

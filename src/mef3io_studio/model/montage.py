@@ -60,18 +60,45 @@ def lead_and_contact(name: str) -> tuple[str, int | None]:
 MIN_LEAD_CONTACTS = 4
 
 
+#: The midline names of the 10-20 / 10-10 scalp sets: a recording holding one is a scalp
+#: recording, whatever else it holds.
+SCALP_MIDLINE = frozenset("fz cz pz oz fpz afz fcz cpz poz".split())
+
+#: The prefixes of the standard scalp set (``F1`` ... ``F8``, ``FC1`` ... ``C6``, ``P1`` ...
+#: ``P8``, ``A1`` ``A2``, ``M1`` ``M2``): in a scalp recording they are never leads.
+SCALP_PREFIXES = frozenset("fp af f fc ft c t cp tp p po o a m".split())
+
+_EEG_PREFIX = re.compile(r"^eeg[\s_\-]*")
+
+
+def _scalp_key(name: str) -> str:
+    return _EEG_PREFIX.sub("", name.strip().casefold())
+
+
+def is_scalp_recording(names: Sequence[str]) -> bool:
+    """Whether the names include a midline scalp name (Fz, Cz, Pz, Oz, Fpz, AFz, FCz, CPz,
+    POz; any case, with or without an ``EEG`` prefix)."""
+    return any(_scalp_key(n) in SCALP_MIDLINE for n in names)
+
+
 def real_leads(names: Sequence[str]) -> frozenset[str]:
     """The leads among ALL recorded channels: prefixes with at least
-    :data:`MIN_LEAD_CONTACTS` different contacts, contact 1 among them."""
+    :data:`MIN_LEAD_CONTACTS` different contacts, contact 1 among them. In a recording that
+    holds a midline scalp name, the prefixes of the standard scalp set are never leads (a
+    10-10 cap has ``F1`` ... ``F8``); depth leads beside them (``LA1`` ... ``LA12``) still are."""
     contacts: dict[str, set[int]] = {}
     for n in names:
         lead, contact = lead_and_contact(n)
         if contact is not None:
             contacts.setdefault(lead, set()).add(contact)
+    scalp = is_scalp_recording(names)
     return frozenset(
         lead
         for lead, c in contacts.items()
-        if len(c) >= MIN_LEAD_CONTACTS and 1 in c and not _surely_not_eeg(lead)
+        if len(c) >= MIN_LEAD_CONTACTS
+        and 1 in c
+        and not _surely_not_eeg(lead)
+        and not (scalp and _scalp_key(lead).strip(" _-") in SCALP_PREFIXES)
     )
 
 
