@@ -1259,6 +1259,7 @@ class ViewerWindow(QMainWindow):
         self._sync_toolbar_time()
         self._update_status_mode()
         self.filter_panel.set_notice(self._notice())
+        self.canvas.refresh_pointer()  # a resting mouse is now over another time
         first = not self._ready
         self._ready = True
         if first:  # once the first page is asked for: the strip learns where the data really is

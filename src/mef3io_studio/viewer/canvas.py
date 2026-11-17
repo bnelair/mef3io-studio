@@ -1080,6 +1080,15 @@ class TraceCanvas(QWidget):
         self.pointer_changed.emit(self._t_at(pos), row)
         self.update()
 
+    def refresh_pointer(self) -> None:
+        """The page changed under a resting mouse: tell what time and row the pointer is over
+        now (no mouse move comes), so a key that adds at the pointer uses the page shown."""
+        pos = self._pointer
+        if pos is None:
+            return
+        row = self.row_at(pos.y()) if self.plot_rect().contains(pos) else None
+        self.pointer_changed.emit(self._t_at(pos), row)
+
     def leaveEvent(self, event) -> None:  # noqa: N802
         self._pointer = None
         self.pointer_changed.emit(None, None)

@@ -295,12 +295,15 @@ class EditMode(QObject):
         """The time (and end, for a selection) to add at: the Shift+drag
         selection, else the pointer, else the middle of the page."""
         w = self.win
+        lo, length = int(w.state.t0), int(w.page_us())
+        hi = lo + length
         sel = w.canvas.selection
-        if sel is not None:
+        if sel is not None and int(sel[0]) < hi and int(sel[1]) > lo:
             return int(sel[0]), int(sel[1])
-        if w._pointer_t is not None:
+        # never a time that is not on the page shown (a pointer time from before a page turn)
+        if w._pointer_t is not None and lo <= int(w._pointer_t) < hi:
             return int(w._pointer_t), None
-        return int(w.state.t0 + w.page_us() // 2), None
+        return lo + length // 2, None
 
     def _check_values(self, values: dict, ignore_uid: int | None = None) -> str:
         item = ad.DraftItem(
