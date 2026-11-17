@@ -54,6 +54,7 @@ from ..model import viewer_colours as vc
 from ..model import viewer_display as vd
 from ..model import viewer_marks as vm
 from ..model import viewer_view as vv
+from ..model.sampling import bounded_sample
 from ..model.viewer_view import ViewState
 from ..workers.slices import SlicedRunner
 from ..workers.viewer_pipeline import EnvelopePiece
@@ -91,6 +92,12 @@ CLIP_FILL = 0.9
 #: overview's block extremes: ``MIN_JUDGE_ENVELOPE``) for its size to be judged.
 MIN_JUDGE_VALUES = 200
 MIN_JUDGE_ENVELOPE = 20
+#: A row's size is judged from at most this many of its values (fixed pseudo-random
+#: positions: the 98th percentile of 8192 values is as good as of 240000, and 30 times cheaper
+#: on the GUI thread).
+JUDGE_SAMPLE = 8192
+#: Pages one undecided fit looks at before it gives up and keeps the default.
+MAX_FIT_TRIES = 5
 #: A held key asks for its page this long after the first repeat of a batch.
 REPEAT_FRAME_MS = 12
 #: How many of the notes carried into the page the group's tooltip lists.
@@ -227,6 +234,8 @@ class ViewerWindow(QMainWindow):
         self._auto_open = self.FIT_ON_OPEN and not self._sens_stored
         #: The last complete page the fit looked at (it is not tried twice on one).
         self._fit_tried: tuple | None = None
+        #: Complete pages the fit could not judge (it stops after ``MAX_FIT_TRIES``).
+        self._fit_failures = 0
         #: The montage, reference, filters and hidden channels the held centres are for.
         self._look: tuple | None = None
         #: Whether the page was an overview the last time ``_refresh`` looked.
@@ -1066,9 +1075,12 @@ class ViewerWindow(QMainWindow):
         else:
             w = piece.window(r.local, t0, t1)
             least = MIN_JUDGE_VALUES
-        w = w[np.isfinite(w)]
-        if w.size < least:
+        total = w.size
+        w = bounded_sample(w, JUDGE_SAMPLE)
+        finite = w[np.isfinite(w)]
+        if not finite.size or finite.size * (total / w.size) < least:
             return None
+        w = finite
         spread = float(np.percentile(np.abs(w - np.median(w)), 98))
         return spread if spread > 0 else None
 
@@ -1229,6 +1241,7 @@ class ViewerWindow(QMainWindow):
             # a sensitivity that was only fitted, never chosen, is fitted again.
             if self._was_overview is not None and self._fit_allowed():
                 self._auto_open = True
+                self._fit_failures = 0
             self._was_overview = overview
         s = self.state
         look = (s.montage, s.reference, s.filters, s.hidden)
@@ -1358,8 +1371,12 @@ class ViewerWindow(QMainWindow):
         self._fit_tried = page
         before = self.state.sensitivity
         if not self.auto_sensitivity(announce=False):
+            # a page that cannot be judged: a few more pages are tried, then the default stays
+            self._fit_failures += 1
+            if self._fit_failures >= MAX_FIT_TRIES:
+                self._auto_open = False
             return
-        self._auto_open = False
+        self._auto_open = False  # decided: kept until Auto, a chosen value or the overview
         if self.state.sensitivity != before:
             self.status_message.setText(
                 f"Sensitivity set to {self.state.sensitivity:g} µV/mm to fit this recording."
