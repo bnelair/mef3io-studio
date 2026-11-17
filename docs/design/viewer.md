@@ -588,11 +588,20 @@ The honest steps for one note, from "I see something" to "it is stored":
   field (`viewer/inline_note.py`) opens where the note will be, with the caret in it.
   Enter keeps (an empty field keeps a bare marker), Esc drops, a click elsewhere keeps
   typed words and drops an empty field. A type written first ("Spike: ...") is the type,
-  by the convention above.
+  by the convention above. The time is the one under the pointer **on the page shown**:
+  every page turn asks the canvas again (`refresh_pointer`), so a note added after paging
+  with the keys and a resting mouse lands on the new page; `EditMode._anchor` never returns a
+  time off the page (a pointer time or selection from before a page turn is not used: it
+  falls back to the middle of the page, where the field opens). When `N` turned edit mode
+  on, Esc on its field (or a refused note with an empty draft) turns it off again; a mode
+  the person turned on stays.
 - **Offered for one key** (Alt+1 ... Alt+6, a click, or Up/Down through the texts): the last
   four texts typed in this window, then the types the recordings already hold (their quick
   labels) and the quick types. The texts are in memory for the window only and are never
-  written (a note's text can hold patient details; `PREFERENCES` has no such key).
+  written (a note's text can hold patient details; `PREFERENCES` has no such key). The
+  texts are offered only while the details of EVERY recording are shown (`EditMode.hints`);
+  with any hidden none is offered, and they come back when the details are shown. The types
+  list is made again when what is shown changes. `Hint.__repr__` hides its value.
 - **Entering edit mode explicitly** (the switch, `A`, the digit keys, the right-click menu,
   the form) works as before; the form stays for the time/channel/length by hand.
 - **Draft notes** keep their marks: dashed on the traces, *(new)* in the list, and a quiet
@@ -604,7 +613,9 @@ The honest steps for one note, from "I see something" to "it is stored":
   (`EditMode.quick_save_text`). Anything else shows the full preview. Every check of
   `annotation_save` is unchanged: the recording moved, replaced or changed, the passwords.
 - **No duplicates, one rule** (`annotation_draft.note_key`: time, record type, length, stored
-  text, channel). The draft and the editor refuse a note equal to a stored one or to another
+  text, channel; and, once the recording a note goes to is known, that recording: a plan's key
+  is `(recording, note_key)` and stored notes are compared as `(recording, key)` pairs
+  (`Draft.stored_pairs`), so two recordings side by side can each hold the same note). The draft and the editor refuse a note equal to a stored one or to another
   draft one with one sentence; an import leaves such rows out and says how many; a save
   leaves a copy of a stored note out of the write and out of the draft; and the read-again
   after a stopped save (`items_now_stored`) matches with the same key (now including the
@@ -612,6 +623,18 @@ The honest steps for one note, from "I see something" to "it is stored":
 - **A save of notes does not start over.** The signal did not change, so `ViewerData.refresh_notes`
   reads only the notes again: one inspect per written recording must still give the
   fingerprint taken at opening, and the notes read back must be exactly the ones appended.
+  The proof is no longer a third inspect after the write: `write_plan` takes
+  `annotation_save.signal_snapshot` of each recording right after its check against the
+  fingerprint of opening (every file that is not a notes file, as name, size and mtime_ns,
+  from ONE `os.scandir` walk, no file opened) and again right after its write; `WriteResult.
+  signals_same` says whether they are equal, and `refresh_notes(appended, signals_same)` skips
+  the inspect for those (False = reopen as before; a recording not in the dict is inspected as
+  before). The two checks before the write (`prepare` and the one right before the write) are
+  both kept: they are the safety check, they run back to back inside the task AFTER the user's
+  answer, and a result a moment old is not reused on purpose (the window between check and
+  write is the thing the second check keeps short, and it also covers the time earlier
+  recordings take to write). The limit of the snapshot: a change that keeps a file's size and
+  its mtime (on a drive with a coarse clock) is not seen by it.
   The readers, `epoch` (so the tile cache and the prepared pages), the strip and the
   view stay; the canvas is never set loading; the draft is not blanked or abandoned before
   the write. When either test fails the window reopens as before (page waits, the strip read
@@ -634,7 +657,13 @@ The honest steps for one note, from "I see something" to "it is stored":
   then reads the recordings again. Nothing in the app rewrites a recording. The **Take
   out** button of the notes list keeps its documented behaviour for a stored note (it marks
   it in the draft for a later copy, see below): the Delete key and the menu are the ones
-  that say it cannot be removed yet.
+  that say it cannot be removed yet. Delete / Backspace remove a draft note only while the
+  traces, the note chips or the notes list have the keyboard (`ViewerWindow._focus_on_notes`):
+  on a combo box or a button the key does nothing.
+- **A reopen that fails after a notes-only save** switches saving off (`stale`, the count line
+  says so) because the notes shown are the old ones and a note added again would be stored
+  twice. `begin_data_change()` is inside the guarded path of both reopen routes, so a raise
+  there frees the draft.
 
 **Edit mode** (switch in toolbar row 1; off on every open):
 - **Draft:** a banner says "Edit mode: changes are a draft until you save".
@@ -791,7 +820,9 @@ sensitivity says so on screen.
 - **Centred, and the centre is held.** Each row has a held level at its middle
   (`TraceCanvas._levels`, keyed by channel and minus channel, in the data's
   unit): kept while the page's own level (the median, from a sample of at most
-  a thousand points: `_RowShape.centre`) stays within half a row height (at the
+  a thousand points at fixed pseudo-random positions, `model/sampling.bounded_sample`: a
+  regular stride locks to a periodic signal, a sine whose period divides it read at one phase
+  only: `_RowShape.centre`) stays within half a row height (at the
   row's sensitivity) of it, otherwise the page's level is taken. So a small step
   in the level moves the trace (it is visible) and a big one starts the middle
   again; a DC offset of millivolts never moves a trace away from its row. The
@@ -814,7 +845,11 @@ sensitivity says so on screen.
   cannot be judged (`_page_spread` is None: flat, only gaps, fewer than
   `MIN_JUDGE_VALUES` = 200 values per row, `MIN_JUDGE_ENVELOPE` = 20 block
   extremes in the overview) leaves the default and the next complete page tries
-  again (a page is not tried twice); the first choice ends it. The spread is the
+  again (a page is not tried twice, and after `MAX_FIT_TRIES` = 5 complete pages it could not
+  judge it stops and keeps the default; the overview switch arms it again); the first
+  choice ends it, and so does a successful fit: it is kept (no page-to-page refit) until
+  Auto, a chosen value or the overview switch. A row is judged from at most `JUDGE_SAMPLE` =
+  8192 of its values (the same sampler), so the GUI thread pays about 0.3 ms a row, not 20. The spread is the
   98th percentile of the distance from the row's median, over the page's values
   or, in the overview, the blocks' lowest and highest; the fit is the median
   over the EEG rows in view. A fitted value is never in `_chosen`, so never
@@ -829,7 +864,8 @@ sensitivity says so on screen.
   is an ECG row) and each has a sensitivity of its own (`DrawRow.own_scale`,
   `own_sens`): a step of the toolbar's list (`SENS_STEPS`) chosen from a robust
   stretch of its data (`_choose_own_scales`: when the row first has a page it can
-  be judged from, and when Auto is pressed), then held across pages. The row is
+  be judged from, and when Auto is pressed, a filter change, or when the overview starts or
+  ends), then held across pages. The row is
   drawn at the coarser of its own value and the toolbar's
   (`TraceCanvas.row_sensitivity`), never finer, so a lead-off ECG of 0.2 µV noise
   is a flat line. Its gutter has a small second line ("500 µV/mm") whenever it
@@ -856,7 +892,11 @@ sensitivity says so on screen.
 - A **lead** (`montage.real_leads`) is a name prefix that, among ALL recorded
   channels, has at least `MIN_LEAD_CONTACTS` = 4 contacts, contact 1 among them
   (`LA1` ... `LA12` is one; scalp names `F3 F4 F7 F8`, `T3`-`T6`, `A1 A2`,
-  `Fp1 Fp2` are not). The window computes it once (`_leads`). A channel of a lead
+  `Fp1 Fp2` are not). A **10-10 cap** has four or more of `F1..F8`, `FC1..`, `C1..C6`,
+  `P1..P8`: when the names include a midline scalp name (`Fz Cz Pz Oz Fpz AFz FCz CPz POz`, any
+  case, with or without an `EEG ` prefix) the prefixes of the standard scalp set (`Fp AF F FC
+  FT C T CP TP P PO O A M`) are never leads; depth leads in the same recording (`LA1..LA12`)
+  still are. The window computes it once (`_leads`). A channel of a lead
   is EEG whatever its letters (`HR1`..`HR8`, `CO1`.., `DC1`.., `LOC` as lead names
   are neither sent to the end nor given a scale of their own).
 - Rows of one lead in a row (runs of at least `montage.MIN_GROUP` = 3) are a

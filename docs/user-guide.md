@@ -888,8 +888,10 @@ The **Montage** box in the toolbar chooses how the channels are shown:
 **Channels** (`C`) opens a list with a search box: tick the channels to show.
 Above the channels are the **leads**. A lead is a name with at least four
 contacts, one of them contact 1 (for example LA, made of LA1 to LA12); scalp
-names such as F3, F4, T3 or A1 are not leads. Tick or untick a whole lead at once:
-tick or untick a whole lead at once; a lead with only some of its channels
+names such as F3, F4, T3 or A1 are not leads, and neither is anything of a scalp cap
+(F1 to F8, FC1 to FC4, C1 to C6, P1 to P8 and so on) when the recording has a
+midline scalp channel such as Fz, Cz or Pz; electrode leads recorded beside a
+scalp set (LA1 to LA12) still are. Tick or untick a whole lead at once; a lead with only some of its channels
 shown is half ticked. Searching finds a lead by its name or by a channel in
 it. Right-clicking a trace can also hide a channel or a whole lead, or show
 only that lead.
@@ -907,7 +909,8 @@ EEG (ECG, EMG, DC, SpO2 and the like) come last; a channel that belongs to a lea
 is always taken for EEG, whatever its name (a lead called HR or DC stays with the
 others). Each channel that is not EEG has a sensitivity of its own, chosen from
 the same list as the toolbar's from what it shows when the recording opens (and
-again when you press **Auto**), then kept while you move through the recording.
+again when you press **Auto**, change a filter, or zoom into or out of the overview),
+then kept while you move through the recording.
 It is never more magnified than the toolbar's value, so a disconnected ECG with
 only amplifier noise looks flat, as it is. When a row's sensitivity differs from
 the toolbar's, its name has a small second line ("500 µV/mm") and the status
@@ -1015,25 +1018,30 @@ offers:
 
 **The quick way.** Put the pointer where the note belongs and press **`N`**.
 A small text field opens right there (edit mode turns itself on). Type, then
-press **Enter** to keep the note or **Esc** to drop it. To give the note a
+press **Enter** to keep the note or **Esc** to drop it (if `N` was what turned
+edit mode on, **Esc** turns it off again). The note goes where the pointer is on
+the page you see, also after you turned pages with the keys and left the mouse
+where it was; with the pointer off the traces it goes to the middle of the page. To give the note a
 length, drag with **Shift** held over the stretch first (the selection stays
 until you use it), then press `N`: the note lasts as long as the selection.
 Under the field the app offers your last few texts and the types of note
 that the recording already holds: press **Alt+1**, **Alt+2** and so on, or
 click one (the up and down arrows walk through your last texts). Those texts
 are remembered only while this window is open and are never written to the
-settings. Then press **Ctrl+S**: one line asks "Save 1 new note into
+settings, and they are offered only while the details of every recording are shown. Then press **Ctrl+S**: one line asks "Save 1 new note into
 Recording A?", and **Save** adds it to the recording. (Ctrl+S inside the text
 field keeps the note and goes straight to that question.) A quiet *3 notes not
 saved yet* in the status bar reminds you while a draft exists, and closing the
 window still asks.
 
 A note that is the same as one already stored, or already in your draft (same
-time, length, type, text and channel), is refused with a sentence, and a save
+time, length, type, text and channel, in the same recording: recordings side by
+side can each hold the same note), is refused with a sentence, and a save
 never stores a note twice. In your draft you can change a note's text or
 remove it: right-click the note (its chip, its row in the list, or its mark on
 the traces) and choose **Change the text** or **Remove this note**, or select
-it and press **Delete**; **Ctrl+Z** brings it back. A note that is **already
+it and press **Delete** (or Backspace) while the traces, the note marks or the
+notes list have the keyboard; **Ctrl+Z** brings it back. A note that is **already
 stored** cannot be removed yet in this version: the entry is there but grey,
 with the reason beside it.
 
