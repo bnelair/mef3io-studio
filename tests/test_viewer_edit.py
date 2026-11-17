@@ -1140,18 +1140,39 @@ def test_a_save_of_notes_does_not_read_the_strip_again_nor_interrupt_a_read(ed, 
     win, spy, _ = ed
     qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
     stretches = list(win._stretches)
+    data, ctl = win.data, win.controller
+    # a strip read that is RUNNING while the save happens: it waits at the gate inside the read
+    gate, started = threading.Event(), threading.Event()
+    real_env, real_many = data.envelope, data.envelope_many
+
+    def gated(real):
+        def call(*a, **k):
+            started.set()
+            assert gate.wait(30)
+            return real(*a, **k)
+
+        return call
+
+    data.envelope, data.envelope_many = gated(real_env), gated(real_many)
+    win._stretches = []  # what the read delivers is seen arriving
+    win.request_strip_envelope()
+    qtbot.waitUntil(started.is_set, timeout=20_000)
+    epoch = ctl._strip_epoch
     order, asked = [], []
-    ctl = win.controller
-    real_drain, real_reopen, real_ask = ctl.drain_strip, win.data.reopen, ctl.request_strip_envelope
+    real_drain, real_reopen, real_ask = ctl.drain_strip, data.reopen, ctl.request_strip_envelope
     ctl.drain_strip = lambda *a, **k: (order.append("drain"), real_drain(*a, **k))[1]
-    win.data.reopen = lambda: (order.append("reopen"), real_reopen())[1]
+    data.reopen = lambda: (order.append("reopen"), real_reopen())[1]
     ctl.request_strip_envelope = lambda *a, **k: (asked.append(a), real_ask(*a, **k))[1]
     turn_on(win)
     win.edit.add(T0 + 30 * SEC, None, "Spike", "once")
     finish_save(qtbot, win)
     qtbot.wait(300)
+    assert not gate.is_set() and win._stretches == []  # the read is still in flight
     assert order == []  # nothing is reopened, so no read has to end first
     assert not asked  # only notes were added: the signal is as it was
+    assert ctl._strip_epoch == epoch  # and the running read was not given up
+    gate.set()  # it now ends, and its result is shown as it would have been
+    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
     assert win._stretches == stretches
 
 

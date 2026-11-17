@@ -227,6 +227,7 @@ class ViewerWindow(QMainWindow):
         #: (channel, minus) -> the sensitivity a row that is not EEG was given
         #: (chosen once, held across pages; see ``_choose_own_scales``).
         self._own_sens: dict[tuple, float] = {}
+        self._own_filters = self.state.filters  # the filters ``_own_sens`` was chosen under
         self._long_actions: list = []
         #: Fit the sensitivity once on the first complete page (not when the
         #: person has chosen a sensitivity before: that one is kept).
@@ -742,6 +743,9 @@ class ViewerWindow(QMainWindow):
 
     def _key_pressed(self, event: QKeyEvent, entry) -> None:
         self.last_key_text = event.text()
+        if entry.action == "remove_note" and not self._focus_on_notes():
+            super().keyPressEvent(event)  # a combo box or a button is not a place to remove a note
+            return
         if self.canvas.active_edge and entry.action in ("page_forward", "page_back"):
             self.nudge_edge(1 if entry.action == "page_forward" else -1)
             event.accept()
@@ -750,6 +754,17 @@ class ViewerWindow(QMainWindow):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def _focus_on_notes(self) -> bool:
+        """Whether the keyboard is on the traces, the note chips or the notes list: the only
+        places where Delete and Backspace take the selected draft note out."""
+        focus = QApplication.focusWidget()
+        if focus is None:
+            return False
+        for w in (self.canvas, self.chips, self.notes_tab.table):
+            if focus is w or w.isAncestorOf(focus):
+                return True
+        return False
 
     # -- geometry and the page ----------
 
@@ -1243,7 +1258,11 @@ class ViewerWindow(QMainWindow):
                 self._auto_open = True
                 self._fit_failures = 0
             self._was_overview = overview
+            self._own_sens.clear()  # a row that is not EEG is judged again by what it now shows
         s = self.state
+        if s.filters != self._own_filters:  # another filtering: another size, judged again
+            self._own_filters = s.filters
+            self._own_sens.clear()
         look = (s.montage, s.reference, s.filters, s.hidden)
         if look != self._look:  # other rows or other filtering: the held centres are void
             self._look = look

@@ -78,3 +78,36 @@ def test_a_fitted_scale_is_kept_when_the_next_pages_look_different(make_window, 
         win.go_to(T0 + 60 * k * SEC)
         settle_rows(win)
         assert win.state.sensitivity == fitted
+
+
+# --- 8e. the own sensitivity of a row that is not EEG is chosen again ----
+
+
+def _ecg(t, rng):
+    return 900 * np.sin(2 * np.pi * 1.2 * t) + 5 * rng.normal(size=t.size)
+
+
+def test_a_row_that_is_not_eeg_is_judged_again_after_a_filter_change_and_the_overview(
+    make_window, tmp_path
+):
+    from mef3io_studio.model import dsp
+
+    win = make_window(write_signals(tmp_path / "e.mefd", {**eeg(5), "ECG": _ecg}, seconds=600))
+    win.set_state(sensitivity=100)
+    settle_rows(win)
+    key = ("ECG", None)
+    assert key in win._own_sens
+
+    win._own_sens[key] = 12345.0  # a size chosen under other settings
+    win._filters_chosen(dsp.FilterSettings(1.0, 50.0, 50.0))
+    settle_rows(win)
+    assert win._own_sens[key] != 12345.0  # judged again
+
+    win._own_sens[key] = 12345.0
+    win.set_timebase(0.05)  # into the overview
+    settle_rows(win)
+    assert win._own_sens.get(key) != 12345.0
+    win._own_sens[key] = 12345.0
+    win.set_timebase(30)  # and out of it
+    settle_rows(win)
+    assert win._own_sens.get(key) != 12345.0

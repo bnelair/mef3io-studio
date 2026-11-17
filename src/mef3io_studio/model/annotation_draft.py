@@ -191,6 +191,11 @@ def item_key(item: DraftItem) -> tuple:
     return note_key(item.time, item.code, item.end, item.stored_text, item.channel)
 
 
+def _same_place(a: DraftItem, b: DraftItem) -> bool:
+    """Whether two items could go to the same recording: not when each is chosen for another."""
+    return a.recording is None or b.recording is None or a.recording == b.recording
+
+
 def items_now_stored(items: Sequence[DraftItem], before, after) -> list[int]:
     """The uids of the draft's new items that the recordings hold now, though
     nothing said so (a save that ended without telling what it had written):
@@ -235,6 +240,9 @@ class Draft:
         #: Gives the keys (:func:`mark_key`) of the notes already stored; set by
         #: the window. None = nothing is stored (as in a test).
         self.stored_keys: Callable[[], Collection[tuple]] | None = None
+        #: The same notes as ``(recording index, key)`` pairs: a note chosen for ONE recording is
+        #: the same as a stored note only of that recording. None = judged without the recording.
+        self.stored_pairs: Callable[[], Collection[tuple]] | None = None
         #: How many rows the last :meth:`add_many` left out as copies.
         self.skipped_duplicates = 0
 
@@ -334,10 +342,13 @@ class Draft:
         """One sentence when ``item`` is the same note as a stored one or as
         another item of the draft (not ``ignore_uid``), else ""."""
         key = item_key(item)
-        if self.stored_keys is not None and key in self.stored_keys():
+        if item.recording is not None and self.stored_pairs is not None:
+            if (item.recording, key) in self.stored_pairs():
+                return DUPLICATE_STORED
+        elif self.stored_keys is not None and key in self.stored_keys():
             return DUPLICATE_STORED
         for other in self._items.values():
-            if other.uid != ignore_uid and item_key(other) == key:
+            if other.uid != ignore_uid and item_key(other) == key and _same_place(item, other):
                 return DUPLICATE_DRAFT
         return ""
 
@@ -391,7 +402,7 @@ class Draft:
                 r.get("label") or PLAIN, r.get("text") or "", r.get("channel") or None,
                 r.get("recording"), None, True,
             )  # fmt: skip
-            key = item_key(item)
+            key = (item.recording, item_key(item))
             if key in keys or self.duplicate_reason(item):
                 self.skipped_duplicates += 1
                 continue
@@ -469,7 +480,8 @@ class Draft:
         choices: dict[tuple[int, ...], int] | None = None,
     ) -> SavePlan:
         stored = self.stored_keys() if self.stored_keys is not None else ()
-        return make_plan(self.additions(), self.stored_changes, holders, choices, stored)
+        pairs = self.stored_pairs() if self.stored_pairs is not None else None
+        return make_plan(self.additions(), self.stored_changes, holders, choices, stored, pairs)
 
 
 # --- routing -----------------------------------------------------------------------------
@@ -571,18 +583,30 @@ def make_plan(
     holders: Callable[[str | None, int], list[int]],
     choices: dict[tuple[int, ...], int] | None = None,
     stored: Collection[tuple] = (),
+    stored_pairs: Collection[tuple] | None = None,
 ) -> SavePlan:
+    """``stored``: the keys of the stored notes (judged without the recording);
+    ``stored_pairs``: ``(recording, key)`` of each stored note, which, when given, replaces it:
+    a note is the same as a stored or earlier one only in the recording it goes to, so two
+    recordings side by side can each hold the same note."""
     plan = SavePlan(needs_copy=needs_copy)
-    seen = set(stored)
+    seen: set[tuple] = set()
     for item in additions:
         key = item_key(item)
-        if key in seen:
+        if stored_pairs is None and key in stored:
             plan.duplicates.append(item)
             continue
-        seen.add(key)
         r = route(item, holders)
         if r.status == "ambiguous" and choices and choices.get(r.choices) in r.choices:
             r = Routing("ok", choices[r.choices])
+        where = r.recording if r.status == "ok" else None  # None: not decided (yet)
+        if (where is not None and stored_pairs is not None and (where, key) in stored_pairs) or (
+            where,
+            key,
+        ) in seen:
+            plan.duplicates.append(item)
+            continue
+        seen.add((where, key))
         if r.status == "outside":
             plan.refused.append((item, r.reason))
             continue

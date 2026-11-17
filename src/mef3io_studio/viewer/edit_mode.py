@@ -75,6 +75,7 @@ class EditMode(QObject):
         self.win = window
         self.draft = ad.Draft()
         self.draft.stored_keys = self._stored_keys
+        self.draft.stored_pairs = self._stored_pairs
         self._keys_of: list | None = None  # the marks the keys below were made from
         self._keys: frozenset = frozenset()
         self.on = False
@@ -95,6 +96,10 @@ class EditMode(QObject):
         self._types_of: list | None = None
         self._types: list[str] = []
         self._types_shown: tuple = ()
+        #: N turned edit mode on (it was off): Esc on its field turns it off again.
+        self._on_by_n = False
+        self._pairs_of: list | None = None
+        self._pairs: frozenset = frozenset()
         self._jobs: JobManager | None = None
         self.banner = QFrame(window)
         self.banner.setObjectName("EditBanner")
@@ -154,6 +159,15 @@ class EditMode(QObject):
             self._keys_of = marks
         return self._keys
 
+    def _stored_pairs(self) -> frozenset:
+        """``(recording, key)`` of every stored note: the same note in another recording is
+        not a copy of it."""
+        marks = self.win.marks
+        if marks is not self._pairs_of:
+            self._pairs = frozenset((m.recording, ad.mark_key(m)) for m in marks)
+            self._pairs_of = marks
+        return self._pairs
+
     def quick_types(self) -> tuple[str, ...]:
         s = self.win.settings
         return ad.parse_quick_types(s.get("viewer/quick_types") if s else "")
@@ -200,6 +214,7 @@ class EditMode(QObject):
 
     def _apply_mode(self, on: bool) -> None:
         self.on = on
+        self._on_by_n = False
         w = self.win
         (w.features.add if on else w.features.discard)("edit")
         self.banner.setVisible(on)
@@ -470,8 +485,10 @@ class EditMode(QObject):
         if self.inline.is_open:
             self.inline.field.setFocus()
             return
-        if not self.on and not self.set_on(True):
+        started = not self.on
+        if started and not self.set_on(True):
             return
+        self._on_by_n = started
         time, end = self._anchor()
         problem = self._check_values(
             {"time": time, "end": end, "label": ad.PLAIN, "text": "", "channel": None}
@@ -479,6 +496,7 @@ class EditMode(QObject):
         if problem and problem not in (ad.DUPLICATE_STORED, ad.DUPLICATE_DRAFT):
             self.win.last_refusal = problem
             self.win.status_message.setText(problem)
+            self._leave_if_by_n()
             return
         self._inline_for = ("new", time, end)
         when = timefmt.format_time(time, self.win.zone, 3)
@@ -505,8 +523,17 @@ class EditMode(QObject):
         y = c.row_y(row) + c.row_height * 0.5 if row is not None else c.plot_rect().top() + 8
         self.inline.open_at(c.x_of(time), y, head, text, self.hints())
 
+    def _leave_if_by_n(self) -> None:
+        """N turned edit mode on and nothing came of it (Esc, a refusal): it goes off again, as
+        it was. Once the draft holds something the mode is the person's."""
+        if self._on_by_n and self.on and not self.draft.dirty and not self.saving:
+            self.set_on(False)
+        elif self.draft.dirty:
+            self._on_by_n = False
+
     def _inline_dropped(self) -> None:
         self._inline_for = None
+        self._leave_if_by_n()
         self.win.canvas.setFocus()
 
     def _inline_kept(self, typed: str, save: bool) -> None:
@@ -514,6 +541,12 @@ class EditMode(QObject):
         self.win.canvas.setFocus()
         if what is None or self._busy():
             return
+        try:
+            self._inline_kept_note(what, typed, save)
+        finally:
+            self._leave_if_by_n()
+
+    def _inline_kept_note(self, what, typed: str, save: bool) -> None:
         label, text = ad.split_text(typed.strip())
         if what[0] == "change":
             item = self.draft.get(what[1])
@@ -1092,7 +1125,6 @@ class EditMode(QObject):
         the recordings are opened again (the page waits), as every save once did."""
         w = self.win
         data, controller = w.data, w.controller
-        w.begin_data_change()
 
         def work(ctx):
             ctx.report(0, None, "Reading the recordings again")
@@ -1109,7 +1141,10 @@ class EditMode(QObject):
 
         def failed(_message=None) -> None:
             self.saving = False
+            # The notes on screen are the old ones: a note added again would be stored twice.
+            self.stale = True
             w.end_data_change(None, (), reopened=False)
+            self._sync_buttons()
             out.error = out.error or UserMessage(
                 "The notes were added, but they cannot be shown",
                 "The new notes and events are in the recordings, but the viewer could not "
@@ -1118,6 +1153,7 @@ class EditMode(QObject):
             self._after_save(out, False, False)
 
         try:
+            w.begin_data_change()
             handle = self.jobs.submit("Reading the recordings again", work)
         except Exception:  # noqa: BLE001
             log.exception("the recordings could not be read again")
@@ -1153,7 +1189,6 @@ class EditMode(QObject):
         data, controller = w.data, w.controller
         before = list(w.marks)
         self.saving = True  # the draft stays locked while the recordings are read
-        w.begin_data_change()  # they are opened again
         self._sync_buttons()
 
         def work(ctx):
@@ -1164,6 +1199,7 @@ class EditMode(QObject):
             return data.annotations(), tuple(data.annotations_locked)
 
         try:
+            w.begin_data_change()  # they are opened again
             handle = self.jobs.submit("Reading the recordings again", work)
         except Exception:  # noqa: BLE001 - the window must say what is left to do
             log.exception("the recordings could not be read again")

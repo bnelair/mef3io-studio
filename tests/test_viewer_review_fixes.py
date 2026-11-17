@@ -26,7 +26,7 @@ from test_viewer_marks_ui import Shown, make_window, pair, wait_marks, write
 
 from mef3io_studio.model import annotation_draft as ad
 
-# --- 1. N after paging by keyboard ------------------------------------------------------------
+# --- 1. N after paging by keyboard ----
 
 
 def test_n_after_a_page_turn_with_the_mouse_at_rest_adds_on_the_page_shown(ed):
@@ -56,7 +56,7 @@ def test_the_anchor_is_never_off_the_page(ed):
     assert t == win.state.t0 + win.page_us() // 2
 
 
-# --- 2. the lead rule on a 10-10 cap ----------------------------------------------------------
+# --- 2. the lead rule on a 10-10 cap ----
 
 from mef3io_studio.model import montage as m  # noqa: E402
 
@@ -91,7 +91,7 @@ def test_without_a_midline_name_the_rule_does_not_change():
     assert m.real_leads([f"F{i}" for i in range(1, 9)]) == {"F"}
 
 
-# --- 3. hidden details: no typed text offered ----------------------------------------------------
+# --- 3. hidden details: no typed text offered ----
 
 
 def test_typed_texts_are_offered_only_while_details_are_shown(ed):
@@ -110,7 +110,7 @@ def test_typed_texts_are_offered_only_while_details_are_shown(ed):
     assert "patient-detail-xyz" not in repr(Hint("text", "patient-detail-xyz"))
 
 
-# --- 5. the held-centre estimate cannot lock to a period ---------------------------------------
+# --- 5. the held-centre estimate cannot lock to a period ----
 
 
 @pytest.mark.parametrize("period", [40, 32, 64, 41, 100, 512, 1024, 2048])
@@ -136,7 +136,7 @@ def test_the_sample_is_the_same_every_time_and_short_arrays_are_kept_whole():
     assert bounded_sample(b, 1024) is b
 
 
-# --- 6. the cost of a save: no inspect after the write ---------------------------------------
+# --- 6. the cost of a save: no inspect after the write ----
 
 
 def test_a_save_inspects_each_recording_twice_before_the_write_and_never_after(
@@ -181,7 +181,7 @@ def test_the_signal_snapshot_sees_signal_files_only_and_opens_nothing(tmp_path, 
     assert asave.signal_snapshot(str(path)) != before
 
 
-# --- 7. a warm page turn does not ask the same thing of every row ----------------------------------
+# --- 7. a warm page turn does not ask the same thing of every row ----
 
 
 def test_the_name_rules_are_asked_once_per_name_not_once_per_row_and_page():
@@ -211,3 +211,180 @@ def test_the_geometry_of_a_row_identity_is_read_once_per_page_not_once_per_row(e
         assert n_rows >= 3 and 1 <= len(asked) <= 3, (n_rows, len(asked))
     finally:
         type(win)._ident_tail = real
+
+
+# --- 8a. Delete on a combo box or a button does not take a note out ----
+
+
+def test_delete_and_backspace_on_a_combo_box_or_a_button_keep_the_draft_note(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    item = win.edit.add(T0 + 30 * SEC, None, "Note", "kept")
+    assert item is not None and win.edit.selected is not None
+    for widget in (win.profile_box, win.edit_button):
+        widget.setFocus()
+        assert widget.hasFocus()
+        for k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            QTest.keyClick(widget, k)
+            assert [i.text for i in win.edit.draft.items] == ["kept"], (widget, k)
+    # on the traces, and in the notes list, it still takes the note out
+    win.canvas.setFocus()
+    key(win, Qt.Key.Key_Delete)
+    assert not win.edit.draft.items
+    key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    win.edit.select_item(win.edit.draft.items[0])
+    win.notes_tab.table.setFocus()
+    assert win.notes_tab.table.hasFocus()
+    QTest.keyClick(win.notes_tab.table, Qt.Key.Key_Backspace)
+    assert not win.edit.draft.items
+
+
+# --- 8b. the same note in two recordings side by side ----
+
+
+def _both(channel, t):
+    return [0, 1]  # two recordings hold data at every time
+
+
+def test_two_recordings_side_by_side_can_each_hold_the_same_session_note():
+    mk = lambda uid, rec: ad.DraftItem(uid, T0 + SEC, None, "Note", "same", None, rec)  # noqa: E731
+    plan = ad.make_plan([mk(1, 0), mk(2, 1)], 0, _both)
+    assert not plan.duplicates and sorted(plan.by_recording) == [0, 1]
+    # the same recording twice is still one note
+    again = ad.make_plan([mk(1, 0), mk(2, 0)], 0, _both)
+    assert [i.uid for i in again.duplicates] == [2] and sorted(again.by_recording) == [0]
+    # stored in recording 0: a copy for 0 is left out, one for 1 is written
+    key = ad.item_key(mk(1, 0))
+    stored = ad.make_plan([mk(1, 0), mk(2, 1)], 0, _both, stored_pairs={(0, key)})
+    assert [i.uid for i in stored.duplicates] == [1] and sorted(stored.by_recording) == [1]
+    # without the recording of the stored notes the old rule holds: any recording's copy counts
+    old = ad.make_plan([mk(1, 0), mk(2, 1)], 0, _both, stored=[key])
+    assert len(old.duplicates) == 2
+    # a note whose recording is not chosen yet is asked about, not dropped
+    free = ad.make_plan([ad.DraftItem(3, T0 + SEC, None, "Note", "same", None)], 0, _both)
+    assert free.ambiguous and not free.duplicates
+
+
+def test_the_draft_keeps_the_same_note_chosen_for_two_recordings():
+    draft = ad.Draft()
+    draft.stored_pairs = lambda: frozenset()
+    rows = [
+        {"time": T0 + SEC, "label": "Note", "text": "same", "recording": 0},
+        {"time": T0 + SEC, "label": "Note", "text": "same", "recording": 1},
+        {"time": T0 + SEC, "label": "Note", "text": "same", "recording": 1},
+    ]
+    assert draft.add_many(rows) == 2 and draft.skipped_duplicates == 1
+    one = ad.DraftItem(0, T0 + SEC, None, "Note", "same", None, 0)
+    assert draft.duplicate_reason(one) == ad.DUPLICATE_DRAFT
+    other = ad.DraftItem(0, T0 + SEC, None, "Note", "different", None, 1)
+    assert draft.duplicate_reason(other) == ""
+    draft.stored_pairs = lambda: frozenset({(1, ad.item_key(other))})
+    assert draft.duplicate_reason(other) == ad.DUPLICATE_STORED
+    elsewhere = ad.DraftItem(0, T0 + SEC, None, "Note", "different", None, 0)
+    assert draft.duplicate_reason(elsewhere) == ""
+
+
+# --- 8c, 8d. a failed reopen switches saving off; a raise while it starts frees the draft ----
+
+
+def _no_refresh(monkeypatch):
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended, *rest: False)
+
+
+def test_a_failed_reopen_after_a_notes_only_save_keeps_saving_off(ed, qtbot, monkeypatch):
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    win, spy, (a, b) = ed
+    turn_on(win)
+    _no_refresh(monkeypatch)
+
+    def broken(self):
+        raise OSError("gone")
+
+    monkeypatch.setattr(ViewerData, "reopen", broken)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored anyway")
+    finish_save(qtbot, win)
+    assert "cannot be shown" in spy.problems[-1].title
+    assert win.edit.stale and not win.edit.saving
+    # the notes on screen are the old ones: the same note added again must not be stored twice
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored anyway")
+    assert win.edit.draft.dirty and not win.edit.save_button.isEnabled()
+    assert win.edit.save() is False
+    assert "Saving is off" in win.edit.count_label.text()
+
+
+def test_a_raise_while_the_reopen_starts_frees_the_draft(ed, qtbot, monkeypatch):
+    win, spy, _ = ed
+    turn_on(win)
+    _no_refresh(monkeypatch)
+
+    def refuses():
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(win, "begin_data_change", refuses)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored")
+    finish_save(qtbot, win)
+    assert not win.edit.saving and win.edit.stale
+    assert "cannot be shown" in spy.problems[-1].title
+
+
+def test_a_raise_while_looking_again_frees_the_draft(ed, qtbot, monkeypatch):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "maybe stored")
+    win.data.read_facts()
+    from mef3io_studio.viewer import edit_mode
+
+    real = edit_mode.asave.write_plan
+
+    def write_then_lose_the_report(*args, **kw):
+        real(*args, **kw)
+        raise RuntimeError("the report was lost")
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", write_then_lose_the_report)
+
+    def refuses():
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(win, "begin_data_change", refuses)
+    win.edit.save()
+    qtbot.waitUntil(lambda: bool(spy.problems), timeout=30_000)
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    assert win.edit.stale and not win.edit.save_button.isEnabled()
+    assert "open the recordings again" in spy.problems[0].text
+
+
+# --- 8g. Esc on the field N opened from the normal view leaves edit mode as it was ----
+
+
+def test_esc_after_n_from_the_normal_view_turns_edit_mode_off_again(ed):
+    win, spy, _ = ed
+    assert not win.edit.on
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    assert win.edit.on and win.edit.inline.is_open
+    press(win, Qt.Key.Key_Escape)
+    assert not win.edit.on and not win.edit.draft.dirty and not win.edit_button.isChecked()
+    assert not spy.asked  # nothing to save or discard: no question
+    # a note that was kept keeps the mode on
+    key(win, Qt.Key.Key_N)
+    type_in(win, "kept")
+    press(win, Qt.Key.Key_Return)
+    assert win.edit.on and win.edit.draft.dirty
+    # and a mode the person turned on is theirs: Esc leaves it on
+    win.edit.draft.clear()
+    win.edit.refresh()
+    key(win, Qt.Key.Key_N)
+    press(win, Qt.Key.Key_Escape)
+    assert win.edit.on
+
+
+def test_esc_after_n_keeps_the_mode_the_person_chose(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    press(win, Qt.Key.Key_Escape)
+    assert win.edit.on
