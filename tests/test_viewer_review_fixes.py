@@ -179,3 +179,35 @@ def test_the_signal_snapshot_sees_signal_files_only_and_opens_nothing(tmp_path, 
     st = tdat.stat()
     os.utime(tdat, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
     assert asave.signal_snapshot(str(path)) != before
+
+
+# --- 7. a warm page turn does not ask the same thing of every row ----------------------------------
+
+
+def test_the_name_rules_are_asked_once_per_name_not_once_per_row_and_page():
+    m.lead_and_contact.cache_clear()
+    m._surely_not_eeg.cache_clear()
+    names = [f"LA{i}" for i in range(1, 65)]
+    for _ in range(3):  # three page turns
+        for n in names:
+            m.is_non_eeg(n, {"LA"})
+            m.lead_of(n, {"LA"})
+    info = m.lead_and_contact.cache_info()
+    assert info.misses == 64 and info.hits > 64 * 3
+    assert m._surely_not_eeg.cache_info().misses == 64
+    assert m.lead_and_contact("LA3") == ("LA", 3) and m.lead_and_contact("Cz") == ("Cz", None)
+
+
+def test_the_geometry_of_a_row_identity_is_read_once_per_page_not_once_per_row(ed):
+    win, _spy, _ = ed
+    win.set_timebase(10)
+    win.go_to(T0)
+    asked = []
+    real = type(win)._ident_tail
+    type(win)._ident_tail = lambda self: (asked.append(1), real(self))[1]
+    try:
+        win._apply_pieces()
+        n_rows = len(win.canvas.rows)
+        assert n_rows >= 3 and 1 <= len(asked) <= 3, (n_rows, len(asked))
+    finally:
+        type(win)._ident_tail = real

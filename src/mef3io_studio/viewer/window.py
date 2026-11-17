@@ -1305,18 +1305,21 @@ class ViewerWindow(QMainWindow):
         its block arrives; rows without one stay empty."""
         self.canvas.set_rows(self._draw_rows(rows, [None] * len(rows)), self.overview(), self.multi)
 
-    def _row_ident(self, row) -> tuple:
-        """What a row's picture is of: another channel, montage partner, filter,
-        zoom or width, or the overview's other kind of picture never stands in
-        for it (its min/max bins would be drawn blocky and look real)."""
+    def _ident_tail(self) -> tuple:
+        """The part of every row's identity that is the same for all rows (asked once per
+        page, not once per row: it reads the screen's geometry)."""
         return (
-            row.plus,
-            row.minus,
             self.state.filters,
             self.overview(),
             self.state.timebase,
             int(self.canvas.plot_width),
         )
+
+    def _row_ident(self, row, tail: tuple | None = None) -> tuple:
+        """What a row's picture is of: another channel, montage partner, filter,
+        zoom or width, or the overview's other kind of picture never stands in
+        for it (its min/max bins would be drawn blocky and look real)."""
+        return (row.plus, row.minus, *(self._ident_tail() if tail is None else tail))
 
     def _apply_pieces(self) -> None:
         if self._closed:
@@ -1338,9 +1341,10 @@ class ViewerWindow(QMainWindow):
         # (a row that failed has nothing to stand in: it says so)
         failed = self.controller.failed_rows()
         kept = {}
+        tail = self._ident_tail()
         for i, row in enumerate(rows):
             if i not in failed:
-                ident = self._row_ident(row)
+                ident = self._row_ident(row, tail)
                 kept[ident] = pieces[i] if pieces[i] is not None else self._stale.get(ident)
         self._stale = kept
         self._stale = {k: v for k, v in self._stale.items() if v is not None}
@@ -1442,10 +1446,11 @@ class ViewerWindow(QMainWindow):
             if not self.overview()
             else [montage.RowGroup()] * len(rows)
         )
+        tail = self._ident_tail()
         for i, (row, pc, tag) in enumerate(zip(rows, pieces, tags, strict=True)):
             tag = tag if keep_tags else ""
             bad = i in failed
-            old = None if pc is not None or bad else self._stale.get(self._row_ident(row))
+            old = None if pc is not None or bad else self._stale.get(self._row_ident(row, tail))
             out.append(
                 DrawRow(
                     row.label,

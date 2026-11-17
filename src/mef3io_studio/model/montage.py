@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -31,6 +32,7 @@ class Row:
     note: str | None = None
 
 
+@lru_cache(maxsize=16384)  # pure on the name, asked for every row on every page turn
 def lead_and_contact(name: str) -> tuple[str, int | None]:
     """Split ``LA3`` / ``LA_3`` / ``LA-3`` into ``("LA", 3)``.
 
@@ -125,6 +127,7 @@ NON_EEG = SURELY_NOT_EEG | AMBIGUOUS_NON_EEG
 _SURE_PREFIXES = ("ecg", "ekg", "emg", "eog")
 
 
+@lru_cache(maxsize=16384)
 def _surely_not_eeg(name: str) -> bool:
     key = re.sub(r"[^a-z]", "", name.casefold())
     return key in SURELY_NOT_EEG or key.startswith(_SURE_PREFIXES)
