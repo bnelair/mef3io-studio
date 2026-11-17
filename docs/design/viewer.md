@@ -568,6 +568,74 @@ mef3io), driven by a scheduler in `workers/`.
     shows "(hidden)", with the same **Show** button.
   - Note text is never logged.
 
+**Adding notes quickly** (phase 5; the owner: "nothing fancy, the speed is a key").
+The honest steps for one note, from "I see something" to "it is stored":
+
+| | before | now |
+|---|---|---|
+| turn edit mode on | click the switch | none (`N` does it) |
+| point at the time | 1 | 1 |
+| ask for the note | `A` | `N` |
+| write the text | click the text box (the form opens on the time), type | type (the field has the caret) |
+| keep it | click "Add to the draft" | Enter |
+| save | click "Save…" | Ctrl+S |
+| confirm | read the preview, click "Add them to the recordings" | Enter on "Save" (one line) |
+| **actions** | **8** | **5** (point, `N`, type, Enter, Ctrl+S) + Enter on the line; **4 + 1** with Ctrl+S inside the field |
+
+- **`N`** (always available, key table `new_note`) adds a note at the pointer, or over
+  the Shift+drag selection (a duration), and turns edit mode on when it is off (a
+  recording packed in a `.mefd.tar` is refused in plain words, as before). A small
+  field (`viewer/inline_note.py`) opens where the note will be, with the caret in it.
+  Enter keeps (an empty field keeps a bare marker), Esc drops, a click elsewhere keeps
+  typed words and drops an empty field. A type written first ("Spike: ...") is the type,
+  by the convention above.
+- **Offered for one key** (Alt+1 ... Alt+6, a click, or Up/Down through the texts): the last
+  four texts typed in this window, then the types the recordings already hold (their quick
+  labels) and the quick types. The texts are in memory for the window only and are never
+  written (a note's text can hold patient details; `PREFERENCES` has no such key).
+- **Entering edit mode explicitly** (the switch, `A`, the digit keys, the right-click menu,
+  the form) works as before; the form stays for the time/channel/length by hand.
+- **Draft notes** keep their marks: dashed on the traces, *(new)* in the list, and a quiet
+  "N notes not saved yet" in the status bar while any exist.
+- **Save, fast:** Ctrl+S (edit mode; also inside the field). A draft that ONLY ADDS, to
+  recordings that need no password typed and with nothing waiting for a choice or refused,
+  asks ONE line ("Save 2 new notes into Recording A? Saved notes cannot be taken out again
+  in this version.", a letter while the name is hidden) with Save / Cancel
+  (`EditMode.quick_save_text`). Anything else shows the full preview. Every check of
+  `annotation_save` is unchanged: the recording moved, replaced or changed, the passwords.
+- **No duplicates, one rule** (`annotation_draft.note_key`: time, record type, length, stored
+  text, channel). The draft and the editor refuse a note equal to a stored one or to another
+  draft one with one sentence; an import leaves such rows out and says how many; a save
+  leaves a copy of a stored note out of the write and out of the draft; and the read-again
+  after a stopped save (`items_now_stored`) matches with the same key (now including the
+  length).
+- **A save of notes does not start over.** The signal did not change, so `ViewerData.refresh_notes`
+  reads only the notes again: one inspect per written recording must still give the
+  fingerprint taken at opening, and the notes read back must be exactly the ones appended.
+  The readers, `epoch` (so the tile cache and the prepared pages), the strip and the
+  view stay; the canvas is never set loading; the draft is not blanked or abandoned before
+  the write. When either test fails the window reopens as before (page waits, the strip read
+  ends first, `reopen`). The baseline for the NEXT save is still the fingerprint taken at
+  opening, so a recording changed meanwhile is refused as before. Measured on synthetic
+  data, 128 channels, local disk: file opens of the data refresh 509 -> 262 (the one inspect
+  is 260 of them; without it 2), the page's tile reads after the save 3 -> 0.
+- **Many notes.** What the stored notes give (type, time, end as arrays) is made once per
+  read of the notes (`model/viewer_display.py`); a change to the draft only inserts or flags
+  a few entries, so adding a note to 60,000 stays near 20 ms instead of 235. A draft note
+  is always listed (marked as not stored) and selected, also beyond the 5,000 rows a long
+  list shows.
+- **Draft notes: remove and change the text** with Delete / Backspace on the selected note
+  and the menu on a note (right-click on its chip, its list row or its mark): *Change the
+  text* (the inline field, filled) and *Remove this note*. A **stored** note shows *Remove
+  this note* disabled, with the sentence "A stored note cannot be removed yet in this
+  version." beside it, in the normal view too. The seam for the day the library can do it
+  is ONE place, `annotation_save._REMOVE_STORED` (read by `stored_removal_reason` and called
+  by `remove_stored_notes`, which raises `StoredRemovalNotSupported` today); the window
+  then reads the recordings again. Nothing in the app rewrites a recording. The **Take
+  out** button of the notes list keeps its documented behaviour for a stored note (it marks
+  it in the draft for a later copy, see below): the Delete key and the menu are the ones
+  that say it cannot be removed yet.
+
 **Edit mode** (switch in toolbar row 1; off on every open):
 - **Draft:** a banner says "Edit mode: changes are a draft until you save".
   All edits go into an in-memory draft, with undo/redo (Ctrl+Z / Ctrl+Shift+Z).
@@ -625,8 +693,9 @@ mef3io), driven by a scheduler in `workers/`.
       and the viewer then says so in plain words.
     - **Writer:** opened on the existing session with that recording's
       passwords (the full-access one for an encrypted recording).
-    - **After Save:** the viewer reopens the affected Readers and the
-      MultiReader, so what is shown is what is stored.
+    - **After Save:** the viewer reads the notes again (see "A save of notes does
+      not start over"); only when the signal cannot be shown to be unchanged does it
+      reopen the Readers and the MultiReader.
   - **Any change to or removal of a stored annotation:**
     - Save offers **Save as a new copy** only, never an in-place change.
     - The copy is made with `mef3io.transform_session` (verified, original

@@ -1013,9 +1013,33 @@ offers:
 
 ### Add notes and events (edit mode)
 
+**The quick way.** Put the pointer where the note belongs and press **`N`**.
+A small text field opens right there (edit mode turns itself on). Type, then
+press **Enter** to keep the note or **Esc** to drop it. To give the note a
+length, drag with **Shift** held over the stretch first (the selection stays
+until you use it), then press `N`: the note lasts as long as the selection.
+Under the field the app offers your last few texts and the types of note
+that the recording already holds: press **Alt+1**, **Alt+2** and so on, or
+click one (the up and down arrows walk through your last texts). Those texts
+are remembered only while this window is open and are never written to the
+settings. Then press **Ctrl+S**: one line asks "Save 1 new note into
+Recording A?", and **Save** adds it to the recording. (Ctrl+S inside the text
+field keeps the note and goes straight to that question.) A quiet *3 notes not
+saved yet* in the status bar reminds you while a draft exists, and closing the
+window still asks.
+
+A note that is the same as one already stored, or already in your draft (same
+time, length, type, text and channel), is refused with a sentence, and a save
+never stores a note twice. In your draft you can change a note's text or
+remove it: right-click the note (its chip, its row in the list, or its mark on
+the traces) and choose **Change the text** or **Remove this note**, or select
+it and press **Delete**; **Ctrl+Z** brings it back. A note that is **already
+stored** cannot be removed yet in this version: the entry is there but grey,
+with the reason beside it.
+
 Edit mode is **off** every time you open the viewer. Turn it on with the
-**Edit mode** button in the toolbar. A banner then reminds you that your
-changes are **a draft until you save**.
+**Edit mode** button in the toolbar (or just press `N`). A banner then reminds
+you that your changes are **a draft until you save**.
 
 - **Add a note or event** at the pointer with `A`, the **Add…** button in the
   notes list, or the right-click menu (which can also add one to a single
@@ -1037,9 +1061,13 @@ changes are **a draft until you save**.
   draft: **changing or removing stored notes is not possible yet**, because
   it would need a new copy of the recording. Those changes cannot be saved.
 
-**Save.** Choose **Save…** in the banner. The app shows how many notes and
-events will be added to each recording, and from when to when. Nothing is
-written until you choose **Add them to the recordings**.
+**Save.** Press **Ctrl+S**, or choose **Save…** in the banner. When you only
+added notes, one line asks whether to save them (how many, and into which
+recording). In every other case (a choice of recording, a note outside every
+recording, a password to type, or changes to stored notes) the app shows how
+many notes and events will be added to each recording, and from when to when.
+Nothing is written until you choose **Save** (or **Add them to the
+recordings**).
 
 - Saving **only adds**. Notes already in the recording are never rewritten,
   and a note you add cannot be removed from that recording afterwards, except
@@ -1049,8 +1077,11 @@ written until you choose **Add them to the recordings**.
 - For a **password-protected** recording the app needs **both** passwords
   (basic and full-access). It holds one of them from when you opened the
   recording and asks for the other here.
-- When the saving ends, the viewer reads the recordings again so the new
-  notes show. Anything that could not be saved stays in the draft.
+- When the saving ends, the viewer reads only the notes again, so the new
+  notes show at once and the page, the view and the overview stay as they
+  are. (If it cannot be sure that the signal itself is unchanged, it opens
+  the recordings again, as before.) Anything that could not be saved stays in
+  the draft.
 - A **single-file recording** (`.mefd.tar`) cannot get new notes; unpack the
   recording first (see *Pack into one file, or unpack*).
 - If you turn edit mode off or close the window with an unsaved draft, the

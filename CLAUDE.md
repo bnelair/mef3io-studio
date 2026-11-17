@@ -318,6 +318,17 @@ Code (app shell, #2/#3):
   call mef3io after it); a stored note of a hidden recording cannot be
   edited (it would show its text); export waits for details to be shown.
   Tests: tests/test_annotation_draft.py, tests/test_viewer_edit.py.
+  Phase 5 (adding fast, docs/design/viewer.md "Adding notes quickly"): `N` (any time, turns
+  edit mode on) opens `viewer/inline_note.py` at the pointer; Ctrl+S saves; a save that only
+  adds asks ONE line (`EditMode.quick_save_text`), anything else keeps the preview; ONE
+  duplicate rule `annotation_draft.note_key` (draft, editor, import, save plan,
+  `items_now_stored`); a notes-only save calls `ViewerData.refresh_notes` (inspect once per
+  written recording + exact read-back count; else the old reopen) and keeps the page, tile
+  cache and strip; `model/viewer_display.py` keeps a 60,000-note list quick; draft notes are
+  removed with Delete/menu, a STORED note's Remove is disabled (`annotation_save._REMOVE_STORED`
+  is the one place a library call plugs in; never rewrite a recording). The last texts typed
+  live in `EditMode.recent_texts` (memory only, never in preferences). Tests:
+  tests/test_viewer_edit.py, tests/test_viewer_draft_many.py.
 - Rename + time order (#12): `model/times.py` is the ONE helper over
   `mef3io.time_range` (`read_time`/`read_times`/`order_by_time`; join's
   `read_layouts` uses it too): `verified` = `offset_known`, and unverified
