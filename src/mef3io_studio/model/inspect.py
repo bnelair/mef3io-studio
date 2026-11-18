@@ -56,6 +56,7 @@ from .recording import (
     RecordingDetails,
     is_packed,
 )
+from .text import technical
 
 #: Which levels of notes this version reads (session, channel and part).
 NOTE_LEVELS = ("session", "channel", "segment")
@@ -90,6 +91,18 @@ NOTES_DAMAGED = UserMessage(
     "A file that holds notes and events could not be read, so some may be missing. "
     'The signal is not affected and nothing was changed. Use "Check for problems" '
     "to see which, and keep a copy of the original.",
+)
+
+#: mef3io's own code (``SummaryWarning.code``) for a recording whose notes and
+#: events were being changed when the program stopped (or still are).
+EDIT_INTERRUPTED_CODE = technical("annotation-edit-interrupted")
+
+NOTES_EDIT_INTERRUPTED = UserMessage(
+    "The notes and events cannot be read right now",
+    "A program was changing this recording's notes and events and was interrupted "
+    "(or is still working on it), so they are not shown here. The signal is not "
+    "affected and this app changed nothing. If no program is still working on it, it "
+    'must be rescued first: use "Check for problems" to see what to do.',
 )
 
 
@@ -308,7 +321,16 @@ def _details(summary, location: str, access: str, legacy: bool) -> RecordingDeta
         if p.get("kind") == "records"
     ]
     notes_problem = None
-    if record_problems:
+    interrupted = [
+        _strip_location(str(w.message or ""), location)
+        for w in summary.warnings
+        if getattr(w, "code", None) == EDIT_INTERRUPTED_CODE
+    ]
+    if interrupted:
+        notes_problem = UserMessage(
+            NOTES_EDIT_INTERRUPTED.title, NOTES_EDIT_INTERRUPTED.text, "\n".join(interrupted)
+        )
+    elif record_problems:
         notes_problem = UserMessage(
             NOTES_DAMAGED.title, NOTES_DAMAGED.text, "\n".join(record_problems)
         )

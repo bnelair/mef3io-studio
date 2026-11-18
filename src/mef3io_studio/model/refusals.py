@@ -288,9 +288,12 @@ WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     ),
     technical("source-mid-operation"): _fixed(
         "This recording is in the middle of a change",
-        "Renaming this recording was started and did not finish (the computer may have "
-        f"stopped, or another program is still working on it). {NOTHING} Wait until the "
-        "other program has finished, or run the rename again to undo it, then try again.",
+        "A change to this recording (renaming it, or changing its notes and events) was "
+        "started and did not finish (the computer may have stopped, or another program is "
+        f"still working on it). {NOTHING} Wait until the other program has finished. If "
+        "nothing is working on it, the recording must be rescued first: if you were "
+        "renaming it, run the rename again to undo it; if its notes and events were being "
+        "changed, Check for problems in Explore says what to do. Then try again.",
     ),
     # Choosing a part of the recording (a time window). The app does not offer
     # it yet: these can only be the app's own mistakes.
@@ -517,9 +520,12 @@ JOIN_WORDS: dict[str, Callable[[dict], tuple[str, str]]] = {
     ),
     technical("source-mid-operation"): _fixed(
         "A recording is in the middle of a change",
-        "Renaming one of the recordings was started and did not finish (the computer may have "
-        f"stopped, or another program is still working on it). {NOTHING_JOINED} Wait until "
-        "the other program has finished, then try again.",
+        "A change to one of the recordings (renaming it, or changing its notes and events) "
+        "was started and did not finish (the computer may have stopped, or another program "
+        f"is still working on it). {NOTHING_JOINED} Wait until the other program has "
+        "finished. If nothing is working on it, the recording must be rescued first: if you "
+        "were renaming it, run the rename again to undo it; if its notes and events were "
+        "being changed, Check for problems in Explore says what to do. Then try again.",
     ),
     # opening the originals
     technical("source-unreadable"): _fixed(
