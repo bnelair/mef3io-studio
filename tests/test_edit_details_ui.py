@@ -331,7 +331,9 @@ def test_a_lone_surrogate_is_counted_and_left_for_mef3io_to_refuse(shown_window,
     assert dialog.boxes["subject_id"].room.text()  # no exception in the slot
 
 
-def test_closing_in_any_way_wipes_the_passwords_and_the_run(shown_window, qtbot, tmp_path):
+def test_closing_is_refused_while_busy_wiping_nothing_and_wipes_when_idle(
+    shown_window, qtbot, tmp_path
+):
     entry = open_entry(qtbot, shown_window, write_plain(tmp_path / "a.mefd"))
     dialog = open_dialog(qtbot, shown_window, entry)
     dialog.boxes["recording_location"].set_text("x")
@@ -341,15 +343,14 @@ def test_closing_in_any_way_wipes_the_passwords_and_the_run(shown_window, qtbot,
     dialog._update()
     dialog.check_and_save()  # busy: checking
     assert dialog._busy
-    dialog.close()
-    assert dialog.passwords.passwords() is None
-    assert not dialog.passwords.basic.text() and not dialog.passwords.full_again.text()
+    dialog.close()  # refused first: the check or the save goes on, nothing is wiped
+    assert dialog.isVisible() and dialog.passwords.passwords() == (NEW_BASIC, NEW_FULL)
     qtbot.waitUntil(lambda: not dialog._busy, timeout=60_000)
-    # The run went on without a window: it finished, and kept no password.
     assert dialog.result is not None and dialog.result.ok
-    assert dialog.request.output_password is None and dialog._open_password == ""
-    dialog.reject()
+    assert dialog.request.output_password is None  # the run kept no password
+    dialog.reject()  # idle: everything is wiped
     assert dialog._open_password == "" and dialog.request is None and dialog._pending is None
+    assert dialog.passwords.passwords() is None
 
 
 def test_the_run_keeps_no_password_after_saving_or_closing(shown_window, qtbot, tmp_path):
