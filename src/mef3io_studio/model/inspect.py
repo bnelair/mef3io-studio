@@ -101,7 +101,7 @@ NOTES_EDIT_INTERRUPTED = UserMessage(
     "The notes and events cannot be read right now",
     "A program was changing this recording's notes and events and was interrupted "
     "(or is still working on it), so they are not shown here. The signal is not "
-    "affected and nothing was changed. If no program is still working on it, it "
+    "affected and this app changed nothing. If no program is still working on it, it "
     'must be rescued first: use "Check for problems" to see what to do.',
 )
 
