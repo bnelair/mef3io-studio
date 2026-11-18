@@ -90,6 +90,16 @@ def test_refusals_are_translated_by_code_never_by_message(tmp_path):
     assert plain.title == "The copy could not be made"
 
 
+def test_a_recording_with_an_interrupted_notes_edit_is_refused_in_words_that_fit(tmp_path):
+    from explorer_sessions import interrupt_notes_edit
+
+    interrupt_notes_edit(write_plain(tmp_path / "JaneDoe.mefd"))
+    found = a.check_copy(request(tmp_path))
+    assert found.title == "This recording is in the middle of a change"
+    assert "notes and events" in found.text and "renaming" in found.text
+    assert not (tmp_path / "out").exists()
+
+
 @pytest.mark.parametrize(
     ("exc", "title"),
     [

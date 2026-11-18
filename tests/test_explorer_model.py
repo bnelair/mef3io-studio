@@ -22,6 +22,7 @@ from explorer_sessions import (
     crc32,
     damage_details,
     damage_index,
+    interrupt_notes_edit,
     set_time_offset,
     write_encrypted,
     write_gappy,
@@ -205,6 +206,24 @@ def test_check_clean_and_damaged(tmp_path):
     assert not bad.ok
     assert bad.groups[0].title == PLAIN_CHECKS["crc.index"][0]
     assert "crc.index" in bad.groups[0].technical
+
+
+def test_an_interrupted_notes_edit_is_said_in_plain_words(tmp_path):
+    from test_ui_language import BANNED_RE
+
+    path = interrupt_notes_edit(write_plain(tmp_path / "cut.mefd"))
+    # Explore does not show "0 items" as if there were no notes.
+    d = inspect_recording(str(path)).details
+    assert d.notes == () and d.notes_problem is not None
+    assert d.notes_problem.title == "The notes and events cannot be read right now"
+    assert not BANNED_RE.search(d.notes_problem.title + d.notes_problem.text)
+    assert str(tmp_path) not in d.notes_problem.detail
+    # Check for problems says what happened, and the command that works.
+    report = check_recording(str(path))
+    titles = [g.title for g in report.groups]
+    assert PLAIN_CHECKS["records.interrupted-edit"][0] in titles
+    text = PLAIN_CHECKS["records.interrupted-edit"][1]
+    assert "python -m mef3io recover --apply" in text and "earlier notes" in text
 
 
 def test_every_mef3io_check_has_plain_words():
