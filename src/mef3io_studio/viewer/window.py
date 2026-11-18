@@ -512,6 +512,15 @@ class ViewerWindow(QMainWindow):
         ):
             self._long_actions.append(row1.addWidget(w))
         self._long_sep = row1.addSeparator()
+        self.addToolBar(row1)
+        self.addToolBarBreak()
+        # The toolbars are four short rows, not two long ones: a row that is wider than the
+        # window loses its LAST controls to the ">>" menu, whatever the font, so no row may
+        # hold more than a window of 1280 px shows at a large font. Edit mode, the notes and
+        # the export are one row, the display settings another, and the rarer ones (filters,
+        # Types, the rows, the overview, the colours) the last.
+        row1b = QToolBar("Notes and export", self)
+        row1b.setMovable(False)
         for w in (
             self.notes_button,
             self.edit_button,
@@ -519,12 +528,12 @@ class ViewerWindow(QMainWindow):
             self.export_end_button,
             self.range_button,
         ):
-            row1.addWidget(w)
+            row1b.addWidget(w)
         spacer = QWidget(self)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row1.addWidget(spacer)
-        row1.addWidget(self.help_button)
-        self.addToolBar(row1)
+        row1b.addWidget(spacer)
+        row1b.addWidget(self.help_button)
+        self.addToolBar(row1b)
         self.addToolBarBreak()
 
         row2 = QToolBar("Display", self)
@@ -577,23 +586,27 @@ class ViewerWindow(QMainWindow):
         self.types_button = tool("Types", "Types of notes and events (T)", lambda: press("types"))
         row2.addWidget(self.montage_bar)
         row2.addWidget(self.channels_button)
-        row2.addWidget(self.overview_button)
         for label, w in (("Spacing", self.spacing_box), ("Sensitivity", self.sens_box)):
             row2.addWidget(QLabel(label, self))
             row2.addWidget(w)
         row2.addWidget(self.auto_button)
-        row2.addWidget(QLabel("Timebase", self))
-        row2.addWidget(self.timebase_box)
-        row2.addWidget(self.length_label)
-        row2.addWidget(self.filters_button)
-        row2.addWidget(self.types_button)
-        row2.addWidget(self.rows_label)
+        self.addToolBar(row2)
+        self.addToolBarBreak()
+        row3 = QToolBar("View", self)
+        row3.setMovable(False)
+        row3.addWidget(QLabel("Timebase", self))
+        row3.addWidget(self.timebase_box)
+        row3.addWidget(self.length_label)  # beside the timebase: how much time that holds
+        row3.addWidget(self.filters_button)
+        row3.addWidget(self.types_button)
+        row3.addWidget(self.rows_label)
+        row3.addWidget(self.overview_button)
         # What a narrow window may lose goes last, into the ">>" menu: the colours (a rare
         # choice, kept in the preferences), never Types or the rows label.
-        self._colour_note_action = row2.addWidget(self.colour_note)
+        self._colour_note_action = row3.addWidget(self.colour_note)
         self._colour_note_action.setVisible(False)
-        row2.addWidget(self.profile_box)
-        self.addToolBar(row2)
+        row3.addWidget(self.profile_box)
+        self.addToolBar(row3)
         self._sync_boxes()
         self._sync_long_buttons()
 

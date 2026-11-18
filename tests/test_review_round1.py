@@ -23,7 +23,7 @@ from test_viewer_edit import (  # noqa: F401
     turn_on,
 )
 from test_viewer_marks_ui import make_window, pair, wait_marks, write  # noqa: F401
-from test_viewer_open_files import held_signal_files
+from test_viewer_open_files import HAVE_FD_LIST, held_signal_files
 from test_viewer_remove_notes import NOTE, Asked, remove, stored, texts  # noqa: F401
 from test_viewer_ui import LIGHT, open_data, settle
 
@@ -366,9 +366,10 @@ def test_a_closing_window_holds_no_file_before_it_has_shut_down(qtbot, qapp, tmp
     p = write(tmp_path / "a.mefd", seconds=120)
     data = open_data(p)
     real = data.envelope
-    gate = threading.Event()
+    gate, started = threading.Event(), threading.Event()
 
     def slow(*a, **k):
+        started.set()
         gate.wait(10)  # the index read is in flight for as long as the test wants
         return real(*a, **k)
 
@@ -379,11 +380,14 @@ def test_a_closing_window_holds_no_file_before_it_has_shut_down(qtbot, qapp, tmp
     win.show()
     qtbot.waitUntil(lambda: win._ready, timeout=10_000)
     settle(qtbot, win)
-    qtbot.waitUntil(lambda: bool(held_signal_files(tmp_path)), timeout=10_000)
+    qtbot.waitUntil(started.is_set, timeout=20_000)  # the index read is in flight
+    if HAVE_FD_LIST:  # (Linux only: no list of open files elsewhere without a helper)
+        qtbot.waitUntil(lambda: bool(held_signal_files(tmp_path)), timeout=10_000)
     released = []
     win.released.connect(lambda: released.append(1))
     win.close()
-    assert held_signal_files(tmp_path) == []  # at once, not when the read has ended
+    if HAVE_FD_LIST:
+        assert held_signal_files(tmp_path) == []  # at once, not when the read has ended
     qtbot.wait(300)
     assert not released  # the window still counts as holding its recordings
     gate.set()
@@ -450,7 +454,8 @@ def test_a_release_during_a_read_keeps_the_files_known_as_held(tmp_path):
         with data._reading():
             data.release_files()  # the idle release, while a read begins
             data._combined.read(names, data.timeline_start, data.timeline_start + 5 * SEC)
-        assert held_signal_files(tmp_path)  # the read opened them again
+        if HAVE_FD_LIST:
+            assert held_signal_files(tmp_path)  # the read opened them again
         assert data.idle_with_files(0.0)  # so the next idle release still lets go
     finally:
         data.close()
@@ -492,26 +497,65 @@ def test_the_stretches_are_asked_for_again_after_a_reopen_of_an_unchanged_signal
 # --- merge review 6: at 1280 px nothing essential is out of reach -----------------------------
 
 
-def test_at_1280_wide_types_stays_and_only_the_colours_leave(window, make_window, pair, qtbot):
-    from PySide6.QtWidgets import QToolBar, QToolButton, QWidget
+@pytest.mark.parametrize("pixels", [8, 11, 14, 17, 24, 40])
+def test_the_axis_leaves_air_between_its_two_lines_at_every_font_size(
+    make_window, tmp_path, pixels
+):
+    """The time labels and the note under them (the overview text) are separated by
+    ``axis_height - 2 * line - 6`` px; the rule must leave more than half a line at any font."""
+    from PySide6.QtGui import QFont
 
-    # many channels, so that not every row fits and the rows label ("Rows 1-n of m") is shown
-    p = write(pair[0].parent / "Many.mefd", channels=[f"Ch{i:02d}" for i in range(80)])
-    win = make_window(p)
-    win.resize(1280, 720)
-    qtbot.wait(300)
-    bars = {b.windowTitle(): b for b in win.findChildren(QToolBar)}
-    display = bars["Display"]
-    assert win.rows_label.text()  # there is something to say about the rows
-    assert win.types_button.isVisibleTo(display) and win.rows_label.isVisibleTo(display)
-    assert win.montage_bar.isVisibleTo(display) and win.filters_button.isVisibleTo(display)
-    out = {
-        w
-        for w in display.findChildren(QWidget)
-        if w.parent() is display and not w.isVisibleTo(display)
-    }
-    assert out <= {win.profile_box, win.colour_note, win.length_label}  # only the colours may go
-    # whatever the first toolbar loses sits in its ">>" menu: reachable
-    nav = bars["Navigation"]
-    ext = nav.findChild(QToolButton, "qt_toolbar_ext_button")
-    assert win.range_button.isVisibleTo(nav) or (ext is not None and ext.isVisibleTo(nav))
+    win = make_window(write(tmp_path / "a.mefd"))
+    font = QFont(win.canvas.font())
+    font.setPixelSize(pixels)
+    win.canvas.setFont(font)
+    line = win.canvas.fontMetrics().height()
+    assert win.canvas.axis_height - 2 * line - 6 >= line // 2 + 3
+
+
+@pytest.mark.parametrize("points", [9, 11, 13, 15])
+def test_at_1280_wide_every_control_is_on_screen_at_any_font_size(
+    make_window, tmp_path, qtbot, points
+):
+    """The toolbars are short rows: whatever the font, at 1280 px nothing but the colours (the
+    last of the last row) may fall into a ">>" menu, and Types and the rows label never do."""
+    from PySide6.QtGui import QFont
+    from PySide6.QtWidgets import QApplication, QToolBar, QWidget
+
+    app = QApplication.instance()
+    old = app.font()
+    font = QFont(old)
+    font.setPointSizeF(float(points))
+    app.setFont(font)
+    try:
+        # many channels, so that not every row fits and the rows label ("Rows 1-n of m") shows
+        p = write(tmp_path / "Many.mefd", channels=[f"Ch{i:02d}" for i in range(80)])
+        win = make_window(p)
+        win.setFont(font)
+        win.resize(1280, 720)
+        qtbot.wait(300)
+        assert win.rows_label.text()  # there is something to say about the rows
+        essential = (
+            win.prev_button, win.next_button, win.day_box, win.time_edit, win.go_button,
+            win.jump_button, win.notes_button, win.edit_button, win.export_start_button,
+            win.export_end_button, win.range_button, win.help_button, win.montage_bar,
+            win.channels_button, win.spacing_box, win.sens_box, win.auto_button,
+            win.timebase_box, win.filters_button, win.types_button, win.rows_label,
+            win.overview_button,
+        )  # fmt: skip
+        out = []
+        for bar in win.findChildren(QToolBar):
+            out += [w for w in essential if w.parent() is bar and not w.isVisibleTo(bar)]
+        assert out == [], [
+            (type(w).__name__, w.toolTip()[:30], w.parent().windowTitle()) for w in out
+        ]
+        # only the colours (and the note about them, and the length label) may be left out
+        for bar in win.findChildren(QToolBar):
+            gone = {
+                w
+                for w in bar.findChildren(QWidget)
+                if w.parent() is bar and w.isHidden() is False and not w.isVisibleTo(bar)
+            }
+            assert gone <= {win.profile_box, win.colour_note, win.length_label}
+    finally:
+        app.setFont(old)

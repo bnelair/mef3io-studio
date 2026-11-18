@@ -135,6 +135,10 @@ def test_the_label_follows_a_resize_before_the_page_is_asked_for_again(one, qtbo
 
 
 def test_the_label_follows_a_display_with_another_resolution(one, qtbot, monkeypatch):
+    # (four toolbar rows leave less height: the row scroll bar, which narrows the plot, shows
+    # up after the first layout; the page it gives is the one to come back to)
+    one.resize(1200, 900)
+    qtbot.wait(150)
     before = one.page_us()
     dpi = one.canvas.logicalDpiX()
     monkeypatch.setattr(one.canvas, "logicalDpiX", lambda: dpi * 2)  # twice the pixels per mm

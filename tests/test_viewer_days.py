@@ -124,13 +124,18 @@ def test_hours_days_and_stretches_move_the_page(make_window, days_path, qtbot):
     win.go_to(T0 + 2 * HOUR)
     win.move_by(HOUR, 1)
     assert win.state.t0 == T0 + 3 * HOUR
-    QTest.keyClick(win.canvas, Qt.Key.Key_Right, Qt.KeyboardModifier.ControlModifier)
-    assert win.state.t0 == T0 + 4 * HOUR  # Ctrl+Right: an hour
-    QTest.keyClick(win.canvas, Qt.Key.Key_Left, Qt.KeyboardModifier.ControlModifier)
+    # the keys of the platform (macOS keeps Ctrl+Arrow for itself: keymap.build_keymap)
+    from mef3io_studio.viewer.keymap import MAC
+
+    M = Qt.KeyboardModifier
+    hour = M.AltModifier | M.ShiftModifier if MAC else M.ControlModifier
+    mods = M.ControlModifier | M.AltModifier if MAC else M.ControlModifier | M.ShiftModifier
+    QTest.keyClick(win.canvas, Qt.Key.Key_Right, hour)
+    assert win.state.t0 == T0 + 4 * HOUR  # Ctrl+Right (macOS: Alt+Shift+Right): an hour
+    QTest.keyClick(win.canvas, Qt.Key.Key_Left, hour)
     assert win.state.t0 == T0 + 3 * HOUR
-    mods = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
     QTest.keyClick(win.canvas, Qt.Key.Key_Right, mods)
-    assert win.state.t0 == T0 + 27 * HOUR  # Ctrl+Shift+Right: a day
+    assert win.state.t0 == T0 + 27 * HOUR  # Ctrl+Shift+Right (macOS: Ctrl+Alt): a day
     QTest.keyClick(win.canvas, Qt.Key.Key_Left, mods)
     assert win.state.t0 == T0 + 3 * HOUR
     # next stretch with data: over the 3 hour gap, then on

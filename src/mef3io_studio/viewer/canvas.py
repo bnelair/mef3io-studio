@@ -293,8 +293,11 @@ class TraceCanvas(QWidget):
 
     @property
     def axis_height(self) -> int:
-        # two lines: the time labels, and (small) what the page is (the overview, edges)
-        return int(self.fontMetrics().height() * 2.7)
+        # Two lines: the time labels (from 4 px under the axis line) and what the page is (the
+        # overview, edges: baseline ``descent + 2`` above the bottom). The air between them is
+        # ``axis - 2 * line - 6`` px, so ``2.6 * line + 10`` leaves ``0.6 * line + 4``: more
+        # than half a line at every font size (a fixed 2.7 lines left 3.8 px at 14 px: not).
+        return int(self.fontMetrics().height() * 2.6) + 10
 
     def plot_rect(self) -> QRectF:
         return QRectF(

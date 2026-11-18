@@ -1035,6 +1035,19 @@ sensitivity says so on screen.
   the library: `tests/test_viewer_open_files.py` counts the kernel's opens of the `.tdat`
   files (inotify) over three passes of the same six tiles of four channels: 72 without,
   4 with.
+  **Windows (stated, not changed):** a folder cannot be moved or renamed while a file in
+  it is held open, so on Windows another program cannot move or rename a recording that a
+  viewer window shows while it is being read; it is let go of `IDLE_RELEASE` (8 s) after
+  the last read, at once when the window closes, and before any task of this app. Seen in
+  CI: two tests that renamed a recording under an open viewer failed with "Access is
+  denied" until they released the viewer's files first (`ViewerData.release_files`, as the
+  idle release does). On macOS and Linux a rename is not blocked.
+- **Toolbars:** four short rows (Navigation; Notes and export; Display; View), not two
+  long ones. A toolbar wider than the window loses its LAST controls to the ">>" menu,
+  whatever the font, so no row holds more than a 1280 px window shows at a large font
+  (tested at 9 to 15 pt): the colours (last of the last row) are the only control that
+  may be pushed out. The axis under the traces is `2.6 lines + 10 px` high, so the time
+  labels and the note under them are always more than half a line apart.
 - **Keys and buttons:** Ctrl+Right / Ctrl+Left one hour, Ctrl+Shift+Right /
   Left one day (on macOS, where Ctrl+Arrow belongs to the system, the table is
   built for the platform, `keymap.build_keymap`: Alt+Shift+Right / Left one hour,

@@ -71,6 +71,12 @@ def test_two_recordings_share_one_budget(pair):
 # --- files are really held, and let go ------------------------------------------------------------
 
 
+#: Whether this system lists a process's open files as /proc does (Linux). macOS and Windows
+#: give no such list without a helper program or a new dependency, so the checks that need the
+#: list run on Linux only; what does not need it is kept on every platform.
+HAVE_FD_LIST = os.path.isdir("/proc/self/fd")
+
+
 def held_signal_files(under) -> list[str]:
     """The signal files below ``under`` that this process holds open right now (other tests'
     windows may still hold theirs: only this test's folder counts)."""

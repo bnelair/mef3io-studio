@@ -723,6 +723,9 @@ def test_a_moved_or_replaced_recording_is_refused_before_anything_is_written(ed,
     win.edit.add(T0 + 120 * SEC, None, "Spike", "y")  # recording B: fine
     before_b = tree_hash(b)
     moved = Path(a).with_name("Renamed.mefd")
+    # On Windows a folder cannot be renamed while a file in it is held open, and the viewer
+    # keeps its signal files open between reads: let go of them, as the idle release does.
+    win.data.release_files()
     Path(a).rename(moved)
     finish_save(qtbot, win)
     assert "not where it was opened" in spy.problems[-1].title
@@ -1601,6 +1604,7 @@ def test_the_refusals_of_a_save_still_stand_after_the_one_line(line, qtbot):
     win.edit.set_on(True)
     win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
     moved = Path(a).with_name("Renamed.mefd")
+    win.data.release_files()  # (Windows: no rename while the viewer holds a file open)
     Path(a).rename(moved)
     assert win.edit.save()
     qtbot.waitUntil(lambda: not win.edit.saving)

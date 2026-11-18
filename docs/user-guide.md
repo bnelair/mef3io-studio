@@ -989,6 +989,13 @@ The **Day** and time boxes in the toolbar do the same, and you can also type
 a date and time (`2000-01-31 14:30`) or just a date in the time box. Times are shown in
 the time zone you chose for the site (see *Times and time zones*).
 
+**Moving or renaming a recording that is shown (Windows).** To read quickly the viewer
+keeps the files of the recording open between pages. On Windows a folder cannot be moved
+or renamed by another program while a file in it is open, so a recording that a viewer
+window shows cannot be moved or renamed while it is being read; the viewer lets go 8
+seconds after the last read, at once when you close its window, and before anything else
+this app starts. (The app's own Rename refuses a recording that is open in a viewer.)
+
 **Long recordings.** The strip above the traces shows the whole recording:
 the data in colour, the gaps hatched (also a pause inside one recording, once
 the viewer has read where the data is, from one channel of each recording), a
