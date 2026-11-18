@@ -127,12 +127,19 @@ class LocalRecordingSource(RecordingSource):
         return inspect_many(requests, send=send, cancel=cancel)
 
     def check(
-        self, location: str, password: str = "", send=None, cancel: CancelToken | None = None
+        self,
+        location: str,
+        password: str = "",
+        send=None,
+        cancel: CancelToken | None = None,
+        quick: bool = False,
     ) -> CheckReport:
         from .problems import check_recording
 
         progress = byte_progress(send) if send is not None else None
-        return check_recording(os.fspath(location), password, cancel=cancel, progress=progress)
+        return check_recording(
+            os.fspath(location), password, cancel=cancel, progress=progress, quick=quick
+        )
 
     def open_viewer(
         self,

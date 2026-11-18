@@ -719,6 +719,85 @@ def test_make_new_after_the_run_the_choices_are_kept_and_the_result_is_reachable
 
 
 # --------------------------------------------------------------------------
+# F / item 6: Check for problems says what it reads, offers a quick look
+
+
+def _read_bytes() -> int:
+    for line in open("/proc/self/io"):  # noqa: SIM115
+        if line.startswith("rchar:"):
+            return int(line.split(":")[1])
+    raise AssertionError("no rchar")
+
+
+@pytest.mark.skipif(not __import__("os").path.exists("/proc/self/io"), reason="Linux only")
+def test_the_quick_look_does_not_read_the_signal(tmp_path):
+    """Review finding F: "Check for problems" read every block of the signal
+    files although its text said it read the details and the list only."""
+    import mef3io
+    import numpy as np
+
+    from mef3io_studio.model.problems import check_recording
+
+    path = tmp_path / "big.mefd"
+    rng = np.random.default_rng(1)
+    with mef3io.Writer(str(path), overwrite=True) as w:
+        for ch in range(4):
+            w.write(f"c{ch}", rng.normal(size=600_000) * 50, 946_684_800_000_000, 1024.0)
+    before = _read_bytes()
+    quick = check_recording(str(path), quick=True)
+    mid = _read_bytes()
+    full = check_recording(str(path))
+    after = _read_bytes()
+    assert quick.quick and not full.quick
+    assert quick.ok and full.ok
+    assert (mid - before) * 10 < (after - mid)  # a small fraction of the full read
+
+
+def test_check_panel_says_what_it_reads_and_offers_both(window, qtbot, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from test_edit_details_ui import open_entry
+
+    window._closing = True
+    window.show()
+    page = window.explorer
+    entry = open_entry(qtbot, window, write_plain(tmp_path / "rec.mefd"))
+    panel = page.check_panel
+    page.select_entry(entry)
+    text = panel.intro.text().lower()
+    assert "signal" in text and "reads" in text
+    assert "only the details" not in text and "list of where" not in text.split("quick")[0]
+    assert panel.quick_button.text() == "Quick look"
+    assert panel.full_button.text().startswith("Full check (reads about ")
+    # A real click on Quick look: no signal is read, and the result says so.
+    qtbot.mouseClick(panel.quick_button, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    qtbot.waitUntil(lambda: entry.check is not None, timeout=60_000)
+    assert entry.check.quick
+    assert "quick look" in panel.headline.text().lower()
+    shown = " ".join(
+        w.text()
+        for w in panel.findChildren(__import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)
+    )
+    assert "signal files were not read" in shown
+    qtbot.mouseClick(panel.full_button, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    qtbot.waitUntil(lambda: entry.check is not None and not entry.check.quick, timeout=60_000)
+    assert panel.headline.text() == "No problems found"
+
+
+def test_the_list_button_is_the_quick_look(window, qtbot, tmp_path):
+    from test_edit_details_ui import open_entry
+
+    window._closing = True
+    window.show()
+    page = window.explorer
+    entry = open_entry(qtbot, window, write_plain(tmp_path / "rec.mefd"))
+    page.select_entry(entry)
+    page.check_selected()
+    qtbot.waitUntil(lambda: entry.check is not None, timeout=60_000)
+    assert entry.check.quick
+    assert "quick look" in entry.check.short_status().lower()
+
+
+# --------------------------------------------------------------------------
 # E: the same recordings are not checked again for nothing
 
 

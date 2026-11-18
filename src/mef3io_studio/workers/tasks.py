@@ -232,9 +232,17 @@ def export_times(ctx: JobContext, items: list[ExportItem], zone, level: str, pat
 
 
 def check_recording(
-    ctx: JobContext, source: RecordingSource, location: str, password: str = ""
+    ctx: JobContext,
+    source: RecordingSource,
+    location: str,
+    password: str = "",
+    quick: bool = False,
 ) -> CheckReport:
-    phase = "Checking the recording for problems"
+    phase = (
+        "Quick look at the recording's details and lists"
+        if quick
+        else "Reading the signal files to check them"
+    )
     ctx.report(0, None, phase)
 
     def got(progress: ByteProgress) -> None:
@@ -242,10 +250,15 @@ def check_recording(
 
     if source.isolate:
         report = ctx.run_isolated(
-            source.check, location, password, on_message=got, stop_grace=STOP_GRACE_SECONDS
+            source.check,
+            location,
+            password,
+            on_message=got,
+            stop_grace=STOP_GRACE_SECONDS,
+            quick=quick,
         )
     else:
-        report = source.check(location, password, send=got, cancel=ctx.cancel_token)
+        report = source.check(location, password, send=got, cancel=ctx.cancel_token, quick=quick)
     log.info(
         "job %d: checked %d part(s), %d problem(s)",
         ctx.job_id,

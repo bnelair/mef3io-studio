@@ -151,6 +151,9 @@ class CheckReport:
     #: Parts that could not be checked at all (e.g. damaged details).
     parts_skipped: int = 0
     technical: str = ""
+    #: A quick look: the stored details and the lists of where the signal is,
+    #: NOT the signal files themselves.
+    quick: bool = False
 
     @property
     def problem_count(self) -> int:
@@ -176,7 +179,7 @@ class CheckReport:
         if self.parts_checked == 0:
             return "Could not be checked"
         if self.ok:
-            return "No problems"
+            return "No problems (quick look)" if self.quick else "No problems"
         n = self.problem_count
         if n:
             return f"{n} problem{'s' if n != 1 else ''}"
@@ -191,7 +194,7 @@ def _strip_location(text: str, location: str) -> str:
     return text
 
 
-def to_report(report, location: str) -> CheckReport:
+def to_report(report, location: str, quick: bool = False) -> CheckReport:
     """Turn a ``mef3io.Report`` into plain-language groups."""
     groups = []
     for check_id, findings in report.by_check().items():
@@ -233,6 +236,7 @@ def to_report(report, location: str) -> CheckReport:
         groups=tuple(groups),
         parts_skipped=len(report.skipped),
         technical=_strip_location("\n".join(lines), location),
+        quick=quick,
     )
 
 
@@ -241,17 +245,21 @@ def check_recording(
     password: str = "",
     cancel: CancelToken | None = None,
     progress: Callable[[int, int], object] | None = None,
+    quick: bool = False,
 ) -> CheckReport:
     """Run every check mef3io has on the recording. Reads only. ``cancel``
     stops it from inside mef3io (as JobCancelled); ``progress(done, total)``
-    gets mef3io's progress, in bytes."""
+    gets mef3io's progress, in bytes. ``quick``: do not read every block of
+    the signal files (mef3io's ``exact_difference_bytes=False``: one
+    declaration is then only bounded, not measured), which is a small
+    fraction of the reading."""
     import mef3io
 
     cancel = cancel or CancelToken()
     cancel.raise_if_cancelled()
     location = os.fspath(location)
     with stopped_by_library(), library_warnings_caught():
-        report = mef3io.Validator(location, password=password).validate(
-            cancel=cancel.for_library(), progress=progress
-        )
-    return to_report(report, location)
+        report = mef3io.Validator(
+            location, password=password, exact_difference_bytes=not quick
+        ).validate(cancel=cancel.for_library(), progress=progress)
+    return to_report(report, location, quick)

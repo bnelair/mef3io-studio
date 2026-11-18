@@ -505,7 +505,9 @@ class ExplorerPage(QWidget):
         self.combined_mode_button.toggled.connect(self._on_mode_toggled)
         self.status_view = StatusView(self)
         self.status_view.unlock_requested.connect(lambda: self.unlock(self.current_entry()))
-        self.status_view.check_requested.connect(lambda: self.check(self.current_entry()))
+        self.status_view.check_requested.connect(
+            lambda: self.check(self.current_entry(), quick=True)
+        )
         self.overview = OverviewPanel(self)
         self.channels = ChannelsPanel(self)
         self.timeline = TimelinePanel(self)
@@ -517,7 +519,9 @@ class ExplorerPage(QWidget):
         self.privacy.reveal_changed.connect(self._on_reveal_changed)
         self.history = HistoryPanel(self)
         self.check_panel = CheckPanel(self)
-        self.check_panel.check_requested.connect(lambda: self.check(self.current_entry()))
+        self.check_panel.check_requested.connect(
+            lambda quick: self.check(self.current_entry(), quick=quick)
+        )
         self.tabs = QTabWidget(self)
         self.tabs.setUsesScrollButtons(True)
         self.tabs.setElideMode(Qt.TextElideMode.ElideNone)
@@ -1152,10 +1156,12 @@ class ExplorerPage(QWidget):
     # ------------------------------------------------------------------
     # Check for problems
     # ------------------------------------------------------------------
-    def check(self, entry: RecordingEntry | None):
+    def check(self, entry: RecordingEntry | None, quick: bool = False):
+        """Check one recording. ``quick``: only its stored details and the
+        lists of where the signal is (the signal files are not read)."""
         if entry is None or entry.busy or entry.needs_password:
             return None
-        entry.busy = "Checking…"
+        entry.busy = "Quick look…" if quick else "Checking…"
         entry.check = None
         entry.check_error = None
         self._entry_changed(entry)
@@ -1165,8 +1171,18 @@ class ExplorerPage(QWidget):
             self.source,
             entry.location,
             entry.password,
+            quick,
         )
-        progress = JobProgressWidget(handle, self)
+        progress = JobProgressWidget(
+            handle,
+            self,
+            note=(
+                "Reads the stored details and the lists only. Nothing is changed."
+                if quick
+                else "Reads through the signal files of this recording. This can take "
+                "many minutes on a large recording. Nothing is changed; Stop ends it."
+            ),
+        )
         progress.hide()
         self._check_progress[entry.key] = progress
         if entry is self.current_entry():
@@ -1196,9 +1212,12 @@ class ExplorerPage(QWidget):
         return handle
 
     def check_selected(self) -> None:
+        """The list's "Check for problems": the quick look at every selected
+        recording (the full check, which reads the signal files, is chosen
+        on the recording's own Check tab, where it says how much it reads)."""
         for entry in self.selected_entries():
             if entry.outcome is not None:
-                self.check(entry)
+                self.check(entry, quick=True)
 
     # ------------------------------------------------------------------
     # Copy summary

@@ -716,34 +716,48 @@ class HistoryPanel(QWidget):
 # --------------------------------------------------------------------------
 
 
+CHECK_INTRO = (
+    "Compares what the recording says about itself with its data. Neither choice changes "
+    "the recording; you can stop at any time.\n"
+    "Quick look: reads only the recording's stored details and the lists of where its "
+    "signal is kept (a small part of the files, usually seconds). It cannot see damage "
+    "inside the signal files.\n"
+    "Full check: also reads through the signal files themselves, block by block. That is "
+    "about as much reading as copying the recording, so on a large recording or a network "
+    "drive it can take many minutes."
+)
+QUICK_DONE = (
+    "This was a quick look: the signal files were not read, so damage inside them would "
+    "not show. Use the full check to be sure."
+)
+
+
 class CheckPanel(QWidget):
-    check_requested = Signal()
+    #: True for the quick look, False for the full check.
+    check_requested = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         inner = QWidget()
-        intro = QLabel(
-            "Compares what the recording says about itself with its data, using the "
-            "mef3io library's checks. It reads the recording's details and the list of "
-            "where its signal is stored, and never changes the recording. On a large "
-            "recording it can take a while; you can stop it at any time.",
-            inner,
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        self.button = QPushButton("Check now", inner)
-        self.button.setProperty("primary", True)
-        self.button.clicked.connect(self.check_requested)
+        self.intro = QLabel(CHECK_INTRO, inner)
+        self.intro.setObjectName("Muted")
+        self.intro.setWordWrap(True)
+        self.quick_button = QPushButton("Quick look", inner)
+        self.quick_button.setProperty("primary", True)
+        self.quick_button.clicked.connect(lambda: self.check_requested.emit(True))
+        self.full_button = QPushButton("Full check", inner)
+        self.full_button.clicked.connect(lambda: self.check_requested.emit(False))
         self.progress_slot = QVBoxLayout()
         self.headline = QLabel("", inner)
         self.headline.setFont(scaled_font(self, 1.15, bold=True))
         self.headline.setWordWrap(True)
         self.results = QVBoxLayout()
         row = QHBoxLayout()
-        row.addWidget(self.button)
+        row.addWidget(self.quick_button)
+        row.addWidget(self.full_button)
         row.addStretch(1)
         box = QVBoxLayout(inner)
-        box.addWidget(intro)
+        box.addWidget(self.intro)
         box.addLayout(row)
         box.addLayout(self.progress_slot)
         box.addWidget(self.headline)
@@ -768,7 +782,14 @@ class CheckPanel(QWidget):
 
     def show_entry(self, entry: RecordingEntry, zone: tzinfo) -> None:  # noqa: ARG002
         _clear(self.results)
-        self.button.setEnabled(not entry.busy and not entry.needs_password)
+        can = not entry.busy and not entry.needs_password
+        self.quick_button.setEnabled(can)
+        self.full_button.setEnabled(can)
+        details = entry.details
+        size = sum(c.bytes for c in details.channels) if details is not None else 0
+        self.full_button.setText(
+            f"Full check (reads about {format_size(size)})" if size else "Full check"
+        )
         report = entry.check
         if entry.check_error is not None and report is None:
             self.headline.setText(entry.check_error.title)
@@ -781,7 +802,9 @@ class CheckPanel(QWidget):
         if report is None:
             self.headline.setText("" if entry.busy else "Not checked yet")
             return
-        self.headline.setText(report.headline())
+        self.headline.setText(report.headline() + (" (quick look)" if report.quick else ""))
+        if report.quick:
+            self.results.addWidget(_notice(QUICK_DONE))
         if report.parts_skipped:
             self.results.addWidget(
                 _notice(
