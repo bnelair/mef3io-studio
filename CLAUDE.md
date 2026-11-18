@@ -273,7 +273,11 @@ Code (app shell, #2/#3):
   (`problems.read_back_recording`: `Reader.read_raw` in windows, mef3io checks each block's CRC)
   is the only one that finds such damage. The Check tab shows `estimate_check` figures (from
   the parts and blocks in the details, measured, tested), never the sum of file sizes for the
-  validator. `CheckReport.mode` names the kind once in `headline()`/`short_status()`. Tests: tests/test_wizard_checks.py.
+  validator. `CheckReport.mode` names the kind once in `headline()`/`short_status()`. The LAST RESULT (copies, date key rows, "Show the last result", "Open it") is kept until step 2
+  really starts writing, never dropped by Start/Stop/a refusal in step 1; Anonymize asks first
+  (`ask_unsaved_date_key`: save / go on / do not start) when the date key was not saved. The name
+  re-check skip key includes the recordings' state as Explore holds it; `resume()` is refused while
+  a check or run is active; closing a busy Edit details wipes nothing. Tests: tests/test_wizard_checks.py.
 - Signal viewer window (viewer/, spec docs/design/viewer.md; part 1 = window,
   data flow, navigation, montages, filters; recording band/banner/side panel,
   part 2 = recording band/boundaries/banner, side panel, notes and events

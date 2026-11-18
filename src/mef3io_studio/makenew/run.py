@@ -50,6 +50,10 @@ CHANGED_DURING_CHECK = (
     "judge exactly what is written. Look at the choices, then start again."
 )
 CHECK_STOPPED = "The check was stopped. Nothing was made. Your choices are kept."
+RESUME_BUSY_TEXT = (
+    "A check or a run is going on in this window. Stop it, or wait until it ends, then "
+    "continue the batch."
+)
 NOT_CLOSED_TEXT = (
     "The window was not closed because the check or the copying is still going on. Press "
     "Stop on this page first (nothing half-made is left behind), then close the window."
@@ -257,7 +261,12 @@ class BatchRunMixin:
     def resume(self, journal, password_for, output_password=None, ask_existing=None):
         """Continue an interrupted batch from its journal (passwords were
         never journaled: the caller asked for them again). Everything is
-        checked again for the recordings still to do first."""
+        checked again for the recordings still to do first. Refused while a
+        check or a run is going on in this window."""
+        if self._busy:
+            self.closing_note.setText(RESUME_BUSY_TEXT)
+            self.closing_note.setVisible(True)
+            return None
         batch = pipeline.from_payload(journal.payload, password_for, output_password)
         batch = replace(batch, keep_awake=self.keep_awake)
         self._journal = journal

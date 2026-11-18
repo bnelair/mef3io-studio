@@ -1362,3 +1362,221 @@ def test_make_new_start_then_stop_keeps_the_last_result(window, qtbot, tmp_path,
     press(qtbot, dialog.result_button)
     assert dialog.step == dlg.STEP_RUN and dialog.summary.text() == summary
     assert dialog.results_table.rowCount() == 2 and dialog.open_button.isVisible()
+
+
+# --------------------------------------------------------------------------
+# Item 4 (small ones)
+
+
+def test_join_leaving_the_page_during_the_check_clears_the_passwords(
+    window, qtbot, tmp_path, monkeypatch
+):
+    """(a) hideEvent skipped forget() on the run step, so after leaving the
+    page during step 1 a refusal came back with the passwords still typed."""
+    import mef3io_studio.joiner.page as J
+
+    page, out = _join_page_at_new(window, qtbot, tmp_path)
+    type_passwords(page.new.passwords)
+    monkeypatch.setattr(J, "check_join", slow(J.check_join, 0.8))
+    press(qtbot, page.next_button)
+    check = page.check_handle
+    qtbot.wait(100)
+    window.module_list.setCurrentRow(window.module_keys.index("explorer"))  # leave the page
+    (out / "joined.mefd").mkdir()  # the check refuses
+    qtbot.waitUntil(lambda: check.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: page.step == J.STEP_NEW, timeout=10_000)
+    passwords = page.new.passwords
+    assert passwords.passwords() is None and passwords.basic.text() == passwords.full.text() == ""
+    assert passwords.needs_decision  # asked again, never a silent run without them
+    assert not page.next_button.isEnabled()
+
+
+def test_edit_details_the_x_during_the_check_wipes_nothing(window, qtbot, tmp_path, monkeypatch):
+    """(b) closeEvent wiped the passwords before reject() refused the close."""
+    import mef3io_studio.explorer.edit_details as E
+
+    dialog, out = _edit_dialog(window, qtbot, tmp_path)
+    type_passwords(dialog.passwords)
+    dialog._update()
+    monkeypatch.setattr(E, "check_changes", slow(E.check_changes, 0.8))
+    press(qtbot, dialog.save_button)
+    handle = dialog._check_handle
+    qtbot.wait(100)
+    dialog.close()  # the X, while the check runs
+    assert dialog.isVisible()  # refused, and nothing was wiped
+    assert dialog.passwords.passwords() == PW
+    (out / "edited.mefd").mkdir()  # the check refuses
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: not dialog._busy, timeout=10_000)
+    assert dialog.passwords.passwords() == PW  # still there for the next Start
+    assert dialog.name.text() == "edited"
+
+
+def test_anonymize_the_name_check_is_repeated_when_a_recording_was_read_again(
+    window_page, qtbot, tmp_path
+):
+    """(c) The skip key held what was typed but nothing about the recordings'
+    state: a recording Explore read again (changed on disk) must be checked."""
+    from dataclasses import replace
+
+    from test_anonymizer_ui import STEP_PASSWORDS
+
+    window, page = window_page
+    src = write_plain(tmp_path / "orig.mefd", notes=False)
+    open_in_explorer(qtbot, window, [src])
+    go_to_channels(page)
+    out = tmp_path / "out"
+    out.mkdir()
+    _through_to_review(page, qtbot, out, names=["E1"])
+    page.go(STEP_IDENTITY)
+    before = len(window.jobs.handles)
+    page.next()  # nothing changed: not checked again
+    assert len(window.jobs.handles) == before and page.step == STEP_PASSWORDS
+    entry = page.choices[0].entry
+    entry.outcome = replace(entry.outcome, size_bytes=(entry.outcome.size_bytes or 0) + 4096)
+    page.go(STEP_IDENTITY)
+    page.next()  # the recording is not the one that was checked
+    assert len(window.jobs.handles) == before + 1
+    qtbot.waitUntil(lambda: page.step == STEP_PASSWORDS, timeout=60_000)
+
+
+def test_anonymize_resume_is_refused_while_a_check_or_a_run_is_going(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    """(d) resume() called restart() under a running check."""
+    import mef3io_studio.anonymizer.page as P
+
+    window, page = window_page
+    anonymizer_at_review(window, page, qtbot, tmp_path)
+    said = []
+    page.resume_problems.connect(said.append)
+    monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 1.0))
+    press(qtbot, page.next_button)
+    handle = page.preflight_handle
+    qtbot.wait(100)
+    jobs = len(window.jobs.handles)
+    assert page.resume(object(), lambda source: "") is None
+    assert len(window.jobs.handles) == jobs  # nothing was started
+    assert said and "going on" in said[0]
+    assert page.step == STEP_RUN and not handle.is_finished  # the check was not dropped
+    qtbot.waitUntil(lambda: page.run.finished, timeout=120_000)
+
+
+def test_make_new_resume_is_refused_while_a_check_is_going(window, qtbot, tmp_path, monkeypatch):
+    import mef3io_studio.makenew.run as R
+
+    dialog, out = _make_new_at_where(window, qtbot, tmp_path)
+    monkeypatch.setattr(R, "preflight_batch", slow(R.preflight_batch, 1.0))
+    press(qtbot, dialog.start_button)
+    handle = dialog.handle
+    qtbot.wait(100)
+    assert dialog.resume(object(), lambda source: "") is None
+    assert dialog.handle is handle and "going on" in dialog.closing_note.text()
+    qtbot.waitUntil(lambda: dialog.finished_run, timeout=180_000)
+
+
+# --------------------------------------------------------------------------
+# Item 4 (e): Cut into pieces, through its buttons
+
+
+def _pieces_at_where(window, qtbot, tmp_path, passwords=True):
+    from explorer_sessions import SECOND, T0
+    from test_make_new_ui import open_all
+    from test_pieces_model import write_signal
+    from test_pieces_ui import make_dialog, reach_cut_step
+
+    from mef3io_studio.pieces import dialog as pdlg
+
+    window._closing = True
+    window.show()
+    source = tmp_path / "Rec.mefd"
+    write_signal(source)
+    out = tmp_path / "out"
+    out.mkdir()
+    entries = open_all(qtbot, window, [source])
+    dialog = make_dialog(qtbot, window, entries)
+    dialog.open()
+    reach_cut_step(qtbot, dialog)
+    for s in (30, 60):
+        dialog.at_input.set_us(T0 + s * SECOND, dialog.zone)
+        dialog.add_time()
+    dialog.next()
+    assert dialog.step == pdlg.STEP_PASSWORDS
+    if passwords:
+        type_passwords(dialog.passwords)
+    dialog.next()
+    assert dialog.step == pdlg.STEP_WHERE
+    dialog.pattern.setText("Cut-<number>")
+    dialog.folder = str(out)
+    dialog._changed()
+    return dialog, out
+
+
+def test_pieces_one_button_with_its_own_name(window, qtbot, tmp_path):
+    from mef3io_studio.pieces import dialog as pdlg
+
+    dialog, out = _pieces_at_where(window, qtbot, tmp_path)
+    assert dialog.step == pdlg.STEP_WHERE
+    assert dialog.start_button.text() == "Make the pieces"
+    assert dialog.start_button.isEnabled() and dialog.problem.text() == ""
+    dialog.reject()
+
+
+def test_pieces_cleared_passwords_block_start_until_decided_again(window, qtbot, tmp_path):
+    from mef3io_studio.pieces import dialog as pdlg
+
+    dialog, out = _pieces_at_where(window, qtbot, tmp_path)
+    press(qtbot, dialog.start_button)
+    qtbot.waitUntil(lambda: dialog.finished_run and not dialog._busy, timeout=180_000)
+    press(qtbot, dialog.back_button)  # Back to my choices
+    assert dialog.step == pdlg.STEP_WHERE
+    second = tmp_path / "second"
+    second.mkdir()
+    dialog.folder = str(second)
+    dialog._changed()
+    assert dialog.passwords.needs_decision  # the values are gone, only THAT is kept
+    assert not dialog.start_button.isEnabled()
+    assert "password" in dialog.problem.text().lower()
+    click_radio(qtbot, dialog.passwords.none)  # "No password" is a real choice
+    dialog._changed()
+    assert dialog.start_button.isEnabled()
+    dialog.reject()
+
+
+def test_pieces_stop_during_the_check_keeps_every_choice(window, qtbot, tmp_path, monkeypatch):
+    import mef3io_studio.makenew.run as R
+    from mef3io_studio.pieces import dialog as pdlg
+
+    dialog, out = _pieces_at_where(window, qtbot, tmp_path)
+    monkeypatch.setattr(R, "preflight_batch", slow(R.preflight_batch, 30.0))
+    press(qtbot, dialog.start_button)
+    handle = dialog.handle
+    qtbot.wait(100)
+    assert dialog.step == pdlg.STEP_RUN and "Step 1 of 2" in dialog.run_heading.text()
+    press(qtbot, dialog.progress_slot.itemAt(0).widget().cancel_button)
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=30_000)
+    qtbot.waitUntil(lambda: dialog.step == pdlg.STEP_WHERE, timeout=10_000)
+    assert "check was stopped" in dialog.problem.text()
+    assert dialog.passwords.passwords() == PW and dialog.folder == str(out)
+    assert dialog.pattern.text() == "Cut-<number>" and len(dialog.plan().pieces) == 3
+    assert dialog.start_button.isEnabled() and list(out.iterdir()) == []
+    dialog.reject()
+
+
+def test_pieces_a_refusal_keeps_every_choice(window, qtbot, tmp_path, monkeypatch):
+    import mef3io_studio.makenew.run as R
+    from mef3io_studio.pieces import dialog as pdlg
+
+    dialog, out = _pieces_at_where(window, qtbot, tmp_path)
+    monkeypatch.setattr(R, "preflight_batch", slow(R.preflight_batch, 0.6))
+    press(qtbot, dialog.start_button)
+    handle = dialog.handle
+    qtbot.wait(100)
+    (out / "Cut-01.mefd").mkdir()  # a name gets taken meanwhile
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: dialog.step == pdlg.STEP_WHERE, timeout=10_000)
+    assert "already in the chosen folder" in dialog.problem.text()
+    assert dialog.passwords.passwords() == PW and dialog.folder == str(out)
+    assert dialog.pattern.text() == "Cut-<number>" and len(dialog.plan().pieces) == 3
+    assert sorted(p.name for p in out.iterdir()) == ["Cut-01.mefd"]  # nothing written
+    dialog.reject()

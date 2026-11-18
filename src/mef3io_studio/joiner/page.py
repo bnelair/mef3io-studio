@@ -952,8 +952,11 @@ class JoinerPage(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         # Passwords typed but not used yet are not kept while the page is away.
-        if self._built and self.step != STEP_RUN:
-            self._generation += 1
+        # Also during step 1: a refusal then returns to the choices with the
+        # fields empty and the question asked again, never with passwords left.
+        if self._built:
+            if self.step != STEP_RUN:
+                self._generation += 1
             self.new.passwords.forget()
         super().hideEvent(event)
 

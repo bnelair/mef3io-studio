@@ -639,6 +639,10 @@ class EditDetailsDialog(QDialog):
         super().done(result)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._busy:
+            # Refused first, and nothing is wiped: the check or the save goes on.
+            event.ignore()
+            return
         self._wipe()
         super().closeEvent(event)
 

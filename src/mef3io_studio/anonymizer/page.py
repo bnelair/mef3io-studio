@@ -150,6 +150,10 @@ CHECK_REFUSED = (
     "choice you made is kept. Fix what is listed, then choose Make the copies again."
 )
 CHECK_STOPPED = "The check was stopped. Nothing was written. Your choices are kept."
+RESUME_BUSY_TEXT = (
+    "A check or a run is going on in Anonymize. Stop it, or wait until it ends, then "
+    "continue the batch."
+)
 UNSAVED_KEY_TEXT = (
     "You have not saved the date key of the copies you made last. It is the only way to find "
     "the original dates again, and a new run takes it away. Save it now, or go on without it."
@@ -1942,7 +1946,10 @@ class AnonymizerPage(QWidget):
         # What the check judges (not where the copies will go: it uses a
         # placeholder). The same recordings with the same choices that passed
         # once are not read and checked again for nothing.
-        judged = (checked, tuple(replace(r, destination="") for r in requests))
+        # The recordings' state as Explore holds it (size and details as read) is
+        # part of it: a recording read again is not the one that was checked.
+        state = tuple(c.entry.outcome for c in self.choices)
+        judged = (checked, tuple(replace(r, destination="") for r in requests), state)
         if judged == self._names_passed:
             self.go(STEP_PASSWORDS)
             return None
@@ -2077,6 +2084,9 @@ class AnonymizerPage(QWidget):
         never journaled; the caller asked for them again."""
         from ..model import journal as journal_
 
+        if self._checking() or (self.handle is not None and not self.handle.is_finished):
+            self.resume_problems.emit(RESUME_BUSY_TEXT)
+            return None
         batch = pipeline.from_payload(journal.payload, password_for, output_password)
         batch = replace(batch, keep_awake=self.keep_awake())
         self.restart()
