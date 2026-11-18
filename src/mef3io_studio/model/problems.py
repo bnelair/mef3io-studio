@@ -127,6 +127,27 @@ PLAIN_CHECKS: dict[str, tuple[str, str]] = {
         "channel with the units of its first part. Check that the parts really use the "
         "units you expect. Fixing problems in place does not change this.",
     ),
+    technical("records.interrupted-edit"): (
+        "The notes and events were being changed when a program stopped",
+        "A program was changing this recording's notes and events and was interrupted "
+        "(or is still working on it). Until that is settled the notes and events cannot "
+        "be read and nothing can be added to the recording; the signal itself can still "
+        "be read. If no program is still working on it, it must be fixed before the "
+        "recording can be used fully: this app version cannot do that yet. Ask whoever "
+        "looks after the recording's files to rescue it with mef3io's command "
+        "(" + technical("mef3io recover <folder>") + "). Do not remove or move any file "
+        "next to the recording first.",
+    ),
+    technical("records.edit-leftovers"): (
+        "Leftover files from a change of the notes and events",
+        "A change of this recording's notes and events left temporary files next to the "
+        "notes' own files, and the recording no longer says that a change is under way. "
+        "Some notes and events may be missing from view: the earlier copy of their file "
+        "may still be among the leftovers. Nothing is deleted by this app. Keep these "
+        "files and ask whoever looks after the recording's files to look at them and "
+        "put the right file back (" + technical("mef3io recover <folder>") + " removes "
+        "them when the notes' own files are whole). The signal is not affected.",
+    ),
 }
 _UNKNOWN = (
     "Something in the recording's details does not match its data",
