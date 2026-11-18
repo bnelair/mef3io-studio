@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..model.jobs import JobRecord, JobStatus
-from ..model.progress import format_duration
+from ..model.progress import format_duration, format_elapsed
 from ..workers.jobs import JobHandle, JobManager
 from . import icons
 from .theme import LIGHT, Theme
@@ -320,19 +320,32 @@ class ActivityIndicator(QWidget):
 
 class JobProgressWidget(QWidget):
     """One job's progress, for embedding in a dialog or wizard step: phase
-    label, bar (determinate when the total is known), time left, Cancel."""
+    label, bar (determinate when the total is known; a bar that only moves
+    when it is not, never a full one), time left, the time since it started,
+    Stop.
 
-    def __init__(self, handle: JobHandle, parent=None):
+    ``step`` ("Step 1 of 2") is put before the phase, ``note`` is one muted
+    sentence under the bar saying what the step does and what Stop will do."""
+
+    def __init__(self, handle: JobHandle, parent=None, step: str = "", note: str = ""):
         super().__init__(parent)
         self.handle = handle
+        self.step = step
         self.label = QLabel(handle.record.title, self)
+        self.label.setWordWrap(True)
         self.eta = QLabel("", self)
         self.eta.setObjectName("Muted")
+        self.elapsed = QLabel("", self)
+        self.elapsed.setObjectName("Muted")
         self.bar = QProgressBar(self)
         self.bar.setTextVisible(False)
         self.bar.setRange(0, 0)
         self.cancel_button = QPushButton("Stop", self)
         self.cancel_button.clicked.connect(handle.cancel)
+        self.note = QLabel(note, self)
+        self.note.setObjectName("Muted")
+        self.note.setWordWrap(True)
+        self.note.setVisible(bool(note))
         top = QHBoxLayout()
         top.addWidget(self.label, 1)
         top.addWidget(self.eta)
@@ -343,24 +356,40 @@ class JobProgressWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(top)
         layout.addLayout(row)
+        layout.addWidget(self.elapsed)
+        layout.addWidget(self.note)
+        self._started = time.monotonic()
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
+        self._clock.timeout.connect(self._tick)
+        self._clock.start()
         handle.changed.connect(self.refresh)
         self.refresh()
 
+    def _tick(self) -> None:
+        if self.handle.record.status.finished:
+            self._clock.stop()
+            return
+        self.elapsed.setText(f"Running for {format_elapsed(time.monotonic() - self._started)}")
+
     def refresh(self) -> None:
         record = self.handle.record
-        self.label.setText(
-            progress_text(record) if not record.status.finished else record.result_text
-        )
+        text = progress_text(record) if not record.status.finished else record.result_text
+        self.label.setText(f"{self.step}: {text}" if self.step else text)
         self.eta.setText(format_duration(record.eta_seconds))
         if record.status.finished:
             self.bar.setRange(0, 1)
             self.bar.setValue(1)
             self.cancel_button.setEnabled(False)
-        elif record.progress.determinate:
-            self.bar.setRange(0, 1000)
-            self.bar.setValue(round(1000 * (record.progress.fraction or 0)))
+            self._clock.stop()
+            self.elapsed.setText("")
         else:
-            self.bar.setRange(0, 0)
+            self._tick()
+            if record.progress.determinate:
+                self.bar.setRange(0, 1000)
+                self.bar.setValue(round(1000 * (record.progress.fraction or 0)))
+            else:
+                self.bar.setRange(0, 0)
         if record.cancel_requested:
             self.cancel_button.setEnabled(False)
 

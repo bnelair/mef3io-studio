@@ -293,6 +293,29 @@ archives" (2026-10-16) is built as follows.
   destination for all estimated copies; the work folder for the largest; on
   one drive, the total plus the largest), and mef3io's name refusal. Problems
   are listed on the Review step and nothing starts.
+- **One button, the check is step 1 of the run** (usability review, 2026-11):
+  "Make the copies" is the only button. `AnonymizerPage.start()` takes ONE
+  snapshot (`make_batch()`), shows the run page at once ("Step 1 of 2": the
+  time since it started, a bar that only moves while the amount is unknown,
+  one sentence on what the step does and what Stop does) and submits
+  `preflight_batch` on that snapshot. No choice is on screen then and Back is
+  hidden. `_preflight_done` starts the run only if `pipeline.what_is_written`
+  of the batch the choices make NOW equals the checked one (new passwords left
+  out: the form is emptied when the page is left); otherwise nothing runs, the
+  Review step says so, every choice stays. A refusal (every reason) or Stop
+  goes back to Review the same way. mef3io's `anonymize_session` makes its own
+  pre-flight again before it writes and cannot be handed a result, so the app
+  does NOT check a third time: the name check on the Identity step is skipped
+  when nothing it judged has changed since it passed. After a run (also a
+  stopped one) "Back to my choices" returns to Review with everything kept, and
+  "Show the last result" reaches the outcome from every step until the next
+  run starts (`start()` replaces the run state).
+- **Cleared passwords are a question** (`common/passwords.PasswordsStep`): the
+  form is emptied when the page is left, when the window closes and when the
+  copies start (values only; `cleared_once` records THAT it happened). Until
+  the person types new passwords or clicks a choice (`needs_decision`),
+  `problem_text()` blocks Start in every wizard and says why; a copy without
+  the chosen passwords is never made silently.
 - **Failures:** a refusal or a failure ends one recording. A failure to
   reach the source or the destination (an `OSError` / `IoError` that is not a
   refusal) is RETRYABLE: the recording stays waiting in the journal; after 3

@@ -59,7 +59,7 @@ from ..common.passwords import PasswordsStep
 from ..explorer.panels import _scroll
 from ..explorer.state import RecordingEntry
 from ..joiner.page import TimeInput
-from ..makenew.dialog import PROTECTED_NOTE, source_of
+from ..makenew.dialog import PASSWORDS_CLEARED, PROTECTED_NOTE, source_of
 from ..makenew.run import BatchRunMixin
 from ..model import makenew as makenew_model
 from ..model import pieces as P
@@ -169,9 +169,12 @@ class PiecesDialog(BatchRunMixin, QDialog):
         self.problem.setObjectName("Bad")
         self.back_button = QPushButton("Back", self)
         self.back_button.clicked.connect(self.back)
+        self.result_button = QPushButton("Show the last result", self)
+        self.result_button.clicked.connect(self.show_last_result)
+        self.result_button.setVisible(False)
         self.next_button = QPushButton("Next", self)
         self.next_button.clicked.connect(self.next)
-        self.start_button = QPushButton("Check and make the pieces", self)
+        self.start_button = QPushButton("Make the pieces", self)
         self.start_button.setProperty("primary", True)
         self.start_button.clicked.connect(self.start)
         self.open_button = QPushButton("Show them in Explore", self)
@@ -181,6 +184,7 @@ class PiecesDialog(BatchRunMixin, QDialog):
         self.close_button.clicked.connect(self.reject)
         buttons = QHBoxLayout()
         buttons.addWidget(self.back_button)
+        buttons.addWidget(self.result_button)
         buttons.addWidget(self.next_button)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.open_button)
@@ -476,6 +480,9 @@ class PiecesDialog(BatchRunMixin, QDialog):
         handle.failed.connect(failed)
 
     def back(self) -> None:
+        if self.step == STEP_RUN:
+            self.back_to_choices()
+            return
         if self.step in (STEP_CUT, STEP_PASSWORDS, STEP_WHERE) and not self._busy:
             self.go(self.step - 1)
 
@@ -493,6 +500,8 @@ class PiecesDialog(BatchRunMixin, QDialog):
         if step == STEP_PASSWORDS:
             return self.passwords.problem_text()
         if step == STEP_WHERE:
+            if self.passwords.needs_decision:
+                return PASSWORDS_CLEARED
             found = P.pattern_problem(self.pattern.text())
             if found:
                 return found
@@ -527,7 +536,10 @@ class PiecesDialog(BatchRunMixin, QDialog):
         shown = text or ("\n".join(self._preflight_problems) if not running else "")
         self.problem.setText(shown)
         self.problem.setVisible(bool(shown))
-        self.back_button.setVisible(not running)
+        ended = running and self.finished_run and not self._busy
+        self.back_button.setVisible(not running or ended)
+        self.back_button.setText("Back to my choices" if running else "Back")
+        self.result_button.setVisible(not running and self.finished_run)
         self.next_button.setVisible(self.step < STEP_WHERE)
         self.start_button.setVisible(self.step == STEP_WHERE)
         self.back_button.setEnabled(self.step > STEP_RECORDING)

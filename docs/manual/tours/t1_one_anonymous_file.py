@@ -144,7 +144,7 @@ def build() -> Tour:
             "Open the recordings in Explore (they can be folders ending in .mefd or "
             "single files ending in .mefd.tar).",
             "Join or trim writes a new recording. Nothing is written until you choose "
-            "Check and save.",
+            "Save the new recording.",
         ],
         steps=steps,
     )

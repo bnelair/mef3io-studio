@@ -73,10 +73,17 @@ class RecordingSource(abc.ABC):
 
     @abc.abstractmethod
     def check(
-        self, location: str, password: str = "", send=None, cancel: CancelToken | None = None
+        self,
+        location: str,
+        password: str = "",
+        send=None,
+        cancel: CancelToken | None = None,
+        quick: bool = False,
+        read_back: bool = False,
     ) -> CheckReport:
         """Check the recording for problems. Reads only. ``send`` gets
-        :class:`~.progress.ByteProgress`; ``cancel`` stops it."""
+        :class:`~.progress.ByteProgress`; ``cancel`` stops it. ``quick`` /
+        ``read_back``: see :func:`.problems.check_recording`."""
 
     @abc.abstractmethod
     def open_viewer(
@@ -127,12 +134,25 @@ class LocalRecordingSource(RecordingSource):
         return inspect_many(requests, send=send, cancel=cancel)
 
     def check(
-        self, location: str, password: str = "", send=None, cancel: CancelToken | None = None
+        self,
+        location: str,
+        password: str = "",
+        send=None,
+        cancel: CancelToken | None = None,
+        quick: bool = False,
+        read_back: bool = False,
     ) -> CheckReport:
         from .problems import check_recording
 
         progress = byte_progress(send) if send is not None else None
-        return check_recording(os.fspath(location), password, cancel=cancel, progress=progress)
+        return check_recording(
+            os.fspath(location),
+            password,
+            cancel=cancel,
+            progress=progress,
+            quick=quick,
+            read_back=read_back,
+        )
 
     def open_viewer(
         self,

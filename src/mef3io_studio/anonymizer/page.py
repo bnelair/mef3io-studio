@@ -126,6 +126,42 @@ from .picker import ChannelPicker
 #: Wait this long after the last change of the Explore list before listing
 #: the recordings again (a scan delivers them in quick bursts).
 REFRESH_DELAY_MS = 150
+CHECK_STEP_NOTE = (
+    "This looks at every recording and at where the copies will go, and writes nothing. "
+    "If something is wrong you are told what and what to do, and every choice you made is "
+    "kept. Stop ends the check and leaves everything as it was."
+)
+RUN_STEP_NOTE = (
+    "Stop ends the copy that is being made and removes what it had written. Copies that "
+    "are already saved and checked stay."
+)
+CHANGED_DURING_CHECK = (
+    "A choice was changed while the check was running, so nothing was started: the check "
+    "must judge exactly what is written. Look at the choices, then choose Make the copies "
+    "again."
+)
+PASSWORDS_CLEARED_AT_REVIEW = (
+    "The passwords were cleared for safety, and the copies are never made without them "
+    "unless you say so. Go back to the Passwords step and type them again, or choose "
+    "No password."
+)
+CHECK_REFUSED = (
+    "The check found something that must be fixed first, so nothing was written. Every "
+    "choice you made is kept. Fix what is listed, then choose Make the copies again."
+)
+CHECK_STOPPED = "The check was stopped. Nothing was written. Your choices are kept."
+RESUME_BUSY_TEXT = (
+    "A check or a run is going on in Anonymize. Stop it, or wait until it ends, then "
+    "continue the batch."
+)
+RESUME_KEY_TEXT = (
+    "The batch was not continued: the date key of the last run is not saved, and continuing "
+    "would take it away. Save the date key (Anonymize, last result), then continue."
+)
+UNSAVED_KEY_TEXT = (
+    "You have not saved the date key of the copies you made last. It is the only way to find "
+    "the original dates again, and a new run takes it away. Save it now, or go on without it."
+)
 
 STEPS = (
     "Recordings",
@@ -1348,16 +1384,34 @@ class RunStep(QWidget):
         self.retry_button = None
         self.finish_bundle_button = None
 
+    def begin_check(self, handle, n: int) -> None:
+        """Step 1 of 2, on the run page: nothing can be changed here."""
+        _clear(self.progress_slot)
+        _clear(self.open_buttons)
+        _clear(self.messages)
+        self.result_texts = {}
+        self.table.setRowCount(0)
+        self.table.setVisible(False)  # nothing to list until step 2
+        self.key_box.setVisible(False)
+        self.heading.setText(
+            f"Step 1 of 2: checking everything before {format_count(n, 'copy', 'copies')} "
+            "can be made"
+        )
+        self.progress = JobProgressWidget(handle, self, step="Step 1 of 2", note=CHECK_STEP_NOTE)
+        self.progress_slot.addWidget(self.progress)
+
     def start(self, handle, requests: list[CopyRequest]) -> None:
         _clear(self.progress_slot)
         _clear(self.open_buttons)
         _clear(self.messages)
         self.result_texts = {}
         self.key_box.setVisible(False)
+        self.table.setVisible(True)
         self.heading.setText(
-            f"Making {format_count(len(requests), 'anonymized copy', 'anonymized copies')}…"
+            f"Step 2 of 2: making "
+            f"{format_count(len(requests), 'anonymized copy', 'anonymized copies')}…"
         )
-        self.progress = JobProgressWidget(handle, self)
+        self.progress = JobProgressWidget(handle, self, step="Step 2 of 2", note=RUN_STEP_NOTE)
         self.progress_slot.addWidget(self.progress)
         self.fill_table()
 
@@ -1434,6 +1488,7 @@ class RunStep(QWidget):
             self.heading.setText(
                 f"Done: {format_count(len(saved), 'copy', 'copies')} saved and checked."
             )
+        self.table.setVisible(True)  # a check that began after the run hid it
         self.fill_table()
         batch = page.batch
         bundle_mode = batch is not None and batch.output == pipeline.BUNDLE
@@ -1593,8 +1648,13 @@ class AnonymizerPage(QWidget):
         self.run = RunState()
         self.handle = None
         self.names_handle = None
+        #: What the last name check that PASSED judged (see ``check_names``).
+        self._names_passed: tuple | None = None
         self._open_password = ""
         self._passwords_dropped = False
+        #: The date key of the last finished run was saved (see
+        #: :meth:`has_unsaved_date_key`).
+        self._date_key_saved = False
         self._retry_batch = None
         self.batch_state = None
         self._original_times: dict[str, tuple] = {}
@@ -1683,8 +1743,14 @@ class AnonymizerPage(QWidget):
         self.next_button.setProperty("primary", True)
         self.next_button.clicked.connect(self.next)
         self.why_not = _label(muted=True)
+        # The outcome of the last run stays reachable from every step until
+        # the next run starts.
+        self.result_button = QPushButton("Show the last result")
+        self.result_button.clicked.connect(self.show_last_result)
+        self.result_button.setVisible(False)
         nav = QHBoxLayout()
         nav.addWidget(self.why_not, 1)
+        nav.addWidget(self.result_button)
         nav.addWidget(self.back_button)
         nav.addWidget(self.next_button)
 
@@ -1745,8 +1811,6 @@ class AnonymizerPage(QWidget):
         if self._passwords_dropped:
             self._passwords_dropped = False
             self.go(STEP_PASSWORDS)
-        if self.step == STEP_PASSWORDS:
-            self.passwords.cleared.setVisible(self.passwords.cleared_once)
         if self.step == STEP_RECORDINGS and self._recordings_dirty:
             self._refresh_timer.start()
 
@@ -1779,7 +1843,6 @@ class AnonymizerPage(QWidget):
             return
         if step != STEP_RECORDINGS:
             self.recordings.lost.setVisible(False)
-        self.passwords.cleared.setVisible(step == STEP_PASSWORDS and self.passwords.cleared_once)
         self.stack.setCurrentIndex(step)
         for i, label in enumerate(self.step_labels):
             label.setObjectName(
@@ -1829,22 +1892,29 @@ class AnonymizerPage(QWidget):
                 return "Checking the names…"
             return ""
         if step == STEP_PASSWORDS:
+            if self.passwords.needs_decision:
+                return self.passwords.problem_text()
             return "Fix the passwords first." if self.passwords.problem_text() else ""
         if step == STEP_OUTPUT:
             return "Fix the name of the batch archive first." if self.output.problem_text() else ""
         if step == STEP_REVIEW:
             if self.preflight_handle is not None and not self.preflight_handle.is_finished:
                 return "Checking everything before starting…"
+            if self.passwords.needs_decision:
+                return PASSWORDS_CLEARED_AT_REVIEW
             return "" if self.review.ok else "Fix what is listed above first."
         return ""
 
     def _update_buttons(self, *_args) -> None:
         step = self.step
-        running = self.handle is not None and not self.handle.is_finished
+        running = (self.handle is not None and not self.handle.is_finished) or self._checking()
         why = self._blocker_text()
         self.why_not.setText(why)
-        self.back_button.setVisible(step != STEP_RUN)
+        ended = step == STEP_RUN and self.run.finished and not running
+        self.back_button.setVisible(step != STEP_RUN or ended)
+        self.back_button.setText("Back to my choices" if step == STEP_RUN else "Back")
         self.back_button.setEnabled(step > STEP_RECORDINGS)
+        self.result_button.setVisible(step != STEP_RUN and self.has_last_result())
         if step == STEP_REVIEW:
             self.next_button.setText("Make the copies")
         elif step == STEP_RUN:
@@ -1856,13 +1926,37 @@ class AnonymizerPage(QWidget):
         else:
             self.next_button.setEnabled(not why)
 
+    def has_last_result(self) -> bool:
+        """A run has ended and no new one has started: its outcome (the
+        table, the copies, the date key) is still here."""
+        return self.run.finished and self.batch is not None
+
+    def show_last_result(self) -> None:
+        if self.has_last_result() and not self._checking():
+            # A check that began after the run drew its own step on this page.
+            _clear(self.run_step.progress_slot)
+            self.run_step.finish()
+            self.go(STEP_RUN)
+
     def back(self) -> None:
-        if self.step > STEP_RECORDINGS and self.step != STEP_RUN:
+        if self.step == STEP_RUN:
+            # After a run (also a stopped one) back to the choices, all kept.
+            # While a check or a run is going, there is no way back but Stop.
+            if self.run.finished and not self._checking():
+                self.go(STEP_REVIEW)
+            return
+        if self.step > STEP_RECORDINGS:
             self.go(self.step - 1)
 
     def next(self) -> None:
         step = self.step
         if step == STEP_RUN:
+            # "Anonymize more recordings" drops everything: never while the
+            # check or the run is still going.
+            if self._checking() or (self.handle is not None and not self.handle.is_finished):
+                return
+            if not self._date_key_settled():
+                return
             self.restart()
             return
         if self._blocker_text():
@@ -1914,12 +2008,23 @@ class AnonymizerPage(QWidget):
         # The new passwords play no part in the names: never sent.
         requests = [replace(r, output_password=None) for r in self.requests()]
         checked = self._names_now()
+        # What the check judges (not where the copies will go: it uses a
+        # placeholder). The same recordings with the same choices that passed
+        # once are not read and checked again for nothing.
+        # The recordings' state as Explore holds it (size and details as read) is
+        # part of it: a recording read again is not the one that was checked.
+        state = tuple(c.entry.outcome for c in self.choices)
+        judged = (checked, tuple(replace(r, destination="") for r in requests), state)
+        if judged == self._names_passed:
+            self.go(STEP_PASSWORDS)
+            return None
+        self._names_passed = None
         handle = self.jobs.submit("Checking the names of the copies", check_copy_names, requests)
         self.names_handle = handle
         # Locked while mef3io looks: a verdict always answers the names shown.
         self.identity.table.setEnabled(False)
         handle.finished.connect(lambda: self.identity.table.setEnabled(True))
-        handle.succeeded.connect(lambda verdicts: self._names_checked(verdicts, checked))
+        handle.succeeded.connect(lambda verdicts: self._names_checked(verdicts, checked, judged))
         handle.failed.connect(self._names_failed)
         handle.finished.connect(self._update_buttons)
         self._update_buttons()
@@ -1931,11 +2036,15 @@ class AnonymizerPage(QWidget):
         shared = (self.identity.clear(), self.dates.plan.reference_id if self.dates.plan else None)
         return {c.key: (c.name, c.pseudonym, shared) for c in self.choices}
 
-    def _names_checked(self, verdicts: dict, checked: dict | None = None) -> None:
+    def _names_checked(
+        self, verdicts: dict, checked: dict | None = None, judged: tuple | None = None
+    ) -> None:
         if checked is not None and checked != self._names_now():
             return  # the names changed since: this verdict is about others
         for c in self.choices:
             c.names_message = verdicts.get(c.key)
+        if judged is not None and all(c.names_message is None for c in self.choices):
+            self._names_passed = judged
         self.identity.show_problems()
         if self.step == STEP_IDENTITY and all(c.names_message is None for c in self.choices):
             self.go(STEP_PASSWORDS)
@@ -1989,20 +2098,46 @@ class AnonymizerPage(QWidget):
         return replace(batch, keep_awake=self.keep_awake())
 
     # -- running -----------------------------------------------------------------------
+    def _checking(self) -> bool:
+        return self.preflight_handle is not None and not self.preflight_handle.is_finished
+
     def start(self):
-        """Check everything that can be checked up front (in the background),
-        then run the whole batch unattended."""
-        if not self.review.ok:
+        """Step 1 of the run: check everything that can be checked up front
+        (in the background, on the run page, where no choice can be changed),
+        then, from that very check, run the whole batch unattended (step 2)."""
+        if not self.review.ok or self._checking() or self.passwords.needs_decision:
+            return None
+        if not self._date_key_settled():
             return None
         batch = self.make_batch()
         self.preflight_problems = []
+        # The last result (the copies, the date key rows, "Open the copy") stays
+        # until step 2 really starts writing: Stop or a refusal in step 1 must
+        # not take away the only way to reverse the move of the dates.
+        self.handle = None
         handle = self.jobs.submit("Checking everything before starting", preflight_batch, batch)
         self.preflight_handle = handle
         handle.succeeded.connect(lambda verdict: self._preflight_done(batch, verdict))
         handle.failed.connect(self._preflight_failed)
+        handle.cancelled.connect(self._preflight_stopped)
         handle.finished.connect(self._update_buttons)
+        self.go(STEP_RUN)
+        self.run_step.begin_check(handle, len(batch.items))
         self._update_buttons()
         return handle
+
+    def _check_is_stale(self, batch: pipeline.Batch) -> bool:
+        """The choices on the wizard are no longer the ones ``batch`` was
+        made from, so a check of ``batch`` says nothing about them."""
+        return pipeline.what_is_written(self.make_batch()) != pipeline.what_is_written(batch)
+
+    def _back_to_review(self, problems: list[str]) -> None:
+        """Step 1 found a reason not to go on: back to the last step, nothing
+        written, every choice kept, every reason listed."""
+        self.go(STEP_REVIEW)
+        self.preflight_problems = problems
+        self.review.refresh()
+        self._update_buttons()
 
     def resume(self, journal, password_for, output_password=None, ask_existing=None):
         """Continue an interrupted batch from its journal. The up-front checks
@@ -2014,6 +2149,14 @@ class AnonymizerPage(QWidget):
         never journaled; the caller asked for them again."""
         from ..model import journal as journal_
 
+        if self._checking() or (self.handle is not None and not self.handle.is_finished):
+            self.resume_problems.emit(RESUME_BUSY_TEXT)
+            return None
+        # Resuming restarts the page, which takes the last result (and its
+        # unsaved date key) away: ask first, as a new run does.
+        if not self._date_key_settled():
+            self.resume_problems.emit(RESUME_KEY_TEXT)
+            return None
         batch = pipeline.from_payload(journal.payload, password_for, output_password)
         batch = replace(batch, keep_awake=self.keep_awake())
         self.restart()
@@ -2066,21 +2209,35 @@ class AnonymizerPage(QWidget):
         return handle
 
     def _preflight_failed(self, message) -> None:
-        self.preflight_problems = [f"{message.title}. {message.text}"]
-        self.review.refresh()
+        if self.step == STEP_RUN:
+            self._back_to_review([f"{message.title}. {message.text}"])
+        else:
+            self.preflight_problems = [f"{message.title}. {message.text}"]
+            self.review.refresh()
+
+    def _preflight_stopped(self) -> None:
+        self._back_to_review([CHECK_STOPPED])
 
     def _preflight_done(self, batch: pipeline.Batch, verdict: dict) -> None:
+        handle = self.preflight_handle
+        if handle is not None and handle.record.cancel_requested:
+            # Stop was pressed and the check returned normally anyway (it was
+            # past its last stop point): a requested stop always wins.
+            self._back_to_review([CHECK_STOPPED])
+            return
+        if self._check_is_stale(batch):
+            self._back_to_review([CHANGED_DURING_CHECK])
+            return
         problems = list(verdict.get("problems", []))
         names = verdict.get("names", {})
         for c in self.choices:
             message = names.get(c.key)
             if message is not None:
                 problems.append(f"{c.entry.name}: {message.title}. {message.text}")
-        self.preflight_problems = problems
         if problems:
-            self.review.refresh()
-            self._update_buttons()
+            self._back_to_review([CHECK_REFUSED, *problems])
             return
+        self.preflight_problems = []
         self.run_batch(batch)
 
     def run_batch(self, batch: pipeline.Batch, journal=None):
@@ -2092,6 +2249,7 @@ class AnonymizerPage(QWidget):
         self.batch_state = None
         self.bundle_outcome = None
         self.run = RunState(requests=[i.request for i in batch.items])
+        self._date_key_saved = False  # the new copies have a key of their own
         n = len(batch.items)
         title = "Making an anonymized copy" if n == 1 else f"Making {n} anonymized copies"
         handle = self.jobs.submit(title, run_batch, batch, journal)
@@ -2110,14 +2268,17 @@ class AnonymizerPage(QWidget):
         self.run.requests = [
             replace(i.request, output_password=None, password="") for i in batch.items
         ]
+        # The values are gone from here on. What stays is the fact that they
+        # were cleared: going back to the choices asks for them again.
         self.passwords.forget()
-        self.passwords.cleared_once = False
         self.go(STEP_RUN)
         self.run_step.start(handle, self.run.requests)
         self._update_buttons()
         return handle
 
     def stop(self) -> None:
+        if self._checking():
+            self.preflight_handle.cancel()  # step 1: ends the check, nothing written
         if self.handle is not None:
             self.handle.cancel()
 
@@ -2258,11 +2419,12 @@ class AnonymizerPage(QWidget):
         self.batch = None
         self.bundle_outcome = None
         self.preflight_problems = []
-        self.passwords.forget()
-        self.passwords.cleared_once = False
+        self._names_passed = None
+        self.passwords.start_over()
         self._open_password = ""
         self.choices = []
         self.run = RunState()
+        self._date_key_saved = False
         self.handle = None
         self._selection_keys = ()
         self.recordings.ticked.clear()
@@ -2322,6 +2484,41 @@ class AnonymizerPage(QWidget):
         box.exec()
         return box.clickedButton() is save
 
+    @property
+    def date_key_saved(self) -> bool:
+        """The date key of the last finished run was written to a file."""
+        return self._date_key_saved
+
+    def has_unsaved_date_key(self) -> bool:
+        """A finished run has copies whose date key was not saved: it is the
+        only way to reverse the move of the dates, and it lives in memory
+        only, so whatever drops the last result takes it away."""
+        return not self._date_key_saved and bool(self.date_key_rows())
+
+    def ask_unsaved_date_key(self) -> str:
+        """Before a new run drops the last result: ``"save"`` (save the key
+        first), ``"skip"`` (go on without it) or ``"cancel"`` (do not start)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("The date key was not saved")
+        box.setText(UNSAVED_KEY_TEXT)
+        save = box.addButton("Save the date key…", QMessageBox.ButtonRole.AcceptRole)
+        skip = box.addButton("Go on without saving it", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Don't start", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        return "save" if clicked is save else "skip" if clicked is skip else "cancel"
+
+    def _date_key_settled(self) -> bool:
+        """True when a new run may take the last result away: its date key
+        was saved, or there is none, or the person chose to go on."""
+        if not self.has_unsaved_date_key():
+            return True
+        answer = self.ask_unsaved_date_key()
+        if answer == "save":
+            return self.save_date_key()
+        return answer == "skip"
+
     def save_date_key(self) -> bool:
         rows = self.date_key_rows()
         if not rows or not self.confirm_date_key():
@@ -2352,6 +2549,7 @@ class AnonymizerPage(QWidget):
             message = describe_error(exc)
             QMessageBox.warning(self, message.title, message.text)
             return False
+        self._date_key_saved = True
         self.status.emit("Date key saved.")
         return True
 

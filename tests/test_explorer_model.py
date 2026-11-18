@@ -200,8 +200,8 @@ def test_inspect_many_streams_outcomes(tmp_path):
 
 def test_check_clean_and_damaged(tmp_path):
     clean = check_recording(str(write_plain(tmp_path / "ok.mefd")))
-    assert clean.ok and clean.headline() == "No problems found"
-    assert clean.short_status() == "No problems"
+    assert clean.ok and clean.headline() == "No problems found (full check)"
+    assert clean.short_status() == "No problems (full check)"
     bad = check_recording(str(damage_index(write_plain(tmp_path / "bad.mefd", notes=False))))
     assert not bad.ok
     assert bad.groups[0].title == PLAIN_CHECKS["crc.index"][0]
