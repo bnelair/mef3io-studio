@@ -3,9 +3,9 @@
 The viewer's controls (navigation, notes, export, display settings, filters ...) used to sit
 in toolbars. A toolbar wider than its window loses its LAST controls to a ">>" menu, and how
 wide it is depends on the font, which cannot be known. A flow layout cannot lose anything:
-the controls keep their order and wrap onto as many rows as the width needs (two on a wide
-screen, more on a narrow one), and ``heightForWidth`` tells the window how tall that is, so
-the signal gets the rest.
+the controls keep their order and wrap onto as many rows as the width needs (two or three on a
+wide screen, depending on the font, more on a narrow one), and ``heightForWidth`` tells the
+window how tall that is, so the signal gets the rest.
 
 A *group* (a label and its control, a button pair) is one item, so it is never split between
 two rows.

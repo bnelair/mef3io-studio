@@ -1055,7 +1055,8 @@ sensitivity says so on screen.
   control, a button pair) is one flow item, never split over two rows; Tab goes in the
   order shown (`_tab_in_visual_order`). `heightForWidth` is right, so the signal gets the
   rest. Tests: every control is visible and inside the window at widths 1000, 1280 and 1920
-  and 9 to 15 pt; two rows at 1920 with the default font. The axis under the traces is `2.6
+  and 9 to 15 pt; at 1920 two rows with the Linux and macOS fonts, three with the Windows
+  font (CI). The axis under the traces is `2.6
   lines + 10 px` high, so the time
   labels and the note under them are always more than half a line apart.
 - **Keys and buttons:** Ctrl+Right / Ctrl+Left one hour, Ctrl+Shift+Right /

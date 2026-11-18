@@ -565,7 +565,9 @@ def test_every_control_is_on_screen_at_any_width_and_font_size(
         assert box.height() >= box.flow.heightForWidth(box.width())  # the flow gets its height
         assert win.canvas.height() > 150  # and the signal the rest
         if width == 1920 and points == 9:
-            assert box.rows() <= 2, box.rows()  # a wide screen: the two rows it always had
+            # A wide screen: two rows with the Linux and macOS fonts, three with the wider
+            # Windows font (measured in CI). Nothing is hidden either way.
+            assert box.rows() <= 3, box.rows()
     finally:
         app.setFont(old)
 
