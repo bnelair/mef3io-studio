@@ -154,6 +154,10 @@ RESUME_BUSY_TEXT = (
     "A check or a run is going on in Anonymize. Stop it, or wait until it ends, then "
     "continue the batch."
 )
+RESUME_KEY_TEXT = (
+    "The batch was not continued: the date key of the last run is not saved, and continuing "
+    "would take it away. Save the date key (Anonymize, last result), then continue."
+)
 UNSAVED_KEY_TEXT = (
     "You have not saved the date key of the copies you made last. It is the only way to find "
     "the original dates again, and a new run takes it away. Save it now, or go on without it."
@@ -2147,6 +2151,11 @@ class AnonymizerPage(QWidget):
 
         if self._checking() or (self.handle is not None and not self.handle.is_finished):
             self.resume_problems.emit(RESUME_BUSY_TEXT)
+            return None
+        # Resuming restarts the page, which takes the last result (and its
+        # unsaved date key) away: ask first, as a new run does.
+        if not self._date_key_settled():
+            self.resume_problems.emit(RESUME_KEY_TEXT)
             return None
         batch = pipeline.from_payload(journal.payload, password_for, output_password)
         batch = replace(batch, keep_awake=self.keep_awake())

@@ -124,7 +124,9 @@ REFRESH_DELAY_MS = 150
 STEPS = ("Recordings", "Channels", "What to keep", "Privacy", "New recording", "Save")
 STEP_RECORDINGS, STEP_CHANNELS, STEP_KEEP, STEP_PRIVACY, STEP_NEW, STEP_RUN = range(len(STEPS))
 
-RECORDING_CHANGED = "This recording has changed since it was opened; the times were updated."
+RECORDING_CHANGED = (
+    "A recording has changed since it was opened; checking again with its current times."
+)
 
 #: The "Keep" choices, in the order the list shows them.
 KEEP_LABELS = (
@@ -1760,7 +1762,12 @@ class JoinerPage(QWidget):
     def _check_is_stale(self, request: JoinRequest) -> bool:
         """The choices on the page are no longer the ones ``request`` was
         made from, so its check says nothing about them."""
-        return self._what_is_written(self.make_request()) != self._what_is_written(request)
+        try:
+            return self._what_is_written(self.make_request()) != self._what_is_written(request)
+        except ValueError:
+            # The privacy choices cannot make a request any more: they are not
+            # the ones that were checked.
+            return True
 
     def check_and_save(self):
         """Step 1 of the run: mef3io's checks (nothing written), on the run

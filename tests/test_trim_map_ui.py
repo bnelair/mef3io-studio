@@ -441,7 +441,7 @@ def test_window_join_end_to_end_output_is_the_window_within_the_data(window_page
 
 
 def run_check(qtbot, page, tmp_path):
-    """On to the last step, name it, press Check and save, return the texts
+    """On to the last step, name it, press Save the new recording, return the texts
     of what stops it."""
     from PySide6.QtWidgets import QLabel
 

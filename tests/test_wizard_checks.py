@@ -424,6 +424,32 @@ def test_join_a_refusal_lists_every_reason_and_keeps_every_choice(
     assert "already" in page.why_not.text() or "already" in page.new.problem.text()
 
 
+def test_join_a_request_that_cannot_be_made_after_the_check_is_stale_not_a_dead_end(
+    window, qtbot, tmp_path, monkeypatch
+):
+    """Review finding: make_request() raising ValueError inside the stale
+    test left the run page with no message and no way back."""
+    import mef3io_studio.joiner.page as J
+
+    page, out = _join_page_at_new(window, qtbot, tmp_path)
+    monkeypatch.setattr(J, "check_join", slow(J.check_join, 0.6))
+    check = start_join(qtbot, page)
+    qtbot.wait(100)
+
+    def cannot(*_a, **_k):
+        raise ValueError("no plan for the dates")
+
+    monkeypatch.setattr(page, "make_request", cannot)
+    qtbot.waitUntil(lambda: check.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: page.step == J.STEP_NEW, timeout=10_000)
+    monkeypatch.undo()
+    assert page.handle is None
+    assert not (out / "joined.mefd").exists()  # nothing was written
+    assert J.CHANGED_DURING_CHECK in page.new.notice.text()
+    assert page.next_button.isEnabled()  # the page is usable again
+    assert page.back_button.isVisibleTo(page)
+
+
 def test_join_stop_during_the_check_keeps_the_choices(window, qtbot, tmp_path, monkeypatch):
     import mef3io_studio.joiner.page as J
 
@@ -1290,6 +1316,23 @@ def test_anonymize_a_new_run_first_says_the_date_key_is_not_saved(
     assert asked == [1, 2] and "S001" in key.read_text(encoding="utf-8")
     qtbot.waitUntil(lambda: page.run.finished and page.handle is not None, timeout=120_000)
     assert (second / "S001.mefd").is_dir()
+
+
+def test_anonymize_resume_asks_about_the_unsaved_date_key_first(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    """Review finding: resume() restarted the page and dropped an unsaved
+    date key without asking."""
+    window, page = window_page
+    _out, _second = _finished_anonymize(window, page, qtbot, tmp_path)
+    said, asked = [], []
+    page.resume_problems.connect(said.append)
+    monkeypatch.setattr(page, "ask_unsaved_date_key", lambda: asked.append(1) or "cancel")
+    jobs = len(window.jobs.handles)
+    assert page.resume(object(), lambda source: "") is None
+    assert asked == [1] and said and "date key" in said[0]
+    assert len(window.jobs.handles) == jobs  # nothing started
+    assert page.date_key_rows() and page.has_last_result()  # nothing taken away
 
 
 def test_anonymize_the_question_is_not_asked_when_the_key_was_saved(

@@ -1214,8 +1214,8 @@ class ExplorerPage(QWidget):
 
     def check_selected(self) -> None:
         """The list's "Check for problems": the quick look at every selected
-        recording (the full check, which reads the signal files, is chosen
-        on the recording's own Check tab, where it says how much it reads)."""
+        recording. The full check and "Read everything back" are chosen on the
+        recording's own Check tab, where it says how much each reads."""
         for entry in self.selected_entries():
             if entry.outcome is not None:
                 self.check(entry, quick=True)
