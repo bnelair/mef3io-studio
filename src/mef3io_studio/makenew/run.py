@@ -96,7 +96,9 @@ class BatchRunMixin:
             return None
         batch = self.make_batch()
         self._preflight_problems = []
-        self._reset_run()
+        # The last result stays until step 2 really starts (``run``): Stop or a
+        # refusal in step 1 must not take it away. Only its view is put away.
+        self._hide_last_view()
         self._set_busy(True)
         self.go(self.STEP_RUN)
         handle = self.jobs.submit("Checking everything before starting", preflight_batch, batch)
@@ -145,9 +147,33 @@ class BatchRunMixin:
             self.go(self.STEP_WHERE)
 
     def show_last_result(self) -> None:
-        """The outcome of the last run stays here until the next run starts."""
+        """The outcome of the last run stays here until the next run starts
+        (its step 2, not its check)."""
         if self.finished_run and not self._busy:
+            self._show_last_view()
             self.go(self.STEP_RUN)
+
+    def _hide_last_view(self) -> None:
+        """Step 1 of a new run draws on the run page: put the last result's
+        view away (the result itself is kept)."""
+        self._clear(self.progress_slot)
+        for widget in (self.results_table, self.summary, self.open_button):
+            widget.setVisible(False)
+        for n in range(self.messages.count()):
+            widget = self.messages.itemAt(n).widget()
+            if widget is not None:
+                widget.setVisible(False)
+
+    def _show_last_view(self) -> None:
+        self._clear(self.progress_slot)
+        self.run_heading.setText(getattr(self, "_last_heading", self.run_heading.text()))
+        self.results_table.setVisible(True)
+        self.summary.setVisible(True)
+        self.open_button.setVisible(any(r.ok for r in self.results.values()))
+        for n in range(self.messages.count()):
+            widget = self.messages.itemAt(n).widget()
+            if widget is not None:
+                widget.setVisible(True)
 
     def _reset_run(self) -> None:
         self.results = {}
@@ -155,6 +181,8 @@ class BatchRunMixin:
         self.state = None
         self.stopped = False
         self.finished_run = False
+        for widget in (self.results_table, self.summary):
+            widget.setVisible(True)
         self._clear(self.messages)
         self._clear(self.progress_slot)
         self.results_table.setRowCount(0)
@@ -200,6 +228,8 @@ class BatchRunMixin:
         copy without any, plus the copies' full-access password for "Show
         them in Explore" only."""
         self.batch = pipeline.without_passwords(batch)
+        if journal is None:
+            self._reset_run()  # step 2 really starts: the last result is replaced now
         output = next(
             (i.request.output_password for i in batch.items if i.request.output_password), None
         )
@@ -317,6 +347,7 @@ class BatchRunMixin:
     def _finished(self) -> None:
         self._clear(self.progress_slot)
         self.finished_run = True
+        self._last_heading = self.run_heading.text()
         self._set_busy(False)
         saved = [r for r in self.results.values() if r.ok]
         total = len(self.batch.items) if self.batch is not None else len(saved)

@@ -70,7 +70,7 @@ def test_the_choices_cannot_be_reached_while_the_check_runs(
     window, page = window_page
     out = anonymizer_at_review(window, page, qtbot, tmp_path)
     monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 1.0))
-    handle = page.start()
+    handle = start_anonymize(qtbot, page)
     qtbot.wait(100)
     assert not handle.is_finished
     # The check is step 1 of the run: its page is shown, no choice is on screen.
@@ -93,7 +93,7 @@ def test_a_check_about_other_choices_never_starts_a_run(window_page, qtbot, tmp_
     window, page = window_page
     out = anonymizer_at_review(window, page, qtbot, tmp_path)
     monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 1.0))
-    handle = page.start()
+    handle = start_anonymize(qtbot, page)
     qtbot.wait(100)
     page.identity.table.item(0, 1).setText("S777")  # not reachable by a click
     qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
@@ -117,7 +117,7 @@ def test_negative_control_without_the_guard_the_old_choices_are_written(
     out = anonymizer_at_review(window, page, qtbot, tmp_path)
     monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 1.0))
     monkeypatch.setattr(P.AnonymizerPage, "_check_is_stale", lambda self, batch: False)
-    handle = page.start()
+    handle = start_anonymize(qtbot, page)
     qtbot.wait(100)
     page.identity.table.item(0, 1).setText("S777")
     qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
@@ -290,7 +290,7 @@ def test_make_new_closing_with_x_during_the_check_keeps_the_passwords(
     assert dialog.step == dlg.STEP_WHERE
     dialog.folder = str(out)
     dialog._changed()
-    handle = dialog.start()
+    handle = start_dialog(qtbot, dialog)
     qtbot.wait(100)
     dialog.close()  # the X of the window, while the check runs
     assert dialog.isVisible()  # it does not close, and says why
@@ -302,7 +302,7 @@ def test_make_new_closing_with_x_during_the_check_keeps_the_passwords(
     dialog._changed()
     assert dialog.passwords.passwords() == PW  # still there: nothing was cleared
     monkeypatch.setattr(R, "preflight_batch", real_preflight)
-    dialog.start()
+    press(qtbot, dialog.start_button)
     qtbot.waitUntil(lambda: dialog.finished_run, timeout=180_000)
     for p in out.iterdir():
         with pytest.raises(Exception):  # noqa: B017, PT011
@@ -332,7 +332,7 @@ def test_make_new_after_a_run_the_passwords_are_asked_again(window, qtbot, tmp_p
     dialog.next()
     dialog.folder = str(out)
     dialog._changed()
-    dialog.start()
+    press(qtbot, dialog.start_button)
     qtbot.waitUntil(lambda: dialog.finished_run, timeout=180_000)
     dialog.go(dlg.STEP_PASSWORDS)
     assert dialog.passwords.needs_decision
@@ -387,7 +387,7 @@ def test_join_has_one_button_and_the_check_is_step_one_on_the_run_page(
     page, out = _join_page_at_new(window, qtbot, tmp_path)
     monkeypatch.setattr(J, "check_join", slow(J.check_join, 1.0))
     assert page.next_button.text() == "Save the new recording"  # one button, no Check
-    check = page.next()
+    check = start_join(qtbot, page)
     qtbot.wait(100)
     assert not check.is_finished
     assert page.step == J.STEP_RUN
@@ -408,7 +408,7 @@ def test_join_a_refusal_lists_every_reason_and_keeps_every_choice(
     page, out = _join_page_at_new(window, qtbot, tmp_path)
     type_passwords(page.new.passwords)
     monkeypatch.setattr(J, "check_join", slow(J.check_join, 0.6))
-    check = page.next()
+    check = start_join(qtbot, page)
     qtbot.wait(100)
     (out / "joined.mefd").mkdir()  # the name gets taken meanwhile
     qtbot.waitUntil(lambda: check.is_finished, timeout=60_000)
@@ -427,7 +427,7 @@ def test_join_stop_during_the_check_keeps_the_choices(window, qtbot, tmp_path, m
 
     page, out = _join_page_at_new(window, qtbot, tmp_path)
     monkeypatch.setattr(J, "check_join", slow(J.check_join, 5.0))
-    check = page.next()
+    check = start_join(qtbot, page)
     qtbot.wait(100)
     qtbot.mouseClick(
         page.run_step.progress.cancel_button,
@@ -444,7 +444,7 @@ def test_join_a_check_about_other_choices_never_starts_a_run(window, qtbot, tmp_
 
     page, out = _join_page_at_new(window, qtbot, tmp_path)
     monkeypatch.setattr(J, "check_join", slow(J.check_join, 0.8))
-    check = page.next()
+    check = start_join(qtbot, page)
     qtbot.wait(100)
     page.new.name.setText("renamed")  # no click can do this on the run page
     qtbot.waitUntil(lambda: check.is_finished, timeout=60_000)
@@ -492,7 +492,7 @@ def test_make_new_the_check_is_step_one_and_nothing_can_change(
     dialog, out = _make_new_at_where(window, qtbot, tmp_path)
     monkeypatch.setattr(R, "preflight_batch", slow(R.preflight_batch, 1.0))
     assert dialog.start_button.text() == "Make the new recordings"  # one button
-    handle = dialog.start()
+    handle = start_dialog(qtbot, dialog)
     qtbot.wait(100)
     assert dialog.step == dlg.STEP_RUN
     assert "Step 1 of 2" in dialog.run_heading.text()
@@ -514,7 +514,7 @@ def test_make_new_stop_during_the_check_keeps_every_choice(window, qtbot, tmp_pa
 
     dialog, out = _make_new_at_where(window, qtbot, tmp_path)
     monkeypatch.setattr(R, "preflight_batch", slow(R.preflight_batch, 5.0))
-    handle = dialog.start()
+    handle = start_dialog(qtbot, dialog)
     qtbot.wait(100)
     qtbot.mouseClick(
         dialog.progress_slot.itemAt(0).widget().cancel_button, Qt.MouseButton.LeftButton
@@ -536,7 +536,7 @@ def test_make_new_a_check_about_other_choices_never_starts_a_run(
 
     dialog, out = _make_new_at_where(window, qtbot, tmp_path)
     monkeypatch.setattr(R, "preflight_batch", slow(R.preflight_batch, 1.0))
-    handle = dialog.start()
+    handle = start_dialog(qtbot, dialog)
     qtbot.wait(100)
     dialog.naming_text.setText("-other")  # no click can reach this on the run page
     qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
@@ -575,7 +575,7 @@ def test_edit_details_one_button_and_the_check_shows_what_it_does(
     monkeypatch.setattr(E, "check_changes", slow(E.check_changes, 1.0))
     assert dialog.save_button.text() == "Save the new recording"  # one button
     assert dialog.save_button.isEnabled()
-    handle = dialog.check_and_save()
+    handle = start_edit(qtbot, dialog)
     qtbot.wait(100)
     assert not handle.is_finished
     widget = dialog.progress_slot.itemAt(0).widget()
@@ -597,7 +597,7 @@ def test_edit_details_stop_during_the_check_keeps_every_choice(
 
     dialog, out = _edit_dialog(window, qtbot, tmp_path)
     monkeypatch.setattr(E, "check_changes", slow(E.check_changes, 5.0))
-    handle = dialog.check_and_save()
+    handle = start_edit(qtbot, dialog)
     qtbot.wait(100)
     qtbot.mouseClick(
         dialog.progress_slot.itemAt(0).widget().cancel_button, Qt.MouseButton.LeftButton
@@ -616,7 +616,7 @@ def test_edit_details_a_check_about_other_choices_never_starts_a_save(
 
     dialog, out = _edit_dialog(window, qtbot, tmp_path)
     monkeypatch.setattr(E, "check_changes", slow(E.check_changes, 1.0))
-    handle = dialog.check_and_save()
+    handle = start_edit(qtbot, dialog)
     qtbot.wait(100)
     dialog.boxes["recording_location"].set_text("Room 9")  # no click can reach it
     qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
@@ -645,10 +645,10 @@ def test_anonymize_after_stop_the_choices_are_kept_and_the_result_is_reachable(
     out.mkdir()
     _through_to_review(page, qtbot, out, names=["BIG1"])
     entered = _gate(monkeypatch, tmp_path, "during")
-    page.start()
+    start_anonymize(qtbot, page)
     qtbot.waitUntil(entered.exists, timeout=60_000)
     assert not page.back_button.isVisibleTo(page)  # still running: no way out but Stop
-    page.stop()
+    press(qtbot, page.run_step.progress.cancel_button)
     qtbot.waitUntil(lambda: page.run.finished, timeout=60_000)
     stopped = page.run_step.heading.text()
     assert stopped.startswith("Stopped")
@@ -663,12 +663,16 @@ def test_anonymize_after_stop_the_choices_are_kept_and_the_result_is_reachable(
     assert page.result_button.isVisibleTo(page)
     qtbot.mouseClick(page.result_button, Qt.MouseButton.LeftButton)
     assert page.step == STEP_RUN and page.run_step.heading.text() == stopped
-    page.back()
+    press(qtbot, page.back_button)
     assert page.step == STEP_REVIEW
     assert page.next_button.isEnabled()  # start again, nothing to type again
     monkeypatch.undo()
-    page.start()
-    assert not page.result_button.isVisibleTo(page)  # a new run: the old outcome is gone
+    start_anonymize(qtbot, page)
+    # Only step 1 has begun: the outcome of the last run is still kept (it is
+    # replaced when step 2 really starts writing, below).
+    assert page.has_last_result()
+    qtbot.waitUntil(lambda: page.handle is not None, timeout=60_000)
+    assert not page.has_last_result() or page.run.requests  # now it is the new run's
     qtbot.waitUntil(lambda: page.run.finished, timeout=120_000)
     assert (out / "BIG1.mefd").is_dir()
 
@@ -681,7 +685,7 @@ def test_join_after_the_run_the_choices_are_kept_and_the_result_is_reachable(
     import mef3io_studio.joiner.page as J
 
     page, out = _join_page_at_new(window, qtbot, tmp_path)
-    page.next()
+    press(qtbot, page.next_button)
     qtbot.waitUntil(lambda: page.handle is not None and page.handle.is_finished, timeout=120_000)
     qtbot.waitUntil(lambda: page.back_button.isVisibleTo(page), timeout=10_000)
     assert page.back_button.text() == "Back to my choices"
@@ -706,7 +710,7 @@ def test_make_new_after_the_run_the_choices_are_kept_and_the_result_is_reachable
     dialog.passwords.none.setChecked(True)
     dialog.change_details.setChecked(True)
     dialog.boxes["recording_location"].set_text("Room 5")
-    dialog.start()
+    press(qtbot, dialog.start_button)
     qtbot.waitUntil(lambda: dialog.finished_run, timeout=180_000)
     assert dialog.back_button.isVisible() and dialog.back_button.text() == "Back to my choices"
     summary = dialog.summary.text()
@@ -989,9 +993,9 @@ def test_anonymize_stop_in_step_one_ends_the_check_and_keeps_the_choices(
     window, page = window_page
     out = anonymizer_at_review(window, page, qtbot, tmp_path)
     monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 30.0))
-    handle = page.start()
+    handle = start_anonymize(qtbot, page)
     qtbot.wait(100)
-    page.stop()
+    press(qtbot, page.run_step.progress.cancel_button)
     qtbot.waitUntil(lambda: handle.is_finished, timeout=30_000)
     qtbot.waitUntil(lambda: page.step == STEP_REVIEW, timeout=10_000)
     assert "check was stopped" in page.review.blocked.text()
@@ -1005,7 +1009,7 @@ def test_the_time_since_start_counts_while_a_step_runs(window_page, qtbot, tmp_p
     window, page = window_page
     anonymizer_at_review(window, page, qtbot, tmp_path)
     monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 3.0))
-    handle = page.start()
+    handle = start_anonymize(qtbot, page)
     qtbot.waitUntil(
         lambda: "Running for 1 second" in page.run_step.progress.elapsed.text(), timeout=5_000
     )
@@ -1018,11 +1022,11 @@ def test_join_during_step_one_the_only_button_is_disabled(window, qtbot, tmp_pat
 
     page, _out = _join_page_at_new(window, qtbot, tmp_path)
     monkeypatch.setattr(J, "check_join", slow(J.check_join, 1.0))
-    check = page.next()
+    check = start_join(qtbot, page)
     qtbot.wait(100)
     assert page.step == J.STEP_RUN and not check.is_finished
     assert not page.next_button.isEnabled()  # "Join or trim more recordings" would drop everything
-    page.next()
+    press(qtbot, page.next_button)
     assert page.step == J.STEP_RUN
     qtbot.waitUntil(lambda: page.handle is not None and page.handle.is_finished, timeout=120_000)
 
@@ -1047,9 +1051,34 @@ def deaf(fn, entered):
 
 
 def press(qtbot, button):
+    """A real click on a button."""
     from PySide6.QtCore import Qt
 
     qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
+
+
+def start_anonymize(qtbot, page):
+    """Click "Make the copies"; the check's handle."""
+    press(qtbot, page.next_button)
+    return page.preflight_handle
+
+
+def start_join(qtbot, page):
+    """Click "Save the new recording"; the check's handle."""
+    press(qtbot, page.next_button)
+    return page.check_handle
+
+
+def start_dialog(qtbot, dialog):
+    """Click the Start button of Make new / Cut into pieces; the check's handle."""
+    press(qtbot, dialog.start_button)
+    return dialog.handle
+
+
+def start_edit(qtbot, dialog):
+    """Click "Save the new recording" of Edit details; the check's handle."""
+    press(qtbot, dialog.save_button)
+    return dialog._check_handle
 
 
 def wait_set(qtbot, event):
@@ -1169,3 +1198,167 @@ def test_the_check_tasks_look_for_a_stop_after_their_last_stage(tmp_path):
     request = join_model.JoinRequest((source,), str(tmp_path / "j.mefd"))
     with pytest.raises(JobCancelled):
         tasks.check_join(ctx(), request)
+
+
+# --------------------------------------------------------------------------
+# Item 3: the last result is kept until step 2 of a new run really writes
+
+
+def _finished_anonymize(window, page, qtbot, tmp_path):
+    out = anonymizer_at_review(window, page, qtbot, tmp_path)
+    press(qtbot, page.next_button)  # Make the copies
+    qtbot.waitUntil(lambda: page.run.finished, timeout=120_000)
+    assert page.date_key_rows() and not page.date_key_saved
+    press(qtbot, page.back_button)  # Back to my choices
+    assert page.step == STEP_REVIEW
+    second = tmp_path / "out2"
+    second.mkdir()
+    page.review.set_folder(str(second))
+    assert page.review.ok, page.review.blocked.text()
+    return out, second
+
+
+def test_anonymize_start_then_stop_keeps_the_date_key_rows(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    """Review finding: Start threw the last result away at the BEGINNING of
+    step 1, so Start then Stop lost the date key rows for good. The question
+    about the unsaved key is answered "start anyway" here."""
+    import mef3io_studio.anonymizer.page as P
+
+    window, page = window_page
+    _out, second = _finished_anonymize(window, page, qtbot, tmp_path)
+    before = page.date_key_rows()
+    monkeypatch.setattr(page, "ask_unsaved_date_key", lambda: "skip")
+    monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 30.0))
+    press(qtbot, page.next_button)
+    handle = page.preflight_handle
+    qtbot.wait(100)
+    press(qtbot, page.run_step.progress.cancel_button)  # Stop
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=30_000)
+    qtbot.waitUntil(lambda: page.step == STEP_REVIEW, timeout=10_000)
+    assert page.date_key_rows() == before  # the only way to undo the shift is still there
+    assert page.has_last_result() and page.result_button.isVisibleTo(page)
+    press(qtbot, page.result_button)  # Show the last result
+    assert page.step == STEP_RUN
+    assert page.run_step.key_box.isVisibleTo(page.run_step)
+    assert page.run_step.table.rowCount() == 1 and page.run_step.table.isVisibleTo(page.run_step)
+    assert page.run_step.heading.text().startswith("Done")
+    assert list(second.iterdir()) == []
+
+
+def test_anonymize_a_refused_check_keeps_the_last_result_too(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    import mef3io_studio.anonymizer.page as P
+
+    window, page = window_page
+    _out, second = _finished_anonymize(window, page, qtbot, tmp_path)
+    before = page.date_key_rows()
+    monkeypatch.setattr(page, "ask_unsaved_date_key", lambda: "skip")
+    monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 0.6))
+    press(qtbot, page.next_button)
+    handle = page.preflight_handle
+    qtbot.wait(100)
+    (second / "S001.mefd").mkdir()  # the name gets taken meanwhile
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: page.step == STEP_REVIEW, timeout=10_000)
+    assert page.handle is None and page.date_key_rows() == before
+
+
+def test_anonymize_a_new_run_first_says_the_date_key_is_not_saved(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    window, page = window_page
+    _out, second = _finished_anonymize(window, page, qtbot, tmp_path)
+    asked = []
+    # "Don't start": nothing starts, the result and every choice stay.
+    monkeypatch.setattr(page, "ask_unsaved_date_key", lambda: asked.append(1) or "cancel")
+    old_check = page.preflight_handle
+    press(qtbot, page.next_button)
+    assert asked == [1] and page.step == STEP_REVIEW and page.preflight_handle is old_check
+    assert page.date_key_rows()
+    # "Save it": the key is written (asked for as ever), then the run goes on.
+    key = tmp_path / "keys" / "key.csv"
+    key.parent.mkdir()
+    monkeypatch.setattr(page, "ask_unsaved_date_key", lambda: asked.append(2) or "save")
+    monkeypatch.setattr(page, "confirm_date_key", lambda: True)
+    monkeypatch.setattr(page, "choose_date_key_path", lambda: str(key))
+    press(qtbot, page.next_button)
+    assert asked == [1, 2] and "S001" in key.read_text(encoding="utf-8")
+    qtbot.waitUntil(lambda: page.run.finished and page.handle is not None, timeout=120_000)
+    assert (second / "S001.mefd").is_dir()
+
+
+def test_anonymize_the_question_is_not_asked_when_the_key_was_saved(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    window, page = window_page
+    _out, second = _finished_anonymize(window, page, qtbot, tmp_path)
+    key = tmp_path / "keys" / "key.csv"
+    key.parent.mkdir()
+    monkeypatch.setattr(page, "confirm_date_key", lambda: True)
+    monkeypatch.setattr(page, "choose_date_key_path", lambda: str(key))
+    assert page.save_date_key() is True
+    monkeypatch.setattr(
+        page, "ask_unsaved_date_key", lambda: pytest.fail("the key was saved: nothing to ask")
+    )
+    press(qtbot, page.next_button)
+    qtbot.waitUntil(lambda: page.run.finished and page.handle is not None, timeout=120_000)
+    assert (second / "S001.mefd").is_dir()
+
+
+def test_join_start_then_stop_keeps_the_last_result(window, qtbot, tmp_path, monkeypatch):
+    import mef3io_studio.joiner.page as J
+
+    page, out = _join_page_at_new(window, qtbot, tmp_path)
+    press(qtbot, page.next_button)
+    qtbot.waitUntil(lambda: page.handle is not None and page.handle.is_finished, timeout=120_000)
+    qtbot.waitUntil(lambda: page.back_button.isVisibleTo(page), timeout=10_000)
+    first = page.result
+    press(qtbot, page.back_button)
+    page.new.name.setText("joined2")
+    monkeypatch.setattr(J, "check_join", slow(J.check_join, 30.0))
+    press(qtbot, page.next_button)
+    check = page.check_handle
+    qtbot.wait(100)
+    press(qtbot, page.run_step.progress.cancel_button)
+    qtbot.waitUntil(lambda: check.is_finished, timeout=30_000)
+    qtbot.waitUntil(lambda: page.step == J.STEP_NEW, timeout=10_000)
+    assert page.result is first  # kept
+    assert page.result_button.isVisibleTo(page)
+    press(qtbot, page.result_button)
+    assert page.step == J.STEP_RUN and page.run_step.heading.text() == "Saved and checked"
+    assert page.run_step.open_button.isVisibleTo(page)  # "Open it in Explore" still there
+    assert sorted(p.name for p in out.iterdir()) == ["joined.mefd"]
+
+
+def test_make_new_start_then_stop_keeps_the_last_result(window, qtbot, tmp_path, monkeypatch):
+    import mef3io_studio.makenew.run as R
+    from mef3io_studio.makenew import dialog as dlg
+
+    dialog, out = _make_new_at_where(window, qtbot, tmp_path, passwords=False)
+    dialog.passwords.none.setChecked(True)
+    dialog.change_details.setChecked(True)
+    dialog.boxes["recording_location"].set_text("Room 5")
+    press(qtbot, dialog.start_button)
+    qtbot.waitUntil(lambda: dialog.finished_run and not dialog._busy, timeout=180_000)
+    summary = dialog.summary.text()
+    press(qtbot, dialog.back_button)
+    second = tmp_path / "second"
+    second.mkdir()
+    dialog.folder = str(second)
+    dialog.passwords.none.setChecked(True)
+    dialog._changed()
+    monkeypatch.setattr(R, "preflight_batch", slow(R.preflight_batch, 30.0))
+    press(qtbot, dialog.start_button)
+    handle = dialog.handle
+    qtbot.wait(100)
+    press(qtbot, dialog.progress_slot.itemAt(0).widget().cancel_button)
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=30_000)
+    qtbot.waitUntil(lambda: dialog.step == dlg.STEP_WHERE, timeout=10_000)
+    assert dialog.finished_run and len(dialog.results) == 2  # the last result is kept
+    assert dialog.result_button.isVisible()
+    press(qtbot, dialog.result_button)
+    assert dialog.step == dlg.STEP_RUN and dialog.summary.text() == summary
+    assert dialog.results_table.rowCount() == 2 and dialog.open_button.isVisible()

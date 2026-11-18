@@ -150,6 +150,10 @@ CHECK_REFUSED = (
     "choice you made is kept. Fix what is listed, then choose Make the copies again."
 )
 CHECK_STOPPED = "The check was stopped. Nothing was written. Your choices are kept."
+UNSAVED_KEY_TEXT = (
+    "You have not saved the date key of the copies you made last. It is the only way to find "
+    "the original dates again, and a new run takes it away. Save it now, or go on without it."
+)
 
 STEPS = (
     "Recordings",
@@ -1415,6 +1419,7 @@ class RunStep(QWidget):
             self.heading.setText(
                 f"Done: {format_count(len(saved), 'copy', 'copies')} saved and checked."
             )
+        self.table.setVisible(True)  # a check that began after the run hid it
         self.fill_table()
         batch = page.batch
         bundle_mode = batch is not None and batch.output == pipeline.BUNDLE
@@ -1578,6 +1583,9 @@ class AnonymizerPage(QWidget):
         self._names_passed: tuple | None = None
         self._open_password = ""
         self._passwords_dropped = False
+        #: The date key of the last finished run was saved (see
+        #: :meth:`has_unsaved_date_key`).
+        self._date_key_saved = False
         self._retry_batch = None
         self.batch_state = None
         self._original_times: dict[str, tuple] = {}
@@ -1856,6 +1864,9 @@ class AnonymizerPage(QWidget):
 
     def show_last_result(self) -> None:
         if self.has_last_result() and not self._checking():
+            # A check that began after the run drew its own step on this page.
+            _clear(self.run_step.progress_slot)
+            self.run_step.finish()
             self.go(STEP_RUN)
 
     def back(self) -> None:
@@ -1874,6 +1885,8 @@ class AnonymizerPage(QWidget):
             # "Anonymize more recordings" drops everything: never while the
             # check or the run is still going.
             if self._checking() or (self.handle is not None and not self.handle.is_finished):
+                return
+            if not self._date_key_settled():
                 return
             self.restart()
             return
@@ -2022,10 +2035,14 @@ class AnonymizerPage(QWidget):
         then, from that very check, run the whole batch unattended (step 2)."""
         if not self.review.ok or self._checking() or self.passwords.needs_decision:
             return None
+        if not self._date_key_settled():
+            return None
         batch = self.make_batch()
         self.preflight_problems = []
+        # The last result (the copies, the date key rows, "Open the copy") stays
+        # until step 2 really starts writing: Stop or a refusal in step 1 must
+        # not take away the only way to reverse the move of the dates.
         self.handle = None
-        self.run = RunState()
         handle = self.jobs.submit("Checking everything before starting", preflight_batch, batch)
         self.preflight_handle = handle
         handle.succeeded.connect(lambda verdict: self._preflight_done(batch, verdict))
@@ -2152,6 +2169,7 @@ class AnonymizerPage(QWidget):
         self.batch_state = None
         self.bundle_outcome = None
         self.run = RunState(requests=[i.request for i in batch.items])
+        self._date_key_saved = False  # the new copies have a key of their own
         n = len(batch.items)
         title = "Making an anonymized copy" if n == 1 else f"Making {n} anonymized copies"
         handle = self.jobs.submit(title, run_batch, batch, journal)
@@ -2326,6 +2344,7 @@ class AnonymizerPage(QWidget):
         self._open_password = ""
         self.choices = []
         self.run = RunState()
+        self._date_key_saved = False
         self.handle = None
         self._selection_keys = ()
         self.recordings.ticked.clear()
@@ -2385,6 +2404,41 @@ class AnonymizerPage(QWidget):
         box.exec()
         return box.clickedButton() is save
 
+    @property
+    def date_key_saved(self) -> bool:
+        """The date key of the last finished run was written to a file."""
+        return self._date_key_saved
+
+    def has_unsaved_date_key(self) -> bool:
+        """A finished run has copies whose date key was not saved: it is the
+        only way to reverse the move of the dates, and it lives in memory
+        only, so whatever drops the last result takes it away."""
+        return not self._date_key_saved and bool(self.date_key_rows())
+
+    def ask_unsaved_date_key(self) -> str:
+        """Before a new run drops the last result: ``"save"`` (save the key
+        first), ``"skip"`` (go on without it) or ``"cancel"`` (do not start)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("The date key was not saved")
+        box.setText(UNSAVED_KEY_TEXT)
+        save = box.addButton("Save the date key…", QMessageBox.ButtonRole.AcceptRole)
+        skip = box.addButton("Go on without saving it", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Don't start", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        return "save" if clicked is save else "skip" if clicked is skip else "cancel"
+
+    def _date_key_settled(self) -> bool:
+        """True when a new run may take the last result away: its date key
+        was saved, or there is none, or the person chose to go on."""
+        if not self.has_unsaved_date_key():
+            return True
+        answer = self.ask_unsaved_date_key()
+        if answer == "save":
+            return self.save_date_key()
+        return answer == "skip"
+
     def save_date_key(self) -> bool:
         rows = self.date_key_rows()
         if not rows or not self.confirm_date_key():
@@ -2415,6 +2469,7 @@ class AnonymizerPage(QWidget):
             message = describe_error(exc)
             QMessageBox.warning(self, message.title, message.text)
             return False
+        self._date_key_saved = True
         self.status.emit("Date key saved.")
         return True
 

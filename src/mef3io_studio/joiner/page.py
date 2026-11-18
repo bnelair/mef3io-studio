@@ -1065,12 +1065,16 @@ class JoinerPage(QWidget):
 
     def show_last_result(self) -> None:
         if self._ended and not self._checking():
+            # A check that began after the run drew its own step on this page.
+            _clear(self.run_step.progress_slot)
+            self.run_step.finish(self.result, self._stopped, self._failure)
             self.go(STEP_RUN)
 
     def back(self) -> None:
         if self.step == STEP_RUN:
             # After a run (also a stopped one): back to the choices, all kept.
-            if self._ended:
+            # Not while a new check is going on (its page is this one).
+            if self._ended and not self._checking():
                 self.go(STEP_NEW)
             return
         if STEP_RECORDINGS < self.step and not self._checking():
@@ -1130,9 +1134,9 @@ class JoinerPage(QWidget):
         request = self.make_request()
         self.new.set_findings([])
         self.new.say("")
+        # The last result (and "Open it in Explore") stays until step 2 really
+        # starts: Stop or a refusal here must not take it away.
         self.handle = None
-        self.result = None
-        self._ended = False
         handle = self.jobs.submit("Checking before joining", check_join, request)
         self.check_handle = handle
         self.go(STEP_RUN)
@@ -1171,7 +1175,9 @@ class JoinerPage(QWidget):
     def start(self, request: JoinRequest):
         self.request = request
         self.result = None
+        self._ended = False
         self._stopped = False
+        self._failure = None
         # The run has the passwords now (in its request); the form does not
         # keep them. Going back to the choices asks for them again.
         self.new.passwords.forget()
@@ -1205,7 +1211,6 @@ class JoinerPage(QWidget):
     def _on_finished(self) -> None:
         self._ended = True
         self.run_step.finish(self.result, self._stopped, self._failure)
-        self._failure = None
         self._update_buttons()
         if self._stopped:
             text = "Joining stopped: nothing was saved."
