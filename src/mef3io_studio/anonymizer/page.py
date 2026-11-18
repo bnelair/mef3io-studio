@@ -140,6 +140,11 @@ CHANGED_DURING_CHECK = (
     "must judge exactly what is written. Look at the choices, then choose Make the copies "
     "again."
 )
+PASSWORDS_CLEARED_AT_REVIEW = (
+    "The passwords were cleared for safety, and the copies are never made without them "
+    "unless you say so. Go back to the Passwords step and type them again, or choose "
+    "No password."
+)
 CHECK_STOPPED = "The check was stopped. Nothing was written. Your choices are kept."
 
 STEPS = (
@@ -1715,8 +1720,6 @@ class AnonymizerPage(QWidget):
         if self._passwords_dropped:
             self._passwords_dropped = False
             self.go(STEP_PASSWORDS)
-        if self.step == STEP_PASSWORDS:
-            self.passwords.cleared.setVisible(self.passwords.cleared_once)
         if self.step == STEP_RECORDINGS and self._recordings_dirty:
             self._refresh_timer.start()
 
@@ -1749,7 +1752,6 @@ class AnonymizerPage(QWidget):
             return
         if step != STEP_RECORDINGS:
             self.recordings.lost.setVisible(False)
-        self.passwords.cleared.setVisible(step == STEP_PASSWORDS and self.passwords.cleared_once)
         self.stack.setCurrentIndex(step)
         for i, label in enumerate(self.step_labels):
             label.setObjectName(
@@ -1799,12 +1801,16 @@ class AnonymizerPage(QWidget):
                 return "Checking the names…"
             return ""
         if step == STEP_PASSWORDS:
+            if self.passwords.needs_decision:
+                return self.passwords.problem_text()
             return "Fix the passwords first." if self.passwords.problem_text() else ""
         if step == STEP_OUTPUT:
             return "Fix the name of the batch archive first." if self.output.problem_text() else ""
         if step == STEP_REVIEW:
             if self.preflight_handle is not None and not self.preflight_handle.is_finished:
                 return "Checking everything before starting…"
+            if self.passwords.needs_decision:
+                return PASSWORDS_CLEARED_AT_REVIEW
             return "" if self.review.ok else "Fix what is listed above first."
         return ""
 
@@ -1966,7 +1972,7 @@ class AnonymizerPage(QWidget):
         """Step 1 of the run: check everything that can be checked up front
         (in the background, on the run page, where no choice can be changed),
         then, from that very check, run the whole batch unattended (step 2)."""
-        if not self.review.ok or self._checking():
+        if not self.review.ok or self._checking() or self.passwords.needs_decision:
             return None
         batch = self.make_batch()
         self.preflight_problems = []
@@ -2121,8 +2127,9 @@ class AnonymizerPage(QWidget):
         self.run.requests = [
             replace(i.request, output_password=None, password="") for i in batch.items
         ]
+        # The values are gone from here on. What stays is the fact that they
+        # were cleared: going back to the choices asks for them again.
         self.passwords.forget()
-        self.passwords.cleared_once = False
         self.go(STEP_RUN)
         self.run_step.start(handle, self.run.requests)
         self._update_buttons()
@@ -2269,8 +2276,7 @@ class AnonymizerPage(QWidget):
         self.batch = None
         self.bundle_outcome = None
         self.preflight_problems = []
-        self.passwords.forget()
-        self.passwords.cleared_once = False
+        self.passwords.start_over()
         self._open_password = ""
         self.choices = []
         self.run = RunState()

@@ -36,6 +36,11 @@ from ..model import journal as journal_
 from ..model.errors import UserMessage
 from ..workers.tasks import BatchState, preflight_batch, run_batch
 
+NOT_CLOSED_TEXT = (
+    "The window was not closed because the check or the copying is still going on. Press "
+    "Stop on this page first (nothing half-made is left behind), then close the window."
+)
+
 
 class BatchRunMixin:
     STEP_WHERE = 0
@@ -57,8 +62,12 @@ class BatchRunMixin:
         self.results_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.summary = _label()
+        self.closing_note = _label()
+        self.closing_note.setObjectName("Caution")
+        self.closing_note.setVisible(False)
         layout = QVBoxLayout(page)
         layout.addWidget(_label(f"Making the {self.NOUN}", bold=True))
+        layout.addWidget(self.closing_note)
         layout.addLayout(self.progress_slot)
         layout.addLayout(self.messages)
         layout.addWidget(self.results_table, 1)
@@ -304,10 +313,20 @@ class BatchRunMixin:
         super().done(result)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._busy:
+            # Not closed, and nothing is cleared: the run is still going on.
+            event.ignore()
+            self._say_not_closed()
+            return
         self._wipe()
         super().closeEvent(event)
 
+    def _say_not_closed(self) -> None:
+        self.closing_note.setText(NOT_CLOSED_TEXT)
+        self.closing_note.setVisible(True)
+
     def reject(self) -> None:
         if self._busy:
+            self._say_not_closed()
             return
         super().reject()

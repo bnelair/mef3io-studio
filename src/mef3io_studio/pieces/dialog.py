@@ -59,7 +59,7 @@ from ..common.passwords import PasswordsStep
 from ..explorer.panels import _scroll
 from ..explorer.state import RecordingEntry
 from ..joiner.page import TimeInput
-from ..makenew.dialog import PROTECTED_NOTE, source_of
+from ..makenew.dialog import PASSWORDS_CLEARED, PROTECTED_NOTE, source_of
 from ..makenew.run import BatchRunMixin
 from ..model import makenew as makenew_model
 from ..model import pieces as P
@@ -493,6 +493,8 @@ class PiecesDialog(BatchRunMixin, QDialog):
         if step == STEP_PASSWORDS:
             return self.passwords.problem_text()
         if step == STEP_WHERE:
+            if self.passwords.needs_decision:
+                return PASSWORDS_CLEARED
             found = P.pattern_problem(self.pattern.text())
             if found:
                 return found

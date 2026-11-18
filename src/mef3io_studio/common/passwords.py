@@ -30,6 +30,13 @@ PASSWORD_EXPLANATION = (
 )
 
 
+CLEARED_TEXT = (
+    "The passwords you typed were cleared for safety (you left this page, the window was "
+    "closed, or the copies were started). The app never keeps passwords. Type them again, "
+    "or choose No password."
+)
+
+
 class PasswordsStep(QWidget):
     """No password, or two new ones. Also the joiner's (``joiner/page.py``),
     which names what is protected (``what``) and explains it its own way."""
@@ -68,11 +75,13 @@ class PasswordsStep(QWidget):
         self.problem.setObjectName("Bad")
         self.interop = _label()
         self.interop.setObjectName("Caution")
+        #: The passwords were cleared (their VALUES are gone; only this fact
+        #: is kept). Until the person decides again, by typing new ones or by
+        #: choosing "No password" with a click, nothing may go on: a run
+        #: without the passwords they chose must never start silently.
         self.cleared_once = False
-        self.cleared = _label(
-            "For safety, the passwords you typed were cleared when you left this page. "
-            "Type them again, or choose No password."
-        )
+        self._decided = False
+        self.cleared = _label(CLEARED_TEXT)
         self.cleared.setObjectName("Caution")
         self.cleared.setVisible(False)
         layout = QVBoxLayout(self)
@@ -86,6 +95,8 @@ class PasswordsStep(QWidget):
         layout.addWidget(self.interop)
         layout.addStretch(1)
         self.none.toggled.connect(self._update)
+        self.none.clicked.connect(self._decide)
+        self.both.clicked.connect(self._decide)
         self._update()
 
     def interop_text(self) -> str:
@@ -100,7 +111,19 @@ class PasswordsStep(QWidget):
             )
         return ""
 
+    @property
+    def needs_decision(self) -> bool:
+        """The passwords were cleared and the person has not said again what
+        they want (typed passwords count as saying it)."""
+        return self.cleared_once and not self._decided and not self.both.isChecked()
+
+    def _decide(self, *_args) -> None:
+        self._decided = True
+        self._update()
+
     def problem_text(self) -> str:
+        if self.needs_decision:
+            return CLEARED_TEXT
         if not self.both.isChecked():
             return ""
         if not self.basic.text() or not self.full.text():
@@ -116,8 +139,10 @@ class PasswordsStep(QWidget):
     def _update(self, *_args) -> None:
         self.form.setEnabled(self.both.isChecked())
         text = self.problem_text()
-        self.problem.setText(text)
-        self.problem.setVisible(bool(text))
+        self.problem.setText("" if self.needs_decision else text)
+        self.problem.setVisible(bool(text) and not self.needs_decision)
+        if hasattr(self, "cleared"):
+            self.cleared.setVisible(self.needs_decision)
         if hasattr(self, "interop"):
             warning = self.interop_text()
             self.interop.setText(warning)
@@ -134,6 +159,14 @@ class PasswordsStep(QWidget):
             f.text() for f in (self.basic, self.basic_again, self.full, self.full_again)
         ):
             self.cleared_once = True
+            self._decided = False
         for field_ in (self.basic, self.basic_again, self.full, self.full_again):
-            field_.clear()
+            field_.setText("")  # not clear(): that can be undone, bringing it back
         self.none.setChecked(True)
+
+    def start_over(self) -> None:
+        """A new run of the wizard: nothing was cleared, nothing is asked."""
+        self.forget()
+        self.cleared_once = False
+        self._decided = False
+        self._update()

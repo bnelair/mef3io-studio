@@ -960,8 +960,6 @@ class JoinerPage(QWidget):
             self.keep.recompute()
         elif step == STEP_NEW:
             self.new.prepare()
-        passwords = self.new.passwords
-        passwords.cleared.setVisible(step == STEP_NEW and passwords.cleared_once)
         self._update_buttons()
 
     def _prepare_channels(self) -> None:
@@ -1209,8 +1207,7 @@ class JoinerPage(QWidget):
         self.handle = None
         self.check_handle = None
         self._stopped = False
-        self.new.passwords.forget()
-        self.new.passwords.cleared_once = False
+        self.new.passwords.start_over()
         self.new.name.clear()
         self._selection_keys = ()
         self.keep.set_recordings([])

@@ -106,6 +106,11 @@ PLAIN_COPY = (
     "Leave out a channel, change a detail or add passwords. Otherwise the new recordings would "
     "just be copies."
 )
+PASSWORDS_CLEARED = (
+    "The passwords were cleared for safety, and the new recordings are never made without "
+    "them unless you say so. Go back to the Passwords step and type them again, or choose "
+    "No password."
+)
 SHOWN_CHANNELS = 6
 
 
@@ -678,6 +683,8 @@ class MakeNewDialog(BatchRunMixin, QDialog):
         if step == STEP_PASSWORDS:
             return self.passwords.problem_text()
         if step == STEP_WHERE:
+            if self.passwords.needs_decision:
+                return PASSWORDS_CLEARED
             sources = self.sources()
             found = makenew.name_problems(sources, self.new_names(), self.folder)
             if found:
