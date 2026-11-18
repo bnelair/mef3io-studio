@@ -1689,7 +1689,10 @@ def test_a_save_of_notes_keeps_the_page_the_tile_cache_and_the_readers(ed, qtbot
     win.edit.add(T0 + 120 * SEC, None, "Note", "in B")
     finish_save(qtbot, win)
     assert not spy.problems and not win.edit.draft.dirty
-    assert seen == {"reopen": 0, "open": 0, "tiles": 0, "loading": []}
+    # The page is never shown as loading. (A block that arrives late may redraw the rows
+    # and say "not loading" again: that blanks nothing.)
+    assert not any(seen.pop("loading"))
+    assert seen == {"reopen": 0, "open": 0, "tiles": 0}
     assert (data.data_id, data.epoch) == key0 and win.data is data
     assert data._readers == readers and data._combined is combined and data._info is info
     assert len(win.controller.cache) >= tiles_cached  # nothing was thrown away
