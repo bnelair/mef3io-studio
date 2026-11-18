@@ -4,7 +4,7 @@ Desktop app (PySide6) for exploring, organizing, protecting and anonymizing
 MEF 3.0 recordings, built
 on the mef3io library (github.com/bnelair/mef3io). Status: early development;
 0.1.0 = first full release (after dev1-dev6; dev5 Join or trim #31, dev6 signal
-viewer + edit mode, additions only), on mef3io 2.1.1: Rename window (#12,
+viewer + edit mode, additions only), on mef3io 2.3.0: Rename window (#12,
 undo until close), Edit details copy (#14), shared password choice (#15),
 "Make new recordings" with saved channel choices (#16). Still to come:
 metadata edit in place, change/remove stored notes. Cutting into pieces is built
@@ -387,12 +387,13 @@ Code (app shell, #2/#3):
   has its own message). Tests: tests/test_rename_model.py,
   tests/test_rename_ui.py (use `age()`/utime: a fresh synthetic recording is
   "written a moment ago"; tests run with `PYTHONPATH=src` from a worktree).
+- Manual and videos (#83): `docs/manual/tours/tN_*.py` (steps driven on the REAL app on made-up data) -> `scripts/manual/build_manual.py` (PDF `dist/manual/mef3io-studio-manual-<VERSION>.pdf`) and `build_videos.py` (MP4 via QtMultimedia, needs PySide6-Addons of the same version). The release build (build.yml job `manual`, PR #84) re-encodes the videos to H.264 and the release job attaches PDF + videos. A UI change that breaks a tour fails `tests/test_manual_tours.py`; fix the tour (docs/manual/README.md).
 - Join or trim (#31): `model/join.py` (Qt-free) + `joiner/page.py` (a wizard
   like the anonymizer's, REUSING its `RecordingsStep` (subclass: texts +
   `_reason`), `PasswordsStep(what=, explanation=, none_label=)`,
   `channel_selection_for` and `ChannelPicker`; built on first use). Steps:
-  Recordings, CHANNELS, What to keep, New recording, Save (channels BEFORE
-  keep: the overlap rule needs the left-out channels). Keep = whole |
+  Recordings, CHANNELS, What to keep, PRIVACY, New recording, Save (channels
+  BEFORE keep: the overlap rule needs the left-out channels). Keep = whole |
   first(d) | last(d) | between(t0, t1) -> `resolve_keep` -> `Span`
   `[start, end)`; a window reaching the recording's end goes to mef3io as
   `end + 1` (`Span.to_end`). END CONVENTION: a recording's end is where its
@@ -401,7 +402,7 @@ Code (app shell, #2/#3):
   last sample's own time), so `read_layouts` takes the end from each
   channel's last block (`Reader.block_envelope(ch, t0=stated_end - 1)`:
   only the last part's index, `end_uutc` = start + samples/fs); the page
-  uses Explore's details (header ends) for the preview only. Start and
+  uses Explore's details (header ends) for the map only. WINDOW MODE ("What to keep", default for >1 recording): `KeepStep.window` = two ints (us, UTC), set by the `joiner/trimmap.TrimMapWidget` lines (a subclass of Explore's `CombinedTimelineWidget`: reuse, never copy), a UTC date field and a whole-number field, always in sync; `model/join.window_keeps` gives every recording `Keep(between)` or LEAVES IT OUT (extent or, from the coverage runs, data not meeting `[Start, End)`); `KeepStep.rows` = kept rows only (later steps never see left-out ones), `all_rows` = every chosen one (channels step, `_still_readable`, viewer window). Touching a row's own choice switches to per-recording mode. A layout arriving late must NOT emit `changed` unless something changed (it would void a running check). Signals carrying times are `Signal(object, ...)`: `int` is 32 bit. Start and
   "times confirmed" (`offset_known`) still come from `time_range`; channels
   from the Reader. `plan_join(sources, layouts, excluded=, changes=)`
   (pure) orders by time; OVERLAP IS PER CHANNEL: two kept parts conflict
@@ -415,17 +416,21 @@ Code (app shell, #2/#3):
   out = `NO_CHANNELS_LEFT`. One recording kept whole with no channel left
   out and no new passwords = `NOTHING_TO_CHANGE` (refused; with a change it
   is a plain transform copy). Run (`make_joined`, ONE helper process for
-  the whole run, one progress bar via `JoinProgress.overall`): one
-  recording -> `transform_session(src, dst, time_range, exact=True,
-  exclude, output_password)` straight to dst; several -> each non-whole part
-  cut with `transform_session` into `<dst folder>/.mef3io-studio-parts-
-  <hex>/part-N.mefd` (whole ones go to merge as they are), then
-  `merge_sessions(parts in time order, dst, passwords, exclude_channels,
-  output_password)`: channel choice and new passwords apply ONCE, in the
-  merge. TEMP PARTS ARE ALWAYS PASSWORD-PROTECTED with throw-away passwords
-  made in the helper (never returned, logged or stored): an unprotected cut
-  copy would leave readable patient details and note text on disk beside
-  dst for the run (or after a crash). PARTS FOLDER OWNERSHIP:
+  the whole run, one progress bar via `JoinProgress.overall`; kinds `trim`
+  | `join` | `pack` | `check`): ONE mef3io call FROM THE ORIGINALS (since
+  mef3io 2.2.0 / app 0.1.4, on 2.3.0 / app 0.1.5 the windowed-join data-loss fix; NO temporary copy of a part exists, so no
+  throw-away passwords): several -> `merge_sessions(sources in time order,
+  dst, passwords, exclude_channels, time_ranges=[None | span.time_range],
+  exact=True, anonymize={shift_us, pseudonym, clear, text} | None,
+  records="keep"|"drop", output_password, n_threads=0, progress, cancel)`
+  (`_merge_arguments` is shared by run and check, so the check is the run's
+  own); 0.1.5 FAST CHECK: check and run take Explore's cached facts (start/end, channels, size) instead of reopening; `model/join.facts_still_true` compares a cheap staleness signature (a few files) and `without_facts` re-reads once if a recording changed (page says so, checks again); the Channels step is always shown (viewer "Send to Join or trim" preselects visible channels, hide-all = none ticked + notice); merge `MixedUnitsWarning`/`MixedFactorsWarning` become plain result notices (`_warned_channels`), `units.mixed` shows in Explore's checks; a merge takes the left-out list OVER ALL sources (a channel only some
+  have is fine; one none has is refused), so the app no longer filters it per
+  source; ONE recording (merge needs two) -> `transform_session` (via
+  `changes.transform_copy`, `ChangeRequest.records`) or, anonymous,
+  `anonymize_session`, same options. ONE FILE only: the recording is built in
+  the hidden `.mef3io-studio-parts-<hex>/` folder (then packed with
+  `archive`, compared, named). PARTS FOLDER OWNERSHIP:
   `make_parts_folder` = `os.mkdir` (never an existing folder) then AT ONCE
   a marker file `PARTS_MARKER` holding the request's random `run_token`
   (marker write fails -> rmdir the still-empty folder, re-raise);
@@ -433,19 +438,31 @@ Code (app shell, #2/#3):
   whose marker holds THIS run's token: a folder that was already there (a
   FileExistsError from mkdir) or another run's is never touched. It runs in
   the helper's `finally` AND in the task (`join.tidy`, also `<dst>.partial`)
-  after an ended helper; `parts_left` is reported. Up-front (`check_join`,
-  nothing written): `read_layouts`, `plan_for`, then one recording:
-  `transform.check` as it will run; several: `transform.check` per cut
-  (placeholder dst, path codes ignored) + `merge.check` over the ORIGINALS
-  with the real dst/channels/passwords, ignoring `merge-overlap` when
-  anything is cut. STALE CHECK: while the check runs the page disables its
+  after an ended helper; `parts_left` is reported. NOTES AND EVENTS:
+  `JoinRequest.records` (`RECORDS_KEEP` default | `RECORDS_DROP`) ->
+  `records=`; asked in the PRIVACY step (they hold free text that can name the
+  patient; applies to any join, anonymous or not; `PrivacyStep.records()`),
+  hides `DetailsAndTextBox`'s text choice when left out (`show_text_choice`);
+  `JoinRequest.changes` is True for it; result: `JoinResult.notes_left_out` /
+  `records_dropped`, `joiner/page.saved_words` says "All notes and events were
+  left out." (the History tab cannot: mef3io's provenance has no such word).
+  Up-front (`check_join`, nothing written): `read_layouts`, `plan_for`,
+  space, then one recording: `transform.check` (`anonymize.check` when
+  anonymous) as it will run; several: ONE `merge.check` with exactly the
+  run's arguments (`merge-overlap` is judged on the TRIMMED data by mef3io, so
+  nothing is ignored; with one file the placeholder dst's path codes are).
+  Anonymous refusals use `_anonymous_refusal_message` (anonymizer words for
+  its codes, else `JOIN_WORDS`). New codes (`merge-time-ranges-count`,
+  `merge-anonymize-metadata`, `merge-threads-invalid`, `records-invalid`) are
+  app-mistake words (the app never makes those calls). Sizing: result
+  (+ packed file for one file) only. STALE CHECK: while the check runs the page disables its
   steps (`stack`) and Back; every input change, `go()` and `hideEvent`
   bump `_generation`, and the check's callback starts the run only if the
   generation is unchanged, the page still on New recording and visible.
   Words: `refusals.JOIN_WORDS` covers EVERY code of
-  `mef3io.transform.REFUSAL_CODES` and `mef3io.merge.REFUSAL_CODES` (test;
-  no "anonymi", "were not changed" in each); the anonymizer's `WORDS` stay
-  anonymizer-only. Details via `join_technical_text` (every source/dst path
+  `mef3io.transform.REFUSAL_CODES` and the merge's own (test; no "anonymi",
+  "were not changed" in each); the anonymizer's `WORDS` cover the anonymizer
+  codes the merge now also lists. Details via `join_technical_text` (every source/dst path
   and name stripped), then `scrubbed`. Keys are paths: `JoinSource.key`,
   `Problem.keys`, `CheckFinding.key`, `JoinPlan.order`, `Layout` are
   `repr=False` (test). Recordings needing a password use the one Explore
@@ -460,7 +477,22 @@ Code (app shell, #2/#3):
   samples via Reader, three-way, single trim, side by side incl. shared
   channel and leaving it out, overlap, Stop, cleanup + pre-existing folder,
   ends from blocks, reprs, password-protected parts and sources),
-  tests/test_joiner_ui.py (incl. stale check and the Explore action).
+  tests/test_joiner_ui.py (incl. stale check and the Explore action),
+  tests/test_join_anonymous.py (anonymous + one file, Stop at every stage,
+  free space, test_join_one_pass.py: the one-call pipeline end to end, notes
+  keep/drop, Stop mid-merge, new-code words). ANONYMOUS + ONE FILE:
+  `JoinRequest.anonymous` (`join.Anonymous`: shift_us or None = keep dates,
+  pseudonym, clear, text) and `.one_file` (destination ends `.mefd.tar`). The
+  whole pipeline is ONE function, `join.run(request, plan, sizing, send,
+  cancel)`: the ONE mef3io call above, then (one file) `archive.run_in_helper`
+  + `finish` from the hidden folder (`packed.mefd.tar` inside it, so Stop/tidy
+  remove everything with it). NO copy with the patient's details is ever
+  written. The check runs with the NEW NAME as the copy name (patient details
+  in the name are refused). Free space (`join.sizing`/`space_problem`,
+  `pipeline.MARGIN`) is checked in the check and again at the start.
+  Progress: stages weighted by bytes (`JoinProgress.step/steps/weight`), stage
+  names in `progress_phase`. `PrivacyStep` reuses `DatesStep(single=True)` and
+  `DetailsAndTextBox` (extracted from the Anonymize page's IdentityStep).
 - Copy with changes (#14, #15): `model/changes.py` (Qt-free) is the ONE call
   site of `mef3io.transform_session` / `transform.check` (a test pins it):
   `ChangeRequest` (source, destination, source password, channels /
@@ -469,7 +501,7 @@ Code (app shell, #2/#3):
   `check_changes` (dry run, new passwords never passed), `make_changes`
   (helper entry, errors -> `ChangeResult` with plain words, Stop raised),
   `transform_copy` / `transform_refusals` (raw, used by Join or trim for its
-  trim and its temporary cuts), `describe_transform_error` / `refusal_message`
+  trim of one recording), `describe_transform_error` / `refusal_message`
   (shared by both features; words = `refusals.JOIN_WORDS`, which now has real
   words for metadata-too-long / -channel-unknown, `DETAIL_LABELS`).
   `changed_details` builds the minimal `metadata=` (a detail that was never
@@ -488,7 +520,7 @@ Code (app shell, #2/#3):
   elsewhere" warning via `password_interop_issue`); output blocks are never
   password-protected (MEF design), the text says passwords do not hide the
   signal. NOT built: editing in place (needs mef3io `edit_metadata`, absent in
-  2.1.1) - no placeholder UI. History word for op 8: "copied with changes".
+  2.3.0) - no placeholder UI. History word for op 8: "copied with changes".
 - Make new recordings (#16): ONE window for the same changes in many
   recordings (`makenew/dialog.py` `MakeNewDialog`, Explore button + list menu
   "Make new recordings…", steps recordings -> channels -> details ->
@@ -562,3 +594,12 @@ Code (app shell, #2/#3):
   OWN stretches (the Explorer's are merged across gaps under 1.5 sample
   periods, and a piece inside such a gap would be refused by mef3io). A day's
   midnight that does not exist (clock jumps at 00:00) is the jump instant.
+
+Overview band (viewer, `viewer/overview.py`): min/max of the whole recording
+above the strip, from `block_envelope` (index only; units already scaled per
+segment). ONE multi-channel call per request for uncached channels only, on
+the viewer's open reader (never a second open: pinned by
+`tests/test_viewer_overview.py`), in the controller's background pool; cache
+`controller.overview` for the open recording. Default = first shown channel,
+max 4 lanes, each scaled to its own range; hidden channels leave the band.
+Click/drag shared with the strip via `strip.TimelineNav`.

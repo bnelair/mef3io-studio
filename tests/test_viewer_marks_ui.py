@@ -473,7 +473,12 @@ def test_send_to_join_or_trim_signals_the_recordings_and_the_window(make_window,
     a, b = win.export_range()
     with qtbot.waitSignal(win.join_requested) as sig:
         win.send_to_join()
-    assert sig.args == [(0, 1), a, b]
+    assert sig.args == [(0, 1), a, b, ()]
+    # the channels hidden in the viewer go along
+    win.hide_channel(win._channels[0])
+    with qtbot.waitSignal(win.join_requested) as sig:
+        win.send_to_join()
+    assert sig.args[3] == (win._channels[0],)
     # a context menu offers the two edges
     from PySide6.QtWidgets import QMenu
 

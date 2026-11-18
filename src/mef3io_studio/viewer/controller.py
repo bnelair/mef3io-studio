@@ -19,6 +19,7 @@ import itertools
 import logging
 import threading
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -40,11 +41,10 @@ from ..workers.viewer_scheduler import (
     ViewBlockCache,
     data_key_of,
 )
-from .strip import envelope_bins
+from .overview import summarise
 
 MAX_COMPUTE = 2
 log = logging.getLogger(__name__)
-STRIP_BINS = 2000
 #: A lost tile is asked for again at most this often / this many times.
 RETRY_AFTER = 3.0
 MAX_RETRIES = 3
@@ -99,13 +99,13 @@ class ViewController(QObject):
     loading_changed = Signal(bool)
     #: A read or computation failed: a plain sentence.
     failed = Signal(str)
-    #: The strip's envelope: ``[2, bins]`` normalised.
-    strip_envelope = Signal(object)
+    #: The overview band's cache changed (or a read failed): see ``overview``.
+    overview_changed = Signal()
 
     _tile = Signal(object)
     _done = Signal(object, object)  # (job, (outcome, error))
     _error = Signal(object, object, object)  # (tile key, error, generation when it failed)
-    _strip = Signal(object)
+    _overview = Signal(object)
 
     def __init__(self, data, perf: Performance | None = None, parent=None):
         super().__init__(parent)
@@ -146,7 +146,11 @@ class ViewController(QObject):
         self._tile.connect(self._pump)
         self._done.connect(self._on_done)
         self._error.connect(self._on_error)
-        self._strip.connect(self.strip_envelope)
+        self._overview.connect(self._on_overview)
+        #: channel -> (min, max, scale), for the open recording (GUI thread only)
+        self.overview: dict = {}
+        self._overview_asked: set[str] = set()
+        self.overview_failed = False
 
     # -- worker-thread callbacks: only emit ------------------------------------
 
@@ -544,22 +548,43 @@ class ViewController(QObject):
 
     # -- the strip ----------
 
-    def request_strip_envelope(self, channel: str) -> None:
+    def request_overview(self, channels: Sequence[str]) -> None:
+        """Compute the overview band's columns for the channels not cached yet
+        (the whole recording, block index only) with ONE multi-channel call on
+        the viewer's own Reader, in the background. Cached and already-asked
+        channels are skipped, so no index is read twice. The result arrives
+        through ``overview_changed``."""
+        want = [
+            c
+            for c in dict.fromkeys(channels)
+            if c not in self.overview and c not in self._overview_asked
+        ]
+        if not want:
+            return
+        self._overview_asked.update(want)
         data = self.data
+        span = (data.timeline_start, data.timeline_end)
 
         def work():
             try:
-                e = data.envelope(channel, data.timeline_start, data.timeline_end)
-                env = envelope_bins(
-                    e["start_uutc"], e["end_uutc"], e["min"], e["max"],
-                    (data.timeline_start, data.timeline_end), STRIP_BINS,
-                )  # fmt: skip
-            except BaseException:  # noqa: BLE001 - the strip simply stays plain
-                return
+                parts = data.envelopes(want, span[0], span[1])
+                done = {c: summarise(parts[c], span) for c in want}
+            except BaseException:  # noqa: BLE001 - the band says it is not available
+                done = None
             if not self._closed:
-                self._strip.emit(env)
+                self._overview.emit((tuple(want), done))
 
         self._strip_pool.submit(work)
+
+    def _on_overview(self, result) -> None:
+        want, done = result
+        self._overview_asked.difference_update(want)
+        if done is None:
+            self.overview_failed = True
+        else:
+            self.overview.update(done)
+            self.overview_failed = False
+        self.overview_changed.emit()
 
     # -- lifecycle ----------
 

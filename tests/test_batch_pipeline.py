@@ -146,11 +146,29 @@ def test_one_failing_recording_does_not_stop_the_batch(qtbot, jobs, tmp_path):
 # Stop
 
 
+def _assert_stop_left_nothing_half_made(published, dest, work):
+    """Stop leaves nothing half-made. A recording that mef3io had already
+    finished and checked when Stop landed (it verifies inside ``.partial``
+    and then renames, so the final name is always a complete copy) may
+    stay, but only if the result says it was delivered."""
+    delivered = {
+        Path(r.destination).name for r in published if isinstance(r, a.CopyResult) and r.ok
+    }
+    left = {p.name for p in dest.iterdir()}
+    assert left <= delivered, f"unreported leftovers: {sorted(left - delivered)}"
+    for name in left:
+        mef3io.inspect(str(dest / name))  # complete: opens and lists its channels
+    assert list(work.iterdir()) == []
+    assert journal.unfinished() == []  # a deliberate stop needs no resume
+
+
 @pytest.mark.parametrize("output", [pipeline.FOLDERS, pipeline.ARCHIVES, pipeline.BUNDLE])
 def test_stop_while_anonymizing_leaves_nothing_half_made(qtbot, jobs, tmp_path, output):
     big = write_large(tmp_path / "big.mefd", channels=2, parts=2, seconds=900)
     batch, dest, work = make_batch(tmp_path, output, [big], exclude=())
     handle = jobs.submit("batch", tasks.run_batch, batch, None)
+    published = []
+    handle.published.connect(published.extend)
     qtbot.waitUntil(
         lambda: (
             handle.record.progress is not None
@@ -162,9 +180,32 @@ def test_stop_while_anonymizing_leaves_nothing_half_made(qtbot, jobs, tmp_path, 
     handle.cancel()
     with qtbot.waitSignal(handle.finished, timeout=60_000):
         pass
-    assert list(dest.iterdir()) == []
-    assert list(work.iterdir()) == []
-    assert journal.unfinished() == []  # a deliberate stop needs no resume
+    # The library may be faster than the click (mef3io 2.2.0 on a fast
+    # disk): a copy it had finished stays, and is reported as delivered.
+    _assert_stop_left_nothing_half_made(published, dest, work)
+
+
+def test_stop_right_after_the_copy_is_finished_keeps_it_and_says_so(qtbot, jobs, tmp_path):
+    """Deterministic version of the race: Stop lands the moment the finished
+    copy appears under its final name. The copy is complete and checked, so it
+    stays, and the result screen lists it as saved."""
+    big = write_large(tmp_path / "big.mefd", channels=2, parts=2, seconds=900)
+    # large too, so it cannot also finish before the Stop lands
+    second = write_large(tmp_path / "second.mefd", channels=2, parts=2, seconds=900)
+    batch, dest, work = make_batch(tmp_path, pipeline.FOLDERS, [big, second], exclude=())
+    handle = jobs.submit("batch", tasks.run_batch, batch, None)
+    published = []
+    handle.published.connect(published.extend)
+    qtbot.waitUntil(lambda: (dest / "S001.mefd").exists(), timeout=120_000)
+    handle.cancel()
+    with qtbot.waitSignal(handle.finished, timeout=60_000):
+        pass
+    assert handle.record.status.name == "CANCELLED"
+    results = results_by_key(published)
+    assert results["k0"].ok  # delivered, and said so
+    assert "k1" not in results or not results["k1"].ok
+    assert (dest / "S001.mefd").is_dir() and not (dest / "S002.mefd").exists()
+    _assert_stop_left_nothing_half_made(published, dest, work)
 
 
 def test_stop_while_adding_to_the_bundle_cuts_it_back(tmp_path):

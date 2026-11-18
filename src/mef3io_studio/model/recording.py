@@ -466,6 +466,9 @@ class InspectOutcome:
     needs_password: bool = False
     wrong_password: bool = False
     error: UserMessage | None = None
+    #: What changes when the recording grows or is touched (see
+    #: ``inspect.measure``), so Join or trim can tell with a few ``stat``s.
+    stamp: tuple | None = None
 
     @property
     def name(self) -> str:

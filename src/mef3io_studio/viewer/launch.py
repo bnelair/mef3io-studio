@@ -31,12 +31,13 @@ def launch(
     on_window: Callable[[ViewerWindow], None] | None = None,
     on_failed: Callable[[object], None] | None = None,
     on_revealed: Callable[[object], None] | None = None,
-    on_join: Callable[[list, int, int], None] | None = None,
+    on_join: Callable[[list, int, int, tuple], None] | None = None,
 ):
     """Start opening ``entries`` (explorer ``RecordingEntry`` objects) in a
     viewer. ``on_revealed(entry)``: the viewer's Show button showed a
     recording's details (Explore's own switch, so the entry is told).
-    ``on_join(keys, start, end)``: "Send to Join or trim". Returns the job
+    ``on_join(keys, start, end, hidden)``: "Send to Join or trim" (``hidden``:
+    the channel names hidden in the viewer). Returns the job
     handle."""
     paths = [e.location for e in entries]
     passwords = [e.password for e in entries]
@@ -67,8 +68,8 @@ def launch(
         )
         if on_join is not None:
             window.join_requested.connect(
-                lambda who, a, b: on_join(
-                    [location_key(data.location_of(i)) for i in who], int(a), int(b)
+                lambda who, a, b, hidden: on_join(
+                    [location_key(data.location_of(i)) for i in who], int(a), int(b), tuple(hidden)
                 )
             )
         window.show()

@@ -240,6 +240,7 @@ def test_join_leaving_the_page_asks_for_the_passwords_again(window, qtbot, tmp_p
     b = write(tmp_path / "B.mefd", T0 + 3 * HOUR)
     open_in_explorer(qtbot, window, [a, b])
     choose_all(page)
+    page.next()  # What to keep -> Privacy (added on main)
     page.next()
     assert page.step == STEP_NEW
     page.new.folder = str(tmp_path)
@@ -369,6 +370,7 @@ def _join_page_at_new(window, qtbot, tmp_path, monkeypatch=None):
     page.keep.rows[0].duration.set_seconds(3600)
     page.keep.rows[1].set_how(KEEP_FIRST)
     page.keep.rows[1].duration.set_seconds(1800)
+    page.next()  # What to keep -> Privacy (added on main)
     page.next()
     assert page.step == STEP_NEW
     out = tmp_path / "out"

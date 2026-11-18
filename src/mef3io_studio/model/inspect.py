@@ -93,25 +93,55 @@ NOTES_DAMAGED = UserMessage(
 )
 
 
-def size_on_disk(location: str) -> int | None:
-    """Bytes the recording takes on disk, from file sizes only (``stat``,
-    which reads no file contents). None if it cannot be measured."""
+def measure(location: str) -> tuple[int | None, tuple | None]:
+    """Bytes the recording takes on disk (file sizes only; ``stat`` reads no
+    file contents) AND its change signature, from ONE walk: nothing is
+    touched a second time. None for what cannot be measured.
+
+    The signature is what Join or trim re-checks cheaply later (see
+    ``join.facts_still_true``): ``(path, modification time, size)`` of the
+    recording itself, of each channel's folder (changes when a part is added
+    to the channel) and of the largest file in every folder (the data of a
+    part: it grows when data is appended). No file names are assumed."""
     try:
         if is_packed(location):
-            return os.stat(location).st_size
+            st = os.stat(location)
+            return st.st_size, ((location, st.st_mtime_ns, st.st_size),)
+        root = os.stat(location)
         total = 0
-        stack = [location]
+        channel_dirs: dict[str, tuple] = {}
+        largest: dict[str, tuple] = {}
+        stack = [(location, None)]
         while stack:
-            folder = stack.pop()
+            folder, channel = stack.pop()
             with os.scandir(folder) as entries:
                 for entry in entries:
                     if entry.is_dir(follow_symlinks=False):
-                        stack.append(entry.path)
+                        owner = channel
+                        if channel is None:
+                            owner = entry.path
+                            st = entry.stat(follow_symlinks=False)
+                            channel_dirs[owner] = (owner, st.st_mtime_ns, 0)
+                        stack.append((entry.path, owner))
                     elif entry.is_file(follow_symlinks=False):
-                        total += entry.stat(follow_symlinks=False).st_size
-        return total
+                        st = entry.stat(follow_symlinks=False)
+                        total += st.st_size
+                        best = largest.get(folder)
+                        if best is None or (st.st_size, entry.path) > (best[2], best[0]):
+                            largest[folder] = (entry.path, st.st_mtime_ns, st.st_size)
+        stamp = (
+            (location, root.st_mtime_ns, 0),
+            *sorted(channel_dirs.values()),
+            *sorted(largest.values()),
+        )
+        return total, stamp
     except OSError:
-        return None
+        return None, None
+
+
+def size_on_disk(location: str) -> int | None:
+    """Bytes the recording takes on disk (see :func:`measure`)."""
+    return measure(location)[0]
 
 
 def _strip_location(text: str, location: str) -> str:
@@ -391,7 +421,7 @@ def inspect_recording(
     cancel = cancel or CancelToken()
     cancel.raise_if_cancelled()
     location = os.fspath(location)
-    size = size_on_disk(location)
+    size, stamp = measure(location)
     try:
         # Warnings are caught, not shown: mef3io's warning texts start with
         # the full path, which must not reach the log.
@@ -430,7 +460,7 @@ def inspect_recording(
         reasons = [_strip_location(str(p.get("reason") or ""), location) for p in summary.problems]
         error = UserMessage(NOTHING_READABLE.title, NOTHING_READABLE.text, "\n".join(reasons))
         return InspectOutcome(location, size_bytes=size, error=error)
-    return InspectOutcome(location, size_bytes=size, details=details)
+    return InspectOutcome(location, size_bytes=size, details=details, stamp=stamp)
 
 
 def inspect_many(
