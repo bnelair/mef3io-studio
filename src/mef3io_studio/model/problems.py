@@ -121,6 +121,12 @@ PLAIN_CHECKS: dict[str, tuple[str, str]] = {
         "fixed in place: copy the notes and events out and save them again, with the "
         "recording's basic and full-access passwords if it has them.",
     ),
+    technical("units.mixed"): (
+        "A channel has different units in different parts",
+        "Nothing is damaged and no value was changed, but programs label the whole "
+        "channel with the units of its first part. Check that the parts really use the "
+        "units you expect. Fixing problems in place does not change this.",
+    ),
 }
 _UNKNOWN = (
     "Something in the recording's details does not match its data",

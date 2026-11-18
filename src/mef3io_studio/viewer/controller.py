@@ -20,6 +20,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -41,7 +42,8 @@ from ..workers.viewer_scheduler import (
     ViewBlockCache,
     data_key_of,
 )
-from .strip import block_stretches, envelope_bins
+from .overview import summarise
+from .strip import block_stretches
 
 
 def default_compute_workers() -> int:
@@ -52,7 +54,6 @@ def default_compute_workers() -> int:
 
 MAX_COMPUTE = default_compute_workers()
 log = logging.getLogger(__name__)
-STRIP_BINS = 2000
 #: A lost tile is asked for again at most this often / this many times.
 RETRY_AFTER = 3.0
 MAX_RETRIES = 3
@@ -60,6 +61,9 @@ MAX_RETRIES = 3
 HELD_SHARE = 0.25
 #: ... but never less than this (a tiny budget must still let a block finish).
 HELD_FLOOR = 32 << 20
+#: The automatic read of the whole recording's block index (strip + overview
+#: band) waits at most this long for the page and its look-ahead to be loaded.
+INDEX_WAIT = 20.0
 #: Idle for this long, the look-ahead deepens one page at a time ...
 IDLE_BEFORE_DEEPENING = 1.0
 #: ... as long as what is cached stays under this share of the cache budget ...
@@ -121,16 +125,15 @@ class ViewController(QObject):
     loading_changed = Signal(bool)
     #: A read or computation failed: a plain sentence.
     failed = Signal(str)
-    #: The strip's envelope: ``[2, bins]`` normalised.
-    strip_envelope = Signal(object)
+    #: The overview band's cache changed (or a read failed): see ``overview``.
+    overview_changed = Signal()
     #: The real stretches with data, from the block index: ``([(t0, t1)], channels read)``.
     strip_stretches = Signal(object)
 
     _tile = Signal(object)
     _done = Signal(object, object)  # (job, (outcome, error))
     _error = Signal(object, object, object)  # (tile key, error, generation when it failed)
-    _strip = Signal(object)
-    _stretches = Signal(object)
+    _index = Signal(object)
 
     def __init__(self, data, perf: Performance | None = None, parent=None):
         super().__init__(parent)
@@ -185,8 +188,11 @@ class ViewController(QObject):
         self._tile.connect(self._pump)
         self._done.connect(self._on_done)
         self._error.connect(self._on_error)
-        self._strip.connect(self.strip_envelope)
-        self._stretches.connect(self.strip_stretches)
+        self._index.connect(self._on_index)
+        #: channel -> (min, max, scale), for the open recording (GUI thread only)
+        self.overview: dict = {}
+        self._overview_asked: set[str] = set()
+        self.overview_failed = False
 
     # -- worker-thread callbacks: only emit ------------------------------------
 
@@ -694,37 +700,62 @@ class ViewController(QObject):
 
     # -- the strip ----------
 
-    def request_strip_envelope(self, channels) -> None:
+    def request_strip_envelope(self, channels, band: Sequence[str] = ()) -> None:
         """Read the block index of ``channels`` (a name or several: one that each
-        recording has) for the strip's faint picture and the real stretches with
-        data (their union). Emits ``strip_stretches`` as ``(stretches, channels)``."""
+        recording has) for the real stretches with data (their union; emits
+        ``strip_stretches`` as ``(stretches, channels)``) and, in the SAME call
+        on the open reader, of the ``band`` channels the overview band still
+        lacks. Every channel read is kept for the band (``overview``), so the
+        index of a channel is read once per open recording. This is the one
+        automatic read of the whole recording: it waits until the page and its
+        look-ahead have been loaded (``_wait_quiet``) and never runs again on
+        paging."""
         names = [channels] if isinstance(channels, str) else list(dict.fromkeys(channels))
+        self._read_index(names, band, wait=True)
+
+    def request_overview(self, channels: Sequence[str]) -> None:
+        """The overview band's columns for the channels not cached yet (the
+        whole recording, block index only) with ONE multi-channel call on the
+        viewer's own Reader, in the background (a pick made by the user: it does
+        not wait). Cached and already-asked channels are skipped, so no index is
+        read twice. The result arrives through ``overview_changed``."""
+        self._read_index([], channels, wait=False)
+
+    def _read_index(self, strip: list[str], band: Sequence[str], wait: bool) -> None:
+        want_band = [
+            c
+            for c in dict.fromkeys(band)
+            if c not in self.overview and c not in self._overview_asked and c not in strip
+        ]
+        names = list(dict.fromkeys([*strip, *want_band]))
         if self._closed or not names:  # a timer that fires after the window closed
             return
+        self._overview_asked.update(names)
         data = self.data
         epoch = self._strip_epoch
 
         def work():
             if epoch != self._strip_epoch:  # drained before it started
                 return
+            if wait:
+                self._wait_quiet(epoch)
             tl = (data.timeline_start, data.timeline_end)
+            found = done = None
             try:
                 if len(names) == 1:
                     got = {names[0]: data.envelope(names[0], *tl)}
                 else:
                     got = data.envelope_many(names, *tl)
-                parts = [got[n] for n in names]
-                starts = np.concatenate([np.asarray(e["start_uutc"]) for e in parts])
-                ends = np.concatenate([np.asarray(e["end_uutc"]) for e in parts])
-                mins = np.concatenate([np.asarray(e["min"]) for e in parts])
-                maxs = np.concatenate([np.asarray(e["max"]) for e in parts])
-                env = envelope_bins(starts, ends, mins, maxs, tl, STRIP_BINS)
-                found = block_stretches(starts, ends)
-            except BaseException:  # noqa: BLE001 - the strip simply stays plain
-                return
-            if not self._closed and epoch == self._strip_epoch:
-                self._strip.emit(env)
-                self._stretches.emit((found, names))
+                done = {c: summarise(got[c], tl) for c in names}
+                if strip:
+                    parts = [got[n] for n in strip]
+                    starts = np.concatenate([np.asarray(e["start_uutc"]) for e in parts])
+                    ends = np.concatenate([np.asarray(e["end_uutc"]) for e in parts])
+                    found = (block_stretches(starts, ends), strip)
+            except BaseException:  # noqa: BLE001 - the band says it is not available
+                done = found = None
+            if not self._closed:
+                self._index.emit((epoch, tuple(names), done, found))
 
         try:
             future = self._strip_pool.submit(work)
@@ -747,6 +778,42 @@ class ViewController(QObject):
             except BaseException:  # noqa: BLE001 - cancelled, timed out or failed: either way over
                 pass
         return all(f.done() for f in futures)
+
+    def _wait_quiet(self, epoch: int, limit: float = INDEX_WAIT) -> None:
+        """(Strip thread.) Let the page and its look-ahead be read first: wait
+        until no block is waiting or being made, at most ``limit`` seconds (so a
+        reader who never stops paging still gets the strip)."""
+        end = time.monotonic() + limit
+        while (
+            time.monotonic() < end
+            and not self._closed
+            and epoch == self._strip_epoch
+            and (self._jobs or self.scheduler.pending())
+        ):
+            time.sleep(0.05)
+
+    def _on_index(self, result) -> None:
+        epoch, names, done, found = result
+        self._overview_asked.difference_update(names)
+        if epoch != self._strip_epoch:  # drained meanwhile: the recording is being reopened
+            return
+        if done is None:
+            self.overview_failed = True
+        else:
+            self.overview.update(done)
+            self.overview_failed = False
+        if found is not None:
+            self.strip_stretches.emit(found)
+        self.overview_changed.emit()
+
+    def reset_overview(self, keep: bool) -> None:
+        """After the recording was reopened (GUI thread): forget what was asked
+        (a read that was ended is asked for again) and, unless the signal is as
+        it was (``keep``), what was read."""
+        self._overview_asked.clear()
+        if not keep:
+            self.overview.clear()
+            self.overview_failed = False
 
     # -- lifecycle ----------
 

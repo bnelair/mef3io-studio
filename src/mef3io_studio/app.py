@@ -627,11 +627,14 @@ def _build_main_window_class():
             if window in self.viewers:
                 self.viewers.remove(window)
 
-        def join_window_in_joiner(self, keys: list, start: int, end: int) -> None:
+        def join_window_in_joiner(
+            self, keys: list, start: int, end: int, hidden: tuple = ()
+        ) -> None:
             """The viewer's "Send to Join or trim": the joiner with those
-            recordings and that part of them."""
+            recordings, that part of them and the channels hidden in the
+            viewer left out."""
             self.module_list.setCurrentRow(self.module_keys.index("joiner"))
-            self.joiner.choose_window(keys, start, end)
+            self.joiner.choose_window(keys, start, end, hidden)
 
         def join_in_joiner(self, keys: list) -> None:
             """Explore's "Join or trim these…": the joiner, with exactly

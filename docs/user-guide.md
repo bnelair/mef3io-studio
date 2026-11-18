@@ -1,6 +1,6 @@
 # User guide
 
-This guide describes the app as of version **0.1.3**. It has three pages:
+This guide describes the app as of version **0.1.5**. It has three pages:
 **Explore** (see what is in your recordings), **Anonymize** (make
 anonymized copies of them) and **Join or trim** (keep part of a recording,
 or join parts of several into one). From Explore you can also rename
@@ -714,21 +714,70 @@ recordings chosen.
    recording that cannot be used says why: for example, a password-protected
    recording opened only with its basic password (open it again in Explore
    with the full-access password).
-2. **Channels.** Every channel of every chosen recording is kept unless you
-   leave it out (the same channel list as on the Anonymize page). The new
-   recording holds every channel you keep, from all the recordings.
-3. **What to keep.** The recordings are listed **in time order**, with their
-   start and end in your time zone. For each, choose what to keep:
-   - **The whole recording**;
-   - **The first…** or **The last…** so many hours, minutes and seconds
-     (more than the recording holds keeps all of it);
-   - **From … to …** two dates and times, typed in the time zone shown above
-     the list (a time outside the recording is cut back to it).
+2. **Channels.** This step is always shown, so you pick exactly the channels you
+   want. Every channel of every chosen recording is kept unless you leave it
+   out (the same channel list as on the Anonymize page). **To keep only a
+   few:** choose **Exclude all**, then tick the channels you want (the filter
+   helps to find them). Coming from the signal viewer, the channels you could
+   see there start as kept and the others as left out; if you hid every
+   channel, none is ticked yet and you tick the ones you want. The new
+   recording holds every channel you keep, from all the recordings. This is
+   the same for an anonymous recording: a channel you leave out is left out
+   of every recording that has it, and the recordings do not need to have the
+   same channels. (A channel that none of the chosen recordings has is
+   refused.)
+3. **What to keep.** A **map** shows each chosen recording on one row, on a
+   shared time axis, exactly like the combined timeline in Explore: the blue
+   stretches are when the recording has data, so gaps and recordings that
+   run at the same time are easy to see. Turn the mouse wheel over it to
+   zoom, drag the background to move along it, or use **Zoom in**, **Zoom
+   out** and **Show everything**. What you keep is drawn clearly; the rest
+   is shaded. The recordings are also listed **in time order** in a table,
+   with their start and end in your time zone. Two ways to choose:
+   - **The same window for all recordings, set on the map** (the choice
+     when you picked several recordings). Two lines, **Start** and **End**,
+     mark the window. Every recording keeps only its own data inside it
+     (from Start up to, not including, End). Drag a line with the mouse, or
+     click the map, press **S** (Start) or **E** (End), and move it with the
+     **left** and **right** arrow keys (**Shift**: ten times further,
+     **Ctrl**: one second, **Home** or **End**: to the first or last
+     moment, **Esc**: let go). A line sticks to the first and last moment of
+     the recordings when you bring it close, and Start always stays before
+     End. Below the map you can also **type** the time, in either form, and
+     the line moves there:
+     - **Date and time (UTC)**, to the microsecond, for example
+       `2026-11-04 13:05:22.123456` (the seconds and the fraction are
+       optional);
+     - **Time as a number (microseconds since 1 January 1970, UTC)**, for
+       example `1793883922123456`: the way the recording file itself
+       stores times.
 
-   The **preview** under the list shows each recording on its own row, as a
-   light bar, with the part you keep in blue, on one timeline, so the gaps
-   between them, and parts that run at the same time, are easy to see. The
-   new recording keeps the times exactly as they were: joining never moves
+     The line, the date and the number always show the same moment. Press
+     Enter, or leave the field, to apply what you typed. If it cannot be
+     read, or Start would not be before End, a message says so and the line
+     does not move; a time outside the recordings is pulled in to the first
+     or last moment, and the message says that too. A recording that has no
+     data between Start and End (also when the window falls in a gap of it)
+     is **left out**: it is greyed on the map, the table says "Left out: no
+     data between Start and End", and it is not part of the new recording or
+     of the later steps. If every recording is left out you cannot go on.
+     The times here are the **real times of the recordings**; if you later
+     make the new recording anonymous with the dates moved, this step says
+     that its times will differ. When you chose a time zone, the step also
+     shows the Start and End in it.
+   - **Choose for each recording.** For each, choose what to keep:
+     - **The whole recording**;
+     - **The first…** or **The last…** so many hours, minutes and seconds
+       (more than the recording holds keeps all of it);
+     - **From … to …** two dates and times, typed in the time zone shown above
+       the list (a time outside the recording is cut back to it).
+
+     The map then shows what each recording keeps, with the Start and End
+     lines hidden. Changing the choice of any recording switches to this way
+     by itself; switching back to the window finds the lines where you left
+     them.
+
+   The new recording keeps the times exactly as they were: joining never moves
    anything in time. **Two kept parts may run at the same time only if they
    share no channel you keep.** If they do share one, they turn red, the step
    names the shared channels, and you cannot go on until you keep less of one
@@ -739,38 +788,86 @@ recordings chosen.
    because some recording programs write the time of the last sample itself
    as the end, which is one sample earlier. "The last hour" is therefore
    exactly the last hour of signal, whichever program made the recording.
-4. **New recording.** Type its name and choose the folder (by default the
-   folder of the first recording). Choose **No password** or protect it with
+4. **Privacy.** Choose **Keep the patient details (as in the originals)**
+   (the default) or **Make it anonymous**. Anonymous shows the Anonymize
+   page's choices for one recording: **Keep the real dates**, or **Move
+   every date by the same number of whole days** (the same dates step as the
+   Anonymize page; all the chosen recordings move together, so their order
+   and spacing stay as they were, and the step says when the new recording
+   will start and end); a **pseudonym** (stored as the patient's code; empty
+   means the new recording's name); which details to clear; and whether the
+   text of notes and events is **removed** or **kept** (kept text still has
+   the names the app knows taken out, but dates, ages and other people's
+   names are not found: read it before sharing). The default name of an
+   anonymous recording is `SUBJ-001`, never made from an original's name.
+   The new name and pseudonym may not contain the patient's names, ID or
+   location, or an original's name; that is checked before anything is
+   written. Under **Notes and events**, whatever you chose above, choose
+   **Keep them** (the default) or **Leave them out**. Leaving them out
+   removes every note and event from the new recording, with its time, so no
+   text that might name the patient is left in it; the signal, the times and
+   the channels are as without it, and the originals keep their notes. When
+   you leave them out, the choice about the text of notes is not needed and
+   is hidden. The result says when they were left out.
+5. **New recording.** Type its name and choose the folder (by default the
+   folder of the first recording). Under **Save as**, choose **A folder
+   (.mefd)** or **One file (.mefd.tar), which this app opens directly**. The
+   file is made in the hidden temporary folder, compared with what it was
+   packed from, and only then given its name; a file or folder with that name
+   is never replaced. Choose **No password** or protect it with
    **two new passwords**; the originals' passwords are not carried over, and
    if any original is password-protected the step reminds you that the new
    recording will not be unless you choose passwords here. Trimming one
    recording and keeping all of it, with no channel left out and no new
    passwords, would only make an exact copy, so it is refused.
-5. **Check and save.** First everything is checked, without writing
-   anything: that each kept part holds signal, that no two parts share a
+6. **Check and save.** First everything is checked, without writing
+   anything: that there is enough free space on the drive of the chosen
+   folder for the busiest moment (about the size of what you keep, and twice
+   that when the result is one file; the message says how much), that each kept part holds signal, that no two parts share a
    channel at the same time, that the channels have the same sampling rate
    in every recording, that the recordings are of the same patient (their
-   patient details match), the passwords, and that the name is free. While
+   patient details match), the passwords, and that the name is free. This
+   check uses what Explore already found out about each recording, so it
+   does not read the recordings through again; if a recording has changed
+   since Explore looked at it (for example it has grown), the page says so
+   and checks again with the new times. While
    the check runs, the choices cannot be changed; if something changes
    anyway (for example you switch to another page, which clears typed
    passwords), nothing is started and you choose Check and save again.
    Anything that stops it is listed in plain words on the New recording
    step. Then the new recording is made, with one progress bar for all of it
    and a **Stop** button, and it is **checked against the originals** before
-   it gets its name. At the end, **Open it in Explore** shows it there.
+   it gets its name. If some channels have different units, or different
+   amplitude settings, in different recordings, the result says so and names
+   them (a channel with different units is labelled with the units of its
+   first part and nothing is rescaled; with different amplitude settings the
+   values are right in Studio, but some older programs, for example the
+   mef_tools Python package, show those channels as all zeros). At the end,
+   **Open it in Explore** shows it there.
 
-**How joining works, and the temporary folder.** When several recordings are
-joined and some are trimmed, the kept part of each trimmed one is first saved
-on its own, in a hidden temporary folder next to the new recording (its name
-starts with `.mef3io-studio-parts-`); then the parts are joined into the new
-recording. Those temporary parts are **password-protected with throw-away
-passwords** made for that run only, so the folder never holds readable
-patient details, even if the computer stops halfway. The folder is always
-removed at the end, also when you press Stop or something goes wrong; if it
-ever cannot be removed, the result says so, and you can delete it yourself.
-The app only ever removes a temporary folder it made for that run (it leaves
-a small note inside it to recognise it); anything else is left alone.
-A recording you keep whole is used as it is, without a temporary copy.
+**One pass, straight from the originals.** However many recordings you
+join, the new recording is made in a single go from the originals: the kept
+part of each, without the channels you left out, anonymous if you chose that
+(one date move and one pseudonym for all), with or without the notes and
+events, and with the new passwords, all in one pass over the data. Nothing is
+saved in between, so no copy with the patient's details is ever written and
+no temporary copy of a part exists. This is also faster than before, because
+each original (which may be on a network drive) is read once to make the new
+recording and once more to check it, and the files are opened far fewer
+times. The progress bar covers the whole run, and **Stop** works at any
+moment and leaves nothing behind. One recording that is only trimmed (a join
+needs two) is made the same way, in one call. The new recording's **History**
+(in Explore) says it was made by the anonymizer or by a copy with changes; it
+cannot say that the notes were left out, which the result screen does.
+
+**The hidden temporary folder (one file only).** Only **One file
+(.mefd.tar)** uses a hidden folder next to the new file (its name starts with
+`.mef3io-studio-parts-`): the recording is made there, packed, compared with
+what it was packed from, and the file then given its name. The folder is
+always removed at the end, also when you press Stop or something goes wrong;
+if it ever cannot be removed, the result says so, and you can delete it
+yourself. The app only ever removes a folder it made for that run (it leaves a
+small note inside it to recognise it); anything else is left alone.
 
 ## View signals
 
@@ -838,6 +935,21 @@ With the mouse: the wheel moves in time, Shift+wheel moves through the
 channels, Ctrl+wheel zooms the timebase at the pointer, dragging pans, and
 a double-click puts that moment in the middle of the page. A right-click
 offers more choices for the channel or moment under the pointer.
+
+**The overview.** Above the coloured timeline bar there is a band that shows
+the whole recording at a glance: for each stretch, the lowest and the
+highest value of a channel. It is there to help you find your way in time
+before a page has loaded. The frame that marks the page you are looking at
+reaches from the timeline bar up over the band, and a click or a drag on the
+band takes you there exactly as on the bar. Where the recording has a gap,
+the band stays empty. It is read in the background without loading the
+signals (it can take a moment on a big recording on a network drive; the band
+says "Loading the overview" meanwhile), and a channel already shown comes
+back at once. The **Overview** button in the second toolbar row chooses the
+channels in the band: by default the first channel that is shown, and up to
+four, each drawn in its own row and scaled to its own size (so rows are not
+comparable with each other). A channel you hide leaves the band. The same
+menu turns the band off.
 
 **Jump** (Ctrl+K) understands a time of day (`14:30`), a day and time (`day
 2 08:00`), a date and time (`2000-01-31 14:30`), a move from the page you
@@ -1011,7 +1123,9 @@ offers:
 - **Copy times** puts the start and end on the clipboard;
 - **Add to list** and **Show the list…** keep several ranges, which you can
   save as a CSV or JSON file (they hold real dates, so store them with care);
-- **Send to Join or trim** opens the Join or trim page with this range;
+- **Send to Join or trim** opens the Join or trim page with this range. It stops at the **Channels** step, with only the channels you could
+  see in the viewer kept (the ones you hid are left out, and if you hid all of
+  them none is ticked yet); change the choice there if you like;
 - **Clear the range**.
 
 ### Add notes and events (edit mode)
@@ -1115,6 +1229,12 @@ afterwards:
 
 ## Help and reporting problems
 
+- **The user manual and the tutorial videos.** Each release on the
+  [Releases page](https://github.com/bnelair/mef3io-studio/releases) has the
+  manual as a PDF and short captioned videos that show, step by step, how to
+  join or trim recordings, make a new one anonymous, and save it as one file.
+  They are made by the app itself on made-up recordings, so they always show
+  the current screens.
 - **Which version you have** is shown in the window's title and at the
   bottom of the list of pages on the left. A version with "dev" in its number is a
   test version; 0.1.0 and later are full releases (still early).

@@ -2,8 +2,8 @@
 
 Each recording's data is drawn in that recording's colour (from the segment
 coverage, metadata only), gaps hatched, the current page as a box, day and
-time marks. Click or drag to go there. Optionally a faint envelope of one
-channel on top (``set_envelope``, from the block index).
+time marks. Click or drag to go there. The overview band above it
+(``overview.py``) shares the click and drag code (:class:`TimelineNav`).
 """
 
 from __future__ import annotations
@@ -57,10 +57,39 @@ def pixel_runs(
     return runs
 
 
-class OverviewStrip(QWidget):
+class TimelineNav(QWidget):
+    """A widget drawn over the whole timeline: a click or a drag anywhere on
+    it asks to centre the page on that moment. Shared by the strip and the
+    overview band above it."""
+
     #: The user clicked or dragged: centre the page on this time (µs).
     navigate = Signal(object)
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.timeline = (0, 1)
+
+    def x_of(self, t: float) -> float:
+        a, b = self.timeline
+        return (t - a) / (b - a) * self.width()
+
+    def t_of(self, x: float) -> int:
+        a, b = self.timeline
+        return int(a + min(1.0, max(0.0, x / max(1, self.width()))) * (b - a))
+
+    def _go(self, event) -> None:
+        self.navigate.emit(self.t_of(event.position().x()))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._go(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._go(event)
+
+
+class OverviewStrip(TimelineNav):
     def __init__(self, palette: Palette, parent=None):
         super().__init__(parent)
         self.setObjectName("OverviewStrip")
@@ -69,11 +98,9 @@ class OverviewStrip(QWidget):
         self.setMouseTracking(True)
         self.palette_ = palette
         self.zone: tzinfo = UTC
-        self.timeline = (0, 1)
         self.coverage: list[tuple[int, int, int]] = []
         self.page = (0, 1)
         self.multi = False
-        self.envelope: np.ndarray | None = None  # [2, bins]: min, max (normalised -1..1)
         #: The export range (µs, either end may be unset) and its label.
         self.export: tuple[int | None, int | None] = (None, None)
         self.export_text = ""
@@ -145,18 +172,6 @@ class OverviewStrip(QWidget):
         )
         self.update()
 
-    def set_envelope(self, env: np.ndarray | None) -> None:
-        self.envelope = env
-        self.update()
-
-    def x_of(self, t: float) -> float:
-        a, b = self.timeline
-        return (t - a) / (b - a) * self.width()
-
-    def t_of(self, x: float) -> int:
-        a, b = self.timeline
-        return int(a + min(1.0, max(0.0, x / max(1, self.width()))) * (b - a))
-
     def paintEvent(self, event) -> None:  # noqa: N802
         pal = self.palette_
         p = QPainter(self)
@@ -176,16 +191,6 @@ class OverviewStrip(QWidget):
                 self._colour_of(rec, dark) if self.multi else legible_on(pal, STRIP_DATA[shade])
             )
             p.fillRect(r, QColor(colour))
-        if self.envelope is not None and self.envelope.shape[1] > 1:
-            n = self.envelope.shape[1]
-            line = QColor(pal.background)
-            line.setAlpha(150)
-            p.setPen(QPen(line, 1))
-            mid, half = bar.center().y(), bar.height() / 2 - 1
-            xs = (np.arange(n) + 0.5) / n * self.width()
-            for x, lo, hi in zip(xs, self.envelope[0], self.envelope[1], strict=True):
-                if np.isfinite(lo) and np.isfinite(hi):
-                    p.drawLine(QPointF(x, mid - hi * half), QPointF(x, mid - lo * half))
         # day / time marks
         a, b = self.timeline
         fm = p.fontMetrics()
@@ -258,16 +263,8 @@ class OverviewStrip(QWidget):
                 x = self.x_of(t)
                 p.drawLine(QPointF(x, top), QPointF(x, bottom))
 
-    def _go(self, event) -> None:
-        self.navigate.emit(self.t_of(event.position().x()))
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._go(event)
-
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if event.buttons() & Qt.MouseButton.LeftButton:
-            self._go(event)
+        super().mouseMoveEvent(event)  # a drag goes there (shared with the overview band)
         self.hover_text = self.readout(event.position().x())
         QToolTip.showText(event.globalPosition().toPoint(), self.hover_text, self)
 
@@ -295,21 +292,3 @@ def block_stretches(starts, ends, min_gap_us: int = 1_000_000) -> list[tuple[int
     return [
         (int(st[f]), int(latest[k])) for f, k in zip(first.tolist(), last.tolist(), strict=True)
     ]
-
-
-def envelope_bins(starts, ends, mins, maxs, timeline: tuple[int, int], bins: int) -> np.ndarray:
-    """Reduce block extremes to ``bins`` columns over the timeline and
-    normalise to -1..1 by the 99th percentile of the magnitudes."""
-    a, b = timeline
-    mn = np.full(bins, np.nan)
-    mx = np.full(bins, np.nan)
-    if len(starts):
-        starts = np.asarray(starts, dtype=np.float64)
-        c = np.clip(((starts - a) / (b - a) * bins).astype(np.int64), 0, bins - 1)
-        ok = np.isfinite(mins) & np.isfinite(maxs)
-        np.fmin.at(mn, c[ok], np.asarray(mins)[ok])
-        np.fmax.at(mx, c[ok], np.asarray(maxs)[ok])
-    mags = np.abs(np.concatenate([mn[np.isfinite(mn)], mx[np.isfinite(mx)]]))
-    scale = float(np.percentile(mags, 99)) if mags.size else 1.0
-    scale = scale or 1.0
-    return np.clip(np.vstack([mn, mx]) / scale, -1.0, 1.0)

@@ -6,14 +6,18 @@
 [![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
 
-**0.1.3** is the latest release (0.1.0 was the first full release). The app is
+**0.1.5** is the latest release (0.1.0 was the first full release). **If you
+made a recording with Join or trim in 0.1.4 and chose a time window for a
+recording whose saved times were wrong, please make it again with 0.1.5**:
+0.1.4 could leave out that recording's chosen part without saying so (see the
+[release notes](docs/release-notes/0.1.5.md)). The app is
 still early, so expect rough edges and tell us about them. It can explore recordings, make anonymized
 copies, keep part of a recording or join parts of several into one, show
 their signals in a viewer (where you can also add notes and events), rename
 recordings safely, change their details into a new copy, give new copies
 passwords, and make new recordings from many at once with a saved choice of
 channels. See [Project status](#project-status) and the
-[release notes](docs/release-notes/0.1.3.md).
+[release notes](docs/release-notes/0.1.5.md).
 
 ## Getting the app
 
@@ -27,7 +31,10 @@ Download the installer for your computer from the
 | Linux | `mef3io-studio-<version>-linux-x86_64.AppImage` (or the `.tar.gz`) | a desktop Linux from 2021 or later: Ubuntu 22.04+, Debian 12+, RHEL / Rocky / Alma 9+, Fedora 35+ |
 
 Each release also has a `SHA256SUMS` file to check that a download is complete
-and unmodified.
+and unmodified, the **user manual** as a PDF (`mef3io-studio-manual-<version>.pdf`)
+and short **captioned tutorial videos** (`.mp4`) that show the workflows on
+made-up recordings: joining and trimming, making it anonymous, saving as one
+file.
 
 There is **no pip package**: mef3io-studio is only distributed as these
 installers. For scripting, use the [mef3io](https://github.com/bnelair/mef3io)
@@ -176,8 +183,19 @@ recordings in Explore and choose **Join or trim these…**.
   when they hold different channels; parts that **share a channel at the same
   moment** are refused before anything starts (leave that channel out, or
   keep less).
+- In **What to keep**, a map shows when each recording has data. Drag its two
+  lines, **Start** and **End**, or type a date and time (UTC, to the
+  microsecond); every recording keeps only its data inside, and one with
+  nothing there is left out. You can still choose for each recording.
 - Leave out channels, and protect the new recording with two new passwords
   if you like.
+- A **Privacy** step lets you **make the new recording anonymous** in the
+  same go (no copy with the patient's details is ever written), choose
+  whether **notes and events** are kept or left out, and save it as a folder
+  or as **one file (`.mefd.tar`)**.
+- The new recording is made in **one pass, straight from the originals**:
+  no temporary copy of any part, far fewer files opened (faster on a network
+  drive).
 - Everything is **checked before anything is written** (sampling rates,
   patient details, passwords, where the new recording goes), and the new
   recording is **checked against the originals** before it is kept. **The
@@ -395,7 +413,8 @@ on `v*` tags, and when started by hand (*Actions → Build installers → Run
 workflow*). Ordinary PRs and merges run only the tests (`ci.yml`). Each build is smoke-tested (`--self-test`, `--self-test-gui`,
 Windows install → upgrade → uninstall, the Linux tarball on five
 distributions, an strace check that no internet socket is opened). On tags the
-installers and `SHA256SUMS` are attached to a GitHub release (a pre-release for test versions), described by
+installers, the PDF manual and the tutorial videos (re-encoded as H.264 so
+browsers play them) and `SHA256SUMS` are attached to a GitHub release (a pre-release for test versions), described by
 `docs/release-notes/<version>.md` when that file exists.
 
 Every bundle carries a `THIRD_PARTY_LICENSES` folder. Qt is used under the
@@ -458,7 +477,7 @@ point to a commit on `main`.
 ## Project status
 
 mef3io-studio is an **early** app: **0.1.0 is the first full release**, built
-on mef3io 2.1.1. It has the installers; **Explore**; **Anonymize**;
+on mef3io 2.3.0. It has the installers; **Explore**; **Anonymize**;
 **Join or trim** and **Cut into pieces**; the **signal viewer** with its optional edit mode for adding
 notes and events; **rename** in time order with undo; **edit details** into a
 new copy; **passwords** on every new copy; and **Make new recordings** with

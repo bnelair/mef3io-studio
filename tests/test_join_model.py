@@ -176,8 +176,8 @@ def test_last_hour_of_one_and_first_hour_of_the_next(two):
     found = mef3io.time_range(str(out / "joined.mefd"))
     assert found.start_uutc == T0 + HOUR
     assert found.end_uutc == T0 + 4 * HOUR
-    # Two cuts, then the join; the bar only goes forward.
-    assert {p.kind for p in progress} == {"cut", "join"}
+    # ONE pass (no separate cuts); the bar only goes forward.
+    assert {p.kind for p in progress} == {"join"}
     overall = [p.overall for p in progress]
     assert overall == sorted(overall) and overall[-1] == 1.0
     assert no_leftovers(out) == []
@@ -216,19 +216,31 @@ def test_three_recordings_trimmed_at_both_ends(tmp_path):
     assert no_leftovers(tmp_path) == []
 
 
-def test_a_recording_kept_whole_is_joined_as_it_is(two, monkeypatch):
+def test_several_recordings_are_joined_by_one_call_from_the_originals(two, monkeypatch):
+    """No cut copies: ONE merge_sessions call, given the originals in time
+    order and a window (or None) for each."""
     tmp, a, b = two
-    cuts = []
-    real = mef3io.transform_session
-    monkeypatch.setattr(
-        mef3io, "transform_session", lambda src, *a_, **k: cuts.append(src) or real(src, *a_, **k)
-    )
+    merges, copies = [], []
+    real = mef3io.merge_sessions
+
+    def spy(sources, dst, **kwargs):
+        merges.append((list(sources), kwargs))
+        return real(sources, dst, **kwargs)
+
+    monkeypatch.setattr(mef3io, "merge_sessions", spy)
+    for name in ("transform_session", "anonymize_session"):
+        monkeypatch.setattr(mef3io, name, lambda *x, **k: copies.append(x))
     request = j.new_request(
-        [source(a, j.Keep()), source(b, j.Keep(j.KEEP_FIRST, 30 * MINUTE))],
+        [source(b, j.Keep(j.KEEP_FIRST, 30 * MINUTE)), source(a, j.Keep())],
         str(tmp / "j.mefd"),
     )
     assert j.make_joined(request).ok
-    assert cuts == [str(b)]
+    assert not copies and len(merges) == 1
+    paths, kwargs = merges[0]
+    assert paths == [str(a), str(b)]
+    assert kwargs["time_ranges"] == [None, (T0 + 3 * HOUR, T0 + 3 * HOUR + 30 * MINUTE)]
+    assert kwargs["exact"] is True and kwargs["n_threads"] == 0
+    assert kwargs["records"] == "keep" and kwargs["anonymize"] is None
     want = np.concatenate([expected(T0, T0 + 2 * HOUR), expected(T0 + 3 * HOUR, T0 + 3.5 * HOUR)])
     np.testing.assert_array_equal(kept_values(tmp / "j.mefd"), want)
 
@@ -300,7 +312,7 @@ def test_a_refusal_after_the_cuts_leaves_nothing_behind(tmp_path):
     assert not (tmp_path / "j.mefd").exists() and no_leftovers(tmp_path) == []
 
 
-def test_stop_during_a_cut_removes_the_temporary_parts(two):
+def test_stop_during_the_join_leaves_nothing(two):
     tmp, a, b = two
     request = j.new_request(
         [source(a, j.Keep(j.KEEP_LAST, HOUR)), source(b, j.Keep(j.KEEP_FIRST, HOUR))],
@@ -311,8 +323,9 @@ def test_stop_during_a_cut_removes_the_temporary_parts(two):
 
     def send(progress):
         seen.append(progress)
-        if progress.kind == "cut":
-            assert os.path.isdir(request.parts_folder)
+        if progress.kind == "join":
+            # No temporary copy, anywhere.
+            assert not os.path.lexists(request.parts_folder)
             token.cancel()
 
     with pytest.raises(JobCancelled):
@@ -336,12 +349,15 @@ def test_tidy_removes_what_an_ended_helper_left(two):
 
 
 def test_a_folder_that_was_already_there_is_never_removed(two):
-    """Only a parts folder carrying THIS run's marker is removed: one that
+    """Only a hidden folder carrying THIS run's marker is removed: one that
     already existed under the name (or another run's) is left as it is,
-    also when the run fails because of it."""
+    also when the run fails because of it (one file is the only case that
+    uses the hidden folder)."""
     tmp, a, b = two
     request = j.new_request(
-        [source(a, j.Keep(j.KEEP_LAST, MINUTE)), source(b, j.Keep())], str(tmp / "j.mefd")
+        [source(a, j.Keep(j.KEEP_LAST, MINUTE)), source(b, j.Keep())],
+        str(tmp / "j.mefd.tar"),
+        one_file=True,
     )
     os.makedirs(request.parts_folder)
     (Path(request.parts_folder) / "user.txt").write_text("keep me")
@@ -352,31 +368,23 @@ def test_a_folder_that_was_already_there_is_never_removed(two):
     # Another run's marker is not this run's.
     (Path(request.parts_folder) / j.PARTS_MARKER).write_text("someone-else")
     assert j.remove_parts(request) and os.path.isdir(request.parts_folder)
-    assert not (tmp / "j.mefd").exists()
+    assert not (tmp / "j.mefd.tar").exists()
 
 
-def test_temporary_parts_are_password_protected(two, monkeypatch):
-    """A cut copy sits on disk while the join runs: it is protected with
-    throw-away passwords, so it never holds readable patient details."""
+def test_no_copy_of_a_part_is_ever_written(two, monkeypatch):
+    """The pipeline used to write each cut part (protected with throw-away
+    passwords) beside the result. Now nothing but the result's own
+    ``.partial`` folder exists while it runs."""
     tmp, a, b = two
-    calls = []
-    real = mef3io.transform_session
-
-    def spy(src, dst, **kwargs):
-        report = real(src, dst, **kwargs)
-        calls.append((kwargs.get("output_password"), not mef3io.time_range(dst).offset_known))
-        return report
-
-    monkeypatch.setattr(mef3io, "transform_session", spy)
     request = j.new_request(
         [source(a, j.Keep(j.KEEP_LAST, HOUR)), source(b, j.Keep(j.KEEP_FIRST, HOUR))],
         str(tmp / "j.mefd"),
     )
-    assert j.make_joined(request).ok
-    assert len(calls) == 2
-    for passwords, protected in calls:
-        assert passwords is not None and passwords[0] != passwords[1] and protected
-    assert len({c[0] for c in calls}) == 1  # one pair for the run
+    seen = []
+    assert j.make_joined(request, send=lambda p: seen.append(sorted(os.listdir(tmp)))).ok
+    assert seen
+    for names in seen:
+        assert set(names) <= {"A.mefd", "B.mefd", "j.mefd.partial", "j.mefd"}, names
 
 
 def test_password_protected_originals_and_a_protected_result(tmp_path):
@@ -442,7 +450,11 @@ def test_every_refusal_code_has_join_words():
 
     from mef3io_studio.model.refusals import JOIN_WORDS
 
-    codes = set(mef3io.transform.REFUSAL_CODES) | set(mef3io.merge.REFUSAL_CODES)
+    # The merge also lists the anonymizer's codes (it can anonymize in the
+    # same pass): those have the anonymizer's words (next test).
+    codes = set(mef3io.transform.REFUSAL_CODES) | (
+        set(mef3io.merge.REFUSAL_CODES) - set(mef3io.anonymize.REFUSAL_CODES)
+    )
     assert codes <= set(JOIN_WORDS), sorted(codes - set(JOIN_WORDS))
     for code in codes:
         title, text = JOIN_WORDS[code]({"channel": "x1", "field": None, "inspect_code": None})
@@ -452,6 +464,25 @@ def test_every_refusal_code_has_join_words():
         assert "were not changed" in text, code
     for code, text in j.PROBLEM_WORDS.items():
         assert not BANNED_RE.search(text), (code, text)
+
+
+def test_a_code_of_the_anonymizer_raised_by_the_join_has_words(two):
+    """The merge raises the anonymizer's codes too (its ``anonymize=``): in a
+    run (not only in the check) they get the anonymizer's plain words."""
+    from mef3io_studio.model.refusals import WORDS
+
+    tmp, a, _b = two
+    request = j.new_request([source(a, j.Keep())], str(tmp / "x.mefd"))
+    only = set(mef3io.merge.REFUSAL_CODES) & set(mef3io.anonymize.REFUSAL_CODES)
+    only -= set(mef3io.transform.REFUSAL_CODES)
+    assert only
+    for code in sorted(only):
+        exc = ValueError(f"[{code}] whatever mef3io says about {a}")
+        exc.code = code
+        exc.details = {}
+        message = j.describe_join_error(exc, request)
+        assert message.title == WORDS[code]({})[0], code
+        assert str(a) not in message.detail
 
 
 def test_refusals_are_translated_by_code(two):
@@ -609,3 +640,93 @@ def test_a_failed_marker_leaves_no_folder(two, monkeypatch):
     with pytest.raises(OSError):
         j.make_parts_folder(request)
     assert not os.path.exists(request.parts_folder)
+
+
+# --------------------------------------------------------------------------
+# One window for every recording (the map on "What to keep")
+
+
+def _layouts():
+    return {
+        "A": j.Layout(T0, T0 + 2 * HOUR, ("a1",)),
+        "B": j.Layout(T0 + 3 * HOUR, T0 + 5 * HOUR, ("a1",)),
+        "C": j.Layout(T0 + HOUR, T0 + 4 * HOUR, ("a1",)),
+    }
+
+
+def test_window_keeps_gives_every_recording_the_exact_window():
+    start, end = T0 + HOUR + 123_456, T0 + 3 * HOUR + 7
+    keeps, left_out = j.window_keeps(_layouts(), start, end)
+    assert set(keeps) == {"A", "B", "C"} and left_out == ()
+    assert all(k == j.Keep(j.KEEP_BETWEEN, start_us=start, end_us=end) for k in keeps.values())
+    # What each keeps, to the microsecond: the window inside the recording's data.
+    sources = [j.JoinSource(k, "/x/" + k, keeps[k]) for k in keeps]
+    plan = j.plan_join(sources, _layouts(), changes=True)
+    assert (plan.spans["A"].start, plan.spans["A"].end) == (start, T0 + 2 * HOUR)
+    assert plan.spans["A"].to_end  # reaches A's own end
+    assert (plan.spans["C"].start, plan.spans["C"].end) == (start, end)
+    assert (plan.spans["B"].start, plan.spans["B"].end) == (T0 + 3 * HOUR, end)
+    assert plan.spans["C"].time_range == (start, end)  # [start, end), exact
+
+
+def test_window_leaves_out_recordings_without_data_inside_it():
+    keeps, left_out = j.window_keeps(_layouts(), T0 + 2 * HOUR, T0 + 3 * HOUR)
+    # A ends exactly where the window starts and B starts where it ends:
+    # [start, end) does not meet them.
+    assert set(keeps) == {"C"} and set(left_out) == {"A", "B"}
+    keeps, left_out = j.window_keeps(_layouts(), T0 - 5 * HOUR, T0 - HOUR)
+    assert keeps == {} and set(left_out) == {"A", "B", "C"}
+
+
+def test_window_uses_the_stretches_with_data_when_known():
+    # C has data only in its first and last hour: a window in its middle
+    # (inside its extent) holds no data.
+    runs = {"C": ((T0 + HOUR, T0 + 2 * HOUR), (T0 + 3 * HOUR, T0 + 4 * HOUR))}
+    keeps, left_out = j.window_keeps(
+        {"C": _layouts()["C"]}, T0 + 2 * HOUR + 1, T0 + 3 * HOUR - 1, runs
+    )
+    assert keeps == {} and left_out == ("C",)
+    keeps, left_out = j.window_keeps({"C": _layouts()["C"]}, T0 + 2 * HOUR - 1, T0 + 3 * HOUR, runs)
+    assert set(keeps) == {"C"}
+    # A single moment inside the window counts.
+    keeps, _ = j.window_keeps(
+        {"C": _layouts()["C"]}, T0, T0 + 9 * HOUR, {"C": ((T0 + HOUR, T0 + HOUR),)}
+    )
+    assert set(keeps) == {"C"}
+
+
+def test_window_with_unknown_times_or_a_bad_window_is_reported_not_hidden():
+    keeps, left_out = j.window_keeps({"X": j.Layout(None, None)}, T0, T0 + HOUR)
+    plan = j.plan_join([j.JoinSource("X", "/x/X", keeps["X"])], {"X": j.Layout(None, None)})
+    assert left_out == () and plan.problems[0].code == j.TIMES_UNKNOWN
+    keeps, left_out = j.window_keeps(_layouts(), T0 + HOUR, T0 + HOUR)  # empty window
+    sources = [j.JoinSource(k, "/x/" + k, keeps[k]) for k in keeps]
+    plan = j.plan_join(sources, _layouts())
+    assert {p.code for p in plan.problems} == {j.END_NOT_AFTER_START}
+
+
+def test_a_window_join_of_two_recordings_holds_the_window_and_the_data_only(tmp_path):
+    a = write(tmp_path / "A.mefd", T0, 2 * 3600)
+    b = write(tmp_path / "B.mefd", T0 + 3 * HOUR, 2 * 3600)
+    c = write(tmp_path / "C.mefd", T0 + 10 * HOUR, 3600)  # far outside the window
+    start, end = T0 + HOUR + 30 * MINUTE, T0 + 3 * HOUR + 20 * MINUTE
+    paths = {"A": a, "B": b, "C": c}
+    layouts = {
+        "A": j.Layout(T0, T0 + 2 * HOUR, ("a1", "a2")),
+        "B": j.Layout(T0 + 3 * HOUR, T0 + 5 * HOUR, ("a1", "a2")),
+        "C": j.Layout(T0 + 10 * HOUR, T0 + 11 * HOUR, ("a1", "a2")),
+    }
+    keeps, left_out = j.window_keeps(layouts, start, end)
+    assert left_out == ("C",)
+    out = tmp_path / "out"
+    out.mkdir()
+    request = j.new_request([source(paths[k], keeps[k]) for k in keeps], str(out / "joined.mefd"))
+    assert j.check_join(request) == []
+    assert j.make_joined(request).ok
+    found = mef3io.time_range(str(out / "joined.mefd"))
+    # The output runs from the window's start to the window's end, but only
+    # as far as the data goes: the hour between A and B stays a gap.
+    assert found.start_uutc == start and found.end_uutc == end
+    want = np.concatenate([expected(start, T0 + 2 * HOUR), expected(T0 + 3 * HOUR, end)])
+    for channel in ("a1", "a2"):
+        np.testing.assert_array_equal(kept_values(out / "joined.mefd", channel), want)

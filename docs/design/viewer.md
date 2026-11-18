@@ -109,7 +109,24 @@ From top to bottom, as in the clinical viewer:
      another resolution (`QWindow.screenChanged`: the same millimetres hold
      another number of pixels). It also shows in the overview. Tooltip: what
      it is, and that a wider window shows more time at the same timebase.
-3. **Overview strip (32 px):** the whole timeline.
+3. **Overview band (above the strip, 22 px per channel, up to 4):** the
+   whole recording's min/max per pixel column for the chosen shown channels
+   (default: the first shown), each lane scaled to its own 99th-percentile
+   range; gaps empty; the page frame continues from the strip over the band;
+   click/drag shares `TimelineNav` with the strip. The band is the ONLY
+   picture of the signal over the whole recording (the strip no longer draws
+   a faint envelope of its own: it would show the same thing twice). It shares
+   ONE index read with the strip: after the first page has been asked for, one
+   multi-channel `block_envelope` call (`ViewController.request_strip_envelope`
+   (strip channels, band channels)) on the viewer's own reader (no second open)
+   gives both the band's columns and the strip's real stretches, on the strip's
+   own thread, waiting until the page and its look-ahead are loaded
+   (`_wait_quiet`, at most 20 s) so it never delays them. Every channel read is
+   cached for the open recording (4096 columns per channel, reduced to the width
+   when drawn): paging never reads it again; a channel picked later is the only
+   one asked for (`request_overview`, no waiting); a save that changed the
+   signal clears the cache and reads again. Code: `viewer/overview.py`.
+3a. **Overview strip (32 px):** the whole timeline.
    - Data drawn per recording in that recording's colour, with gaps
      hatched.
    - The current page drawn as a box.
@@ -919,7 +936,9 @@ sensitivity says so on screen.
   so does the readout. The **real stretches with data** come from the block index
   of ONE channel PER RECORDING (the one that recording holds most of,
   `ViewerWindow._strip_channels`; the union of their stretches,
-  `strip.block_stretches`, read once on the strip's thread after the first page,
+  `strip.block_stretches`, read once on the strip's thread after the first page
+  and after the page and look-ahead are loaded, in the SAME call as the overview
+  band's channels (item 3 above),
   `controller.strip_stretches` = `(stretches, channels read)`): a pause inside
   one recording is a gap, which the segment times alone do not tell. Time the
   channels read do not reach at all (`vv.unreached` of their coverage) keeps the
