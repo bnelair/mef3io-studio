@@ -78,8 +78,9 @@ def test_the_sentence_for_short_stretches_uses_the_same_words():
 def test_the_label_sits_beside_the_timebase_and_says_what_it_is(one):
     win = one
     assert win.length_label.text() == f"= {vv.format_length(win.page_us())}"
-    toolbar = win.timebase_box.parentWidget()
-    items = [toolbar.widgetForAction(a) for a in toolbar.actions()]
+    group = win.timebase_box.parentWidget()  # the label, its box and the time on screen: one item
+    row = group.layout()
+    items = [row.itemAt(i).widget() for i in range(row.count())]
     assert items.index(win.length_label) == items.index(win.timebase_box) + 1
     tip = win.length_label.toolTip()
     assert "time fits on the screen" in tip and "wider window shows more time" in tip

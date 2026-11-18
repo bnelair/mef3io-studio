@@ -38,11 +38,9 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QScrollBar,
-    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTabWidget,
-    QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -66,6 +64,7 @@ from .dialogs import JumpDialog
 from .edit_mode import EditMode
 from .export_range import IDENTIFYING_NOTE, RangeListDialog
 from .filters import FilterPanel, ResponseDialog
+from .flow import Controls
 from .keymap import (
     KEYMAP,
     NAVIGATION_ACTIONS,
@@ -235,7 +234,8 @@ class ViewerWindow(QMainWindow):
         #: (chosen once, held across pages; see ``_choose_own_scales``).
         self._own_sens: dict[tuple, float] = {}
         self._own_filters = self.state.filters  # the filters ``_own_sens`` was chosen under
-        self._long_actions: list = []
+        #: Hours, days and stretches: the buttons, and the flow item that holds them.
+        self._long_buttons: tuple = ()
         #: Fit the sensitivity once on the first complete page (not when the
         #: person has chosen a sensitivity before: that one is kept).
         self._sens_stored = settings is not None and "viewer/sensitivity" in settings.stored_keys()
@@ -346,7 +346,15 @@ class ViewerWindow(QMainWindow):
         self.splitter.addWidget(left)
         self.splitter.addWidget(self.side_panel)
         self.splitter.setStretchFactor(0, 1)
-        self.setCentralWidget(self.splitter)
+        # The controls wrap (viewer/flow.py) over the signal: nothing is lost to a ">>" menu.
+        self.controls = Controls(self)
+        central = QWidget(self)
+        stack = QVBoxLayout(central)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(0)
+        stack.addWidget(self.controls)
+        stack.addWidget(self.splitter, 1)
+        self.setCentralWidget(central)
 
         self.filter_panel = FilterPanel(self.state.filters, self._rates, self)
         self.channel_chooser = ChannelChooser(self)
@@ -390,9 +398,9 @@ class ViewerWindow(QMainWindow):
         hour, day = span >= 2 * 3600 * 1_000_000, span >= 2 * 86_400 * 1_000_000
         stretches = len(self._stretch_starts()) >= 2
         wanted = (day, hour, hour, day, stretches, stretches)
-        for action, on in zip(self._long_actions, wanted, strict=True):
-            action.setVisible(on)
-        self._long_sep.setVisible(any(wanted))
+        for button, on in zip(self._long_buttons, wanted, strict=True):
+            button.setVisible(on)
+        self._long_group.setVisible(any(wanted))
 
     def _build_toolbars(self) -> None:
         def tool(text: str, tip: str, slot, visible: bool = True) -> QToolButton:
@@ -404,8 +412,6 @@ class ViewerWindow(QMainWindow):
             b.setVisible(visible)
             return b
 
-        row1 = QToolBar("Navigation", self)
-        row1.setMovable(False)
         self.prev_button = tool(
             "◀ Previous page", "Go back one page (Left arrow)", lambda: self.page(-1)
         )
@@ -492,52 +498,6 @@ class ViewerWindow(QMainWindow):
             lambda: press("note_list"),
         )
         self.help_button = tool("?", "Keys and mouse (?)", self.toggle_help)
-        for w in (
-            self.prev_button,
-            self.next_button,
-            self.day_box,
-            self.time_edit,
-            self.go_button,
-            self.jump_button,
-        ):
-            row1.addWidget(w)
-        row1.addSeparator()
-        for w in (
-            self.back_day_button,
-            self.back_hour_button,
-            self.forward_hour_button,
-            self.forward_day_button,
-            self.prev_stretch_button,
-            self.next_stretch_button,
-        ):
-            self._long_actions.append(row1.addWidget(w))
-        self._long_sep = row1.addSeparator()
-        self.addToolBar(row1)
-        self.addToolBarBreak()
-        # The toolbars are four short rows, not two long ones: a row that is wider than the
-        # window loses its LAST controls to the ">>" menu, whatever the font, so no row may
-        # hold more than a window of 1280 px shows at a large font. Edit mode, the notes and
-        # the export are one row, the display settings another, and the rarer ones (filters,
-        # Types, the rows, the overview, the colours) the last.
-        row1b = QToolBar("Notes and export", self)
-        row1b.setMovable(False)
-        for w in (
-            self.notes_button,
-            self.edit_button,
-            self.export_start_button,
-            self.export_end_button,
-            self.range_button,
-        ):
-            row1b.addWidget(w)
-        spacer = QWidget(self)
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row1b.addWidget(spacer)
-        row1b.addWidget(self.help_button)
-        self.addToolBar(row1b)
-        self.addToolBarBreak()
-
-        row2 = QToolBar("Display", self)
-        row2.setMovable(False)
         self.montage_bar = MontageBar(self)
         self.channels_button = tool(
             "Channels", "Choose the channels to show (C)", self.toggle_channels
@@ -584,31 +544,50 @@ class ViewerWindow(QMainWindow):
         self.colour_note = QLabel("", self)
         self.colour_note.setObjectName("Danger")
         self.types_button = tool("Types", "Types of notes and events (T)", lambda: press("types"))
-        row2.addWidget(self.montage_bar)
-        row2.addWidget(self.channels_button)
-        for label, w in (("Spacing", self.spacing_box), ("Sensitivity", self.sens_box)):
-            row2.addWidget(QLabel(label, self))
-            row2.addWidget(w)
-        row2.addWidget(self.auto_button)
-        self.addToolBar(row2)
-        self.addToolBarBreak()
-        row3 = QToolBar("View", self)
-        row3.setMovable(False)
-        row3.addWidget(QLabel("Timebase", self))
-        row3.addWidget(self.timebase_box)
-        row3.addWidget(self.length_label)  # beside the timebase: how much time that holds
-        row3.addWidget(self.filters_button)
-        row3.addWidget(self.types_button)
-        row3.addWidget(self.rows_label)
-        row3.addWidget(self.overview_button)
-        # What a narrow window may lose goes last, into the ">>" menu: the colours (a rare
-        # choice, kept in the preferences), never Types or the rows label.
-        self._colour_note_action = row3.addWidget(self.colour_note)
-        self._colour_note_action.setVisible(False)
-        row3.addWidget(self.profile_box)
-        self.addToolBar(row3)
+        # The controls in their order. A group (a label and its control, a button pair) is one
+        # flow item: it is never split between two rows. They wrap as the width needs.
+        label = lambda text: QLabel(text, self)  # noqa: E731
+        c = self.controls
+        c.add(self.prev_button, self.next_button)
+        c.add(self.day_box, self.time_edit, self.go_button, self.jump_button)
+        self._long_buttons = (
+            self.back_day_button,
+            self.back_hour_button,
+            self.forward_hour_button,
+            self.forward_day_button,
+            self.prev_stretch_button,
+            self.next_stretch_button,
+        )
+        self._long_group = c.add(*self._long_buttons)
+        c.add(self.notes_button, self.edit_button)
+        c.add(self.export_start_button, self.export_end_button, self.range_button)
+        c.add(self.montage_bar)
+        c.add(self.channels_button)
+        c.add(label("Spacing"), self.spacing_box)
+        c.add(label("Sensitivity"), self.sens_box, self.auto_button)
+        c.add(label("Timebase"), self.timebase_box, self.length_label)
+        c.add(self.filters_button, self.types_button)
+        c.add(self.rows_label)
+        c.add(self.overview_button)
+        self.colour_note.setVisible(False)
+        c.add(self.colour_note, self.profile_box)
+        c.add(self.help_button)
+        self._tab_in_visual_order()
         self._sync_boxes()
         self._sync_long_buttons()
+
+    def _tab_in_visual_order(self) -> None:
+        """Tab goes through the controls in the order they are shown (grouping them
+        reparented the widgets, which would have changed it)."""
+        chain: list[QWidget] = []
+        flow = self.controls.flow
+        for i in range(flow.count()):
+            item = flow.itemAt(i).widget()
+            inner = item.layout() if item.layout() is not None else None
+            parts = [inner.itemAt(k).widget() for k in range(inner.count())] if inner else [item]
+            chain += [w for w in parts if w.focusPolicy() != Qt.FocusPolicy.NoFocus]
+        for a, b in zip(chain, chain[1:], strict=False):
+            QWidget.setTabOrder(a, b)
 
     def _steps_box(self, steps, fmt: str, tip: str) -> QComboBox:
         box = QComboBox(self)
@@ -1098,7 +1077,7 @@ class ViewerWindow(QMainWindow):
         and in the status line (whole); empty clears both."""
         self.colour_note.setText("Too close to read: not applied." if why else "")
         self.colour_note.setToolTip(why)
-        self._colour_note_action.setVisible(bool(why))
+        self.colour_note.setVisible(bool(why))
         if why:
             self.status_message.setText(why)
         elif self.status_message.text() == vc.TOO_CLOSE:

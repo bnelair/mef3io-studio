@@ -240,7 +240,7 @@ def test_own_colours_paint_the_background_and_the_traces(one, qtbot):
     assert _count_near(win, "#ffd23f") > 200
     # the other parts follow the same background
     assert win.strip.palette_ is pal and win.band.palette_ is pal and win.chips.palette_ is pal
-    assert not win.colour_note.text() and not win._colour_note_action.isVisible()
+    assert not win.colour_note.text() and not win.colour_note.isVisible()
 
 
 def test_choosing_a_built_in_profile_again_restores_it(one, qtbot):
@@ -268,12 +268,12 @@ def test_colours_too_close_are_refused_beside_the_choice_and_nothing_changes(one
     assert (
         win.canvas.palette_ is before and win.state.profile == "auto" and win.state.custom is None
     )
-    assert win.colour_note.text() and win._colour_note_action.isVisible()
+    assert win.colour_note.text() and win.colour_note.isVisible()
     assert win.colour_note.toolTip() == vc.TOO_CLOSE
     assert win.status_message.text() == vc.TOO_CLOSE
     # a good pair afterwards clears the note, and so does choosing another profile
     assert win.set_custom_colours("#ffffff", "#202020") is True
-    assert not win.colour_note.text() and not win._colour_note_action.isVisible()
+    assert not win.colour_note.text() and not win.colour_note.isVisible()
     assert win.status_message.text() == ""
     win.set_custom_colours("#ffffff", "#f0f0f0")
     assert win.colour_note.text()

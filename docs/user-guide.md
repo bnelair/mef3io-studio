@@ -975,7 +975,7 @@ band takes you there exactly as on the bar. Where the recording has a gap,
 the band stays empty. It is read in the background without loading the
 signals (it can take a moment on a big recording on a network drive; the band
 says "Loading the overview" meanwhile), and a channel already shown comes
-back at once. The **Overview** button in the second toolbar row chooses the
+back at once. The **Overview** button among the controls above the signal chooses the
 channels in the band: by default the first channel that is shown, and up to
 four, each drawn in its own row and scaled to its own size (so rows are not
 comparable with each other). A channel you hide leaves the band. The same

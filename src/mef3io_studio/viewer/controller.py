@@ -818,7 +818,7 @@ class ViewController(QObject):
             time.monotonic() < end
             and not self._closed
             and epoch == self._strip_epoch
-            and (self._jobs or self.scheduler.pending())
+            and (self._jobs or self.scheduler.pending() or self._loading)
         ):
             time.sleep(0.05)
 

@@ -93,7 +93,9 @@ def test_the_index_is_read_only_after_the_page_and_its_look_ahead_are_loaded(spi
     s = spied(write(tmp_path / "a.mefd", seconds=120), slow_tiles=0.15)
     s.wait_index()
     first = s.index_reads[0]
-    assert any(e[0] == "tile" for e in s.events if e[2] < first[2])  # the page came first
+    # the page came first: a tile was read before the index (compared by the order of the
+    # events, not by clock: the Windows clock ticks about every 16 ms)
+    assert any(e[0] == "tile" for e in s.events[: s.events.index(first)])
     assert first[3] == (0, 0), first[3]  # nothing was waiting for a block when it began
 
 

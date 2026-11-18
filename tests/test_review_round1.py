@@ -513,14 +513,34 @@ def test_the_axis_leaves_air_between_its_two_lines_at_every_font_size(
     assert win.canvas.axis_height - 2 * line - 6 >= line // 2 + 3
 
 
+def controls_of(win):
+    """Every control of the window's flow, as (name, widget)."""
+    return [
+        ("prev", win.prev_button), ("next", win.next_button), ("day", win.day_box),
+        ("time", win.time_edit), ("go", win.go_button), ("jump", win.jump_button),
+        ("notes", win.notes_button), ("edit", win.edit_button),
+        ("export start", win.export_start_button), ("export end", win.export_end_button),
+        ("export range", win.range_button), ("help", win.help_button),
+        ("montage", win.montage_bar), ("channels", win.channels_button),
+        ("spacing", win.spacing_box), ("sensitivity", win.sens_box), ("auto", win.auto_button),
+        ("timebase", win.timebase_box), ("time on screen", win.length_label),
+        ("filters", win.filters_button), ("types", win.types_button),
+        ("rows", win.rows_label), ("overview", win.overview_button),
+        ("colours", win.profile_box),
+    ]  # fmt: skip
+
+
 @pytest.mark.parametrize("points", [9, 11, 13, 15])
-def test_at_1280_wide_every_control_is_on_screen_at_any_font_size(
-    make_window, tmp_path, qtbot, points
+@pytest.mark.parametrize("width", [1000, 1280, 1920])
+def test_every_control_is_on_screen_at_any_width_and_font_size(
+    make_window, tmp_path, qtbot, width, points
 ):
-    """The toolbars are short rows: whatever the font, at 1280 px nothing but the colours (the
-    last of the last row) may fall into a ">>" menu, and Types and the rows label never do."""
+    """The controls are one wrapping flow (viewer/flow.py): nothing falls into a ">>" menu,
+    whatever the width or the font. Each one is shown and lies inside the window, the flow is
+    as tall as ``heightForWidth`` says, and the signal gets the rest."""
+    from PySide6.QtCore import QPoint
     from PySide6.QtGui import QFont
-    from PySide6.QtWidgets import QApplication, QToolBar, QWidget
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance()
     old = app.font()
@@ -531,31 +551,66 @@ def test_at_1280_wide_every_control_is_on_screen_at_any_font_size(
         # many channels, so that not every row fits and the rows label ("Rows 1-n of m") shows
         p = write(tmp_path / "Many.mefd", channels=[f"Ch{i:02d}" for i in range(80)])
         win = make_window(p)
-        win.setFont(font)
-        win.resize(1280, 720)
+        win.resize(width, 800)
         qtbot.wait(300)
         assert win.rows_label.text()  # there is something to say about the rows
-        essential = (
-            win.prev_button, win.next_button, win.day_box, win.time_edit, win.go_button,
-            win.jump_button, win.notes_button, win.edit_button, win.export_start_button,
-            win.export_end_button, win.range_button, win.help_button, win.montage_bar,
-            win.channels_button, win.spacing_box, win.sens_box, win.auto_button,
-            win.timebase_box, win.filters_button, win.types_button, win.rows_label,
-            win.overview_button,
-        )  # fmt: skip
-        out = []
-        for bar in win.findChildren(QToolBar):
-            out += [w for w in essential if w.parent() is bar and not w.isVisibleTo(bar)]
-        assert out == [], [
-            (type(w).__name__, w.toolTip()[:30], w.parent().windowTitle()) for w in out
-        ]
-        # only the colours (and the note about them, and the length label) may be left out
-        for bar in win.findChildren(QToolBar):
-            gone = {
-                w
-                for w in bar.findChildren(QWidget)
-                if w.parent() is bar and w.isHidden() is False and not w.isVisibleTo(bar)
-            }
-            assert gone <= {win.profile_box, win.colour_note, win.length_label}
+        inside = win.rect()
+        for name, w in controls_of(win):
+            assert w.isVisibleTo(win), name
+            top_left = w.mapTo(win, QPoint(0, 0))
+            assert inside.contains(top_left) and inside.contains(
+                top_left + QPoint(w.width() - 1, w.height() - 1)
+            ), (name, top_left, w.size(), inside)
+        box = win.controls
+        assert box.height() >= box.flow.heightForWidth(box.width())  # the flow gets its height
+        assert win.canvas.height() > 150  # and the signal the rest
+        if width == 1920 and points == 9:
+            assert box.rows() <= 2, box.rows()  # a wide screen: the two rows it always had
     finally:
         app.setFont(old)
+
+
+def test_a_group_is_never_split_over_two_rows(make_window, tmp_path, qtbot):
+    from PySide6.QtCore import QPoint
+
+    win = make_window(write(tmp_path / "a.mefd"))
+    for width in (700, 900, 1100, 1500):
+        win.resize(width, 800)
+        qtbot.wait(150)
+        for label_box in (win.timebase_box, win.sens_box, win.spacing_box):
+            group = label_box.parentWidget()
+            ys = {
+                child.mapTo(win, QPoint(0, 0)).y()
+                for child in group.findChildren(type(label_box).__mro__[0])
+                if child.parent() is group
+            }
+            assert len(ys) == 1, (width, ys)  # the label and its control: one row
+
+
+def test_tab_goes_through_the_controls_in_the_order_they_are_shown(make_window, tmp_path):
+    win = make_window(write(tmp_path / "a.mefd"))
+    from PySide6.QtCore import QPoint
+
+    win.resize(900, 800)  # wrapped onto several rows
+    win.show()
+    mine = [
+        w
+        for _, w in controls_of(win)
+        if w.focusPolicy() != Qt.FocusPolicy.NoFocus and w.isVisibleTo(win)
+    ]
+
+    def where(w):
+        # the flow item (a group or the widget itself) decides the row; then left to right
+        item = w if w.parent() is win.controls else w.parent()
+        a, b = item.mapTo(win, QPoint(0, 0)), w.mapTo(win, QPoint(0, 0))
+        return (a.y(), a.x(), b.x())
+
+    visual = sorted(mine, key=where)  # row by row, left to right
+    chain, w = [], visual[0]
+    while True:  # the focus chain, restricted to these controls, from the first one
+        if w in mine:
+            chain.append(w)
+        w = w.nextInFocusChain()
+        if w is visual[0]:
+            break
+    assert chain == visual

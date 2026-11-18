@@ -91,10 +91,12 @@ rule), and all signal processing runs in numpy beside mef3io.
 
 From top to bottom, as in the clinical viewer:
 
-1. **Toolbar row 1:** previous/next page, day + time-of-day + Go, Jump
+(The controls below are one wrapping flow, see "Controls" under Long recordings; "row 1" and
+"row 2" are the order they come in, not fixed rows.)
+1. **Controls, first part:** previous/next page, day + time-of-day + Go, Jump
    (Ctrl/Cmd+K), Annotations (n), the **Edit mode** switch (off),
    **Export start / Export end**, and help (?).
-2. **Toolbar row 2:** Montage, Channels (C), Spacing, Sensitivity + Auto,
+2. **Controls, second part:** Montage, Channels (C), Spacing, Sensitivity + Auto,
    Timebase and, read only beside it, **how much time is on screen**
    ("= 10 s"), Filters (summary text, opens the filter panel), Colour profile,
    Types (T).
@@ -1042,11 +1044,19 @@ sensitivity says so on screen.
   CI: two tests that renamed a recording under an open viewer failed with "Access is
   denied" until they released the viewer's files first (`ViewerData.release_files`, as the
   idle release does). On macOS and Linux a rename is not blocked.
-- **Toolbars:** four short rows (Navigation; Notes and export; Display; View), not two
-  long ones. A toolbar wider than the window loses its LAST controls to the ">>" menu,
-  whatever the font, so no row holds more than a 1280 px window shows at a large font
-  (tested at 9 to 15 pt): the colours (last of the last row) are the only control that
-  may be pushed out. The axis under the traces is `2.6 lines + 10 px` high, so the time
+- **Controls (replaces the toolbars):** one wrapping flow (`viewer/flow.py`: `FlowLayout`,
+  `Controls`) above the signal, not toolbars. A toolbar wider than its window loses its
+  LAST controls to a ">>" menu, and how wide it is depends on the font, which cannot be
+  known (CI on Windows kept overflowing). In the flow the controls keep their order
+  (navigation, time, hours/days/stretches, notes and Edit mode, export, montage, channels,
+  spacing, sensitivity + Auto, timebase + the time on screen, filters + Types, the rows,
+  the overview, colours, help) and WRAP onto as many rows as the width needs: two on a wide
+  screen, more on a narrow one; nothing is ever hidden by width. A group (a label and its
+  control, a button pair) is one flow item, never split over two rows; Tab goes in the
+  order shown (`_tab_in_visual_order`). `heightForWidth` is right, so the signal gets the
+  rest. Tests: every control is visible and inside the window at widths 1000, 1280 and 1920
+  and 9 to 15 pt; two rows at 1920 with the default font. The axis under the traces is `2.6
+  lines + 10 px` high, so the time
   labels and the note under them are always more than half a line apart.
 - **Keys and buttons:** Ctrl+Right / Ctrl+Left one hour, Ctrl+Shift+Right /
   Left one day (on macOS, where Ctrl+Arrow belongs to the system, the table is
