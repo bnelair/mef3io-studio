@@ -152,16 +152,35 @@ def test_2000_changes_among_50000_stored_notes_are_matched_quickly(ed):
     recs = [rec(i) for i in range(n)]
     marks = [mark_of(r) for r in recs[::25]]  # 2,000 of them
     changes = [asave.StoredChange(m, 1, 1) for m in marks]
-    started = time.perf_counter()
-    remove_, add, why = asave._selectors(Fake(recs), 0, changes)
-    assert why == "" and len(remove_) == 2000
-    assert time.perf_counter() - started < 10  # quadratic: minutes
-    # and the window's own count of copies (the GUI thread) is one pass, then lookups
-    win, _spy, _ = ed
-    win.marks = [mark_of(r) for r in recs]
-    started = time.perf_counter()
-    assert all(win.edit._identical_copies(m) == 1 for m in marks)
-    assert time.perf_counter() - started < 10
+    keys = {"record": 0, "mark": 0}
+    real_record, real_mark = asave.record_key, asave.mark_key
+
+    def count_record(r):
+        keys["record"] += 1
+        return real_record(r)
+
+    def count_mark(m):
+        keys["mark"] += 1
+        return real_mark(m)
+
+    asave.record_key, asave.mark_key = count_record, count_mark
+    try:
+        started = time.perf_counter()
+        remove_, add, why = asave._selectors(Fake(recs), 0, changes)
+        assert why == "" and len(remove_) == 2000
+        assert time.perf_counter() - started < 5  # quadratic: minutes
+        # the work: every stored note looked at ONCE (the index), every change once
+        assert keys == {"record": n, "mark": 2000}
+        # and the window's own count of copies (the GUI thread): one pass, then lookups
+        keys.update(record=0, mark=0)
+        win, _spy, _ = ed
+        win.marks = [mark_of(r) for r in recs]
+        started = time.perf_counter()
+        assert all(win.edit._identical_copies(m) == 1 for m in marks)
+        assert time.perf_counter() - started < 5
+        assert keys["mark"] == n + 2000  # the one pass and one lookup for each change
+    finally:
+        asave.record_key, asave.mark_key = real_record, real_mark
 
 
 # --- notes review 3: an edited stored note stays in its own recording ----------------------------
@@ -258,14 +277,52 @@ def test_a_partial_result_says_exactly_what_was_and_was_not_done():
     assert "Nothing was removed" in asave.describe_removal_error(exc, "Recording B").text
 
 
-def test_a_read_only_folder_gets_its_own_sentence():
-    for error in (PermissionError(errno.EACCES, "Permission denied"), OSError(errno.EROFS, "x")):
-        message = asave.describe_removal_error(error, "Recording A")
-        assert message.code == "read-only" and "read-only" in message.text
-        assert "Windows" not in message.text
-    exc = Exception("x")
-    exc.code = "edit-failed"
-    assert "Windows" in asave.describe_removal_error(exc, "Recording A").text  # another cause
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX permissions")
+def test_a_refused_write_is_read_only_only_when_the_folder_is(tmp_path):
+    folder = tmp_path / "r.mefd"
+    folder.mkdir()
+    denied = Exception("cannot replace x: Access is denied")  # as Windows says it, for a file
+    # held open by another program: the folder is writable, so both causes are named
+    message = asave.describe_removal_error(denied, "Recording A", path=str(folder))
+    assert message.code == "denied" and "another program holds" in message.text
+    assert "read-only" in message.text  # named as a possibility, not claimed
+    coded = Exception("cannot replace x: Access is denied")
+    coded.code = "edit-failed"
+    held = asave.describe_removal_error(coded, "Recording A", path=str(folder))
+    assert held.code == "edit-failed" and "Windows" in held.text
+    # the same words for a folder that really is not writable
+    os.chmod(folder, 0o500)
+    try:
+        message = asave.describe_removal_error(denied, "Recording A", path=str(folder))
+    finally:
+        os.chmod(folder, 0o700)
+    assert message.code == "read-only" and "Windows" not in message.text
+    # the system itself says read-only
+    assert asave.describe_removal_error(OSError(errno.EROFS, "x"), "Recording A").code == (
+        "read-only"
+    )
+
+
+def test_a_failure_without_a_code_after_earlier_recordings_were_changed_is_truthful():
+    message = asave.describe_removal_error(Exception("x"), "Recording B", ["A"])
+    assert "were not changed" not in message.text and "Nothing was removed" not in message.text
+    assert "Recording B was not changed" in message.text and "recording A" in message.text
+    alone = asave.describe_removal_error(Exception("x"), "Recording B")
+    assert "Nothing was removed" in alone.text
+
+
+def test_the_same_note_in_two_recordings_is_two_notes(make_window, tmp_path, qtbot):
+    note = {"time": T0 + 5 * SEC, "type": "Note", "text": "same words"}
+    a = write(tmp_path / "Left.mefd", channels=("Fp1", "Fp2"), notes=[note])
+    b = write(tmp_path / "Right.mefd", channels=("Cz", "Pz"), notes=[dict(note)])
+    win = make_window(a, b, reveal=lambda i: True)
+    wait_marks(qtbot, win)
+    Spy(win)
+    Asked(win)
+    mark = next(m for m in win.notes_tab.rows if m.recording == 0)
+    assert win.edit._identical_copies(mark) == 1  # one in A, one in B: not two copies
+    remove(qtbot, win, mark)
+    assert texts(a) == [] and texts(b) == ["same words"]
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX permissions")
@@ -333,13 +390,27 @@ def test_a_closing_window_holds_no_file_before_it_has_shut_down(qtbot, qapp, tmp
     qtbot.waitUntil(lambda: bool(released), timeout=20_000)
 
 
-def test_the_app_keeps_a_closing_viewer_in_its_list_until_it_is_released():
-    import inspect as _inspect
+def test_the_app_keeps_a_closing_viewer_in_its_list_until_it_is_released(window, qtbot, tmp_path):
+    p = write(tmp_path / "a.mefd", seconds=120)
+    data = open_data(p)
+    real, gate, started = data.envelope, threading.Event(), threading.Event()
 
-    from mef3io_studio import app
+    def slow(*a, **k):
+        started.set()
+        gate.wait(10)
+        return real(*a, **k)
 
-    source = _inspect.getsource(app)
-    assert "window.released.connect" in source and "window.closed.connect" not in source
+    data.envelope = slow
+    win = ViewerWindow(data, theme=LIGHT)
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitUntil(started.is_set, timeout=20_000)  # the index read is in flight
+    window.add_viewer(win)  # what the app does with every viewer it opens
+    win.close()
+    qtbot.wait(300)
+    assert win in window.viewers  # closed, but still shutting down: still counted
+    gate.set()
+    qtbot.waitUntil(lambda: win not in window.viewers, timeout=20_000)
 
 
 # --- merge review 2: a channel picked for the band is not kept waiting -----------------------
@@ -391,10 +462,30 @@ def test_a_release_during_a_read_keeps_the_files_known_as_held(tmp_path):
 def test_the_stretches_are_asked_for_again_after_a_reopen_of_an_unchanged_signal(
     make_window, tmp_path, qtbot
 ):
-    win = make_window(write(tmp_path / "a.mefd", seconds=120))
-    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
-    win._stretches = []  # what a read that was ended for the reopen leaves
-    win.end_data_change(list(win.data.annotations()), tuple(win.data.annotations_locked))
+    data = open_data(write(tmp_path / "a.mefd", seconds=120))
+    real, gate, started = data.envelope, threading.Event(), threading.Event()
+
+    def slow(*a, **k):
+        started.set()
+        gate.wait(10)
+        return real(*a, **k)
+
+    data.envelope = slow
+    win = ViewerWindow(data, theme=LIGHT)
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitUntil(started.is_set, timeout=20_000)  # the read of the stretches is in flight
+    assert win._stretches == []
+    # what a save does when the signal could not be shown unchanged: the read is ended, the
+    # recordings are opened again, and the signal turns out to be as it was
+    win.begin_data_change()
+    win.controller.scheduler.drain(10)
+    threading.Timer(0.3, gate.set).start()
+    win.controller.drain_strip(10)  # waits for the read, drops its result
+    data.reopen()
+    qtbot.wait(100)
+    assert win._stretches == []  # the dropped read left nothing
+    win.end_data_change(list(data.annotations()), tuple(data.annotations_locked))
     qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
 
 
@@ -404,20 +495,22 @@ def test_the_stretches_are_asked_for_again_after_a_reopen_of_an_unchanged_signal
 def test_at_1280_wide_types_stays_and_only_the_colours_leave(window, make_window, pair, qtbot):
     from PySide6.QtWidgets import QToolBar, QToolButton, QWidget
 
-    win = make_window(*pair)
+    # many channels, so that not every row fits and the rows label ("Rows 1-n of m") is shown
+    p = write(pair[0].parent / "Many.mefd", channels=[f"Ch{i:02d}" for i in range(80)])
+    win = make_window(p)
     win.resize(1280, 720)
-    qtbot.wait(200)
+    qtbot.wait(300)
     bars = {b.windowTitle(): b for b in win.findChildren(QToolBar)}
     display = bars["Display"]
+    assert win.rows_label.text()  # there is something to say about the rows
+    assert win.types_button.isVisibleTo(display) and win.rows_label.isVisibleTo(display)
+    assert win.montage_bar.isVisibleTo(display) and win.filters_button.isVisibleTo(display)
     out = {
         w
         for w in display.findChildren(QWidget)
         if w.parent() is display and not w.isVisibleTo(display)
     }
-    assert win.types_button.isVisibleTo(display)
-    assert win.montage_bar.isVisibleTo(display) and win.filters_button.isVisibleTo(display)
-    assert out <= {win.profile_box, win.rows_label, win.colour_note, win.length_label}
-    assert win.profile_box in out or win.profile_box.isVisibleTo(display)
+    assert out <= {win.profile_box, win.colour_note, win.length_label}  # only the colours may go
     # whatever the first toolbar loses sits in its ">>" menu: reachable
     nav = bars["Navigation"]
     ext = nav.findChild(QToolButton, "qt_toolbar_ext_button")

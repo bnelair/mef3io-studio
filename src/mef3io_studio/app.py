@@ -596,11 +596,7 @@ def _build_main_window_class():
             recordings (opened by one background task)."""
             from .viewer.launch import launch
 
-            def add(window) -> None:
-                self.viewers.append(window)
-                # not on ``closed``: a closing window can still hold its recordings
-                window.released.connect(lambda w=window: self._viewer_closed(w))
-
+            add = self.add_viewer
             launch(
                 self.jobs,
                 self.explorer.source,
@@ -614,6 +610,13 @@ def _build_main_window_class():
                 on_revealed=self.explorer.refresh_entry,
                 on_join=self.join_window_in_joiner,
             )
+
+        def add_viewer(self, window) -> None:
+            """A viewer window is open: it stays in ``viewers`` (Rename's refusal, every task's
+            release of kept files) until it has really let go of its recordings, which is
+            when it says ``released``, not when it is merely closed."""
+            self.viewers.append(window)
+            window.released.connect(lambda w=window: self._viewer_closed(w))
 
         def _keys_in_viewers(self) -> set[str]:
             """The recordings open in a signal viewer (they must not be renamed)."""

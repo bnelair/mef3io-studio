@@ -410,8 +410,9 @@ def replacement_record(mark, item) -> dict:
 
 
 def mark_key(mark) -> tuple:
-    """What makes a stored note THIS note: time, type, level, channel, text and length."""
-    return (mark.time, mark.code, mark.level, mark.channel, mark.text, mark.end)
+    """What makes a stored note THIS note: its recording, time, type, level, channel, text and
+    length (the same note in two recordings is two notes, one of each)."""
+    return (mark.recording, mark.time, mark.code, mark.level, mark.channel, mark.text, mark.end)
 
 
 def record_key(rec: dict) -> tuple:
@@ -420,6 +421,7 @@ def record_key(rec: dict) -> tuple:
 
     text = rec.get("text")
     return (
+        int(rec.get("recording", 0)),
         int(rec["time"]),
         str(rec.get("type") or ""),
         str(rec.get("level") or ""),
@@ -563,6 +565,13 @@ REMOVAL_WORDS: dict[str, tuple[str, str]] = {
         "The planned notes of {r} did not pass the library's check before anything was "
         f"written, so nothing was changed. {_UNCHANGED} {_REOPEN}",
     ),
+    "denied": (
+        "The notes could not be written",
+        "The notes of {r} could not be written: the system refused. Either its folder is "
+        "read-only or you do not have permission to write to it, or (on Windows) another "
+        f"program holds one of its files open. {_UNCHANGED} Close other programs that show "
+        "this recording and check that you may change it, then try again.",
+    ),
     "read-only": (
         "The recording's folder cannot be written to",
         "The notes of {r} cannot be changed: its folder is read-only, or you do not have "
@@ -616,12 +625,27 @@ def _outcome(name: str, done: Sequence[str]) -> str:
     )
 
 
-def _is_read_only(exc: BaseException) -> bool:
-    """A folder the user may not write to (read-only, or no permission): the library says so
-    in its own words or through the system's error number."""
+def _not_writable(path: str | None) -> bool:
+    """Whether the recording's folder, or a folder directly in it (a channel's), cannot be
+    written to: asked of the folders themselves, never concluded from an error text."""
+    if not path:
+        return False
+    try:
+        folders = [path]
+        with os.scandir(path) as entries:
+            folders += [e.path for e in entries if e.is_dir(follow_symlinks=False)]
+        return any(not os.access(f, os.W_OK) for f in folders)
+    except OSError:
+        return False
+
+
+def _was_denied(exc: BaseException) -> bool:
+    """The error says a write was refused: by number, or in the library's or the system's
+    words. On Windows a file that another program holds open gives the SAME text, so this
+    alone never proves that a folder is read-only."""
     import errno
 
-    if getattr(exc, "errno", None) in (errno.EACCES, errno.EROFS, errno.EPERM):
+    if getattr(exc, "errno", None) in (errno.EACCES, errno.EROFS):
         return True
     text = str(exc).lower()
     return any(
@@ -630,29 +654,42 @@ def _is_read_only(exc: BaseException) -> bool:
             "read-only file system",
             "permission denied",
             "access is denied",
-            "not permitted",
             "cannot open for write",  # the library's words when a folder takes no new file
         )
     )
 
 
-def describe_removal_error(exc: BaseException, name: str, done: Sequence[str] = ()) -> UserMessage:
+def describe_removal_error(
+    exc: BaseException, name: str, done: Sequence[str] = (), path: str | None = None
+) -> UserMessage:
     """Plain words for a failed removal in ``name`` (e.g. "Recording A"). ``done`` = the
-    letters of recordings already changed before this one failed. Every code of the library
-    has an entry in :data:`REMOVAL_WORDS`; anything else gets the general words of
-    :func:`describe_error`."""
+    letters of recordings already changed before this one failed. ``path`` = the recording's
+    folder: a refused write is called "read-only" only when the folder itself is not
+    writable (or the system says "read-only file system"); otherwise the sentence names the
+    other causes too (on Windows a file held open by another program is refused with the same
+    words). Every code of the library has an entry in :data:`REMOVAL_WORDS`; anything else
+    gets the general words of :func:`describe_error`, made true for what was already done."""
+    import errno
+
     code = str(getattr(exc, "code", "") or "")
     detail = f"{type(exc).__name__}: {exc}"
     outcome = _outcome(name, done)
-    if code in ("", "edit-failed") and _is_read_only(exc):
-        code = "read-only"
+    if code in ("", "edit-failed") and _was_denied(exc):
+        if _not_writable(path) or getattr(exc, "errno", None) == errno.EROFS:
+            code = "read-only"
+        elif code == "":  # refused, and the folder looks writable: say both causes
+            code = "denied"
     if code in REMOVAL_WORDS:
         title, text = REMOVAL_WORDS[code]
         return UserMessage(
             title, text.replace("{r}", name).replace("{outcome}", outcome), detail, code
         )
     base = describe_error(exc)
-    return UserMessage(base.title, f"{base.text} {outcome}", base.detail or detail, code)
+    if done:  # the general text says "not changed", which is not true here
+        text = f"{base.title}. {outcome} See the technical details for what happened."
+    else:
+        text = f"{base.text} {outcome}"
+    return UserMessage(base.title, text, base.detail or detail, code)
 
 
 def _body(rec: dict) -> dict:
@@ -789,7 +826,7 @@ def remove_stored_notes(
                 )
             elif isinstance(exc, Exception):
                 result.error = describe_removal_error(
-                    exc, name, [data.recordings[i].letter for i in sorted(result.written)]
+                    exc, name, [data.recordings[i].letter for i in sorted(result.written)], path
                 )
             else:
                 raise
