@@ -625,8 +625,8 @@ The honest steps for one note, from "I see something" to "it is stored":
   "N notes not saved yet" in the status bar while any exist.
 - **Save, fast:** Ctrl+S (edit mode; also inside the field). A draft that ONLY ADDS, to
   recordings that need no password typed and with nothing waiting for a choice or refused,
-  asks ONE line ("Save 2 new notes into Recording A? Saved notes cannot be taken out again
-  in this version.", a letter while the name is hidden) with Save / Cancel
+  asks ONE line ("Save 2 new notes into Recording A? A saved note can be removed again,
+  but not brought back.", a letter while the name is hidden) with Save / Cancel
   (`EditMode.quick_save_text`). Anything else shows the full preview. Every check of
   `annotation_save` is unchanged: the recording moved, replaced or changed, the passwords.
 - **No duplicates, one rule** (`annotation_draft.note_key`: time, record type, length, stored
@@ -666,17 +666,41 @@ The honest steps for one note, from "I see something" to "it is stored":
   list shows.
 - **Draft notes: remove and change the text** with Delete / Backspace on the selected note
   and the menu on a note (right-click on its chip, its list row or its mark): *Change the
-  text* (the inline field, filled) and *Remove this note*. A **stored** note shows *Remove
-  this note* disabled, with the sentence "A stored note cannot be removed yet in this
-  version." beside it, in the normal view too. The seam for the day the library can do it
-  is ONE place, `annotation_save._REMOVE_STORED` (read by `stored_removal_reason` and called
-  by `remove_stored_notes`, which raises `StoredRemovalNotSupported` today); the window
-  then reads the recordings again. Nothing in the app rewrites a recording. The **Take
-  out** button of the notes list keeps its documented behaviour for a stored note (it marks
-  it in the draft for a later copy, see below): the Delete key and the menu are the ones
-  that say it cannot be removed yet. Delete / Backspace remove a draft note only while the
-  traces, the note chips or the notes list have the keyboard (`ViewerWindow._focus_on_notes`):
-  on a combo box or a button the key does nothing.
+  text* (the inline field, filled) and *Remove this note*. Delete / Backspace remove a
+  draft note only while the traces, the note chips or the notes list have the keyboard
+  (`ViewerWindow._focus_on_notes`): on a combo box or a button the key does nothing.
+  **Removing and changing a STORED note (mef3io 2.4 `remove_annotations`).** *Remove this
+  note*, Delete and the notes list's Take out on a stored note ask ONE plain line ("Remove
+  this note from Recording A? This cannot be undone.") and then run ONE task
+  (`EditMode._remove_stored` -> `_run_stored` -> `annotation_save.remove_stored_notes`): the
+  protection facts are read on a task if not yet known (`read_facts`), a protected
+  recording asks for the password the app does not hold (`ask_other_password`; both are
+  always passed, as for adding; checked with `inspect` first, like a save), then the task
+  re-checks the recording against the opened fingerprint (`prepare(for_removal=True)`),
+  finds the stored records that ARE the note (time, type, level, channel, text, length: read
+  back from `data.annotations()`, so the library gets them as `records()` returns them),
+  releases the kept-open signal files (`data.release_files()`), takes a snapshot of the
+  signal files' names, sizes and times, makes ONE `mef3io.remove_annotations` call per
+  recording (all or nothing; only that level's notes files are rewritten, never the signal
+  or the details), compares the snapshot, and reads only the notes again
+  (`ViewerData.refresh_notes` with the NET change, negative for a removal; else the old
+  reopen). Same save lock as saving notes (`EditMode.saving`: the draft is frozen, the
+  window waits for the task), Stop is the task's token (`for_library()`), before the files
+  are swapped nothing changed and the library puts everything back itself. A note stored
+  TWICE (identical records) is said so in the line, and the choices are one copy (the
+  library call removes both with `expect=2` and adds one back in the same call, so nothing
+  is half-done) or all of them. **Changing the text** of a stored note stays what the draft
+  already does (a changed version beside the struck-through original); at Save, one line
+  asks ("Replace 1 stored note in Recording A with the changed version? The old wording
+  cannot be brought back.") and the stored change is written first, remove + add in ONE
+  call, then what is new in the draft is saved as before. A changed note stays in its own
+  recording and level (an `add` needs that level's notes file to exist: `add-level-missing`
+  has words). Refusals: every `code` the library gives for this call has plain words with a
+  next step in `annotation_save.REMOVAL_WORDS` (`describe_removal_error`; a test lists them
+  all); any other error gets the general words. `assume_owner_gone` is never passed. A
+  single-file (`.mefd.tar`) recording says so and nothing is asked. With an older mef3io
+  (no `remove_annotations`) the entry stays grey with "A stored note cannot be removed yet
+  in this version." (`stored_removal_reason`).
 - **A reopen that fails after a notes-only save** switches saving off (`stale`, the count line
   says so) because the notes shown are the old ones and a note added again would be stored
   twice. `begin_data_change()` is inside the guarded path of both reopen routes, so a raise
@@ -742,13 +766,14 @@ The honest steps for one note, from "I see something" to "it is stored":
     - **After Save:** the viewer reads the notes again (see "A save of notes does
       not start over"); only when the signal cannot be shown to be unchanged does it
       reopen the Readers and the MultiReader.
-  - **Any change to or removal of a stored annotation:**
-    - Save offers **Save as a new copy** only, never an in-place change.
-    - The copy is made with `mef3io.transform_session` (verified, original
-      untouched), with the draft's annotation changes applied in the copy.
-    - **This needs a mef3io feature first:** an annotation-edit option on
-      transform, which removes or replaces given stored records, plus verify
-      support for it. Tracked as [mef3io#163](https://github.com/bnelair/mef3io/issues/163).
+  - **Any change to or removal of a stored annotation (decided 2026-11, replaces the
+    "new copy only" plan of mef3io#163):** done IN PLACE with mef3io 2.4's
+    `remove_annotations` after one plain line that says it cannot be undone: see
+    "Removing and changing a STORED note" above. The notes files of the level involved
+    are rewritten crash-safely by the library; the signal and the details are never
+    opened for writing, which the save checks with a snapshot of the signal files. A
+    verified copy (`transform_session`) stays the way to change a recording WITHOUT
+    touching the original.
 - **Leaving with unsaved changes:** leaving edit mode or closing the window
   asks Save / Discard / Cancel.
 
@@ -948,6 +973,28 @@ sensitivity says so on screen.
   data, and a save of notes does not read it again when the coverage and the
   boundaries are as they were. Hover shows the time with its day and
   "There is data here" or "No data: a gap of 3 h" (`readout`, also the tooltip).
+- **Signal files kept open (mef3io 2.4 `open_files`).** On a network drive every file open
+  is a round trip, and paging reads the same few files again and again, so the viewer's
+  reader (the `MultiReader` of several recordings: one budget for all) keeps up to N signal
+  files open between reads; the wizards and Explore keep nothing open. `model/open_files.py`
+  chooses N: two files per channel (the page's segment and the next one, for a page across a
+  border), at most an EIGHTH of the process's descriptor limit (the library says "well under
+  a quarter"; the app holds descriptors of its own) and never more than 128: Linux soft
+  limit 1024 -> 128, macOS 256 -> 32, Windows -> 64 (the C runtime keeps 512 streams by
+  default; a library that uses buffered streams meets that, `_setmaxstdio` can raise it
+  to 8192 but nothing here relies on it). A recording with 16 channels asks for 32. Files are
+  let go (`ViewerData.release_files`, any thread) when the window closes, before the app
+  writes into the recording (a save of notes, removing or changing a stored note), before
+  EVERY job the app starts (`JobManager.prologue`, run on the job's own thread: renaming,
+  joining, anonymizing, packing, "make them again" removing an earlier copy: none meets a
+  held recording, which on Windows blocks a rename, a removal or a replace) and after
+  `IDLE_RELEASE` (8 s) without a read (`ViewController._maybe_release_idle`, the library
+  call on a thread of its own: a recording left open in a window is not locked). Rename also
+  refuses a recording that is open in a viewer (`in_use_keys`). All reads count as reads
+  (`ViewerData._reading`), so a read in progress is never idle. Measured by the system, not
+  the library: `tests/test_viewer_open_files.py` counts the kernel's opens of the `.tdat`
+  files (inotify) over three passes of the same six tiles of four channels: 72 without,
+  4 with.
 - **Keys and buttons:** Ctrl+Right / Ctrl+Left one hour, Ctrl+Shift+Right /
   Left one day (on macOS, where Ctrl+Arrow belongs to the system, the table is
   built for the platform, `keymap.build_keymap`: Alt+Shift+Right / Left one hour,
@@ -1020,8 +1067,7 @@ look-ahead goes on in the same pump.
    - annotations read-only;
    - the export range with Copy times and Send to Join or trim.
 2. **Edit mode, additions (built):** draft, undo, import/export, save by
-   append. A change to or removal of a stored note is kept in the draft and
-   shown struck through, and Save reports it as needing a new copy; nothing
-   is written for it.
-3. **Edit mode, changes and removals:** save as a new copy; after the
-   mef3io transform annotation-edit feature.
+   append.
+3. **Edit mode, changes and removals (built, mef3io 2.4):** a stored note is taken
+   out (one line, then one task) or replaced by its changed version (remove + add in
+   one library call) in place; see above.

@@ -1155,9 +1155,24 @@ never stores a note twice. In your draft you can change a note's text or
 remove it: right-click the note (its chip, its row in the list, or its mark on
 the traces) and choose **Change the text** or **Remove this note**, or select
 it and press **Delete** (or Backspace) while the traces, the note marks or the
-notes list have the keyboard; **Ctrl+Z** brings it back. A note that is **already
-stored** cannot be removed yet in this version: the entry is there but grey,
-with the reason beside it.
+notes list have the keyboard; **Ctrl+Z** brings it back.
+
+**Removing a note that is already stored.** Choose **Remove this note** on it (or
+select it and press **Delete**). One line asks "Remove this note from Recording A?
+This cannot be undone." and **Remove** takes it out of the recording. Only the
+notes of that recording change (the signal and the details are not touched), and
+the note cannot be brought back from the app, so keep a copy of the original if you
+may need it. A note stored **twice** says so, and you can remove one copy or both.
+**Stop** is safe: the recording stays as it was. If the recording cannot be
+changed (it is password-protected and you do not have both passwords, it is a
+single-file recording, another program is changing it, or its notes were changed
+since you opened it) a message says why and what to do, and nothing is removed.
+A password-protected recording asks for the second password.
+
+To **change the text** of a stored note, use **Change the text** or the Edit button
+of the notes list: the new wording appears next to the old one (struck through),
+and **Save** replaces the old note by the new one, after one line that says the old
+wording cannot be brought back.
 
 Edit mode is **off** every time you open the viewer. Turn it on with the
 **Edit mode** button in the toolbar (or just press `N`). A banner then reminds
@@ -1178,10 +1193,10 @@ you that your changes are **a draft until you save**.
   you what it found. **Export…** saves the listed notes, or all of them, as
   CSV or JSON. These files hold real dates and the text of notes, so the app
   reminds you to store and share them with care.
-- **Change…** and **Take out** work on notes in the draft. For a note that
-  is **already stored** in a recording they only mark the change in the
-  draft: **changing or removing stored notes is not possible yet**, because
-  it would need a new copy of the recording. Those changes cannot be saved.
+- **Change…** works on notes in the draft and on notes **already stored** in a
+  recording (the new wording is saved in place of the old one, see above).
+  **Take out** removes a note from the draft, or, for a stored note, removes it
+  from the recording after one line that asks first.
 
 **Save.** Press **Ctrl+S**, or choose **Save…** in the banner. When you only
 added notes, one line asks whether to save them (how many, and into which
@@ -1191,9 +1206,9 @@ many notes and events will be added to each recording, and from when to when.
 Nothing is written until you choose **Save** (or **Add them to the
 recordings**).
 
-- Saving **only adds**. Notes already in the recording are never rewritten,
-  and a note you add cannot be removed from that recording afterwards, except
-  by making a new copy of it.
+- Saving new notes **only adds**: the notes already in the recording are never
+  rewritten. A note you added can be removed again later (Delete on it); that
+  cannot be undone.
 - If a note for the whole recording falls where two recordings both hold
   data, you choose which recording gets it.
 - For a **password-protected** recording the app needs **both** passwords

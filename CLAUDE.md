@@ -7,7 +7,7 @@ on the mef3io library (github.com/bnelair/mef3io). Status: early development;
 viewer + edit mode, additions only), on mef3io 2.3.0: Rename window (#12,
 undo until close), Edit details copy (#14), shared password choice (#15),
 "Make new recordings" with saved channel choices (#16). Still to come:
-metadata edit in place, change/remove stored notes. Cutting into pieces is built
+metadata edit in place (change/remove stored notes: built, in the viewer). Cutting into pieces is built
 (#31, "Cut into pieces" below). Design in
 `docs/`, work in issues, library-side plan in mef3io#71.
 
@@ -17,8 +17,8 @@ Hard rules:
 - Originals change only when the user explicitly says so. Content changes
   (anonymization, encryption, channel subsets) ALWAYS write a verified copy;
   annotation ADDITIONS (viewer edit mode: append-only via write_annotations,
-  preview + confirmation, no in-place undo; changes/removals only as a new
-  verified copy, docs/design/viewer.md) and renames (via mef3io's rename_session: folder + session .rdat/.ridx + stored
+  preview + confirmation, no in-place undo), taking out and changing a STORED note (mef3io
+  2.4 remove_annotations, one line first, cannot be undone, docs/design/viewer.md) and renames (via mef3io's rename_session: folder + session .rdat/.ridx + stored
   names + description where it equals the old name; fix_name_drift for drift)
   and metadata edits are explicit in-place operations with preview,
   confirmation and undo. Undo is a LOGICAL INVERSE (rename back / edit_metadata
@@ -325,10 +325,30 @@ Code (app shell, #2/#3):
   `items_now_stored`); a notes-only save calls `ViewerData.refresh_notes` (inspect once per
   written recording + exact read-back count; else the old reopen) and keeps the page, tile
   cache and strip; `model/viewer_display.py` keeps a 60,000-note list quick; draft notes are
-  removed with Delete/menu, a STORED note's Remove is disabled (`annotation_save._REMOVE_STORED`
-  is the one place a library call plugs in; never rewrite a recording). The last texts typed
+  removed with Delete/menu. A STORED note is taken out (and a changed one replaced) IN PLACE
+  with mef3io 2.4 `remove_annotations`, called in ONE place (`annotation_save.remove_stored_notes`,
+  `StoredChange`): Delete/menu/Take out ask ONE line ("cannot be undone"; a note stored twice
+  says so: one copy = remove with `expect=copies` + add the others back in the same call, or
+  all), then ONE task under the same save lock (`EditMode.saving`, `_run_stored`): facts read on
+  a task, the other password asked (`ask_other_password`), `prepare(for_removal=True)`, the
+  stored records matched by content from `data.annotations()`, `data.release_files()`, the
+  signal-file snapshot, one library call per recording, then `refresh_notes` with the NET
+  count (else the old reopen). A changed stored note is written at Save (remove + add, one
+  call, written before the new notes; its own recording and level). Every library `code`
+  has plain words (`REMOVAL_WORDS`, a test lists them); never pass `assume_owner_gone`;
+  `.mefd.tar` is refused with words; an older mef3io (no `remove_annotations`) leaves the
+  entry grey (`stored_removal_reason`). The last texts typed
   live in `EditMode.recent_texts` (memory only, never in preferences). Tests:
-  tests/test_viewer_edit.py, tests/test_viewer_draft_many.py.
+  tests/test_viewer_edit.py, tests/test_viewer_draft_many.py, tests/test_viewer_remove_notes.py.
+- Signal files kept open (mef3io 2.4 `open_files`, viewer only): `model/open_files.py` chooses
+  the number (2 per channel, at most 1/8 of the descriptor limit and 128: Linux 128, macOS 32,
+  Windows 64); `ViewerData.set_open_files/release_files/idle_with_files`. Released when the
+  window closes, before the app writes into a recording (`write_plan`, `remove_stored_notes`),
+  before EVERY job (`JobManager.prologue`, set by the app, runs on the job's thread: rename,
+  join, anonymize, pack, "make again") and after `IDLE_RELEASE` without a read
+  (`ViewController._maybe_release_idle`; never a library call on the GUI thread). Any new path
+  that renames, removes or replaces a recording's files must go through a job or release
+  first. Tests: tests/test_viewer_open_files.py (an inotify count of the real opens).
 - Rename + time order (#12): `model/times.py` is the ONE helper over
   `mef3io.time_range` (`read_time`/`read_times`/`order_by_time`; join's
   `read_layouts` uses it too): `verified` = `offset_known`, and unverified
