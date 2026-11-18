@@ -297,6 +297,17 @@ class Draft:
         self._undo.clear()
         self._redo.clear()
 
+    def stored_done(self, marks: Iterable) -> None:
+        """These stored notes were taken out of their recordings: they leave the draft's
+        list of removed ones (and so does the undo history)."""
+        gone = set(marks)
+        if not gone:
+            return
+        self.version += 1
+        self._removed -= gone
+        self._undo.clear()
+        self._redo.clear()
+
     def clear(self) -> None:
         """Forget everything (after a discard)."""
         self.version += 1

@@ -337,9 +337,9 @@ class SavePreview(QDialog):
         self.problems.setVisible(bool(problems))
         n = plan.needs_copy
         self.copy_note.setText(
-            f"{n} {'change to a stored note needs' if n == 1 else 'changes to stored notes need'} "
-            "a new copy. That is available in a later version, so "
-            f"{'it is' if n == 1 else 'they are'} not written now."
+            f"{n} {'change to a stored note is' if n == 1 else 'changes to stored notes are'} "
+            "saved first: the old note is replaced by the changed one, and that cannot be "
+            "undone."
             if n
             else ""
         )

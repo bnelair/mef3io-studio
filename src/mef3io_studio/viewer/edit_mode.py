@@ -2,9 +2,10 @@
 changing and taking out notes and events, importing, exporting and saving
 (docs/design/viewer.md, "Annotations", "Edit mode").
 
-Only ADDITIONS are written, by appending to a recording's notes. A change to
-or a removal of a stored note stays in the draft, is shown, and waits for a
-new copy (a later version); nothing here writes it.
+New notes are written by appending to a recording's notes. A stored note is taken
+out (Delete on it, one line asks first) or changed (saved from the draft) with mef3io's
+``remove_annotations``: a change is "remove the old one and add the new one" in one library
+call, and what was removed cannot be brought back from the app.
 
 The window's GUI thread never calls the library: reading a file for import
 and saving run as tasks (``JobManager``), and the viewer's data is reopened
@@ -22,7 +23,9 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
 )
@@ -60,6 +63,10 @@ class SaveOutcome:
     #: (or the notes read back were not the ones written): the window reopens
     #: the recordings, as it always did.
     needs_reopen: bool = False
+    #: What the status line says when it went well (empty = the usual "added" sentence).
+    message: str = ""
+    #: The stored notes that were taken out of their recordings.
+    stored: tuple = ()
 
 
 class EditMode(QObject):
@@ -634,9 +641,8 @@ class EditMode(QObject):
 
     def remove_note(self) -> bool:
         """The key Delete and the menu entry: a note of the DRAFT leaves it (Ctrl+Z brings
-        it back). A STORED note cannot be removed in this version: the sentence says so, and
-        the one place a later library call plugs in (:func:`asave.remove_stored_notes`) is
-        asked."""
+        it back). A STORED note is taken out of its recording after one plain line asks
+        (:meth:`_remove_stored`); that cannot be undone."""
         if self._busy():
             return False
         m = self._target()
@@ -655,39 +661,199 @@ class EditMode(QObject):
             self.refresh()
             w.status_message.setText("The note left the draft. Ctrl+Z brings it back.")
             return True
+        return self._remove_stored(m)
+
+    # -- taking out a STORED note (mef3io 2.4): ask once, then one task ----------
+
+    def _identical_copies(self, m) -> int:
+        """How many stored notes the viewer shows that are exactly ``m`` (1 = only itself)."""
+        return max(1, sum(1 for x in self.win.marks if x == m and not x.state))
+
+    def _refuse_here(self, text: str) -> bool:
+        self.win.last_refusal = text
+        self.win.status_message.setText(text)
+        return False
+
+    def _remove_stored(self, m) -> bool:
+        """Delete / the menu on a stored note: one plain line asks first (this cannot be
+        undone from the app), then a task takes it out of the recording and the notes are
+        read again. A note stored twice is said so, and one copy or all of them can go."""
+        w = self.win
         reason = asave.stored_removal_reason()
         if reason is not None:
-            w.last_refusal = reason
-            w.status_message.setText(reason)
+            return self._refuse_here(reason)
+        if w.data.is_archive(m.recording):
+            return self._refuse_here(
+                "A single-file recording cannot be changed: unpack it in Explore first."
+            )
+        copies = self._identical_copies(m)
+        where = w.recording_label(m.recording)
+        if copies == 1:
+            line = f"Remove this note from {where}? This cannot be undone."
+        else:
+            times = "twice" if copies == 2 else f"{copies} times"
+            line = (
+                f"This note is stored {times} in {where}. Remove one copy, or all of them? "
+                "This cannot be undone."
+            )
+        answer = self.ask_remove_stored(line, copies)
+        if not answer:
             return False
-        self._remove_stored(m)
+        keep = 1 if answer == "one" else copies
+        self._run_stored([asave.StoredChange(m, copies, keep)])
         return True
 
-    def _remove_stored(self, m) -> None:
-        """The day the library can do it: one task, then the recordings are read again."""
+    def ask_remove_stored(self, line: str, copies: int):
+        """The one line before a stored note is taken out (replaced in tests). Returns
+        ``"all"`` (remove it, with every copy), ``"one"`` (remove one of several identical
+        copies) or None (do nothing)."""
+        verb = "Replace" if line.startswith("Replace") else "Remove"
+        box = QMessageBox(
+            QMessageBox.Icon.Warning,
+            f"{verb} the note?",
+            line,
+            QMessageBox.StandardButton.NoButton,
+            self.win,
+        )
+        role = QMessageBox.ButtonRole.DestructiveRole
+        one = box.addButton("Remove one copy", role) if copies > 1 else None
+        every = box.addButton(f"Remove all {copies}" if copies > 1 else verb, role)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if one is not None and clicked is one:
+            return "one"
+        return "all" if clicked is every else None
+
+    def ask_other_password(self, label: str, letter: str) -> str | None:
+        """The password the app does not hold, for a protected recording (replaced in
+        tests): its basic or full-access password, or None."""
+        text, ok = QInputDialog.getText(
+            self.win,
+            "Password needed",
+            f"To change the notes of recording {letter}, both its passwords are needed.\n"
+            f"Type its {label}:",
+            QLineEdit.EchoMode.Password,
+        )
+        return text if ok and text else None
+
+    def _run_stored(
+        self, changes, then_off: bool = False, then_close: bool = False, continue_with=None
+    ) -> None:
+        """Take the stored notes of ``changes`` out (and add their replacements) as ONE task:
+        the facts about protection are read first (a task), the other password is asked for,
+        then the library is called on the task's thread, and only the notes are read again."""
         w = self.win
         data = w.data
-        self.saving = True
+        self.saving = True  # the draft is locked from here (the facts, the question, the task)
         self._sync_buttons()
 
+        def ready() -> None:
+            if data is not w.data:  # the window moved on
+                self._prepare_ended()
+                return
+            passwords: dict[int, str] = {}
+            for index in sorted({c.mark.recording for c in changes}):
+                label = self.other_password_label(index)
+                if label:
+                    typed = self.ask_other_password(label, w._rec_letter(index))
+                    if not typed:
+                        self._prepare_ended()
+                        return
+                    passwords[index] = typed
+            self._start_stored(changes, passwords, then_off, then_close, continue_with)
+
+        if data.facts_loaded:
+            ready()
+            return
+        handle = self.jobs.submit("Checking the recordings", lambda ctx: data.read_facts())
+        handle.succeeded.connect(lambda _r: ready())
+        handle.failed.connect(self._prepare_failed)
+        handle.cancelled.connect(lambda: self._prepare_failed(None))
+
+    def _start_stored(self, changes, passwords, then_off, then_close, continue_with) -> None:
+        w = self.win
+        data = w.data
+        removed = sum(c.remove for c in changes if c.replacement is None)
+        changed = sum(1 for c in changes if c.replacement is not None)
+        said = []
+        if removed:
+            said.append(f"{timefmt.format_count(removed, 'note')} removed")
+        if changed:
+            said.append(f"{timefmt.format_count(changed, 'note')} changed")
+        message = " and ".join(said) + "."
+
         def work(ctx):
-            ctx.report(0, None, "Removing the note")
-            return asave.remove_stored_notes(data, [m], {})
+            result = asave.remove_stored_notes(
+                data,
+                changes,
+                passwords,
+                ctx.check_cancelled,
+                lambda done, total: ctx.report(done, total, "Taking out the notes"),
+                register_identity,
+                ctx.cancel_token,
+            )
+            records, locked, again = None, (), False
+            if result.written:
+                ctx.report(0, None, "Reading the notes again")
+                try:
+                    # the signal did not change: only the notes are read again
+                    if data.refresh_notes(dict(result.net), result.signals_same):
+                        records, locked = data.annotations(), tuple(data.annotations_locked)
+                    else:
+                        again = True
+                except Exception:  # noqa: BLE001 - the window then reopens
+                    again = True
+            return SaveOutcome(
+                result.written, result.uids, records, locked, result.error, result.stopped,
+                again, message if result.error is None else "", tuple(result.marks),
+            )  # fmt: skip
 
-        def done(_n) -> None:
-            self._reopen_after_save(SaveOutcome([], set(), None, ()), False, False)
-
-        def failed(message=None) -> None:
-            self.saving = False
-            self._sync_buttons()
-            if message is not None:
-                self.show_problem(message)
-
-        handle = self.jobs.submit("Removing a note", work)
+        try:
+            handle = self.jobs.submit("Taking out notes", work)
+        except Exception:  # noqa: BLE001 - the draft must never stay locked
+            log.exception("the removal could not be started")
+            self._prepare_ended()
+            self.show_problem(
+                UserMessage(
+                    "The notes could not be changed",
+                    "Something went wrong before anything was changed. Nothing was removed.",
+                )
+            )
+            return
         self.last_job = handle
-        handle.succeeded.connect(done)
-        handle.failed.connect(failed)
-        handle.cancelled.connect(failed)
+        handle.succeeded.connect(
+            lambda out: self._stored_done(out, then_off, then_close, continue_with)
+        )
+        handle.failed.connect(self._stored_unknown)
+        handle.cancelled.connect(lambda: self._stored_unknown(None))
+
+    def _stored_done(self, out: SaveOutcome, then_off, then_close, continue_with) -> None:
+        w = self.win
+        if out.uids:
+            self.draft.written(out.uids)  # the changes that were stored leave the draft
+        self.draft.stored_done(out.stored)
+        if out.needs_reopen:
+            self._reopen_after_save(out, False, False)  # the draft stays locked
+            return
+        self.saving = False
+        if out.written:
+            w.notes_refreshed(out.records, out.locked)
+        if continue_with is not None and out.error is None:
+            self.select(None)
+            self.refresh()
+            continue_with()
+            return
+        self._after_save(out, then_off, then_close)
+
+    def _stored_unknown(self, message) -> None:
+        """The task ended without an outcome: what the recording holds is not known, so the
+        recordings are read again and the notes shown are what they hold now."""
+        out = SaveOutcome([], set(), None, (), message, message is None)
+        if message is None:
+            out.message = "The removal was stopped."
+        self._reopen_after_save(out, False, False)
 
     def note_menu(self, menu, mark) -> None:
         """The entries of the menu on a note (right-click on its chip, its row in the
@@ -714,15 +880,13 @@ class EditMode(QObject):
             return False
         if m.state in ("new", "changed"):
             self.draft.remove(m.uid)
-        elif m.state == "removed":
-            w = self.win
-            w.status_message.setText("This note is already taken out. Undo to bring it back.")
+            self.select(None)
+            self.refresh()
+            return True
+        if m.state == "removed":
+            self.win.status_message.setText("This note is already taken out.")
             return False
-        else:
-            self.draft.remove(m)
-        self.select(None)
-        self.refresh()
-        return True
+        return self._remove_stored(m)
 
     # -- undo / redo / discard ----------
 
@@ -882,7 +1046,7 @@ class EditMode(QObject):
         n = plan.count
         return (
             f"Save {timefmt.format_count(n, 'new note', 'new notes')} into {where}? "
-            "Saved notes cannot be taken out again in this version."
+            "A saved note can be removed again, but not brought back."
         )
 
     def ask_quick_save(self, text: str) -> bool:
@@ -943,23 +1107,18 @@ class EditMode(QObject):
         def plan_for(choices):
             return self.draft.save_plan(data.holders_at, choices)
 
+        changes = self._stored_changes()
+        if changes:
+            # Changed stored notes are written first, each as "remove + add" in one library
+            # call; whatever is new in the draft follows with the usual save.
+            return self._save_stored(changes, then_off, then_close)
         first = plan_for({})
         if first.count == 0 and first.duplicates and not first.ambiguous and not first.refused:
             # Everything new is already stored: nothing to write, and nothing twice.
             self._drop_duplicates(first)
             return False
         if first.count == 0 and not first.ambiguous and not first.refused:
-            # Only changes to stored notes: shown, never written here.
-            n = first.needs_copy
-            self.show_problem(
-                UserMessage(
-                    "Nothing to add yet",
-                    f"{timefmt.format_count(n, 'change')} to stored notes need a new copy "
-                    "of the recording. That is available in a later version, so nothing can "
-                    "be saved now. The changes stay in the draft.",
-                )
-            )
-            return False
+            return False  # nothing left to write
         if not data.facts_loaded:
             # What the preview needs (which recordings are protected) is read
             # once, on a task thread: opening and paging never inspect.
@@ -975,6 +1134,59 @@ class EditMode(QObject):
             handle.cancelled.connect(lambda: self._prepare_failed(None))
             return True
         return self._ask_then_save(data, plan_for, then_off, then_close)
+
+    def _stored_changes(self) -> list:
+        """The stored notes the draft changes (and any it takes out): what a save writes by
+        removing the old note and adding its new version in ONE library call. A note stored
+        twice has only one copy changed."""
+        out = []
+        for stored, item in self.draft.changed_stored():
+            record = item.record()
+            if item.channel:
+                record["channel"] = item.channel
+            out.append(
+                asave.StoredChange(
+                    stored, self._identical_copies(stored), 1, replacement=record, uid=item.uid
+                )
+            )
+        for stored in self.draft.removed_stored():
+            copies = self._identical_copies(stored)
+            out.append(asave.StoredChange(stored, copies, copies))
+        return out
+
+    def _save_stored(self, changes, then_off: bool, then_close: bool) -> bool:
+        """Ask once (the old text cannot be brought back), then replace the stored notes, then
+        save what is new in the draft. Returns whether a task was started."""
+        w = self.win
+        reason = asave.stored_removal_reason()
+        if reason is not None:
+            self._refuse_here(reason)
+            return False
+        for c in changes:
+            if w.data.is_archive(c.mark.recording):
+                self._refuse_here(
+                    "A single-file recording cannot be changed: unpack it in Explore first."
+                )
+                return False
+        where = vm.join_letters(
+            [w.recording_label(i) for i in sorted({c.mark.recording for c in changes})]
+        )
+        n = len(changes)
+        line = (
+            f"Replace {timefmt.format_count(n, 'stored note')} in {where} with the changed "
+            f"{'version' if n == 1 else 'versions'}? The old "
+            f"{'wording' if n == 1 else 'wordings'} cannot be brought back."
+        )
+        if not self.ask_remove_stored(line, 1):
+            return False
+        more = bool(self.draft.additions())
+        self._run_stored(
+            changes,
+            then_off and not more,
+            then_close and not more,
+            (lambda: self.save(then_off, then_close)) if more else None,
+        )
+        return True
 
     def _drop_duplicates(self, plan) -> None:
         """Items that equal a stored note leave the draft: a note is never stored twice."""
@@ -1112,7 +1324,9 @@ class EditMode(QObject):
             self.show_problem(out.error)
         else:
             w.status_message.setText(
-                f"{timefmt.format_count(len(out.uids), 'note or event', 'notes and events')} added."
+                out.message
+                or f"{timefmt.format_count(len(out.uids), 'note or event', 'notes and events')} "
+                "added."
             )
             if then_off:
                 self._apply_mode(False)

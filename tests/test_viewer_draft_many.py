@@ -143,8 +143,8 @@ def test_a_taken_out_stored_note_stays_listed_struck_through_with_the_arrays_rig
     win.edit.ask_unsaved = lambda what: "discard"
     win.edit.set_on(True)
     stored = win.marks[10]
-    win.edit.on_row(stored)
-    assert win.edit.remove_selected()
+    win.edit.draft.remove(stored)  # the draft's way to mark a stored note as taken out
+    win.edit.refresh()
     shape = win._shaped()
     assert len(shape.marks) == 200 and shape.marks[10].state == "removed"
     assert shape.drafted == [10] and bool(shape.drafted_np[10]) and shape.drafted_np.sum() == 1

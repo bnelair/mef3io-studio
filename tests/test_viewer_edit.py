@@ -83,6 +83,15 @@ class Spy:
         win.edit.show_problem = self.problems.append
         win.edit.ask_unsaved = lambda what: (self.asked.append(what), self.answer)[1]
         win.edit.ask_save = lambda plan_for: ({}, self.extra)
+        #: The question before a stored note is taken out or replaced (default: yes, all of
+        #: them) and the other password of a protected recording.
+        self.stored_lines: list[str] = []
+        self.stored_answer = "all"
+        win.edit.ask_remove_stored = lambda line, copies: (
+            self.stored_lines.append(line),
+            self.stored_answer,
+        )[1]
+        win.edit.ask_other_password = lambda label, letter: self.extra.get(0)
         win.confirm = lambda *a: True
         win.ask_show = lambda indices: True
 
@@ -310,8 +319,8 @@ def test_the_save_preview_lists_each_recording_the_warning_and_the_copy_sentence
     assert "Recording A: Alpha_case: 2 notes and events, 2000-01-01 00:00:30.000 UTC to" in text
     assert "Recording B: Beta_case: 1 note or event, 2000-01-01 00:02:00.000 UTC" in text
     assert "cannot be undone in place" in dialog.warning.text()
-    assert "1 change to a stored note needs a new copy" in dialog.copy_note.text()
-    assert "available in a later version" in dialog.copy_note.text()
+    assert "1 change to a stored note is saved first" in dialog.copy_note.text()
+    assert "cannot be undone" in dialog.copy_note.text()
     assert dialog.ok.isEnabled() and dialog.ok.text() == "Add them to the recordings"
     assert not BANNED_RE.search(" ".join([text, dialog.warning.text(), dialog.copy_note.text()]))
 
@@ -375,36 +384,37 @@ def test_side_by_side_recordings_ask_where_a_whole_recording_note_goes(
     assert right[0][:2] == ("channel", "Cz")
 
 
-# --- stored notes: shown as changed, never written --------------------------------------------
+# --- stored notes: shown as changed, written by "remove + add" after one question -------------
+# (docs/design/viewer.md, "Removing and changing a stored note"; tests/test_viewer_remove_notes.py)
 
 
-def test_removing_a_stored_note_is_shown_but_nothing_is_written(ed):
+def test_a_stored_note_taken_out_in_the_draft_is_shown_and_saved_after_one_question(ed, qtbot):
     win, spy, (a, b) = ed
-    snap = {p: tree_hash(p) for p in (a, b)}
     turn_on(win)
     stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
-    win.edit.on_row(stored)
-    assert win.edit.remove_selected()
+    win.edit.draft.remove(stored)  # the draft's own way to mark a stored note as taken out
+    win.edit.refresh()
     shown = [m for m in win.notes_tab.rows if m.state == "removed"]
     assert [m.text for m in shown] == ["Alpha plain note"]  # still listed, struck through
     assert [c.state for c in win.chips.chips if c.state] == ["removed"]
     assert [m.style for m in win.canvas.marks if m.style] == ["removed"]
     assert win.edit.draft.stored_changes == 1
     assert "1 change to stored notes" in win.edit.count_label.text()
-    # saving with only stored changes writes nothing and says so
-    assert win.edit.save() is False
-    assert spy.problems and "need a new copy" in spy.problems[0].text
-    assert "later version" in spy.problems[0].text
-    assert {p: tree_hash(p) for p in (a, b)} == snap  # bytes AND modification times
-    assert win.edit.draft.dirty  # it stays in the draft
-    # undo brings the note back
+    # undo brings the note back, nothing was asked or written
+    snap = tree_hash(a)
     key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
-    assert not [m for m in win.notes_tab.rows if m.state]
+    assert not [m for m in win.notes_tab.rows if m.state] and not spy.stored_lines
+    assert tree_hash(a) == snap
+    # Save removes it, after one plain line
+    win.edit.draft.remove(stored)
+    win.edit.refresh()
+    finish_save(qtbot, win)
+    assert len(spy.stored_lines) == 1 and "cannot be brought back" in spy.stored_lines[0]
+    assert "Alpha plain note" not in [c[4] for c in comparable(records(a))]
+    assert not win.edit.draft.dirty and not spy.problems
 
 
-def test_changing_a_stored_note_keeps_both_visible_and_a_mixed_save_writes_only_additions(
-    ed, qtbot
-):
+def test_changing_a_stored_note_keeps_both_visible_and_a_mixed_save_replaces_then_adds(ed, qtbot):
     win, spy, (a, _b) = ed
     turn_on(win)
     stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
@@ -416,15 +426,12 @@ def test_changing_a_stored_note_keeps_both_visible_and_a_mixed_save_writes_only_
     states = sorted(m.state for m in win.notes_tab.rows if m.state)
     assert states == ["changed", "removed"]  # the new wording and the struck-through original
     win.edit.add(T0 + 40 * SEC, None, "Spike", "new one")
-    before = comparable(records(a))
     finish_save(qtbot, win)
-    after = comparable(records(a))
-    assert [c for c in after if c not in before] == [
-        ("session", None, "Note", T0 + 40 * SEC, "Spike: new one", None)
-    ]
-    assert all(c in after for c in before)  # the original wording is still stored
-    assert win.edit.draft.stored_changes == 1  # the change waits for a new copy
-    assert any(m.state == "removed" for m in win.notes_tab.rows)
+    got = [c[4] for c in comparable(records(a))]
+    assert "Artifact: reworded" in got and "Alpha plain note" not in got  # replaced
+    assert "Spike: new one" in got  # and the new note was added after it
+    assert len(spy.stored_lines) == 1 and spy.stored_lines[0].startswith("Replace 1 stored note")
+    assert not win.edit.draft.dirty and not spy.problems
 
 
 def test_changing_a_stored_note_of_a_hidden_recording_needs_it_shown(make_window, pair, qtbot):
@@ -1855,11 +1862,13 @@ def test_changing_the_text_into_a_copy_is_refused(ed):
     assert win.edit.draft.get(other.uid).text == "two"
 
 
-def test_the_menu_on_a_stored_note_shows_remove_disabled_with_the_reason(ed):
+def test_the_menu_on_a_stored_note_shows_remove_disabled_with_the_reason(ed, monkeypatch):
+    """Only with a library that cannot take a stored note out (before mef3io 2.4)."""
     from PySide6.QtWidgets import QMenu
 
     from mef3io_studio.model import annotation_save as asave
 
+    monkeypatch.delattr(mef3io, "remove_annotations")
     win, spy, _ = ed
     stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
     for edit_on in (False, True):  # findable from the normal view too
@@ -1897,7 +1906,7 @@ def test_a_right_click_on_a_chip_and_on_a_list_row_opens_that_menu(ed, qtbot):
     table = win.notes_tab.table
     pos = table.visualItemRect(table.item(row, 0)).center()
     win.notes_tab._row_menu(QPoint(pos.x(), pos.y()))
-    assert not entries(win._menu)["Remove this note"].isEnabled()
+    assert entries(win._menu)["Remove this note"].isEnabled()  # (mef3io 2.4 can take it out)
     win._menu.close()
     # on the traces: right-click on the drawn mark of a stored note
     from PySide6.QtCore import QPointF
@@ -1911,42 +1920,26 @@ def test_a_right_click_on_a_chip_and_on_a_list_row_opens_that_menu(ed, qtbot):
     win._menu.close()
 
 
-def test_the_seam_raises_a_plain_not_supported_result_today(ed):
+def test_a_library_without_removal_raises_a_plain_not_supported_result(ed, monkeypatch):
     from mef3io_studio.model import annotation_save as asave
 
+    monkeypatch.delattr(mef3io, "remove_annotations")
     win, _spy, _ = ed
     assert asave.stored_removal_reason() == asave.STORED_REMOVAL_REASON
     with pytest.raises(asave.StoredRemovalNotSupported) as err:
-        asave.remove_stored_notes(win.data, win.marks[:1])
+        asave.remove_stored_notes(win.data, [asave.StoredChange(win.marks[0])])
     assert err.value.user_message.text == asave.STORED_REMOVAL_REASON
-    # nothing in this module can rewrite a recording: its only write is the append
+
+
+def test_the_only_calls_that_change_a_recordings_notes_are_in_one_module():
+    """Appending (the Writer) and taking out (remove_annotations) are each called once, in
+    annotation_save; nothing there deletes, renames or truncates a file."""
     import inspect as _inspect
-
-    source = _inspect.getsource(asave)
-    assert source.count("mef3io.Writer(") == 1 and "write_annotations" in source
-    for word in ("unlink", "os.remove", "shutil", "truncate", "os.rename", "os.replace"):
-        assert word not in source
-
-
-def test_a_later_library_call_plugs_in_at_the_one_place(ed, qtbot, monkeypatch):
-    from PySide6.QtWidgets import QMenu
 
     from mef3io_studio.model import annotation_save as asave
 
-    win, spy, _ = ed
-    asked = []
-    monkeypatch.setattr(
-        asave, "_REMOVE_STORED", lambda data, marks, pw: (asked.append(marks), 1)[1]
-    )
-    stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
-    assert asave.stored_removal_reason() is None
-    menu = QMenu()
-    win.edit.note_menu(menu, stored)
-    remove = entries(menu)["Remove this note"]
-    assert remove.isEnabled() and len(entries(menu)) == 1  # no reason line any more
-    epoch = win.data.epoch
-    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
-        remove.trigger()
-    qtbot.waitUntil(lambda: not win.edit.saving)
-    assert [m[0].text for m in asked] == ["Alpha plain note"]
-    assert win.data.epoch == epoch + 1 and not spy.problems  # the recordings were read again
+    source = _inspect.getsource(asave)
+    assert source.count("mef3io.Writer(") == 1 and "write_annotations" in source
+    assert source.count("mef3io.remove_annotations(") == 1
+    for word in ("unlink", "os.remove", "shutil", "truncate", "os.rename", "os.replace"):
+        assert word not in source
