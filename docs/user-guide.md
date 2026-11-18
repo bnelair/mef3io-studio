@@ -117,7 +117,7 @@ Select a recording to see its details in the tabs below the list:
 | **Patient details** | Name, patient ID, location and descriptions, **hidden until you choose Show** |
 | **Privacy check** | Every kind of detail that could identify the patient, each marked empty or found, and whether the anonymizer made the recording (see [Privacy check](#privacy-check)) |
 | **History** | Which version of the mef3io library created the files and last changed them, and what was done (for example "added to"). No dates are recorded. Files written by other programs have no history |
-| **Check for problems** | Compares what the recording says about itself with its data. Choose **Check now**; the results are explained in plain words, with the technical details one click away. Checking never changes the recording |
+| **Check for problems** | Compares what the recording says about itself with its data, in two sizes. **Quick look** reads only the stored details and the lists of where the signal is kept (a small part of the files, usually seconds) and cannot see damage inside the signal files. **Full check (reads about …)** also reads through the signal files, block by block: about as much reading as copying the recording, so many minutes on a large recording or a network drive. The tab says before you start what each one reads and how much, a bar shows how far it is, and **Stop** ends it. The list's **Check for problems** button does the quick look for every selected recording. Results are explained in plain words, with the technical details one click away, and say when they come from a quick look. Checking never changes the recording |
 
 **A recording with a damaged part still opens.** If one part of a channel
 can't be read, the rest of the recording is shown, that part's time shows as
@@ -289,6 +289,12 @@ window or stop, nothing is left behind.
   full-access password of a password-protected recording. Passwords protect
   the patient details, settings and notes; they do not hide the signal, the
   recording's name or its timing.
+- **One button.** **Save the new recording** is the only button: its first
+  step ("Step 1 of 2") checks everything without writing anything, with the
+  time since it started and **Stop**; its second step ("Step 2 of 2") makes
+  the recording. While the check runs nothing you typed can be changed; if a
+  problem is found, it is listed in plain words and everything you typed is
+  kept; **Stop** in the check leaves everything as it was.
 - The recording's **History** then lists it as *copied with changes*.
 
 Changing a recording's details without making a copy is not possible in this
@@ -328,10 +334,17 @@ The window goes through five steps:
    password), the new recordings would only be copies, and the window asks
    you to change something first.
 
-**Check and make the new recordings** then checks everything that can be
-checked in advance (every original opens, the names are free, there is room)
-and makes the recordings one after another, even for hours, with a progress
-bar and **Stop**. If you stop, a recording that was not finished is removed
+**Make the new recordings** is the only button. Its first step, shown on the
+page that follows ("Step 1 of 2"), checks everything that can be checked in
+advance (every original opens, the names are free, there is room) and writes
+nothing; nothing can be changed meanwhile. If it finds a reason not to go on,
+it lists every reason in plain words and takes you back with every choice kept
+(the passwords too); **Stop** in the check does the same. The second step makes
+the recordings one after another, even for hours, with a progress bar, the time
+since it started and **Stop**. When it ends, **Back to my choices** keeps
+everything you chose (the passwords were cleared for safety and are asked for
+again, or you choose No password), and **Show the last result** brings the
+outcome back until the next run starts. If you stop, a recording that was not finished is removed
 completely and the ones already made stay. If the app or the computer stops in
 the middle, the next start offers to continue the batch (you type the
 passwords again; recordings that were already finished are skipped, and one that
@@ -541,11 +554,22 @@ originals are never changed. A wizard takes you through it step by step, with
    and new start and end, how far the dates move, where the copy goes, its
    estimated size and the free space. The app refuses to start if a name is
    taken or the folder is inside any recording.
-8. **Make the copies.** First the app checks everything it can before
-   starting (the names, that the originals are still there, that nothing
-   is in the way, and that there is enough free space), so a long batch
-   does not fail after hours. Then each copy is made and **checked** in the background,
-   with a progress bar and **Stop**. A stopped or failed copy leaves nothing
+8. **Make the copies.** This is the only button; nothing has to be checked
+   first. Its first step ("Step 1 of 2: checking everything before the copies
+   can be made") runs on the page that follows, where no choice can be
+   changed: it checks the names, that the originals are still there, that
+   nothing is in the way and that there is enough free space, so a long batch
+   does not fail after hours. It writes nothing, shows the time since it started
+   and has **Stop**. If anything is wrong, you are taken back to the last step
+   with every reason listed and every choice kept; the copies are made only
+   from the very choices that were checked. Step 2 then makes each copy and
+   **checks** it in the background, with a progress bar and **Stop**. When the
+   run ends (also after Stop) **Back to my choices** keeps everything you chose,
+   and **Show the last result** brings the outcome back from any step until the
+   next run starts. The passwords you typed are cleared for safety when the
+   copies start, and when you leave the page; the Passwords step then asks
+   again, and the copies are never made without an answer ("No password" is an
+   answer you choose with a click). A stopped or failed copy leaves nothing
    behind, and the others still go ahead; if an unfinished copy could not be
    removed, the result says so and names the folder to delete. Each recording
    then says **Saved and checked**, or why it was not saved.
@@ -702,7 +726,7 @@ The **Join or trim** page makes **one new recording** from parts of others:
 
 The originals are never changed. Like the Anonymize page, it goes step by
 step with **Back** and **Next**, and **nothing is written until you choose
-Check and save**.
+Save the new recording**.
 
 **Starting from Explore:** select one or more recordings in the Explore list
 and choose **Join or trim these…** (the button under the list, or the menu
@@ -746,18 +770,24 @@ recordings chosen.
    recording will not be unless you choose passwords here. Trimming one
    recording and keeping all of it, with no channel left out and no new
    passwords, would only make an exact copy, so it is refused.
-5. **Check and save.** First everything is checked, without writing
-   anything: that each kept part holds signal, that no two parts share a
-   channel at the same time, that the channels have the same sampling rate
-   in every recording, that the recordings are of the same patient (their
-   patient details match), the passwords, and that the name is free. While
-   the check runs, the choices cannot be changed; if something changes
-   anyway (for example you switch to another page, which clears typed
-   passwords), nothing is started and you choose Check and save again.
-   Anything that stops it is listed in plain words on the New recording
-   step. Then the new recording is made, with one progress bar for all of it
-   and a **Stop** button, and it is **checked against the originals** before
-   it gets its name. At the end, **Open it in Explore** shows it there.
+5. **Save the new recording.** One button. Its first step ("Step 1 of 2")
+   checks everything without writing anything: that each kept part holds
+   signal, that no two parts share a channel at the same time, that the
+   channels have the same sampling rate in every recording, that the
+   recordings are of the same patient (their patient details match), the
+   passwords, and that the name is free. It runs on the page that follows, where
+   no choice can be changed, and shows the time since it started and **Stop**.
+   Anything that stops it is listed, every reason, in plain words back on the
+   New recording step, with every choice kept. If a choice changed anyway
+   (no click can do it), nothing is started. Step 2 makes the new recording,
+   with one progress bar for all of it and a **Stop** button, and it is **checked
+   against the originals** before it gets its name. At the end, **Open it in
+   Explore** shows it there; **Back to my choices** keeps everything you chose
+   (the new passwords are asked for again: they were cleared when the work
+   started), and **Show the last result** brings the outcome back until the
+   next run starts. Typed passwords are also cleared when you leave the page;
+   the step then says so and does not go on until you type them again or
+   choose No password.
 
 **How joining works, and the temporary folder.** When several recordings are
 joined and some are trimmed, the kept part of each trimmed one is first saved

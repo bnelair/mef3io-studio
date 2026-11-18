@@ -1568,6 +1568,8 @@ class AnonymizerPage(QWidget):
         self.run = RunState()
         self.handle = None
         self.names_handle = None
+        #: What the last name check that PASSED judged (see ``check_names``).
+        self._names_passed: tuple | None = None
         self._open_password = ""
         self._passwords_dropped = False
         self._retry_batch = None
@@ -1658,8 +1660,14 @@ class AnonymizerPage(QWidget):
         self.next_button.setProperty("primary", True)
         self.next_button.clicked.connect(self.next)
         self.why_not = _label(muted=True)
+        # The outcome of the last run stays reachable from every step until
+        # the next run starts.
+        self.result_button = QPushButton("Show the last result")
+        self.result_button.clicked.connect(self.show_last_result)
+        self.result_button.setVisible(False)
         nav = QHBoxLayout()
         nav.addWidget(self.why_not, 1)
+        nav.addWidget(self.result_button)
         nav.addWidget(self.back_button)
         nav.addWidget(self.next_button)
 
@@ -1819,8 +1827,11 @@ class AnonymizerPage(QWidget):
         running = (self.handle is not None and not self.handle.is_finished) or self._checking()
         why = self._blocker_text()
         self.why_not.setText(why)
-        self.back_button.setVisible(step != STEP_RUN)
+        ended = step == STEP_RUN and self.run.finished and not running
+        self.back_button.setVisible(step != STEP_RUN or ended)
+        self.back_button.setText("Back to my choices" if step == STEP_RUN else "Back")
         self.back_button.setEnabled(step > STEP_RECORDINGS)
+        self.result_button.setVisible(step != STEP_RUN and self.has_last_result())
         if step == STEP_REVIEW:
             self.next_button.setText("Make the copies")
         elif step == STEP_RUN:
@@ -1832,8 +1843,23 @@ class AnonymizerPage(QWidget):
         else:
             self.next_button.setEnabled(not why)
 
+    def has_last_result(self) -> bool:
+        """A run has ended and no new one has started: its outcome (the
+        table, the copies, the date key) is still here."""
+        return self.run.finished and self.batch is not None
+
+    def show_last_result(self) -> None:
+        if self.has_last_result() and not self._checking():
+            self.go(STEP_RUN)
+
     def back(self) -> None:
-        if self.step > STEP_RECORDINGS and self.step != STEP_RUN:
+        if self.step == STEP_RUN:
+            # After a run (also a stopped one) back to the choices, all kept.
+            # While a check or a run is going, there is no way back but Stop.
+            if self.run.finished and not self._checking():
+                self.go(STEP_REVIEW)
+            return
+        if self.step > STEP_RECORDINGS:
             self.go(self.step - 1)
 
     def next(self) -> None:
@@ -1890,12 +1916,20 @@ class AnonymizerPage(QWidget):
         # The new passwords play no part in the names: never sent.
         requests = [replace(r, output_password=None) for r in self.requests()]
         checked = self._names_now()
+        # What the check judges (not where the copies will go: it uses a
+        # placeholder). The same recordings with the same choices that passed
+        # once are not read and checked again for nothing.
+        judged = (checked, tuple(replace(r, destination="") for r in requests))
+        if judged == self._names_passed:
+            self.go(STEP_PASSWORDS)
+            return None
+        self._names_passed = None
         handle = self.jobs.submit("Checking the names of the copies", check_copy_names, requests)
         self.names_handle = handle
         # Locked while mef3io looks: a verdict always answers the names shown.
         self.identity.table.setEnabled(False)
         handle.finished.connect(lambda: self.identity.table.setEnabled(True))
-        handle.succeeded.connect(lambda verdicts: self._names_checked(verdicts, checked))
+        handle.succeeded.connect(lambda verdicts: self._names_checked(verdicts, checked, judged))
         handle.failed.connect(self._names_failed)
         handle.finished.connect(self._update_buttons)
         self._update_buttons()
@@ -1907,11 +1941,15 @@ class AnonymizerPage(QWidget):
         shared = (self.identity.clear(), self.dates.plan.reference_id if self.dates.plan else None)
         return {c.key: (c.name, c.pseudonym, shared) for c in self.choices}
 
-    def _names_checked(self, verdicts: dict, checked: dict | None = None) -> None:
+    def _names_checked(
+        self, verdicts: dict, checked: dict | None = None, judged: tuple | None = None
+    ) -> None:
         if checked is not None and checked != self._names_now():
             return  # the names changed since: this verdict is about others
         for c in self.choices:
             c.names_message = verdicts.get(c.key)
+        if judged is not None and all(c.names_message is None for c in self.choices):
+            self._names_passed = judged
         self.identity.show_problems()
         if self.step == STEP_IDENTITY and all(c.names_message is None for c in self.choices):
             self.go(STEP_PASSWORDS)
@@ -1989,21 +2027,10 @@ class AnonymizerPage(QWidget):
         self._update_buttons()
         return handle
 
-    @staticmethod
-    def _what_is_written(batch: pipeline.Batch) -> tuple:
-        """Everything of a batch that decides what is written (not the
-        random names of its work folders, which each plan makes new)."""
-        return (
-            batch.output,
-            batch.destination,
-            batch.bundle,
-            tuple((replace(i.request, destination=i.final), i.final) for i in batch.items),
-        )
-
     def _check_is_stale(self, batch: pipeline.Batch) -> bool:
         """The choices on the wizard are no longer the ones ``batch`` was
         made from, so a check of ``batch`` says nothing about them."""
-        return self._what_is_written(self.make_batch()) != self._what_is_written(batch)
+        return pipeline.what_is_written(self.make_batch()) != pipeline.what_is_written(batch)
 
     def _back_to_review(self, problems: list[str]) -> None:
         """Step 1 found a reason not to go on: back to the last step, nothing
@@ -2276,6 +2303,7 @@ class AnonymizerPage(QWidget):
         self.batch = None
         self.bundle_outcome = None
         self.preflight_problems = []
+        self._names_passed = None
         self.passwords.start_over()
         self._open_password = ""
         self.choices = []

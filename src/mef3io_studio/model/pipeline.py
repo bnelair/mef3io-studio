@@ -526,6 +526,24 @@ class Batch:
     keep_awake: bool = True
 
 
+def what_is_written(batch: Batch) -> tuple:
+    """Everything of a batch that decides what is written, and nothing else
+    (not the random names of the work folders each plan makes new, and not the
+    new passwords: the form is emptied when the page is left, while the run
+    holds the ones it was started with): two batches with the same value
+    write the same. The wizards compare the
+    batch their check judged with the one the choices make NOW."""
+    return (
+        batch.output,
+        batch.destination,
+        batch.bundle,
+        tuple(
+            (replace(i.request, destination=i.final, output_password=None), i.final)
+            for i in batch.items
+        ),
+    )
+
+
 def plan_batch(
     output: str,
     requests: list[CopyRequest | ChangeRequest],
