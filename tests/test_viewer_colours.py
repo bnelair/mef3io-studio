@@ -320,6 +320,10 @@ def test_changing_colours_repaints_without_reading_or_recomputing(one, qtbot, mo
     win = one
     qtbot.waitUntil(lambda: win.marks_loaded, timeout=10_000)
     settle(qtbot, win)
+    # The one automatic read of the index comes after the page, whenever the machine gets
+    # to it: let it end first, so that only reads caused by the colours are counted.
+    qtbot.waitUntil(lambda: all(f.done() for f in win.controller._strip_futures), timeout=30_000)
+    qtbot.wait(50)
     reads, shows = [], []
     for name in ("read_tile", "envelope"):
         real = getattr(win.data, name)
