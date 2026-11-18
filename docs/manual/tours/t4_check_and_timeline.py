@@ -34,12 +34,12 @@ def build() -> Tour:
         ),
         Step(
             "Check for problems",
-            "Open the Check for problems tab and choose Check now. The app compares "
-            "what the recording says about itself with its data. It never changes the "
-            "recording.",
+            "Open the Check for problems tab and choose Full check. The app compares "
+            "what the recording says about itself with what is stored. It never "
+            "changes the recording.",
             do=[
                 click("Check for problems", "open the Check for problems tab"),
-                click("Check now"),
+                click("Full check"),
                 wait(_checked, "the check to finish", 120),
             ],
             focus=lambda ctx: ctx.window.explorer.check_panel,

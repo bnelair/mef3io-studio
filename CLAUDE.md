@@ -242,6 +242,42 @@ Code (app shell, #2/#3):
   (only this Python may be started). The Anonymize page builds its widgets on
   first use (`AnonymizerPage._build`): built eagerly they made Explore's
   0.25 s responsiveness test flaky.
+- Wizards' check and run (usability review 2026-11; owner complaint "you hate to hit
+  the check button, wait 10 minutes, come back, hit start, and if it did not work nobody
+  knows why"): ONE button per wizard (Anonymize "Make the copies", Join or trim "Save the
+  new recording", Make new / Cut into pieces "Make the new recordings" / "Make the
+  pieces", Edit details "Save the new recording"). The up-front check is STEP 1 OF THE RUN,
+  shown on the run page ("Step 1 of 2": `JobProgressWidget(step=, note=)` = time since
+  start, a bar that only moves while the amount is unknown, what the step does and what
+  Stop does), where no choice can be reached; step 2 writes. THE RUN WRITES WHAT WAS
+  CHECKED: `start()` takes ONE snapshot (`make_batch()` / `make_request()`), the check and
+  the run both use it, and the run starts only if `pipeline.what_is_written(make_batch())`
+  still equals the checked one (new passwords excluded: the form is emptied when the page is
+  left). A refusal lists EVERY reason and goes back to the last step with every choice kept;
+  Stop in the check does the same (never leave a dialog on a page with only Close). A REQUESTED STOP ALWAYS WINS: a check that returns normally after Stop was pressed
+  (it was past its last stop point) is read as stopped (`handle.record.cancel_requested` in
+  each wizard's success handler), never as a go-ahead; the preflight tasks also poll between
+  their stages. After a
+  run, also a stopped one, "Back to my choices" and "Show the last result" (until the next
+  run starts). mef3io's own `anonymize_session`/`transform_session`/`merge_sessions` run
+  their pre-flight again and cannot be handed a result: the app does not add a third
+  pass (Anonymize's Identity name check is skipped when nothing it judged changed).
+  CLEARED PASSWORDS ARE A QUESTION (`PasswordsStep.needs_decision`): the values are gone
+  (setText, not clear(): undoable), only THAT they were cleared is kept; Start stays blocked,
+  saying why, until new ones are typed or a choice is clicked ("No password" included). A
+  dialog (Make new / Pieces) refuses X and Close while busy WITHOUT wiping anything and says
+  Stop comes first. "Check for problems" has three choices (`check_recording(quick=, read_back=)`):
+  `Validator(exact_difference_bytes=False)` (quick look, the list button) and `=True` (full
+  check) BOTH leave the signal values unread (the validator has no check of them: flipped bytes
+  inside a block give no finding), and every result of them says so; "Read everything back"
+  (`problems.read_back_recording`: `Reader.read_raw` in windows, mef3io checks each block's CRC)
+  is the only one that finds such damage. The Check tab shows `estimate_check` figures (from
+  the parts and blocks in the details, measured, tested), never the sum of file sizes for the
+  validator. `CheckReport.mode` names the kind once in `headline()`/`short_status()`. The LAST RESULT (copies, date key rows, "Show the last result", "Open it") is kept until step 2
+  really starts writing, never dropped by Start/Stop/a refusal in step 1; Anonymize asks first
+  (`ask_unsaved_date_key`: save / go on / do not start) when the date key was not saved. The name
+  re-check skip key includes the recordings' state as Explore holds it; `resume()` is refused while
+  a check or run is active; closing a busy Edit details wipes nothing. Tests: tests/test_wizard_checks.py.
 - Signal viewer window (viewer/, spec docs/design/viewer.md; part 1 = window,
   data flow, navigation, montages, filters; recording band/banner/side panel,
   part 2 = recording band/boundaries/banner, side panel, notes and events

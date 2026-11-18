@@ -149,7 +149,7 @@ def new_recording_step(name: str, one_file: bool, extra_caption: str = "") -> St
         f"Type a name, choose the folder where it is saved, and how it is saved. {how} "
         f"{extra_caption}".strip(),
         do=[acts],
-        then=[click("Check and save")],
+        then=[click("Save the new recording")],
         focus=around(
             lambda ctx: ctx.window.joiner.new.name,
             lambda ctx: ctx.window.joiner.new.folder_button,

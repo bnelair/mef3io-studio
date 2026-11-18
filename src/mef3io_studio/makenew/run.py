@@ -36,6 +36,29 @@ from ..model import journal as journal_
 from ..model.errors import UserMessage
 from ..workers.tasks import BatchState, preflight_batch, run_batch
 
+CHECK_STEP_NOTE = (
+    "This looks at every recording and at where the new ones will go, and writes nothing. If "
+    "something is wrong you are told what and what to do, and every choice you made is "
+    "kept. Stop ends the check and leaves everything as it was."
+)
+RUN_STEP_NOTE = (
+    "Stop ends the one being made and removes what it had written. Recordings that are "
+    "already saved and checked stay; the originals are never changed."
+)
+CHANGED_DURING_CHECK = (
+    "A choice was changed while the check was running, so nothing was made: the check must "
+    "judge exactly what is written. Look at the choices, then start again."
+)
+CHECK_STOPPED = "The check was stopped. Nothing was made. Your choices are kept."
+RESUME_BUSY_TEXT = (
+    "A check or a run is going on in this window. Stop it, or wait until it ends, then "
+    "continue the batch."
+)
+NOT_CLOSED_TEXT = (
+    "The window was not closed because the check or the copying is still going on. Press "
+    "Stop on this page first (nothing half-made is left behind), then close the window."
+)
+
 
 class BatchRunMixin:
     STEP_WHERE = 0
@@ -57,8 +80,13 @@ class BatchRunMixin:
         self.results_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.summary = _label()
+        self.closing_note = _label()
+        self.closing_note.setObjectName("Caution")
+        self.closing_note.setVisible(False)
         layout = QVBoxLayout(page)
-        layout.addWidget(_label(f"Making the {self.NOUN}", bold=True))
+        self.run_heading = _label(f"Making the {self.NOUN}", bold=True)
+        layout.addWidget(self.run_heading)
+        layout.addWidget(self.closing_note)
         layout.addLayout(self.progress_slot)
         layout.addLayout(self.messages)
         layout.addWidget(self.results_table, 1)
@@ -72,16 +100,84 @@ class BatchRunMixin:
             return None
         batch = self.make_batch()
         self._preflight_problems = []
-        self._reset_run()
+        # The last result stays until step 2 really starts (``run``): Stop or a
+        # refusal in step 1 must not take it away. Only its view is put away.
+        self._hide_last_view()
         self._set_busy(True)
         self.go(self.STEP_RUN)
         handle = self.jobs.submit("Checking everything before starting", preflight_batch, batch)
         self.handle = handle
-        handle.succeeded.connect(lambda verdict: self._checked(batch, verdict))
+        handle.succeeded.connect(lambda verdict: self._checked_if_current(batch, verdict))
         handle.failed.connect(self._check_failed)
-        handle.cancelled.connect(lambda: self._set_busy(False))
-        self.progress_slot.addWidget(JobProgressWidget(handle, self))
+        handle.cancelled.connect(self._check_stopped)
+        self.run_heading.setText(
+            f"Step 1 of 2: checking everything before the {self.NOUN} are made"
+        )
+        self.progress_slot.addWidget(
+            JobProgressWidget(handle, self, step="Step 1 of 2", note=CHECK_STEP_NOTE)
+        )
         return handle
+
+    def _checked_if_current(self, batch: pipeline.Batch, verdict: dict) -> None:
+        """The run starts only from a check of the choices that are on the
+        wizard now (they cannot be changed from the run page; this holds for
+        any other way a choice could change). A requested Stop always wins,
+        also over a check that returned normally."""
+        if self.handle is not None and self.handle.record.cancel_requested:
+            self._check_stopped()
+            return
+        if pipeline.what_is_written(self.make_batch()) != pipeline.what_is_written(batch):
+            self._clear(self.progress_slot)
+            self._back_to_choices(CHANGED_DURING_CHECK)
+            return
+        self._checked(batch, verdict)
+
+    def _back_to_choices(self, *problems: str) -> None:
+        """Step 1 stopped or refused: nothing was written, every choice (the
+        passwords too: they were not cleared) is as it was."""
+        self._preflight_problems = list(problems)
+        self._set_busy(False)
+        self.go(self.STEP_WHERE)
+
+    def _check_stopped(self) -> None:
+        self._clear(self.progress_slot)
+        self._back_to_choices(CHECK_STOPPED)
+
+    def back_to_choices(self) -> None:
+        """After a run (also a stopped one) back to the last step with every
+        choice kept; the passwords were cleared when the run began, so they
+        are asked for again. While a check or a run goes on: no way back."""
+        if self.finished_run and not self._busy:
+            self.go(self.STEP_WHERE)
+
+    def show_last_result(self) -> None:
+        """The outcome of the last run stays here until the next run starts
+        (its step 2, not its check)."""
+        if self.finished_run and not self._busy:
+            self._show_last_view()
+            self.go(self.STEP_RUN)
+
+    def _hide_last_view(self) -> None:
+        """Step 1 of a new run draws on the run page: put the last result's
+        view away (the result itself is kept)."""
+        self._clear(self.progress_slot)
+        for widget in (self.results_table, self.summary, self.open_button):
+            widget.setVisible(False)
+        for n in range(self.messages.count()):
+            widget = self.messages.itemAt(n).widget()
+            if widget is not None:
+                widget.setVisible(False)
+
+    def _show_last_view(self) -> None:
+        self._clear(self.progress_slot)
+        self.run_heading.setText(getattr(self, "_last_heading", self.run_heading.text()))
+        self.results_table.setVisible(True)
+        self.summary.setVisible(True)
+        self.open_button.setVisible(any(r.ok for r in self.results.values()))
+        for n in range(self.messages.count()):
+            widget = self.messages.itemAt(n).widget()
+            if widget is not None:
+                widget.setVisible(True)
 
     def _reset_run(self) -> None:
         self.results = {}
@@ -89,6 +185,8 @@ class BatchRunMixin:
         self.state = None
         self.stopped = False
         self.finished_run = False
+        for widget in (self.results_table, self.summary):
+            widget.setVisible(True)
         self._clear(self.messages)
         self._clear(self.progress_slot)
         self.results_table.setRowCount(0)
@@ -106,9 +204,7 @@ class BatchRunMixin:
                     f"{self.UNIT} {n + 1} of {len(batch.items)}: {message.title}. {message.text}"
                 )
         if problems:
-            self._preflight_problems = ["Nothing was made yet. " + p for p in problems]
-            self._set_busy(False)
-            self.go(self.STEP_WHERE)
+            self._back_to_choices(*["Nothing was made yet. " + p for p in problems])
             return
         self.run(batch)
 
@@ -136,6 +232,8 @@ class BatchRunMixin:
         copy without any, plus the copies' full-access password for "Show
         them in Explore" only."""
         self.batch = pipeline.without_passwords(batch)
+        if journal is None:
+            self._reset_run()  # step 2 really starts: the last result is replaced now
         output = next(
             (i.request.output_password for i in batch.items if i.request.output_password), None
         )
@@ -146,6 +244,7 @@ class BatchRunMixin:
         self._fill_results()
         n = len(batch.items)
         title = f"Making {self.ONE}" if n == 1 else f"Making {n} {self.NOUN}"
+        self.run_heading.setText(f"Step 2 of 2: {title[0].lower()}{title[1:]}")
         handle = self.jobs.submit(title, run_batch, batch, journal)
         self.handle = handle
         handle.published.connect(self._published)
@@ -154,13 +253,20 @@ class BatchRunMixin:
             lambda message: self.messages.addWidget(_label(f"{message.title}. {message.text}"))
         )
         handle.finished.connect(self._finished)
-        self.progress_slot.addWidget(JobProgressWidget(handle, self))
+        self.progress_slot.addWidget(
+            JobProgressWidget(handle, self, step="Step 2 of 2", note=RUN_STEP_NOTE)
+        )
         return handle
 
     def resume(self, journal, password_for, output_password=None, ask_existing=None):
         """Continue an interrupted batch from its journal (passwords were
         never journaled: the caller asked for them again). Everything is
-        checked again for the recordings still to do first."""
+        checked again for the recordings still to do first. Refused while a
+        check or a run is going on in this window."""
+        if self._busy:
+            self.closing_note.setText(RESUME_BUSY_TEXT)
+            self.closing_note.setVisible(True)
+            return None
         batch = pipeline.from_payload(journal.payload, password_for, output_password)
         batch = replace(batch, keep_awake=self.keep_awake)
         self._journal = journal
@@ -250,6 +356,7 @@ class BatchRunMixin:
     def _finished(self) -> None:
         self._clear(self.progress_slot)
         self.finished_run = True
+        self._last_heading = self.run_heading.text()
         self._set_busy(False)
         saved = [r for r in self.results.values() if r.ok]
         total = len(self.batch.items) if self.batch is not None else len(saved)
@@ -274,6 +381,7 @@ class BatchRunMixin:
                 self.messages.addWidget(TechnicalDetails(result.message.detail))
                 break
         self.open_button.setVisible(bool(saved))
+        self._changed()
 
     def _open_results(self) -> None:
         paths = [r.destination for r in self.results.values() if r.ok]
@@ -304,10 +412,20 @@ class BatchRunMixin:
         super().done(result)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._busy:
+            # Not closed, and nothing is cleared: the run is still going on.
+            event.ignore()
+            self._say_not_closed()
+            return
         self._wipe()
         super().closeEvent(event)
 
+    def _say_not_closed(self) -> None:
+        self.closing_note.setText(NOT_CLOSED_TEXT)
+        self.closing_note.setVisible(True)
+
     def reject(self) -> None:
         if self._busy:
+            self._say_not_closed()
             return
         super().reject()

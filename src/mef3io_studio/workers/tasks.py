@@ -232,9 +232,19 @@ def export_times(ctx: JobContext, items: list[ExportItem], zone, level: str, pat
 
 
 def check_recording(
-    ctx: JobContext, source: RecordingSource, location: str, password: str = ""
+    ctx: JobContext,
+    source: RecordingSource,
+    location: str,
+    password: str = "",
+    quick: bool = False,
+    read_back: bool = False,
 ) -> CheckReport:
-    phase = "Checking the recording for problems"
+    if read_back:
+        phase = "Reading all the signal back and checking every piece of it"
+    elif quick:
+        phase = "Quick look at the recording's details and the list of where the signal is kept"
+    else:
+        phase = "Checking the details, the list of where the signal is kept and the stored sizes"
     ctx.report(0, None, phase)
 
     def got(progress: ByteProgress) -> None:
@@ -242,10 +252,23 @@ def check_recording(
 
     if source.isolate:
         report = ctx.run_isolated(
-            source.check, location, password, on_message=got, stop_grace=STOP_GRACE_SECONDS
+            source.check,
+            location,
+            password,
+            on_message=got,
+            stop_grace=STOP_GRACE_SECONDS,
+            quick=quick,
+            read_back=read_back,
         )
     else:
-        report = source.check(location, password, send=got, cancel=ctx.cancel_token)
+        report = source.check(
+            location,
+            password,
+            send=got,
+            cancel=ctx.cancel_token,
+            quick=quick,
+            read_back=read_back,
+        )
     log.info(
         "job %d: checked %d part(s), %d problem(s)",
         ctx.job_id,
@@ -402,6 +425,7 @@ def check_join(ctx: JobContext, request: join.JoinRequest) -> list[join.CheckFin
     _register_join_identity(request)
     ctx.report(0, None, "Checking everything before starting")
     findings = ctx.run_isolated(join.check_join, request, stop_grace=STOP_GRACE_SECONDS)
+    ctx.check_cancelled()
     findings = [replace(f, message=scrubbed(f.message)) for f in findings]
     log.info("job %d: join check found %d problem(s)", ctx.job_id, len(findings))
     return findings
@@ -467,6 +491,7 @@ def check_changes(ctx: JobContext, request: changes.ChangeRequest) -> list[chang
     _register_change_identity(request)
     ctx.report(0, None, "Checking everything before starting")
     findings = ctx.run_isolated(changes.check_changes, request, stop_grace=STOP_GRACE_SECONDS)
+    ctx.check_cancelled()
     findings = [replace(f, message=scrubbed(f.message)) for f in findings]
     log.info("job %d: check of a copy with changes found %d problem(s)", ctx.job_id, len(findings))
     return findings
@@ -612,6 +637,7 @@ def preflight_batch(
     ]
     outputs = [(done_outputs[0], output_full_password)] if done_outputs else []
     probe = ctx.run_isolated(pipeline.probe, sources, outputs, stop_grace=STOP_GRACE_SECONDS)
+    ctx.check_cancelled()
     originals = {}
     finished_originals = {}
     waiting = {n for n, _i in todo}
@@ -651,6 +677,7 @@ def preflight_batch(
                 stop_grace=STOP_GRACE_SECONDS,
             )
         )
+    ctx.check_cancelled()
     names = {k: scrubbed(v) for k, v in names.items()}
     existing = []
     ours: dict[int, bool] = {}
@@ -664,6 +691,7 @@ def preflight_batch(
             pipeline.made_by_this_batch, checks, stop_grace=STOP_GRACE_SECONDS
         )
         ours = dict(zip(existing, verdicts, strict=True))
+    ctx.check_cancelled()
     if journal is not None:
         # A resume: refusals are reported by position, never by name.
         position = {i.request.key: n for n, i in todo}

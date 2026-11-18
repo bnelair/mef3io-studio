@@ -139,6 +139,23 @@ def format_duration(seconds: float | None) -> str:
     return f"about {round(hours)} hours"
 
 
+def format_elapsed(seconds: float) -> str:
+    """How long something has been running, in plain words: "5 seconds",
+    "2 minutes 10 seconds", "1 hour 4 minutes"."""
+    whole = max(0, int(seconds))
+
+    def unit(n: int, word: str) -> str:
+        return f"{n} {word}{'' if n == 1 else 's'}"
+
+    if whole < 60:
+        return unit(whole, "second")
+    minutes, secs = divmod(whole, 60)
+    if minutes < 60:
+        return f"{unit(minutes, 'minute')} {unit(secs, 'second')}"
+    hours, minutes = divmod(minutes, 60)
+    return f"{unit(hours, 'hour')} {unit(minutes, 'minute')}"
+
+
 @dataclass(frozen=True)
 class ByteProgress:
     """How far one mef3io call has got, from its ``progress(done, total)``

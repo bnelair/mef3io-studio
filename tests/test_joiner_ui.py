@@ -149,7 +149,7 @@ def test_join_two_recordings_end_to_end(window_page, qtbot, tmp_path):
     page.new.folder = str(out)
     page.new.name.setText("joined")
     assert page.new.problem_text() == ""
-    assert page.next_button.text() == "Check and save"
+    assert page.next_button.text() == "Save the new recording"
     check = page.next()
     with qtbot.waitSignal(check.finished, timeout=120_000):
         pass
@@ -250,23 +250,24 @@ def test_a_check_that_finishes_after_a_change_starts_nothing(window_page, qtbot,
     page.next()
     page.new.name.setText("joined")
     check = page.next()
-    # While it runs, nothing on the page can be changed.
-    assert not page.back_button.isEnabled() and not page.stack.isEnabled()
+    # While it runs, the choices are not on screen and cannot be changed.
+    assert page.step == STEP_RUN and not page.back_button.isVisible()
     page.back()
-    assert page.step == STEP_NEW
-    # A change slipped in anyway (here: leaving the page forgets the
-    # passwords): the result of the check is stale and starts nothing.
-    page._inputs_changed()
+    assert page.step == STEP_RUN
+    # A change slipped in anyway (no click can do it): the result of the
+    # check is stale and starts nothing.
+    page.new.name.setText("renamed")
     with qtbot.waitSignal(check.finished, timeout=120_000):
         pass
-    assert page.handle is None and page.step == STEP_NEW
-    assert page.stack.isEnabled() and page.back_button.isEnabled()
+    qtbot.waitUntil(lambda: page.step == STEP_NEW, timeout=10_000)
+    assert page.handle is None
     assert not (tmp_path / "joined.mefd").exists()
+    assert not (tmp_path / "renamed.mefd").exists()
     # Checked again, unchanged: it starts.
     check = page.next()
     with qtbot.waitSignal(check.finished, timeout=120_000):
         pass
-    assert page.step == STEP_RUN
+    qtbot.waitUntil(lambda: page.step == STEP_RUN and page.handle is not None, timeout=10_000)
     with qtbot.waitSignal(page.handle.finished, timeout=120_000):
         pass
     assert page.result.ok

@@ -4,11 +4,13 @@ Steps: recordings (ticked from the Explore list, as on the Anonymize page),
 what to keep of each (whole, the first or last so long, or between two
 times; in time order, with a preview of the kept parts and the gaps
 between them), channels (the anonymizer's picker), the new recording (name,
-folder, optional password protection), then saving it. NOTHING is written
-before "Check and save": that first runs mef3io's own checks (which write
-nothing) in a helper process, and only then makes the recording, in a
-helper process too, with one progress bar and Stop. The originals are never
-changed.
+folder, optional password protection), then saving it. ONE button saves:
+its first step, shown on the run page where no choice can be changed, runs
+mef3io's own checks (which write nothing) in a helper process; only if they
+find nothing, and the choices are still the ones checked, does the second
+step make the recording, in a helper process too. Both have a progress bar
+and Stop. A refusal lists every reason and keeps every choice. The
+originals are never changed.
 
 The rules (what each choice keeps, overlaps, the one mef3io call that
 makes the result from the originals) live in ``model.join``; the widgets never import
@@ -122,7 +124,9 @@ REFRESH_DELAY_MS = 150
 STEPS = ("Recordings", "Channels", "What to keep", "Privacy", "New recording", "Save")
 STEP_RECORDINGS, STEP_CHANNELS, STEP_KEEP, STEP_PRIVACY, STEP_NEW, STEP_RUN = range(len(STEPS))
 
-RECORDING_CHANGED = "This recording has changed since it was opened; the times were updated."
+RECORDING_CHANGED = (
+    "A recording has changed since it was opened; checking again with its current times."
+)
 
 #: The "Keep" choices, in the order the list shows them.
 KEEP_LABELS = (
@@ -145,6 +149,20 @@ PROTECTED_SOURCES = (
     "unless you protect it with two new passwords here."
 )
 
+CHECK_STEP_NOTE = (
+    "This looks at every recording and at where the new one will go, and writes nothing. If "
+    "something is wrong you are told what and what to do, and every choice you made is kept. "
+    "Stop ends the check and leaves everything as it was."
+)
+RUN_STEP_NOTE = (
+    "Stop ends the work and removes what it had written: nothing half-made is left behind "
+    "and the originals are never changed."
+)
+CHANGED_DURING_CHECK = (
+    "A choice was changed while the check was running, so nothing was started: the check "
+    "must judge exactly what is written. Look at the choices, then save again."
+)
+CHECK_STOPPED = "The check was stopped. Nothing was written. Your choices are kept."
 HOW_IT_WORKS = (
     "Several recordings: the part of each that you keep is joined straight into the new "
     "recording in one go, which is then checked against the originals. Nothing is saved "
@@ -1111,6 +1129,11 @@ class NewRecordingStep(QWidget):
         self.how = _label(HOW_IT_WORKS, muted=True)
         self.problem = _label()
         self.problem.setObjectName("Bad")
+        #: What step 1 of the last Save said when it did not go on (stopped,
+        #: a choice changed): the choices themselves are all still here.
+        self.notice = _label()
+        self.notice.setObjectName("Caution")
+        self.notice.setVisible(False)
         self.findings = QVBoxLayout()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1120,6 +1143,7 @@ class NewRecordingStep(QWidget):
         layout.addWidget(self.protected_note)
         layout.addWidget(self.passwords)
         layout.addWidget(self.how)
+        layout.addWidget(self.notice)
         layout.addWidget(self.problem)
         layout.addLayout(self.findings)
         layout.addStretch(1)
@@ -1221,6 +1245,10 @@ class NewRecordingStep(QWidget):
         self.problem.setVisible(bool(text))
         self.changed.emit()
 
+    def say(self, text: str) -> None:
+        self.notice.setText(text)
+        self.notice.setVisible(bool(text))
+
     def set_findings(self, findings: list, names: dict | None = None) -> None:
         _clear(self.findings)
         names = names or {}
@@ -1319,17 +1347,33 @@ class RunStep(QWidget):
         self.open_button.setVisible(shown)
         self.folder_button.setVisible(shown)
 
+    def begin_check(self, handle, several: bool) -> None:
+        """Step 1 of 2: nothing can be changed on this page."""
+        _clear(self.progress_slot)
+        _clear(self.details_slot)
+        self.result.setText("")
+        self.show_buttons(False)
+        self.heading.setText(
+            "Step 1 of 2: checking that the recordings can be joined"
+            if several
+            else "Step 1 of 2: checking that the part can be saved"
+        )
+        self.progress = JobProgressWidget(handle, self, step="Step 1 of 2", note=CHECK_STEP_NOTE)
+        self.progress_slot.addWidget(self.progress)
+
     def start(self, handle, several: bool, anonymous: bool = False) -> None:
         _clear(self.progress_slot)
         _clear(self.details_slot)
         self.result.setText("")
         self.show_buttons(False)
         self.heading.setText(
-            "Joining the recordings…" if several else "Saving the part of the recording…"
+            "Step 2 of 2: joining the recordings…"
+            if several
+            else "Step 2 of 2: saving the part of the recording…"
         )
         if anonymous:
-            self.heading.setText("Making the anonymous recording…")
-        self.progress = JobProgressWidget(handle, self)
+            self.heading.setText("Step 2 of 2: making the anonymous recording…")
+        self.progress = JobProgressWidget(handle, self, step="Step 2 of 2", note=RUN_STEP_NOTE)
         self.progress_slot.addWidget(self.progress)
 
     def finish(self, result: JoinResult | None, stopped: bool, failure=None) -> None:
@@ -1386,6 +1430,8 @@ class JoinerPage(QWidget):
         self.result: JoinResult | None = None
         self._stopped = False
         self._failure = None
+        #: A run has ended and no new one has started: its outcome is kept.
+        self._ended = False
         #: Bumped by every change of a choice: a check that finishes after
         #: one is stale and never starts a run.
         self._generation = 0
@@ -1455,11 +1501,15 @@ class JoinerPage(QWidget):
         self.next_button.setProperty("primary", True)
         self.next_button.clicked.connect(self.next)
         self.why_not = _label(muted=True)
+        self.result_button = QPushButton("Show the last result")
+        self.result_button.clicked.connect(self.show_last_result)
+        self.result_button.setVisible(False)
         self.view_button = QPushButton("View these recordings")
         self.view_button.setToolTip("Look at the chosen recordings in the signal viewer")
         self.view_button.clicked.connect(self.view_chosen)
         nav = QHBoxLayout()
         nav.addWidget(self.why_not, 1)
+        nav.addWidget(self.result_button)
         nav.addWidget(self.view_button)
         nav.addWidget(self.back_button)
         nav.addWidget(self.next_button)
@@ -1518,8 +1568,11 @@ class JoinerPage(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         # Passwords typed but not used yet are not kept while the page is away.
-        if self._built and self.step != STEP_RUN:
-            self._generation += 1
+        # Also during step 1: a refusal then returns to the choices with the
+        # fields empty and the question asked again, never with passwords left.
+        if self._built:
+            if self.step != STEP_RUN:
+                self._generation += 1
             self.new.passwords.forget()
         super().hideEvent(event)
 
@@ -1582,8 +1635,6 @@ class JoinerPage(QWidget):
             self.privacy.set_recordings()
         elif step == STEP_NEW:
             self.new.prepare()
-        passwords = self.new.passwords
-        passwords.cleared.setVisible(step == STEP_NEW and passwords.cleared_once)
         self._update_buttons()
 
     def _prepare_channels(self) -> None:
@@ -1617,23 +1668,22 @@ class JoinerPage(QWidget):
         if step == STEP_PRIVACY:
             return self.privacy.problem_text()
         if step == STEP_NEW:
-            if self._checking():
-                return "Checking everything before starting…"
-            return "Fix what is listed above first." if self.new.problem_text() else ""
+            return self.new.problem_text()
         return ""
 
     def _update_buttons(self, *_args) -> None:
         step = self.step
-        running = self.handle is not None and not self.handle.is_finished
+        checking = self._checking()
+        running = (self.handle is not None and not self.handle.is_finished) or checking
         why = self._blocker_text()
         self.why_not.setText(why)
-        checking = self._checking()
-        # Nothing can be changed while the check runs (it checks THESE choices).
-        self.stack.setEnabled(not checking)
-        self.back_button.setVisible(step != STEP_RUN)
-        self.back_button.setEnabled(step > STEP_RECORDINGS and not checking)
+        ended = step == STEP_RUN and self._ended and not running
+        self.back_button.setVisible(step != STEP_RUN or ended)
+        self.back_button.setText("Back to my choices" if step == STEP_RUN else "Back")
+        self.back_button.setEnabled(step > STEP_RECORDINGS)
+        self.result_button.setVisible(step != STEP_RUN and self._ended)
         if step == STEP_NEW:
-            self.next_button.setText("Check and save")
+            self.next_button.setText("Save the new recording")
         elif step == STEP_RUN:
             self.next_button.setText("Join or trim more recordings")
         else:
@@ -1648,13 +1698,30 @@ class JoinerPage(QWidget):
         if entries:
             self.view_requested.emit(entries)
 
+    def show_last_result(self) -> None:
+        if self._ended and not self._checking():
+            # A check that began after the run drew its own step on this page.
+            _clear(self.run_step.progress_slot)
+            self.run_step.finish(self.result, self._stopped, self._failure)
+            self.go(STEP_RUN)
+
     def back(self) -> None:
-        if STEP_RECORDINGS < self.step < STEP_RUN and not self._checking():
+        if self.step == STEP_RUN:
+            # After a run (also a stopped one): back to the choices, all kept.
+            # Not while a new check is going on (its page is this one).
+            if self._ended and not self._checking():
+                self.go(STEP_NEW)
+            return
+        if STEP_RECORDINGS < self.step and not self._checking():
             self.go(self.step - 1)
 
     def next(self):
         step = self.step
         if step == STEP_RUN:
+            # "Join or trim more recordings" drops everything: never while
+            # the check or the run is still going.
+            if self._checking() or (self.handle is not None and not self.handle.is_finished):
+                return None
             self.restart()
             return None
         if self._blocker_text():
@@ -1684,10 +1751,29 @@ class JoinerPage(QWidget):
     def _names(self) -> dict[str, str]:
         return {r.entry.key: r.entry.name for r in self.keep.rows}
 
+    @staticmethod
+    def _what_is_written(request: JoinRequest) -> tuple:
+        return (
+            request.sources,
+            request.destination,
+            request.exclude_channels,
+        )
+
+    def _check_is_stale(self, request: JoinRequest) -> bool:
+        """The choices on the page are no longer the ones ``request`` was
+        made from, so its check says nothing about them."""
+        try:
+            return self._what_is_written(self.make_request()) != self._what_is_written(request)
+        except ValueError:
+            # The privacy choices cannot make a request any more: they are not
+            # the ones that were checked.
+            return True
+
     def check_and_save(self):
-        """mef3io's checks (nothing written), then, if nothing stops it, the
-        run itself."""
-        if not self._still_readable():
+        """Step 1 of the run: mef3io's checks (nothing written), on the run
+        page where no choice can be changed; then, if nothing stops it and
+        the choices are still the ones checked, step 2, the run itself."""
+        if self._checking() or not self._still_readable():
             return None
         try:
             request = self.make_request()
@@ -1710,26 +1796,32 @@ class JoinerPage(QWidget):
             )
             return None
         self.new.set_findings([])
+        self.new.say("")
+        # The last result (and "Open it in Explore") stays until step 2 really
+        # starts: Stop or a refusal here must not take it away.
+        self.handle = None
         return self._check_then_start(request)
 
     def _check_then_start(self, request: JoinRequest):
+        """Step 1 for ``request``; it is made again, with the recordings
+        opened afresh, when one changed since Explore read it."""
         handle = self.jobs.submit("Checking before joining", check_join, request)
         self.check_handle = handle
-        generation = self._generation
+        self.go(STEP_RUN)
+        self.run_step.begin_check(handle, len(request.sources) > 1)
+
+        def back_to_the_choices(text: str = "") -> None:
+            self.go(STEP_NEW)
+            self.new.say(text)
 
         def checked(findings) -> None:
-            if (
-                generation != self._generation
-                or self.step != STEP_NEW
-                or not self.isVisible()
-                or self.handle is not None
-            ):
-                # Something changed while it was being checked (or the page
-                # was left): this check is not about the choices on screen.
-                self.status.emit(
-                    "The choices changed during the check, so nothing was started. Choose "
-                    "Check and save again."
-                )
+            if handle.record.cancel_requested:
+                # Stop was pressed and the check returned normally anyway: a
+                # requested stop always wins.
+                back_to_the_choices(CHECK_STOPPED)
+                return
+            if self._check_is_stale(request):
+                back_to_the_choices(CHANGED_DURING_CHECK)
                 return
             if request.layouts and not join_model.facts_still_true(request):
                 # A recording was touched since Explore read it: what the
@@ -1741,15 +1833,18 @@ class JoinerPage(QWidget):
                 self._check_then_start(join_model.without_facts(request))
                 return
             if findings:
+                back_to_the_choices()
                 self.new.set_findings(findings, self._names())
                 return
             self.start(request)
 
         def failed(message) -> None:
+            back_to_the_choices()
             self.new.set_findings([join_model.CheckFinding(None, message)])
 
         handle.succeeded.connect(checked)
         handle.failed.connect(failed)
+        handle.cancelled.connect(lambda: back_to_the_choices(CHECK_STOPPED))
         handle.finished.connect(self._update_buttons)
         self._update_buttons()
         return handle
@@ -1757,7 +1852,12 @@ class JoinerPage(QWidget):
     def start(self, request: JoinRequest):
         self.request = request
         self.result = None
+        self._ended = False
         self._stopped = False
+        self._failure = None
+        # The run has the passwords now (in its request); the form does not
+        # keep them. Going back to the choices asks for them again.
+        self.new.passwords.forget()
         several = len(request.sources) > 1
         title = "Joining recordings" if several else "Saving part of a recording"
         if request.anonymous is not None:
@@ -1773,6 +1873,8 @@ class JoinerPage(QWidget):
         return handle
 
     def stop(self) -> None:
+        if self._checking():
+            self.check_handle.cancel()  # step 1: ends the check, nothing written
         if self.handle is not None:
             self.handle.cancel()
 
@@ -1786,8 +1888,8 @@ class JoinerPage(QWidget):
         self._failure = message
 
     def _on_finished(self) -> None:
+        self._ended = True
         self.run_step.finish(self.result, self._stopped, self._failure)
-        self._failure = None
         self._update_buttons()
         if self._stopped:
             text = "Joining stopped: nothing was saved."
@@ -1908,8 +2010,8 @@ class JoinerPage(QWidget):
         self.handle = None
         self.check_handle = None
         self._stopped = False
-        self.new.passwords.forget()
-        self.new.passwords.cleared_once = False
+        self._ended = False
+        self.new.passwords.start_over()
         self.new.name.clear()
         self.new._auto_name = ""
         self.new.save_folder.setChecked(True)

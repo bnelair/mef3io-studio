@@ -198,3 +198,16 @@ def clean_identities():
     privacy.identities.clear()
     yield
     privacy.identities.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_unexpected_date_key_question(monkeypatch):
+    """The Anonymize page asks, before a new run, what to do with a date key
+    that was not saved. A modal box would hang a headless test, so any test
+    that reaches the question must answer it itself."""
+    from mef3io_studio.anonymizer.page import AnonymizerPage
+
+    def unexpected(self):
+        raise AssertionError("the unsaved date key question was asked: answer it in the test")
+
+    monkeypatch.setattr(AnonymizerPage, "ask_unsaved_date_key", unexpected)

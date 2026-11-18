@@ -97,6 +97,22 @@ CURRENT_ATTRS = {
 COL_CHANNEL, COL_DESCRIPTION, COL_REFERENCE = range(3)
 
 
+CHECK_STEP_NOTE = (
+    "This looks at the recording and at where the new one will go, and writes nothing. If "
+    "something is wrong you are told what and what to do, and everything you typed is kept. "
+    "Stop ends the check and leaves everything as it was."
+)
+RUN_STEP_NOTE = (
+    "Stop ends the work and removes what it had written: nothing half-made is left behind "
+    "and the original is never changed."
+)
+CHANGED_DURING_CHECK = (
+    "A choice was changed while the check was running, so nothing was saved: the check must "
+    "judge exactly what is written. Look at the choices, then save again."
+)
+CHECK_STOPPED = "The check was stopped. Nothing was written. Everything you typed is kept."
+
+
 class DetailBox(QWidget):
     """One detail: a box, and how much more text fits. ``initial`` is what
     is stored (None while it is hidden): the box tells what changed."""
@@ -277,7 +293,7 @@ class EditDetailsDialog(QDialog):
         self.progress_slot = QVBoxLayout()
         self.result_label = _label()
         self.result_details = QVBoxLayout()
-        self.save_button = QPushButton("Check and save the new recording", self)
+        self.save_button = QPushButton("Save the new recording", self)
         self.save_button.setProperty("primary", True)
         self.save_button.clicked.connect(self.check_and_save)
         self.open_button = QPushButton("Open it in Explore", self)
@@ -491,12 +507,32 @@ class EditDetailsDialog(QDialog):
         self._clear(self.result_details)
         self.result_label.setText("")
         self._set_busy(True)
+        self.handle = None
         handle = self.jobs.submit("Checking before saving", check_changes, self._pending)
+        self._check_handle = handle
         generation = self._generation
+        # Step 1 of the one button: what it does, how long, and Stop.
+        self.progress_slot.addWidget(
+            JobProgressWidget(handle, self, step="Step 1 of 2", note=CHECK_STEP_NOTE)
+        )
 
         def checked(found) -> None:
             request, self._pending = self._pending, None
             if generation != self._generation or request is None:
+                return
+            if handle.record.cancel_requested:
+                # Stop was pressed and the check returned normally anyway: a
+                # requested stop always wins.
+                self._check_stopped()
+                return
+            self._clear(self.progress_slot)
+            if replace(self.make_request(), output_password=None) != replace(
+                request, output_password=None
+            ):
+                # What was checked is not what the window holds now: the
+                # save must write exactly what was checked, so it does not.
+                self.result_label.setText(CHANGED_DURING_CHECK)
+                self._set_busy(False)
                 return
             if found:
                 self._show_findings(found)
@@ -506,6 +542,7 @@ class EditDetailsDialog(QDialog):
 
         def failed(message) -> None:
             self._pending = None
+            self._clear(self.progress_slot)
             self._show_findings([changes.Finding("", message)])
             self._set_busy(False)
 
@@ -516,6 +553,8 @@ class EditDetailsDialog(QDialog):
 
     def _check_stopped(self) -> None:
         self._pending = None
+        self._clear(self.progress_slot)
+        self.result_label.setText(CHECK_STOPPED)
         self._set_busy(False)
 
     def _show_findings(self, found: list) -> None:
@@ -540,11 +579,14 @@ class EditDetailsDialog(QDialog):
         handle.cancelled.connect(lambda: setattr(self, "_stopped", True))
         handle.failed.connect(lambda message: setattr(self, "_failure", message))
         handle.finished.connect(self._finished)
-        progress = JobProgressWidget(handle, self)
+        progress = JobProgressWidget(handle, self, step="Step 2 of 2", note=RUN_STEP_NOTE)
         self.progress_slot.addWidget(progress)
         return handle
 
     def stop(self) -> None:
+        check = getattr(self, "_check_handle", None)
+        if check is not None and not check.is_finished:
+            check.cancel()  # step 1: ends the check, nothing written
         if self.handle is not None:
             self.handle.cancel()
 
@@ -597,6 +639,10 @@ class EditDetailsDialog(QDialog):
         super().done(result)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._busy:
+            # Refused first, and nothing is wiped: the check or the save goes on.
+            event.ignore()
+            return
         self._wipe()
         super().closeEvent(event)
 
