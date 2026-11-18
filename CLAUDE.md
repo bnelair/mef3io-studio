@@ -484,7 +484,7 @@ Code (app shell, #2/#3):
   elsewhere" warning via `password_interop_issue`); output blocks are never
   password-protected (MEF design), the text says passwords do not hide the
   signal. NOT built: editing in place (needs mef3io `edit_metadata`, absent in
-  2.3.0) - no placeholder UI. History word for op 8: "copied with changes".
+  2.4.0) - no placeholder UI. History word for op 8: "copied with changes".
 - Make new recordings (#16): ONE window for the same changes in many
   recordings (`makenew/dialog.py` `MakeNewDialog`, Explore button + list menu
   "Make new recordings…", steps recordings -> channels -> details ->

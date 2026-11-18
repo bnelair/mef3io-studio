@@ -271,6 +271,25 @@ def test_one_recording_kept_whole_without_a_change_is_refused(two):
     assert not (tmp / "copy.mefd").exists()
 
 
+def test_a_recording_with_an_interrupted_notes_edit_is_refused_in_words_that_fit(two):
+    from explorer_sessions import interrupt_notes_edit
+
+    tmp, a, b = two
+    with mef3io.Writer(str(a), overwrite=False) as w:
+        w.write_annotations([{"time": T0 + S, "text": "note"}])
+    interrupt_notes_edit(a)
+    request = j.new_request(
+        [source(a, j.Keep(j.KEEP_FIRST, HOUR)), source(b, j.Keep(j.KEEP_FIRST, HOUR))],
+        str(tmp / "j.mefd"),
+    )
+    findings = j.check_join(request)
+    text = " ".join(f.message.title + " " + f.message.text for f in findings)
+    assert "in the middle of a change" in text and "notes and events" in text
+    result = j.make_joined(request)
+    assert not result.ok and "notes and events" in result.message.text
+    assert not (tmp / "j.mefd").exists()
+
+
 def test_overlapping_parts_are_refused_before_anything_is_written(tmp_path):
     a = write(tmp_path / "A.mefd", T0, 2 * 3600)
     b = write(tmp_path / "B.mefd", T0 + HOUR, 2 * 3600)

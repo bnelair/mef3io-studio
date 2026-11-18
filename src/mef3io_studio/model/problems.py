@@ -132,11 +132,14 @@ PLAIN_CHECKS: dict[str, tuple[str, str]] = {
         "A program was changing this recording's notes and events and was interrupted "
         "(or is still working on it). Until that is settled the notes and events cannot "
         "be read and nothing can be added to the recording; the signal itself can still "
-        "be read. If no program is still working on it, it must be fixed before the "
+        "be read. If no program is still working on it, it must be rescued before the "
         "recording can be used fully: this app version cannot do that yet. Ask whoever "
-        "looks after the recording's files to rescue it with mef3io's command "
-        "(" + technical("mef3io recover <folder>") + "). Do not remove or move any file "
-        "next to the recording first.",
+        "looks after the recording's files to run mef3io's rescue on it ("
+        + technical("python -m mef3io recover --apply <folder>")
+        + "; without the apply option it only reports). The rescue either finishes the "
+        "change or puts the earlier notes and events back, so the change may turn out "
+        "not to have been made. Do not remove or move any file next to the recording "
+        "first.",
     ),
     technical("records.edit-leftovers"): (
         "Leftover files from a change of the notes and events",
@@ -144,9 +147,11 @@ PLAIN_CHECKS: dict[str, tuple[str, str]] = {
         "notes' own files, and the recording no longer says that a change is under way. "
         "Some notes and events may be missing from view: the earlier copy of their file "
         "may still be among the leftovers. Nothing is deleted by this app. Keep these "
-        "files and ask whoever looks after the recording's files to look at them and "
-        "put the right file back (" + technical("mef3io recover <folder>") + " removes "
-        "them when the notes' own files are whole). The signal is not affected.",
+        "files and ask whoever looks after the recording's files to look at them first: "
+        "if a notes file is missing, its earlier copy has to be put back by hand. When "
+        "the notes' own files are whole, mef3io's rescue removes the leftovers ("
+        + technical("python -m mef3io recover --apply <folder>")
+        + "). The signal is not affected.",
     ),
 }
 _UNKNOWN = (
