@@ -155,6 +155,10 @@ class ViewController(QObject):
         self.max_compute = perf.filter_workers or MAX_COMPUTE
         self._pool = ThreadPoolExecutor(self.max_compute, thread_name_prefix="viewer-compute")
         self._strip_pool = ThreadPoolExecutor(1, thread_name_prefix="viewer-strip")
+        #: A channel the user picks for the overview band has a thread of its own: it must not
+        #: wait behind the automatic read, which may sit in ``_wait_quiet`` for seconds or
+        #: read a multi-day index for minutes (the library call is safe beside another).
+        self._pick_pool = ThreadPoolExecutor(1, thread_name_prefix="viewer-pick")
         self._strip_futures: list = []
         #: Bumped by ``drain_strip``: a read of an older epoch never reports.
         self._strip_epoch = 0
@@ -784,7 +788,7 @@ class ViewController(QObject):
                 self._index.emit((epoch, tuple(names), done, found))
 
         try:
-            future = self._strip_pool.submit(work)
+            future = (self._strip_pool if wait else self._pick_pool).submit(work)
         except RuntimeError:  # the pool is already shut down
             return
         self._strip_futures = [f for f in self._strip_futures if not f.done()] + [future]
@@ -858,6 +862,7 @@ class ViewController(QObject):
         self.scheduler.close()
         self._pool.shutdown(wait=True, cancel_futures=True)
         self._strip_pool.shutdown(wait=True, cancel_futures=True)
+        self._pick_pool.shutdown(wait=True, cancel_futures=True)
         self.cache.clear()
 
 

@@ -17,9 +17,11 @@ The number
     never more than :data:`HARD_CAP`:
 
     * Linux: the soft limit (``RLIMIT_NOFILE``, mostly 1024) -> 128;
-    * macOS: the soft limit of a GUI app is 256 -> 32;
-    * Windows: the C runtime keeps 512 streams by default (``_setmaxstdio``; handles made with
-      ``_open`` go to 8192 but a library that uses buffered streams meets the 512) -> 64.
+    * macOS: the soft limit of a GUI app is 256 -> 32 (assumed from the system's default);
+    * Windows: the library does not use C-runtime streams there (it opens operating-system
+      handles), so no stream limit applies; the number is the one the library itself suggests
+      for Windows, 128 (``WINDOWS_SUGGESTED``). NOTHING was measured on Windows: neither the
+      number nor that the handles behave as the library's notes say. It is a starting point.
 
     A recording with few channels simply gets a smaller number.
 
@@ -39,20 +41,18 @@ import sys
 HARD_CAP = 128
 #: The share of the process's descriptor limit the viewer may hold: one eighth.
 LIMIT_DIVISOR = 8
-#: Windows' C runtime stream limit (its default; a library may meet it).
-WINDOWS_LIMIT = 512
+#: What the library itself suggests for Windows (its ``suggested_open_files()``). Assumed; not
+#: measured here.
+WINDOWS_SUGGESTED = 128
 #: A viewer that has not read for this long lets its files go (seconds).
 IDLE_RELEASE = 8.0
 #: Files wanted per channel: the current segment and the next one (a page across a border).
 PER_CHANNEL = 2
 
 
-def descriptor_limit(platform: str | None = None, soft_limit: int | None = None) -> int:
-    """The number of files this process may have open, as far as the viewer cares.
-    ``platform`` and ``soft_limit`` are for tests."""
-    platform = platform or sys.platform
-    if platform.startswith("win"):
-        return WINDOWS_LIMIT
+def descriptor_limit(soft_limit: int | None = None) -> int:
+    """The number of files this process may have open (POSIX: ``RLIMIT_NOFILE``).
+    ``soft_limit`` is for tests."""
     if soft_limit is not None:
         return soft_limit
     try:
@@ -68,7 +68,9 @@ def descriptor_limit(platform: str | None = None, soft_limit: int | None = None)
 
 def cap(platform: str | None = None, soft_limit: int | None = None) -> int:
     """The most files the viewer may keep open here."""
-    return max(0, min(HARD_CAP, descriptor_limit(platform, soft_limit) // LIMIT_DIVISOR))
+    if (platform or sys.platform).startswith("win"):
+        return min(HARD_CAP, WINDOWS_SUGGESTED)
+    return max(0, min(HARD_CAP, descriptor_limit(soft_limit) // LIMIT_DIVISOR))
 
 
 def release_all(windows) -> int:

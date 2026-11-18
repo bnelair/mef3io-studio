@@ -35,7 +35,8 @@ def test_the_cap_follows_the_descriptor_limit_of_each_platform():
     assert of.cap("linux", 1024) == 128  # an eighth of the usual soft limit
     assert of.cap("linux", 65536) == of.HARD_CAP  # never more than the hard cap
     assert of.cap("darwin", 256) == 32  # a GUI app on macOS starts with 256
-    assert of.cap("win32") == of.WINDOWS_LIMIT // of.LIMIT_DIVISOR == 64
+    # Windows: the library's own suggestion (assumed, not measured here)
+    assert of.cap("win32") == of.WINDOWS_SUGGESTED == 128
     assert of.cap("linux", 4) == 0  # no room: keep nothing open
 
 
@@ -44,7 +45,8 @@ def test_the_budget_is_two_files_per_channel_within_the_cap():
     assert of.budget(3, "linux", 1024) == 6
     assert of.budget(16, "linux", 1024) == 32
     assert of.budget(256, "linux", 1024) == 128
-    assert of.budget(256, "win32") == 64
+    assert of.budget(256, "win32") == 128
+    assert of.budget(40, "win32") == 80
     assert of.budget(256, "darwin", 256) == 32
     assert of.budget(3, "linux", 4) == 0
 

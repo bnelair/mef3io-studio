@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+from collections import Counter
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
@@ -105,6 +106,8 @@ class EditMode(QObject):
         self._types_shown: tuple = ()
         #: N turned edit mode on (it was off): Esc on its field turns it off again.
         self._on_by_n = False
+        self._counts_of: list | None = None  # the marks the copy counts were made from
+        self._counts: Counter = Counter()
         self._pairs_of: list | None = None
         self._pairs: frozenset = frozenset()
         self._jobs: JobManager | None = None
@@ -328,13 +331,30 @@ class EditMode(QObject):
             return int(w._pointer_t), None
         return lo + length // 2, None
 
-    def _check_values(self, values: dict, ignore_uid: int | None = None) -> str:
+    def _stays_in(self, recording: int, time: int, channel: str | None) -> str:
+        """ "" when ``recording`` holds data (of ``channel``) at ``time``, else the sentence for a
+        STORED note that is changed: it stays in its own recording."""
+        if recording in self.win.data.holders_at(channel, int(time)):
+            return ""
+        return (
+            f"This note is stored in {self.win.recording_label(recording)} and stays there: "
+            "choose a time when that recording holds data. To put it into another recording, "
+            "remove it and add a new note there."
+        )
+
+    def _check_values(
+        self, values: dict, ignore_uid: int | None = None, within: int | None = None
+    ) -> str:
         item = ad.DraftItem(
             0, values["time"], values["end"], values["label"], "", values["channel"]
         )
         r = ad.route(item, self.win.data.holders_at)
         if r.status == "outside":
             return r.reason
+        if within is not None:  # a stored note that is changed stays in its own recording
+            stays = self._stays_in(within, values["time"], values["channel"])
+            if stays:
+                return stays
         same = ad.DraftItem(
             0, values["time"], values["end"], values["label"], values.get("text", ""),
             values["channel"],
@@ -385,12 +405,14 @@ class EditMode(QObject):
                 self.select(m)
                 return
 
-    def _make_editor(self, title: str, ignore_uid: int | None = None) -> NoteEditor:
+    def _make_editor(
+        self, title: str, ignore_uid: int | None = None, within: int | None = None
+    ) -> NoteEditor:
         return NoteEditor(
             self.win.zone,
             self.quick_types(),
             self.win._channels,
-            lambda values: self._check_values(values, ignore_uid),
+            lambda values: self._check_values(values, ignore_uid, within),
             title,
             self.win,
         )
@@ -615,12 +637,18 @@ class EditMode(QObject):
                 )
                 w.status_message.setText(w.last_refusal)
                 return None
+            reason = asave.can_edit_stored(m)
+            if reason:  # a kind of note whose type or fields an edit would lose
+                return self._refuse_here(reason) or None
             stored = m
             label, text = ad.split_text(m.text)
             values0 = (m.time, m.end, label, text, m.channel)
         changed = item if stored is None else self.draft.changed_version(stored)
         own = getattr(changed, "uid", None)
-        editor = self._make_editor("Change a note or event", own)
+        origin = stored if stored is not None else getattr(item, "replaces", None)
+        editor = self._make_editor(
+            "Change a note or event", own, None if origin is None else origin.recording
+        )
         editor.set_values(*values0)
         values = self.ask_note(editor)
         if values is None:
@@ -665,9 +693,18 @@ class EditMode(QObject):
 
     # -- taking out a STORED note (mef3io 2.4): ask once, then one task ----------
 
+    def _copy_counts(self) -> dict:
+        """How many stored notes of each exact content the viewer shows, counted ONCE per read
+        of the notes (a change of many notes asks per note: a dictionary lookup, not a scan)."""
+        marks = self.win.marks
+        if self._counts_of is not marks:
+            self._counts = Counter(asave.mark_key(x) for x in marks if not x.state)
+            self._counts_of = marks
+        return self._counts
+
     def _identical_copies(self, m) -> int:
         """How many stored notes the viewer shows that are exactly ``m`` (1 = only itself)."""
-        return max(1, sum(1 for x in self.win.marks if x == m and not x.state))
+        return max(1, self._copy_counts().get(asave.mark_key(m), 0))
 
     def _refuse_here(self, text: str) -> bool:
         self.win.last_refusal = text
@@ -679,25 +716,28 @@ class EditMode(QObject):
         undone from the app), then a task takes it out of the recording and the notes are
         read again. A note stored twice is said so, and one copy or all of them can go."""
         w = self.win
-        reason = asave.stored_removal_reason()
-        if reason is not None:
-            return self._refuse_here(reason)
         if w.data.is_archive(m.recording):
             return self._refuse_here(
                 "A single-file recording cannot be changed: unpack it in Explore first."
             )
         copies = self._identical_copies(m)
         where = w.recording_label(m.recording)
+        times = "twice" if copies == 2 else f"{copies} times"
+        one_by_one = m.code in asave.COPYABLE_TYPES
         if copies == 1:
             line = f"Remove this note from {where}? This cannot be undone."
-        else:
-            times = "twice" if copies == 2 else f"{copies} times"
+        elif one_by_one:
             line = (
                 f"This note is stored {times} in {where}. Remove one copy, or all of them? "
                 "This cannot be undone."
             )
-        answer = self.ask_remove_stored(line, copies)
-        if not answer:
+        else:  # a kind of note whose copies cannot be written back one by one
+            line = (
+                f"This note is stored {times} in {where}, and this kind of note can only be "
+                f"removed with all its copies. Remove all {copies}? This cannot be undone."
+            )
+        answer = self.ask_remove_stored(line, copies if one_by_one else 1)
+        if not answer or (answer == "one" and not one_by_one):
             return False
         keep = 1 if answer == "one" else copies
         self._run_stored([asave.StoredChange(m, copies, keep)])
@@ -865,12 +905,7 @@ class EditMode(QObject):
             menu.addAction("Remove this note (Delete)", lambda: self.remove_mark(mark))
             return
         remove = menu.addAction("Remove this note", lambda: self.remove_mark(mark))
-        reason = asave.stored_removal_reason()
-        remove.setEnabled(reason is None and not self.saving and mark.state != "removed")
-        if reason is not None:
-            remove.setToolTip(reason)
-            note = menu.addAction(reason)  # the reason is read without hovering
-            note.setEnabled(False)
+        remove.setEnabled(not self.saving and mark.state != "removed")
 
     def remove_selected(self) -> bool:
         if self._busy():
@@ -1141,12 +1176,13 @@ class EditMode(QObject):
         twice has only one copy changed."""
         out = []
         for stored, item in self.draft.changed_stored():
-            record = item.record()
-            if item.channel:
-                record["channel"] = item.channel
             out.append(
                 asave.StoredChange(
-                    stored, self._identical_copies(stored), 1, replacement=record, uid=item.uid
+                    stored,
+                    self._identical_copies(stored),
+                    1,
+                    replacement=asave.replacement_record(stored, item),
+                    uid=item.uid,
                 )
             )
         for stored in self.draft.removed_stored():
@@ -1158,11 +1194,17 @@ class EditMode(QObject):
         """Ask once (the old text cannot be brought back), then replace the stored notes, then
         save what is new in the draft. Returns whether a task was started."""
         w = self.win
-        reason = asave.stored_removal_reason()
-        if reason is not None:
-            self._refuse_here(reason)
-            return False
         for c in changes:
+            if c.replacement is not None and (reason := asave.can_edit_stored(c.mark)):
+                self._refuse_here(reason)
+                return False
+            if c.replacement is not None:
+                stays = self._stays_in(
+                    c.mark.recording, c.replacement["time"], c.replacement.get("channel")
+                )
+                if stays:
+                    self._refuse_here(stays)
+                    return False
             if w.data.is_archive(c.mark.recording):
                 self._refuse_here(
                     "A single-file recording cannot be changed: unpack it in Explore first."
@@ -1177,6 +1219,12 @@ class EditMode(QObject):
             f"{'version' if n == 1 else 'versions'}? The old "
             f"{'wording' if n == 1 else 'wordings'} cannot be brought back."
         )
+        twice = sum(1 for c in changes if c.copies > 1)
+        if twice:  # said, so nobody is surprised that the other copy stays as it was
+            line += (
+                f" {timefmt.format_count(twice, 'of them is', 'of them are')} stored more than "
+                "once: only one copy of each is replaced, the others stay."
+            )
         if not self.ask_remove_stored(line, 1):
             return False
         more = bool(self.draft.additions())

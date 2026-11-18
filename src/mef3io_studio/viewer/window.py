@@ -54,6 +54,7 @@ from ..model import viewer_colours as vc
 from ..model import viewer_display as vd
 from ..model import viewer_marks as vm
 from ..model import viewer_view as vv
+from ..model.inspect import NOTES_EDIT_INTERRUPTED
 from ..model.sampling import bounded_sample
 from ..model.viewer_view import ViewState
 from ..workers.slices import SlicedRunner
@@ -170,6 +171,11 @@ class ViewerWindow(QMainWindow):
     FIT_ON_OPEN = True
 
     closed = Signal()
+    #: Emitted once the window has really let go of its recordings (every read ended, every
+    #: file closed): from then on nothing here holds them. The app keeps the window in its
+    #: list of open viewers until then, so renaming stays refused and every task still
+    #: releases its files.
+    released = Signal()
     #: Hooks for what comes next: (what, time in µs). what = "start" | "end".
     export_edge = Signal(str, object)
     #: The page changed: (start, end) in µs.
@@ -280,6 +286,8 @@ class ViewerWindow(QMainWindow):
         self._banner_has_name = False
         self._notes_thread: threading.Thread | None = None
         self.notes_failed = False
+        #: Why the notes could not be read, when that is known (plain words, with what to do).
+        self.notes_failed_why = ""
         self.controller.pieces_changed.connect(self._apply_pieces)
         self.controller.loading_changed.connect(lambda on: self.canvas.set_loading(on))
         self.controller.failed.connect(self._failed)
@@ -578,11 +586,13 @@ class ViewerWindow(QMainWindow):
         row2.addWidget(self.timebase_box)
         row2.addWidget(self.length_label)
         row2.addWidget(self.filters_button)
-        row2.addWidget(self.profile_box)
-        self._colour_note_action = row2.addWidget(self.colour_note)
-        self._colour_note_action.setVisible(False)
         row2.addWidget(self.types_button)
         row2.addWidget(self.rows_label)
+        # What a narrow window may lose goes last, into the ">>" menu: the colours (a rare
+        # choice, kept in the preferences), never Types or the rows label.
+        self._colour_note_action = row2.addWidget(self.colour_note)
+        self._colour_note_action.setVisible(False)
+        row2.addWidget(self.profile_box)
         self.addToolBar(row2)
         self._sync_boxes()
         self._sync_long_buttons()
@@ -1704,8 +1714,12 @@ class ViewerWindow(QMainWindow):
         def run() -> None:
             try:
                 records, locked = data.annotations(), tuple(data.annotations_locked)
-            except Exception:
+                self.notes_failed_why = ""
+            except Exception as exc:
                 records, locked = None, ()
+                # an earlier change of the notes that was left unfinished says so, with what to do
+                interrupted = str(getattr(exc, "code", "")) == "edit-interrupted"
+                self.notes_failed_why = NOTES_EDIT_INTERRUPTED.text if interrupted else ""
             try:
                 self.annotations_ready.emit(records, locked)
             except RuntimeError:
@@ -1720,7 +1734,7 @@ class ViewerWindow(QMainWindow):
         self.notes_failed = records is None
         if records is None:
             records = []
-        self.notes_tab.set_failed(self.notes_failed)
+        self.notes_tab.set_failed(self.notes_failed, self.notes_failed_why)
         self.marks = vm.build_marks(records)
         self.locked_recordings = tuple(locked)
         self.marks_loaded = True
@@ -1742,7 +1756,7 @@ class ViewerWindow(QMainWindow):
             else f"Notes and events ({len(self.marks)})"
         )
         self.notes_button.setToolTip(
-            "The notes and events could not be read."
+            (self.notes_failed_why or "The notes and events could not be read.")
             if self.notes_failed
             else "The list of notes and events, and the recordings (M)"
         )
@@ -2120,6 +2134,10 @@ class ViewerWindow(QMainWindow):
                 self._stretches = []
                 self._sync_long_buttons()
                 self._overview_data()
+                QTimer.singleShot(0, self.request_strip_envelope)
+            elif not self._stretches:
+                # the signal is as it was, but the read of the real stretches was ended for the
+                # reopen before it reported: it is asked for again (with the band's channels)
                 QTimer.singleShot(0, self.request_strip_envelope)
             else:
                 self._sync_overview()
@@ -2691,16 +2709,41 @@ class ViewerWindow(QMainWindow):
     def _shut_down(self) -> None:
         """Stop the scheduler, then the pools, then close the data (in that order)."""
         try:
-            self.controller.finish_close()
+            try:
+                self.controller.finish_close()
+            finally:
+                self.data.release_files()  # again: a read that was running held files
+                thread = self._notes_thread
+                if thread is not None and thread is not threading.current_thread():
+                    # This runs on the shutdown thread, never the GUI thread: wait
+                    # for a notes read to end, however long, so the data is never
+                    # closed under it.
+                    thread.join()
+                self.data.close()
         finally:
-            self.data.release_files()  # the recording is free for anything else at once
-            thread = self._notes_thread
-            if thread is not None and thread is not threading.current_thread():
-                # This runs on the shutdown thread, never the GUI thread: wait
-                # for a notes read to end, however long, so the data is never
-                # closed under it.
-                thread.join()
-            self.data.close()
+            try:
+                self.released.emit()  # now the recordings are really free
+            except RuntimeError:
+                pass  # the window object is gone
+
+    def _let_go_now(self) -> None:
+        """The very first thing a closing window does: keep no signal file open any more and
+        let go of those held, BEFORE anything is waited for (a running read of the index can
+        take minutes on a network drive) and before ``closed`` is emitted. The library call is
+        a few closes; it runs on a thread of its own that is waited for at most 2 s, so the
+        GUI thread never hangs on a slow drive (``_shut_down`` releases once more)."""
+        data = self.data
+
+        def work() -> None:
+            try:
+                data.set_open_files(0)  # a read that is still running keeps nothing after it
+                data.release_files()
+            except Exception:  # noqa: BLE001 - closed already
+                pass
+
+        thread = threading.Thread(target=work, daemon=True, name="viewer-let-go")
+        thread.start()
+        thread.join(2.0)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self._closed:
@@ -2712,6 +2755,7 @@ class ViewerWindow(QMainWindow):
             self._debounce.stop()
             self._repeat_timer.stop()
             self.save_preferences()
+            self._let_go_now()
             self.controller.close()  # cancels at once; the stopping happens off this thread
             threading.Thread(target=self._shut_down, daemon=True).start()
             self.closed.emit()

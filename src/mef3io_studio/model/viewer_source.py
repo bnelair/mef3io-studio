@@ -604,23 +604,20 @@ class ViewerData:
         return int(getattr(self._combined, "open_files", 0) or 0)
 
     def set_open_files(self, n: int) -> None:
-        """Change how many files may be kept open (0 = keep nothing). A library without the
-        feature (before mef3io 2.4) keeps nothing open, as it always did."""
-        if hasattr(type(self._combined), "open_files"):
-            self._combined.open_files = max(0, int(n))
-            self._kept = max(0, int(n))
+        """Change how many files may be kept open (0 = keep nothing)."""
+        self._combined.open_files = max(0, int(n))
+        self._kept = max(0, int(n))
 
     def release_files(self) -> None:
         """Close every signal file the readers keep open, now. Safe from any thread and while
         reads run (the next read opens what it needs again). Call it before anything else
         needs the recording's files: writing notes into it, renaming or removing it."""
-        self._holding = False
+        with self._busy_lock:
+            if not self._busy:  # a read that runs may hold files again: it keeps the flag
+                self._holding = False
         for obj in [self._combined, *self._readers]:
-            release = getattr(obj, "release_files", None)
-            if release is None:
-                continue
             try:
-                release()
+                obj.release_files()
             except Exception:  # noqa: BLE001 - closed already: nothing is held
                 pass
 

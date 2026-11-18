@@ -1862,32 +1862,6 @@ def test_changing_the_text_into_a_copy_is_refused(ed):
     assert win.edit.draft.get(other.uid).text == "two"
 
 
-def test_the_menu_on_a_stored_note_shows_remove_disabled_with_the_reason(ed, monkeypatch):
-    """Only with a library that cannot take a stored note out (before mef3io 2.4)."""
-    from PySide6.QtWidgets import QMenu
-
-    from mef3io_studio.model import annotation_save as asave
-
-    monkeypatch.delattr(mef3io, "remove_annotations")
-    win, spy, _ = ed
-    stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
-    for edit_on in (False, True):  # findable from the normal view too
-        if edit_on:
-            turn_on(win)
-        menu = QMenu()
-        win.edit.note_menu(menu, stored)
-        found = entries(menu)
-        remove = found["Remove this note"]
-        assert not remove.isEnabled() and remove.toolTip() == asave.STORED_REMOVAL_REASON
-        assert found[asave.STORED_REMOVAL_REASON].isEnabled() is False  # the reason is on show
-    assert asave.STORED_REMOVAL_REASON == "A stored note cannot be removed yet in this version."
-    assert not BANNED_RE.search(asave.STORED_REMOVAL_REASON)
-    # the key says the same and changes nothing
-    win.edit.select(stored)
-    key(win, Qt.Key.Key_Delete)
-    assert win.status_message.text() == asave.STORED_REMOVAL_REASON and not win.edit.draft.dirty
-
-
 def test_a_right_click_on_a_chip_and_on_a_list_row_opens_that_menu(ed, qtbot):
     win, spy, _ = ed
     from PySide6.QtCore import QPoint
@@ -1918,17 +1892,6 @@ def test_a_right_click_on_a_chip_and_on_a_list_row_opens_that_menu(ed, qtbot):
     win._context_menu(0, mark.time, win.canvas.mapToGlobal(QPoint(5, 5)), False)
     assert "Remove this note" in entries(win._menu)
     win._menu.close()
-
-
-def test_a_library_without_removal_raises_a_plain_not_supported_result(ed, monkeypatch):
-    from mef3io_studio.model import annotation_save as asave
-
-    monkeypatch.delattr(mef3io, "remove_annotations")
-    win, _spy, _ = ed
-    assert asave.stored_removal_reason() == asave.STORED_REMOVAL_REASON
-    with pytest.raises(asave.StoredRemovalNotSupported) as err:
-        asave.remove_stored_notes(win.data, [asave.StoredChange(win.marks[0])])
-    assert err.value.user_message.text == asave.STORED_REMOVAL_REASON
 
 
 def test_the_only_calls_that_change_a_recordings_notes_are_in_one_module():

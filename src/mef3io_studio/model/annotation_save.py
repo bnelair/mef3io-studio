@@ -24,18 +24,13 @@ text in anything that can reach a log.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from . import timefmt
 from .annotation_draft import SavePlan
 from .errors import UserMessage, describe_error
 from .text import technical
-
-#: Why a note that is already stored in a recording cannot be taken out. ONE sentence,
-#: shown beside the disabled "Remove" entry and when a key asks for it.
-#: Only said while the installed mef3io is older than 2.4 (it has no ``remove_annotations``).
-STORED_REMOVAL_REASON = "A stored note cannot be removed yet in this version."
 
 BOTH_PASSWORDS = "To add notes to a password-protected recording, both its passwords are needed."
 
@@ -371,26 +366,77 @@ class StoredResult:
     signals_same: dict[int, bool] = field(default_factory=dict)
 
 
-class StoredRemovalNotSupported(Exception):
-    """The installed mef3io cannot take out stored notes (before 2.4)."""
+#: Types the library's ``add`` can store COMPLETELY from what the app holds (time, text,
+#: length): a copy that is added back (one of several identical copies removed) is then
+#: identical to the one that stays. Any other type (Seiz, Epoc, Curs ...) has body fields
+#: ``add`` cannot write, so it can only be removed with ALL its copies.
+COPYABLE_TYPES = ("Note", "EDFA", "SyLg")
+#: Types the editor can write back unchanged in kind: a note or an event with a length.
+EDITABLE_TYPES = ("Note", "EDFA")
+#: Said when a stored note of another kind is asked to be changed (it can still be removed).
+EDIT_TYPE_REASON = (
+    "This kind of note can only be removed, not changed, in this version: changing it would "
+    "turn it into a plain note and lose what it holds."
+)
 
-    def __init__(self) -> None:
-        super().__init__("stored notes cannot be removed")
-        self.user_message = UserMessage("A stored note cannot be removed", STORED_REMOVAL_REASON)
+
+def can_edit_stored(mark) -> str:
+    """ "" when the stored note ``mark`` can be changed here, else the plain reason why not.
+    A Note, or an EDFA that has a length; any other kind would lose its type or its fields."""
+    if mark.code == "Note" or (mark.code == "EDFA" and mark.end is not None):
+        return ""
+    return EDIT_TYPE_REASON
 
 
-def stored_removal_reason() -> str | None:
-    """The sentence that says why a stored note cannot be removed, or None when it can."""
-    import mef3io
+def replacement_record(mark, item) -> dict:
+    """What replaces the stored note ``mark`` when the draft's ``item`` is saved: the same
+    kind of record (a Note stays a Note unless a length was given, an EDFA stays an EDFA
+    unless its length was taken away: the user's own choice), at the item's time and channel.
+    The text is the stored text AS IT IS when it was not edited (a trailing blank survives
+    a change of time alone)."""
+    from . import annotation_draft as ad
 
-    return None if hasattr(mef3io, "remove_annotations") else STORED_REMOVAL_REASON
+    unchanged = ad.split_text(mark.text) == (item.label, item.text)
+    rec = {
+        "type": item.code,
+        "time": int(item.time),
+        "text": mark.text if unchanged else item.stored_text,
+    }
+    if item.is_span:
+        rec["duration"] = int(item.end - item.time)
+    if item.channel:
+        rec["channel"] = item.channel
+    return rec
+
+
+def mark_key(mark) -> tuple:
+    """What makes a stored note THIS note: time, type, level, channel, text and length."""
+    return (mark.time, mark.code, mark.level, mark.channel, mark.text, mark.end)
+
+
+def record_key(rec: dict) -> tuple:
+    """:func:`mark_key` of a stored record as the library returns it."""
+    from . import viewer_marks as vm
+
+    text = rec.get("text")
+    return (
+        int(rec["time"]),
+        str(rec.get("type") or ""),
+        str(rec.get("level") or ""),
+        rec.get("channel"),
+        text if isinstance(text, str) else "",
+        vm.mark_end(rec),
+    )
 
 
 #: Plain words for every refusal the library can give here, by its stable ``code``:
 #: ``(title, what happened and what it means, what to do)``. ``{r}`` is the recording's name
 #: ("Recording A"). Never the library's own sentence (it names paths and note text): that
 #: goes behind "Technical details". Each text says what became of the recording.
-_UNCHANGED = "Nothing was removed."
+#: Every text carries this token where it says what became of the notes; the words are made
+#: by :func:`describe_removal_error` (nothing removed, or exactly what was and was not done).
+_UNCHANGED = "{outcome}"
+_RESCUE = technical("python -m mef3io recover --apply <folder>")
 _REOPEN = "Close this window, open the recording again and try once more."
 _ASK = "Ask someone who works with mef3io to look at this recording."
 _NOTE_GONE = (
@@ -406,9 +452,19 @@ _DAMAGED = (
     f'{_UNCHANGED} Use "Check for problems" in Explore to look at it; {_ASK[0].lower()}{_ASK[1:]}'
 )
 _LEFT_OVER = (
-    "An earlier change to the notes of {r} was left unfinished, for example by a power cut, so "
-    "its notes cannot be changed until that has been settled. The app cannot do that yet: "
-    f"{_ASK[0].lower()}{_ASK[1:]} The notes were not changed now."
+    "A program was changing the notes and events of {r} and was interrupted (or is still "
+    "working on it), so they cannot be changed until that is settled. "
+    f"{_UNCHANGED} If no program is still working on it, it must be rescued first: this app "
+    "version cannot do that yet. Ask whoever looks after the recording's files to run "
+    f"mef3io's rescue on it ({_RESCUE}; without the apply option it only reports). The "
+    "rescue either finishes the change or puts the earlier notes and events back, so the "
+    "change may turn out not to have been made. Do not remove or move any file next to the "
+    "recording first."
+)
+_ENCRYPTION = (
+    "The new note does not fit the password protection of {r} (its notes are stored "
+    f"differently from what the new one needs). {_UNCHANGED} Add it as a new note instead, "
+    "or ask someone who works with mef3io to look at this recording."
 )
 REMOVAL_WORDS: dict[str, tuple[str, str]] = {
     "no-match": ("This note is not in the recording any more", _NOTE_GONE),
@@ -470,9 +526,49 @@ REMOVAL_WORDS: dict[str, tuple[str, str]] = {
     technical("record-index-mismatch"): ("The notes of this recording are damaged", _DAMAGED),
     technical("record-index-missing"): ("The notes of this recording are damaged", _DAMAGED),
     technical("ambiguous-session-records"): ("The notes of this recording are damaged", _DAMAGED),
-    "edit-unsettled": ("An earlier change was left unfinished", _LEFT_OVER),
-    "edit-interrupted": ("An earlier change was left unfinished", _LEFT_OVER),
-    "mid-operation": ("An earlier change was left unfinished", _LEFT_OVER),
+    "edit-unsettled": (
+        "The notes and events were being changed when a program stopped",
+        _LEFT_OVER,
+    ),
+    "edit-interrupted": (
+        "The notes and events were being changed when a program stopped",
+        _LEFT_OVER,
+    ),
+    "mid-operation": ("The notes and events were being changed when a program stopped", _LEFT_OVER),
+    technical("edit-journal-inconsistent"): (
+        "The notes and events were being changed when a program stopped",
+        _LEFT_OVER,
+    ),
+    technical("records-encryption-mismatch"): (
+        "The new note does not fit the password protection",
+        _ENCRYPTION,
+    ),
+    technical("verify-failed"): (
+        "The changed notes could not be checked",
+        "The notes of {r} were rewritten, but the check of the result failed, so the change "
+        f"was not kept. {_UNCHANGED} {_REOPEN}",
+    ),
+    "copy-type": (
+        "Only all copies of this note can be removed",
+        "This note is stored more than once in {r}, and this kind of note holds details that "
+        f"cannot be written back, so one copy cannot be left. {_UNCHANGED} Remove all its "
+        "copies, or leave it.",
+    ),
+    "edit-type": (
+        "This kind of note cannot be changed",
+        f"A note of {{r}}: {EDIT_TYPE_REASON[0].lower()}{EDIT_TYPE_REASON[1:]} {_UNCHANGED}",
+    ),
+    technical("verify-plan"): (
+        "The changed notes could not be checked",
+        "The planned notes of {r} did not pass the library's check before anything was "
+        f"written, so nothing was changed. {_UNCHANGED} {_REOPEN}",
+    ),
+    "read-only": (
+        "The recording's folder cannot be written to",
+        "The notes of {r} cannot be changed: its folder is read-only, or you do not have "
+        f"permission to write to it. {_UNCHANGED} Ask whoever looks after the recording's "
+        "files to allow it (or open a copy that you may change), then try again.",
+    ),
     "edit-in-progress": (
         "Another program is changing this recording's notes",
         "A program on this computer started a change to the notes of {r} and has not finished. "
@@ -508,33 +604,55 @@ REMOVAL_WORDS: dict[str, tuple[str, str]] = {
 }
 
 
-def describe_removal_error(exc: BaseException, name: str) -> UserMessage:
-    """Plain words for a failed removal in ``name`` (e.g. "Recording A"). Every code of the
-    library has an entry in :data:`REMOVAL_WORDS`; anything else gets the general words of
-    :func:`describe_error`, with "Nothing was removed." added."""
+def _outcome(name: str, done: Sequence[str]) -> str:
+    """What became of the notes, said exactly: nothing removed, or which recordings were
+    changed (and cannot be changed back) and that ``name`` was not."""
+    if not done:
+        return "Nothing was removed."
+    where = ", ".join(done)
+    return (
+        f"{name} was not changed, and neither were the recordings after it. Already "
+        f"changed, and this cannot be undone: recording {where}."
+    )
+
+
+def _is_read_only(exc: BaseException) -> bool:
+    """A folder the user may not write to (read-only, or no permission): the library says so
+    in its own words or through the system's error number."""
+    import errno
+
+    if getattr(exc, "errno", None) in (errno.EACCES, errno.EROFS, errno.EPERM):
+        return True
+    text = str(exc).lower()
+    return any(
+        s in text
+        for s in (
+            "read-only file system",
+            "permission denied",
+            "access is denied",
+            "not permitted",
+            "cannot open for write",  # the library's words when a folder takes no new file
+        )
+    )
+
+
+def describe_removal_error(exc: BaseException, name: str, done: Sequence[str] = ()) -> UserMessage:
+    """Plain words for a failed removal in ``name`` (e.g. "Recording A"). ``done`` = the
+    letters of recordings already changed before this one failed. Every code of the library
+    has an entry in :data:`REMOVAL_WORDS`; anything else gets the general words of
+    :func:`describe_error`."""
     code = str(getattr(exc, "code", "") or "")
     detail = f"{type(exc).__name__}: {exc}"
+    outcome = _outcome(name, done)
+    if code in ("", "edit-failed") and _is_read_only(exc):
+        code = "read-only"
     if code in REMOVAL_WORDS:
         title, text = REMOVAL_WORDS[code]
-        return UserMessage(title, text.replace("{r}", name), detail, code)
+        return UserMessage(
+            title, text.replace("{r}", name).replace("{outcome}", outcome), detail, code
+        )
     base = describe_error(exc)
-    return UserMessage(base.title, f"{base.text} Nothing was removed.", base.detail or detail, code)
-
-
-def _mark_matches(rec: dict, mark) -> bool:
-    """Whether the stored record ``rec`` is the note ``mark`` shows (its time, type, level,
-    channel, text and length)."""
-    from . import viewer_marks as vm
-
-    text = rec.get("text")
-    return (
-        int(rec["time"]) == mark.time
-        and str(rec.get("type") or "") == mark.code
-        and str(rec.get("level") or "") == mark.level
-        and rec.get("channel") == mark.channel
-        and (text if isinstance(text, str) else "") == mark.text
-        and vm.mark_end(rec) == mark.end
-    )
+    return UserMessage(base.title, f"{base.text} {outcome}", base.detail or detail, code)
 
 
 def _body(rec: dict) -> dict:
@@ -549,19 +667,41 @@ def _body(rec: dict) -> dict:
     return out
 
 
-def _selectors(data, index: int, changes: list[StoredChange]):
-    """The ``remove`` and ``add`` lists for recording ``index``, or a plain reason why not.
-    The stored records come from the open data (one read of the notes, already cached)."""
-    stored = [a for a in data.annotations() if a["recording"] == index]
+def stored_index(data) -> dict[int, dict[tuple, list[dict]]]:
+    """The stored notes of every recording, indexed ONCE by their exact content
+    (:func:`record_key`): recording -> key -> the records that are that note. Finding a note
+    and counting its copies is then one lookup, however many notes there are."""
+    out: dict[int, dict[tuple, list[dict]]] = {}
+    for rec in data.annotations():
+        out.setdefault(rec["recording"], {}).setdefault(record_key(rec), []).append(rec)
+    return out
+
+
+def _selectors(data, index: int, changes: list[StoredChange], stored=None):
+    """The ``remove`` and ``add`` lists for recording ``index``, or a plain reason why not
+    (a code of ours: gone, unclear, copy-type, edit-type). The stored records come from the
+    open data (one read of the notes, already cached), indexed once (``stored``: the index
+    of :func:`stored_index`, built here when not given)."""
+    stored = (stored if stored is not None else stored_index(data)).get(index, {})
     remove: list[dict] = []
     add: list[dict] = []
+    seen: set[tuple] = set()
     for change in changes:
-        found = [r for r in stored if _mark_matches(r, change.mark)]
+        key = mark_key(change.mark)
+        if key in seen:  # the same note chosen twice: the library would refuse the overlap
+            return None, None, "unclear"
+        seen.add(key)
+        found = stored.get(key, [])
         if len(found) != change.copies:
             return None, None, "gone"
         shape = {k: v for k, v in found[0].items() if k != "recording"}
         if any({k: v for k, v in r.items() if k != "recording"} != shape for r in found):
             return None, None, "unclear"  # same time and text, but not the same note
+        kind = str(shape.get("type") or "")
+        if change.remove < change.copies and kind not in COPYABLE_TYPES:
+            return None, None, "copy-type"  # a copy added back would not be identical
+        if change.replacement is not None and kind not in EDITABLE_TYPES:
+            return None, None, "edit-type"  # an edit would change its type or drop its fields
         remove.append({**shape, "expect": change.copies})
         add.extend(_body(found[0]) for _ in range(change.copies - change.remove))
         if change.replacement is not None:
@@ -594,8 +734,6 @@ def remove_stored_notes(
 
     from .cancel import is_stop
 
-    if stored_removal_reason() is not None:
-        raise StoredRemovalNotSupported
     result = StoredResult()
     extra = passwords or {}
     register(*(p for p in extra.values() if p))
@@ -603,12 +741,9 @@ def remove_stored_notes(
     for change in changes:
         by_recording.setdefault(change.mark.recording, []).append(change)
 
-    def refuse(title: str, text: str) -> StoredResult:
-        result.error = UserMessage(title, text + " Nothing was removed.")
-        return result
-
     pairs: dict[int, tuple[str, str]] = {}
     plans: dict[int, tuple[list[dict], list[dict]]] = {}
+    stored = stored_index(data)  # the stored notes, indexed ONCE
     for index in sorted(by_recording):
         name = f"Recording {data.recordings[index].letter}"
         if data.is_archive(index):
@@ -619,9 +754,9 @@ def remove_stored_notes(
         except SaveFailed as exc:
             result.error = exc.user_message
             return result
-        remove, add, why = _selectors(data, index, by_recording[index])
+        remove, add, why = _selectors(data, index, by_recording[index], stored)
         if why:
-            code = "no-match" if why == "gone" else "bad-selector"
+            code = {"gone": "no-match", "unclear": "bad-selector"}.get(why, why)
             result.error = describe_removal_error(_Coded(code), name)
             return result
         plans[index] = (remove, add)
@@ -653,14 +788,9 @@ def remove_stored_notes(
                     + _removed_text(data, result),
                 )
             elif isinstance(exc, Exception):
-                result.error = describe_removal_error(exc, name)
-                if result.written:
-                    result.error = UserMessage(
-                        result.error.title,
-                        result.error.text + _removed_text(data, result),
-                        result.error.detail,
-                        result.error.code,
-                    )
+                result.error = describe_removal_error(
+                    exc, name, [data.recordings[i].letter for i in sorted(result.written)]
+                )
             else:
                 raise
             return result

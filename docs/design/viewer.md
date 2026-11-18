@@ -124,7 +124,9 @@ From top to bottom, as in the clinical viewer:
    (`_wait_quiet`, at most 20 s) so it never delays them. Every channel read is
    cached for the open recording (4096 columns per channel, reduced to the width
    when drawn): paging never reads it again; a channel picked later is the only
-   one asked for (`request_overview`, no waiting); a save that changed the
+   one asked for (`request_overview`, on a thread of its own, `viewer-pick`: it never
+   waits behind the automatic read, which may sit in its quiet-wait for seconds or read
+   a multi-day index for minutes); a save that changed the
    signal clears the cache and reads again. Code: `viewer/overview.py`.
 3a. **Overview strip (32 px):** the whole timeline.
    - Data drawn per recording in that recording's colour, with gaps
@@ -685,22 +687,53 @@ The honest steps for one note, from "I see something" to "it is stored":
   or the details), compares the snapshot, and reads only the notes again
   (`ViewerData.refresh_notes` with the NET change, negative for a removal; else the old
   reopen). Same save lock as saving notes (`EditMode.saving`: the draft is frozen, the
-  window waits for the task), Stop is the task's token (`for_library()`), before the files
-  are swapped nothing changed and the library puts everything back itself. A note stored
+  window waits for the task). **Stop** is the task's token (`for_library()`): before the
+  library swaps the new notes files in, nothing changes and it puts everything back itself;
+  a swap that has begun is finished (the library ignores a Stop from then on: a few
+  renames) and the app then reports the removal as done, which is true. A note stored
   TWICE (identical records) is said so in the line, and the choices are one copy (the
   library call removes both with `expect=2` and adds one back in the same call, so nothing
-  is half-done) or all of them. **Changing the text** of a stored note stays what the draft
-  already does (a changed version beside the struck-through original); at Save, one line
-  asks ("Replace 1 stored note in Recording A with the changed version? The old wording
-  cannot be brought back.") and the stored change is written first, remove + add in ONE
-  call, then what is new in the draft is saved as before. A changed note stays in its own
-  recording and level (an `add` needs that level's notes file to exist: `add-level-missing`
-  has words). Refusals: every `code` the library gives for this call has plain words with a
-  next step in `annotation_save.REMOVAL_WORDS` (`describe_removal_error`; a test lists them
-  all); any other error gets the general words. `assume_owner_gone` is never passed. A
-  single-file (`.mefd.tar`) recording says so and nothing is asked. With an older mef3io
-  (no `remove_annotations`) the entry stays grey with "A stored note cannot be removed yet
-  in this version." (`stored_removal_reason`).
+  is half-done) or all of them. "One copy" is offered only for the kinds `add` can write
+  back whole (`COPYABLE_TYPES`: Note, EDFA, SyLg); any other kind (Seiz, Epoc, Curs ...)
+  holds body fields `add` drops, so its line offers only "remove all N" (refused as
+  `copy-type` in the task too). **Changing the text** of a stored note stays what the
+  draft already does (a changed version beside the struck-through original); at Save, one
+  line asks ("Replace 1 stored note in Recording A with the changed version? The old wording
+  cannot be brought back.", plus "N of them are stored more than once: only one copy of
+  each is replaced" when so) and the stored change is written first, remove + add in ONE
+  call, then what is new in the draft is saved as before. What an edit may and may not do:
+  * only a Note, or an EDFA that has a length, can be changed (`can_edit_stored`); any
+    other kind can only be removed, because the editor can only write those two (a Seiz or
+    Epoc would turn into a plain note and lose its fields): the edit entry says so in one
+    sentence and Save refuses a forced draft;
+  * the record keeps its kind (`replacement_record`): a Note stays a Note unless the user
+    gave it a length, an EDFA stays an EDFA unless the user took the length away;
+  * the text is the stored text AS IT IS when it was not edited (a trailing blank survives a
+    change of time alone: `compose_text` would strip it);
+  * it stays in its own recording and level: the editor refuses a time at which that
+    recording holds no data of the channel ("remove it and add a new note there"), and Save
+    checks the same (`_stays_in`); there is no re-routing (an `add` also needs the level's
+    notes file to exist: `add-level-missing` has words).
+  Matching is linear: the stored notes are indexed ONCE by their exact content
+  (`stored_index`, `mark_key`), and the window counts copies once per read of the notes
+  (`EditMode._copy_counts`), so thousands of changes cost a dictionary lookup each (test:
+  2,000 changes among 50,000 stored notes). Refusals: every `code` the library gives for
+  this call has plain words with a next step in `annotation_save.REMOVAL_WORDS`
+  (`describe_removal_error`); a test derives the codes from the installed library (its
+  docstring and the code-shaped strings of its compiled part) and fails on any without
+  words. An interrupted earlier edit (`edit-interrupted`, `edit-unsettled`,
+  `edit-journal-inconsistent`, `mid-operation`) uses the wording of Explore and Check for
+  problems, with the rescue command `python -m mef3io recover --apply <folder>` inside
+  `technical()` (the app does not rescue). The message says exactly what happened per
+  recording: "Nothing was removed", or "Recording B was not changed ... Already changed,
+  and this cannot be undone: recording A". A folder that cannot be written to (read-only or
+  no permission: the library says "cannot open for write" or "Permission denied") has its
+  own sentence (`read-only`). The application's switch that skips the library's check for a
+  program that is still editing is never used. A single-file (`.mefd.tar`) recording says
+  so and nothing is asked. The mef3io pin is 2.4.0, which has `remove_annotations`, so
+  there is no fallback for an older library. A recording whose notes edit was interrupted
+  opens with its signal; the notes tab and the button's tooltip say why the notes are not
+  there and what to do (`NOTES_EDIT_INTERRUPTED`).
 - **A reopen that fails after a notes-only save** switches saving off (`stale`, the count line
   says so) because the notes shown are the old ones and a note added again would be stored
   twice. `begin_data_change()` is inside the guarded path of both reopen routes, so a raise
@@ -980,10 +1013,17 @@ sensitivity says so on screen.
   chooses N: two files per channel (the page's segment and the next one, for a page across a
   border), at most an EIGHTH of the process's descriptor limit (the library says "well under
   a quarter"; the app holds descriptors of its own) and never more than 128: Linux soft
-  limit 1024 -> 128, macOS 256 -> 32, Windows -> 64 (the C runtime keeps 512 streams by
-  default; a library that uses buffered streams meets that, `_setmaxstdio` can raise it
-  to 8192 but nothing here relies on it). A recording with 16 channels asks for 32. Files are
-  let go (`ViewerData.release_files`, any thread) when the window closes, before the app
+  limit 1024 -> 128, macOS 256 -> 32 (the usual soft limit of a GUI program, assumed).
+  Windows: 128, the number the library itself suggests there; the library opens operating-
+  system handles on Windows (no C-runtime stream limit applies), and the library's notes say
+  that a folder cannot be renamed or removed while a file in it is held. NOTHING was
+  measured on Windows or macOS: the numbers are assumptions to be checked. A recording with
+  16 channels asks for 32. Files are
+  let go (`ViewerData.release_files`, any thread) when the window closes (SYNCHRONOUSLY at
+  its very start, before anything is waited for: `_let_go_now` sets the number to 0 and
+  releases, on a thread the window waits for at most 2 s; the window counts as holding its
+  recordings, for Rename's refusal and for every task's release, until it has really shut
+  down: the `released` signal, not `closed`), before the app
   writes into the recording (a save of notes, removing or changing a stored note), before
   EVERY job the app starts (`JobManager.prologue`, run on the job's own thread: renaming,
   joining, anonymizing, packing, "make them again" removing an earlier copy: none meets a

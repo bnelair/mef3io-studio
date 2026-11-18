@@ -1,0 +1,424 @@
+# ruff: noqa: F811, F401
+"""Review round 1 of the viewer branch (PR #95): one test for each finding that was fixed.
+Synthetic recordings only. Each test fails without its fix."""
+
+from __future__ import annotations
+
+import errno
+import os
+import threading
+import time
+import warnings
+
+import mef3io
+import pytest
+from PySide6.QtCore import Qt
+from test_viewer_edit import (  # noqa: F401
+    Spy,
+    ed,
+    finish_save,
+    open_locked,
+    records,
+    tree_hash,
+    turn_on,
+)
+from test_viewer_marks_ui import make_window, pair, wait_marks, write  # noqa: F401
+from test_viewer_open_files import held_signal_files
+from test_viewer_remove_notes import NOTE, Asked, remove, stored, texts  # noqa: F401
+from test_viewer_ui import LIGHT, open_data, settle
+
+from mef3io_studio.model import annotation_save as asave
+from mef3io_studio.model import viewer_marks as vm
+from mef3io_studio.viewer.window import ViewerWindow
+
+T0 = 946_684_800_000_000
+SEC = 1_000_000
+
+
+class Fake:
+    """The stored notes, as ``ViewerData.annotations()`` hands them over."""
+
+    def __init__(self, recs):
+        self._recs = recs
+
+    def annotations(self):
+        return self._recs
+
+
+def rec(i, kind="Note", text=None, recording=0, duration=None, time_=None):
+    out = {
+        "type": kind,
+        "time": T0 + i if time_ is None else time_,
+        "level": "session",
+        "channel": None,
+        "segment": None,
+        "text": f"n{i}" if text is None else text,
+        "recording": recording,
+    }
+    if duration is not None:
+        out["duration"] = duration
+    return out
+
+
+def mark_of(r):
+    return vm.Mark(
+        r["time"], vm.mark_end(r), r["type"], r["recording"], r["level"], r["channel"], r["text"]
+    )
+
+
+# --- notes review 1: a kind of note an edit would change -------------------------------------
+
+
+def test_a_stored_note_of_another_kind_can_be_removed_but_not_changed(make_window, tmp_path, qtbot):
+    p = write(
+        tmp_path / "Log.mefd",
+        notes=[
+            {"time": T0 + 5 * SEC, "type": "SyLg", "text": "log line"},
+            {"time": T0 + 8 * SEC, "type": "Note", "text": "plain"},
+        ],
+    )
+    win = make_window(p, reveal=lambda i: True)
+    wait_marks(qtbot, win)
+    spy = Spy(win)
+    log = next(m for m in win.notes_tab.rows if m.code == "SyLg")
+    before = tree_hash(p)
+    turn_on(win)
+    win.edit.ask_note = lambda editor: pytest.fail("the editor must not open")
+    win.edit.select(log)
+    assert win.edit.edit_selected() is None
+    assert "only be removed" in win.last_refusal and tree_hash(p) == before
+    # forced through the draft: Save refuses and writes nothing (the type would be lost)
+    win.edit.draft.edit_stored(log, text="changed")
+    assert win.edit.save() is False
+    assert "only be removed" in win.last_refusal and tree_hash(p) == before
+    assert not spy.stored_lines  # nothing was asked: nothing can be done
+    win.edit.draft.clear()
+    win.edit.refresh()
+    Asked(win)
+    remove(qtbot, win, log)  # removing is fine
+    assert texts(p) == ["plain"]
+
+
+def test_an_edited_note_keeps_its_kind_and_its_length(make_window, tmp_path, qtbot):
+    p = write(
+        tmp_path / "Ev.mefd",
+        notes=[
+            {"time": T0 + 5 * SEC, "type": "EDFA", "duration": 2 * SEC, "text": "Spike: sharp"},
+            {"time": T0 + 20 * SEC, "type": "Note", "text": "plain"},
+        ],
+    )
+    win = make_window(p, reveal=lambda i: True)
+    wait_marks(qtbot, win)
+    Spy(win)
+    turn_on(win)
+    ev = next(m for m in win.notes_tab.rows if m.code == "EDFA")
+    win.edit.draft.edit_stored(ev, text="blunt")
+    finish_save(qtbot, win)
+    got = [r for r in records(p) if r["type"] == "EDFA"]
+    assert len(got) == 1 and got[0]["duration"] == 2 * SEC and got[0]["text"] == "Spike: blunt"
+
+
+def test_one_copy_of_a_kind_that_cannot_be_written_back_is_refused():
+    r1, r2 = rec(1, "Epoc"), rec(1, "Epoc")
+    data = Fake([r1, r2])
+    mark = mark_of(r1)
+    remove_, add, why = asave._selectors(data, 0, [asave.StoredChange(mark, 2, 1)])
+    assert why == "copy-type" and remove_ is None  # one copy would be added back incomplete
+    remove_, add, why = asave._selectors(data, 0, [asave.StoredChange(mark, 2, 2)])
+    assert why == "" and add == []  # all copies: fine
+    # the same note of a kind that can be written back whole: one copy can stay
+    n1, n2 = rec(1), rec(1)
+    remove_, add, why = asave._selectors(Fake([n1, n2]), 0, [asave.StoredChange(mark_of(n1), 2, 1)])
+    assert why == "" and len(add) == 1
+
+
+def test_the_line_for_such_a_note_stored_twice_offers_only_all(ed):
+    win, spy, _ = ed
+    r = rec(1, "Epoc", recording=0)
+    m = mark_of(r)
+    win.marks = [m, m]  # as the notes list would show it
+    asked = []
+    win.edit.ask_remove_stored = lambda line, copies: (asked.append((line, copies)), "one")[1]
+    assert win.edit._remove_stored(m) is False  # "one copy" is not possible: nothing starts
+    assert asked and asked[0][1] == 1 and "stored twice" in asked[0][0]
+    assert "only be removed with all its copies" in asked[0][0]
+
+
+# --- notes review 2: matching is linear -----------------------------------------------------
+
+
+def test_2000_changes_among_50000_stored_notes_are_matched_quickly(ed):
+    n = 50_000
+    recs = [rec(i) for i in range(n)]
+    marks = [mark_of(r) for r in recs[::25]]  # 2,000 of them
+    changes = [asave.StoredChange(m, 1, 1) for m in marks]
+    started = time.perf_counter()
+    remove_, add, why = asave._selectors(Fake(recs), 0, changes)
+    assert why == "" and len(remove_) == 2000
+    assert time.perf_counter() - started < 10  # quadratic: minutes
+    # and the window's own count of copies (the GUI thread) is one pass, then lookups
+    win, _spy, _ = ed
+    win.marks = [mark_of(r) for r in recs]
+    started = time.perf_counter()
+    assert all(win.edit._identical_copies(m) == 1 for m in marks)
+    assert time.perf_counter() - started < 10
+
+
+# --- notes review 3: an edited stored note stays in its own recording ----------------------------
+
+
+def test_a_stored_note_cannot_be_moved_into_another_recording(ed):
+    win, spy, (a, b) = ed
+    values = {"time": T0 + 100 * SEC, "end": None, "label": "Note", "channel": None, "text": "x"}
+    # B holds data at 100 s: for a NEW note that is fine, for a stored note of A it is not
+    assert win.edit._check_values(values) == ""
+    why = win.edit._check_values(values, within=0)
+    assert "stays there" in why and "remove it and add a new note" in why
+    inside = dict(values, time=T0 + 6 * SEC)
+    assert win.edit._check_values(inside, within=0) == ""
+    # and Save refuses it if it was forced into the draft
+    turn_on(win)
+    mark = stored(win, "Alpha plain note")
+    win.edit.draft.edit_stored(mark, time=T0 + 100 * SEC)
+    before = tree_hash(a), tree_hash(b)
+    assert win.edit.save() is False
+    assert "stays there" in win.last_refusal and (tree_hash(a), tree_hash(b)) == before
+
+
+# --- notes review 4: the text is kept exactly ----------------------------------------------------
+
+
+def test_changing_only_the_time_keeps_the_text_exactly(make_window, tmp_path, qtbot):
+    p = write(
+        tmp_path / "Sp.mefd",
+        notes=[{"time": T0 + 5 * SEC, "type": "Note", "text": "trail "}],
+    )
+    win = make_window(p, reveal=lambda i: True)
+    wait_marks(qtbot, win)
+    Spy(win)
+    turn_on(win)
+    mark = next(m for m in win.notes_tab.rows if m.text == "trail ")
+    win.edit.draft.edit_stored(mark, time=mark.time + 1000)
+    finish_save(qtbot, win)
+    got = records(p)
+    assert [r["text"] for r in got] == ["trail "] and got[0]["time"] == T0 + 5 * SEC + 1000
+
+
+# --- notes review 5: words for the two codes it missed ---------------------------------------
+
+
+def test_the_interrupted_edit_words_name_the_working_rescue_command():
+    for code in ("edit-journal-inconsistent", "edit-interrupted", "edit-unsettled"):
+        exc = Exception("x")
+        exc.code = code
+        text = asave.describe_removal_error(exc, "Recording A").text
+        assert "python -m mef3io recover --apply <folder>" in text, code
+        assert "rescue" in text and "Nothing was removed" in text
+    exc = Exception("x")
+    exc.code = "records-encryption-mismatch"
+    message = asave.describe_removal_error(exc, "Recording A")
+    assert message.title != "Something went wrong" and "password protection" in message.title
+
+
+# --- notes review 6: an interrupted notes edit says so ----------------------------------------
+
+
+def test_a_recording_with_an_interrupted_notes_edit_says_why_and_what_to_do(
+    make_window, tmp_path, qtbot
+):
+    from mef3io.annotations import _remove_annotations
+
+    p = write(tmp_path / "Half.mefd", notes=[NOTE, {"time": T0 + 9 * SEC, "text": "two"}])
+    with pytest.raises(Exception):  # noqa: B017 - the library's own simulated crash
+        _remove_annotations(
+            str(p),
+            [dict(r) for r in records(p) if r["text"] == NOTE["text"]],
+            [],
+            _crash_at=6,
+        )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        win = make_window(p, reveal=lambda i: True)
+        wait_marks(qtbot, win)
+    assert win.notes_failed
+    tip = win.notes_button.toolTip()
+    assert "rescued" in tip and "Check for problems" in tip
+    assert win.notes_tab.failed.text() == tip and not win.notes_tab.failed.isHidden()
+
+
+# --- notes review 7: messages ---------------------------------------------------------------------
+
+
+def test_a_partial_result_says_exactly_what_was_and_was_not_done():
+    exc = Exception("x")
+    exc.code = "edit-failed"
+    text = asave.describe_removal_error(exc, "Recording B", ["A"]).text
+    assert "Nothing was removed" not in text
+    assert "Recording B was not changed" in text and "recording A" in text and "undone" in text
+    assert "Nothing was removed" in asave.describe_removal_error(exc, "Recording B").text
+
+
+def test_a_read_only_folder_gets_its_own_sentence():
+    for error in (PermissionError(errno.EACCES, "Permission denied"), OSError(errno.EROFS, "x")):
+        message = asave.describe_removal_error(error, "Recording A")
+        assert message.code == "read-only" and "read-only" in message.text
+        assert "Windows" not in message.text
+    exc = Exception("x")
+    exc.code = "edit-failed"
+    assert "Windows" in asave.describe_removal_error(exc, "Recording A").text  # another cause
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX permissions")
+@pytest.mark.parametrize(
+    ("folder", "note"),
+    [("", "Alpha plain note"), ("Cz.timd", "Alpha Cz note")],
+    ids=["the recording's folder", "a channel's folder"],
+)
+def test_removing_from_a_read_only_recording_says_so_and_changes_nothing(ed, qtbot, folder, note):
+    win, spy, (a, _b) = ed
+    Asked(win)
+    before = tree_hash(a)
+    target = os.path.join(a, folder) if folder else str(a)
+    os.chmod(target, 0o500)
+    try:
+        win.edit.remove_mark(stored(win, note))
+        qtbot.waitUntil(lambda: not win.edit.saving and bool(spy.problems), timeout=30_000)
+    finally:
+        os.chmod(target, 0o700)
+    assert tree_hash(a) == before
+    assert "read-only" in spy.problems[0].text and "Windows" not in spy.problems[0].text
+
+
+def test_the_line_before_changing_one_of_two_identical_copies_says_so(make_window, tmp_path, qtbot):
+    p = write(tmp_path / "Two.mefd", notes=[NOTE, dict(NOTE)])
+    win = make_window(p, reveal=lambda i: True)
+    wait_marks(qtbot, win)
+    spy = Spy(win)
+    turn_on(win)
+    mark = stored(win, "Alpha plain note")
+    win.edit.draft.edit_stored(mark, text="Alpha changed")
+    finish_save(qtbot, win)
+    assert "stored more than once" in spy.stored_lines[0]
+    assert sorted(texts(p)) == ["Alpha changed", "Alpha plain note"]
+
+
+# --- merge review 1: a closed window lets go at once, and stays counted until it has ----------
+
+
+def test_a_closing_window_holds_no_file_before_it_has_shut_down(qtbot, qapp, tmp_path):
+    p = write(tmp_path / "a.mefd", seconds=120)
+    data = open_data(p)
+    real = data.envelope
+    gate = threading.Event()
+
+    def slow(*a, **k):
+        gate.wait(10)  # the index read is in flight for as long as the test wants
+        return real(*a, **k)
+
+    data.envelope = slow
+    win = ViewerWindow(data, theme=LIGHT)
+    qtbot.addWidget(win)
+    win.resize(1200, 700)
+    win.show()
+    qtbot.waitUntil(lambda: win._ready, timeout=10_000)
+    settle(qtbot, win)
+    qtbot.waitUntil(lambda: bool(held_signal_files(tmp_path)), timeout=10_000)
+    released = []
+    win.released.connect(lambda: released.append(1))
+    win.close()
+    assert held_signal_files(tmp_path) == []  # at once, not when the read has ended
+    qtbot.wait(300)
+    assert not released  # the window still counts as holding its recordings
+    gate.set()
+    qtbot.waitUntil(lambda: bool(released), timeout=20_000)
+
+
+def test_the_app_keeps_a_closing_viewer_in_its_list_until_it_is_released():
+    import inspect as _inspect
+
+    from mef3io_studio import app
+
+    source = _inspect.getsource(app)
+    assert "window.released.connect" in source and "window.closed.connect" not in source
+
+
+# --- merge review 2: a channel picked for the band is not kept waiting -----------------------
+
+
+def test_a_picked_overview_channel_does_not_wait_behind_the_automatic_read(
+    make_window, tmp_path, qtbot, monkeypatch
+):
+    from mef3io_studio.viewer import controller as ctl
+    from mef3io_studio.workers.viewer_scheduler import TileScheduler
+
+    monkeypatch.setattr(ctl, "INDEX_WAIT", 6.0)
+    monkeypatch.setattr(TileScheduler, "pending", lambda self: 1)  # the automatic read waits
+    p = write(tmp_path / "a.mefd")
+    data = open_data(p)
+    win = ViewerWindow(data, theme=LIGHT)
+    qtbot.addWidget(win)
+    win.resize(1200, 700)
+    win.show()
+    qtbot.waitUntil(lambda: win._ready, timeout=10_000)
+    qtbot.wait(400)  # the automatic read is queued and waiting
+    other = next(c for c in win._channels if c not in win.overview_channels())
+    started = time.monotonic()
+    win.pick_overview_channel(other, True)
+    qtbot.waitUntil(lambda: other in win.controller.overview, timeout=5_000)
+    assert time.monotonic() - started < 3.0
+
+
+# --- merge review 3: a release during a read does not lose the hold --------------------------
+
+
+def test_a_release_during_a_read_keeps_the_files_known_as_held(tmp_path):
+    p = write(tmp_path / "a.mefd", seconds=60)
+    data = open_data(p)
+    try:
+        names = list(data.channels)
+        with data._reading():
+            data.release_files()  # the idle release, while a read begins
+            data._combined.read(names, data.timeline_start, data.timeline_start + 5 * SEC)
+        assert held_signal_files(tmp_path)  # the read opened them again
+        assert data.idle_with_files(0.0)  # so the next idle release still lets go
+    finally:
+        data.close()
+
+
+# --- merge review 4: the strip's stretches come back after a reopen with an unchanged signal -----
+
+
+def test_the_stretches_are_asked_for_again_after_a_reopen_of_an_unchanged_signal(
+    make_window, tmp_path, qtbot
+):
+    win = make_window(write(tmp_path / "a.mefd", seconds=120))
+    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
+    win._stretches = []  # what a read that was ended for the reopen leaves
+    win.end_data_change(list(win.data.annotations()), tuple(win.data.annotations_locked))
+    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
+
+
+# --- merge review 6: at 1280 px nothing essential is out of reach -----------------------------
+
+
+def test_at_1280_wide_types_stays_and_only_the_colours_leave(window, make_window, pair, qtbot):
+    from PySide6.QtWidgets import QToolBar, QToolButton, QWidget
+
+    win = make_window(*pair)
+    win.resize(1280, 720)
+    qtbot.wait(200)
+    bars = {b.windowTitle(): b for b in win.findChildren(QToolBar)}
+    display = bars["Display"]
+    out = {
+        w
+        for w in display.findChildren(QWidget)
+        if w.parent() is display and not w.isVisibleTo(display)
+    }
+    assert win.types_button.isVisibleTo(display)
+    assert win.montage_bar.isVisibleTo(display) and win.filters_button.isVisibleTo(display)
+    assert out <= {win.profile_box, win.rows_label, win.colour_note, win.length_label}
+    assert win.profile_box in out or win.profile_box.isVisibleTo(display)
+    # whatever the first toolbar loses sits in its ">>" menu: reachable
+    nav = bars["Navigation"]
+    ext = nav.findChild(QToolButton, "qt_toolbar_ext_button")
+    assert win.range_button.isVisibleTo(nav) or (ext is not None and ext.isVisibleTo(nav))

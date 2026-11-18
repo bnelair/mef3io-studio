@@ -221,7 +221,9 @@ class NotesTab(QWidget):
         self.type_box.setCurrentIndex(max(0, i))
         self._busy = False
 
-    def set_failed(self, failed: bool) -> None:
+    def set_failed(self, failed: bool, why: str = "") -> None:
+        """The notes could not be read: ``why`` (plain words with what to do) when known."""
+        self.failed.setText(why or "The notes and events could not be read.")
         self.failed.setVisible(failed)
         if failed:
             self.count.setText("")

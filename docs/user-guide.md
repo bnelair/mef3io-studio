@@ -1162,17 +1162,29 @@ select it and press **Delete**). One line asks "Remove this note from Recording 
 This cannot be undone." and **Remove** takes it out of the recording. Only the
 notes of that recording change (the signal and the details are not touched), and
 the note cannot be brought back from the app, so keep a copy of the original if you
-may need it. A note stored **twice** says so, and you can remove one copy or both.
-**Stop** is safe: the recording stays as it was. If the recording cannot be
-changed (it is password-protected and you do not have both passwords, it is a
-single-file recording, another program is changing it, or its notes were changed
-since you opened it) a message says why and what to do, and nothing is removed.
-A password-protected recording asks for the second password.
+may need it. A note stored **twice** says so, and you can remove one copy or both
+(for a few special kinds of note, such as seizure or epoch marks that carry details,
+only all copies can be removed together).
+**Stop** works until the notes are being put in place: before that the recording
+stays exactly as it was. A change that is already being put in place is finished
+(it takes a moment), and the app then says the note was removed. If the recording
+cannot be changed (it is password-protected and you do not have both passwords, it
+is a single-file recording, its folder is read-only, another program is changing it,
+an earlier change was left unfinished, or its notes were changed since you opened
+it) a message says why and what to do, and what was and was not removed. A
+password-protected recording asks for the second password. A recording whose notes
+were being changed when a program stopped opens with its signal, and the notes list
+says why the notes are not shown and what to do.
 
 To **change the text** of a stored note, use **Change the text** or the Edit button
 of the notes list: the new wording appears next to the old one (struck through),
 and **Save** replaces the old note by the new one, after one line that says the old
-wording cannot be brought back.
+wording cannot be brought back. Only plain notes and events with a length can be
+changed; other kinds of note can be removed but not changed, because the change
+would turn them into plain notes. The note stays in its own recording, so its time
+must be one at which that recording holds data: to move a note into another
+recording, remove it and add a new one there. The text stays exactly as it was
+unless you change it.
 
 Edit mode is **off** every time you open the viewer. Turn it on with the
 **Edit mode** button in the toolbar (or just press `N`). A banner then reminds

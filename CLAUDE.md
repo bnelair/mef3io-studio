@@ -334,16 +334,29 @@ Code (app shell, #2/#3):
   stored records matched by content from `data.annotations()`, `data.release_files()`, the
   signal-file snapshot, one library call per recording, then `refresh_notes` with the NET
   count (else the old reopen). A changed stored note is written at Save (remove + add, one
-  call, written before the new notes; its own recording and level). Every library `code`
-  has plain words (`REMOVAL_WORDS`, a test lists them); never pass `assume_owner_gone`;
-  `.mefd.tar` is refused with words; an older mef3io (no `remove_annotations`) leaves the
-  entry grey (`stored_removal_reason`). The last texts typed
+  call, written before the new notes). RULES OF AN EDIT (never lose data silently): only a
+  Note or an EDFA with a length can be changed (`can_edit_stored`; any other kind: removal
+  only), the kind is kept (`replacement_record`), the text is kept exactly unless edited, it
+  stays in its own recording (`_stays_in`, no re-routing); "one copy" of identical copies only
+  for `COPYABLE_TYPES` (else all copies). Matching is linear (`stored_index`, `mark_key`,
+  `EditMode._copy_counts`: index once, never a scan per change). Every library `code` has plain
+  words (`REMOVAL_WORDS`; a test derives the codes from the installed library and fails on one
+  without words); the messages say per recording what was and was not done
+  (`describe_removal_error(done=)`); never pass `assume_owner_gone`; `.mefd.tar` is refused with
+  words; the pin is 2.4.0, so no fallback for an older library. Stop works until the library
+  swaps the files in; after that the removal is finished and reported as done. A recording with an
+  interrupted notes edit opens, the notes tab says why (`NOTES_EDIT_INTERRUPTED`). The last texts typed
   live in `EditMode.recent_texts` (memory only, never in preferences). Tests:
   tests/test_viewer_edit.py, tests/test_viewer_draft_many.py, tests/test_viewer_remove_notes.py.
 - Signal files kept open (mef3io 2.4 `open_files`, viewer only): `model/open_files.py` chooses
-  the number (2 per channel, at most 1/8 of the descriptor limit and 128: Linux 128, macOS 32,
-  Windows 64); `ViewerData.set_open_files/release_files/idle_with_files`. Released when the
-  window closes, before the app writes into a recording (`write_plan`, `remove_stored_notes`),
+  the number (2 per channel, at most 1/8 of the descriptor limit and 128: Linux 128, macOS 32
+  assumed, Windows 128 = the library's own suggestion, ASSUMED and not measured: the library uses
+  OS handles there, not C-runtime streams); `ViewerData.set_open_files/release_files/
+  idle_with_files` (`release_files` clears `_holding` only when no read is in flight). Released
+  AT THE VERY START of closing (`ViewerWindow._let_go_now`: number to 0 + release on a thread
+  waited for at most 2 s, before `closed`), again after the workers ended, and the window stays in
+  `App.viewers` until `released` (Rename's refusal and the job prologue still see it); before the
+  app writes into a recording (`write_plan`, `remove_stored_notes`),
   before EVERY job (`JobManager.prologue`, set by the app, runs on the job's thread: rename,
   join, anonymize, pack, "make again") and after `IDLE_RELEASE` without a read
   (`ViewController._maybe_release_idle`; never a library call on the GUI thread). Any new path
@@ -600,7 +613,8 @@ stretches share ONE automatic index read (`ViewController.request_strip_envelope
 strip channels, band=...)`, started after the first page and only once the page and
 its look-ahead are loaded, `_wait_quiet`; never on paging; nothing is read before
 the first page: `_sync_overview` waits for `_ready`); a user's pick asks only for the
-missing channel (`request_overview`). The strip has no envelope of its own any more.
+missing channel (`request_overview`, on its own thread `viewer-pick`, never behind the
+automatic read's quiet-wait). The strip has no envelope of its own any more.
 `reset_overview` after a reopen. Default = first shown channel,
 max 4 lanes, each scaled to its own range; hidden channels leave the band.
 Click/drag shared with the strip via `strip.TimelineNav`.

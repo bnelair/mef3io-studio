@@ -8,6 +8,7 @@ of the library has plain words and a next step; Stop leaves the recording as it 
 
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 
@@ -126,7 +127,6 @@ def test_the_menu_entry_is_enabled_and_the_reason_line_is_gone(ed):
     from PySide6.QtWidgets import QMenu
 
     win, _spy, _ = ed
-    assert asave.stored_removal_reason() is None
     menu = QMenu()
     win.edit.note_menu(menu, stored(win, "Alpha plain note"))
     found = entries(menu)
@@ -205,14 +205,47 @@ def test_a_changed_stored_note_is_replaced_in_one_call(ed, qtbot, monkeypatch):
 
 # --- the library's refusals, in plain words -----------------------------------------------------
 
-CODES = (
-    "no-match count-mismatch ambiguous selectors-overlap selector-incomplete "
-    "selector-unknown-field bad-selector nothing-to-do unknown-channel unknown-segment "
-    "add-level-missing add-time offset-unknown password record-locked record-torn "
-    "record-damaged record-crc record-index-mismatch record-index-missing "
-    "ambiguous-session-records edit-unsettled edit-interrupted mid-operation edit-in-progress "
-    "edit-newer-format edit-failed records-changed being-written tar-read-only"
-).split()
+#: Codes of this one call that the library gives no hyphen (or no mention in its docstring).
+_PLAIN_CODES = {"ambiguous", "password", "edit-interrupted", "mid-operation"}
+#: Hyphenated strings of the library that are codes of OTHER calls (merge, validate,
+#: transform ...), not of ``remove_annotations``.
+_OTHER_CALLS = {
+    "records-ambiguous", "edit-for", "edit-format", "edit-leftovers", "records-edit",
+    "annotation-edit-interrupted", "offset-applied", "offset-assumed-zero",
+    "offset-dependent", "no-channels-left", "ambiguous-time-convention",
+    "password-level1-only", "password-protected", "password-required", "password-to-key",
+    "password-wrong",
+}  # fmt: skip
+_PREFIX = re.compile(
+    rb"^(record|records|edit|selector|selectors|add|bad|count|no-match|nothing|offset|unknown"
+    rb"|being|mid|tar|verify|ambiguous)-"
+)
+
+
+def library_codes() -> set[str]:
+    """Every refusal code of ``remove_annotations``, derived from the installed library: the
+    codes its docstring names, plus every code-shaped string of its compiled part that starts
+    like one (minus those that belong to other calls). A new library code with no words
+    fails ``test_no_library_code_is_left_without_words``."""
+    import inspect
+
+    doc = inspect.getdoc(mef3io.remove_annotations) or ""
+    found = set(re.findall(r"``([a-z]+(?:-[a-z]+)+)``", doc))
+    so = next(Path(mef3io.__file__).parent.glob("_mef3io*"))
+    data = so.read_bytes()
+    for token in set(re.findall(rb"(?<![\w-])([a-z]+(?:-[a-z0-9]+)+)(?![\w-])", data)):
+        if _PREFIX.match(token):
+            found.add(token.decode())
+    return (found - _OTHER_CALLS) | _PLAIN_CODES
+
+
+CODES = sorted(library_codes() | {"copy-type", "edit-type", "read-only"})
+
+
+def test_no_library_code_is_left_without_words():
+    missing = sorted(library_codes() - set(asave.REMOVAL_WORDS))
+    assert not missing, f"codes of remove_annotations without plain words: {missing}"
+    assert {"records-encryption-mismatch", "edit-journal-inconsistent"} <= library_codes()
 
 
 @pytest.mark.parametrize("code", CODES)
@@ -225,7 +258,8 @@ def test_every_refusal_has_plain_words_and_a_next_step(code):
     message = asave.describe_removal_error(exc, "Recording A")
     assert isinstance(message, UserMessage) and message.code == code
     for part in (message.title, message.text):
-        assert part and not BANNED_RE.search(part), (code, part)
+        shown = part.replace("python -m mef3io recover --apply <folder>", "")  # the technical()
+        assert part and not BANNED_RE.search(shown), (code, part)
     assert "/some/path" not in message.text and "note text" not in message.text
     assert "Recording A" in message.text or "recording A" in message.text
     assert any(w in message.text for w in ("Nothing was", "put back", "were not changed")), code

@@ -598,7 +598,8 @@ def _build_main_window_class():
 
             def add(window) -> None:
                 self.viewers.append(window)
-                window.closed.connect(lambda w=window: self._viewer_closed(w))
+                # not on ``closed``: a closing window can still hold its recordings
+                window.released.connect(lambda w=window: self._viewer_closed(w))
 
             launch(
                 self.jobs,
