@@ -367,7 +367,8 @@ def test_free_space_refusal_stops_the_wizard_before_anything_runs(
     monkeypatch.setattr(pipeline, "free_bytes", lambda _folder: 1000)
     checks = page.start()
     qtbot.waitUntil(lambda: checks.is_finished, timeout=60_000)
-    assert page.handle is None and page.step != 7
+    qtbot.waitUntil(lambda: page.step != 7, timeout=10_000)  # back on the last step
+    assert page.handle is None
     assert any("free" in p for p in page.preflight_problems)
     assert "free" in page.review.blocked.text()
     assert list(out.iterdir()) == []

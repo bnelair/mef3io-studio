@@ -126,6 +126,21 @@ from .picker import ChannelPicker
 #: Wait this long after the last change of the Explore list before listing
 #: the recordings again (a scan delivers them in quick bursts).
 REFRESH_DELAY_MS = 150
+CHECK_STEP_NOTE = (
+    "This looks at every recording and at where the copies will go, and writes nothing. "
+    "If something is wrong you are told what and what to do, and every choice you made is "
+    "kept. Stop ends the check and leaves everything as it was."
+)
+RUN_STEP_NOTE = (
+    "Stop ends the copy that is being made and removes what it had written. Copies that "
+    "are already saved and checked stay."
+)
+CHANGED_DURING_CHECK = (
+    "A choice was changed while the check was running, so nothing was started: the check "
+    "must judge exactly what is written. Look at the choices, then choose Make the copies "
+    "again."
+)
+CHECK_STOPPED = "The check was stopped. Nothing was written. Your choices are kept."
 
 STEPS = (
     "Recordings",
@@ -1287,6 +1302,21 @@ class RunStep(QWidget):
         self.retry_button = None
         self.finish_bundle_button = None
 
+    def begin_check(self, handle, n: int) -> None:
+        """Step 1 of 2, on the run page: nothing can be changed here."""
+        _clear(self.progress_slot)
+        _clear(self.open_buttons)
+        _clear(self.messages)
+        self.result_texts = {}
+        self.table.setRowCount(0)
+        self.key_box.setVisible(False)
+        self.heading.setText(
+            f"Step 1 of 2: checking everything before {format_count(n, 'copy', 'copies')} "
+            "can be made"
+        )
+        self.progress = JobProgressWidget(handle, self, step="Step 1 of 2", note=CHECK_STEP_NOTE)
+        self.progress_slot.addWidget(self.progress)
+
     def start(self, handle, requests: list[CopyRequest]) -> None:
         _clear(self.progress_slot)
         _clear(self.open_buttons)
@@ -1294,9 +1324,10 @@ class RunStep(QWidget):
         self.result_texts = {}
         self.key_box.setVisible(False)
         self.heading.setText(
-            f"Making {format_count(len(requests), 'anonymized copy', 'anonymized copies')}…"
+            f"Step 2 of 2: making "
+            f"{format_count(len(requests), 'anonymized copy', 'anonymized copies')}…"
         )
-        self.progress = JobProgressWidget(handle, self)
+        self.progress = JobProgressWidget(handle, self, step="Step 2 of 2", note=RUN_STEP_NOTE)
         self.progress_slot.addWidget(self.progress)
         self.fill_table()
 
@@ -1779,7 +1810,7 @@ class AnonymizerPage(QWidget):
 
     def _update_buttons(self, *_args) -> None:
         step = self.step
-        running = self.handle is not None and not self.handle.is_finished
+        running = (self.handle is not None and not self.handle.is_finished) or self._checking()
         why = self._blocker_text()
         self.why_not.setText(why)
         self.back_button.setVisible(step != STEP_RUN)
@@ -1928,20 +1959,53 @@ class AnonymizerPage(QWidget):
         return replace(batch, keep_awake=self.keep_awake())
 
     # -- running -----------------------------------------------------------------------
+    def _checking(self) -> bool:
+        return self.preflight_handle is not None and not self.preflight_handle.is_finished
+
     def start(self):
-        """Check everything that can be checked up front (in the background),
-        then run the whole batch unattended."""
-        if not self.review.ok:
+        """Step 1 of the run: check everything that can be checked up front
+        (in the background, on the run page, where no choice can be changed),
+        then, from that very check, run the whole batch unattended (step 2)."""
+        if not self.review.ok or self._checking():
             return None
         batch = self.make_batch()
         self.preflight_problems = []
+        self.handle = None
+        self.run = RunState()
         handle = self.jobs.submit("Checking everything before starting", preflight_batch, batch)
         self.preflight_handle = handle
         handle.succeeded.connect(lambda verdict: self._preflight_done(batch, verdict))
         handle.failed.connect(self._preflight_failed)
+        handle.cancelled.connect(self._preflight_stopped)
         handle.finished.connect(self._update_buttons)
+        self.go(STEP_RUN)
+        self.run_step.begin_check(handle, len(batch.items))
         self._update_buttons()
         return handle
+
+    @staticmethod
+    def _what_is_written(batch: pipeline.Batch) -> tuple:
+        """Everything of a batch that decides what is written (not the
+        random names of its work folders, which each plan makes new)."""
+        return (
+            batch.output,
+            batch.destination,
+            batch.bundle,
+            tuple((replace(i.request, destination=i.final), i.final) for i in batch.items),
+        )
+
+    def _check_is_stale(self, batch: pipeline.Batch) -> bool:
+        """The choices on the wizard are no longer the ones ``batch`` was
+        made from, so a check of ``batch`` says nothing about them."""
+        return self._what_is_written(self.make_batch()) != self._what_is_written(batch)
+
+    def _back_to_review(self, problems: list[str]) -> None:
+        """Step 1 found a reason not to go on: back to the last step, nothing
+        written, every choice kept, every reason listed."""
+        self.go(STEP_REVIEW)
+        self.preflight_problems = problems
+        self.review.refresh()
+        self._update_buttons()
 
     def resume(self, journal, password_for, output_password=None, ask_existing=None):
         """Continue an interrupted batch from its journal. The up-front checks
@@ -2005,21 +2069,29 @@ class AnonymizerPage(QWidget):
         return handle
 
     def _preflight_failed(self, message) -> None:
-        self.preflight_problems = [f"{message.title}. {message.text}"]
-        self.review.refresh()
+        if self.step == STEP_RUN:
+            self._back_to_review([f"{message.title}. {message.text}"])
+        else:
+            self.preflight_problems = [f"{message.title}. {message.text}"]
+            self.review.refresh()
+
+    def _preflight_stopped(self) -> None:
+        self._back_to_review([CHECK_STOPPED])
 
     def _preflight_done(self, batch: pipeline.Batch, verdict: dict) -> None:
+        if self._check_is_stale(batch):
+            self._back_to_review([CHANGED_DURING_CHECK])
+            return
         problems = list(verdict.get("problems", []))
         names = verdict.get("names", {})
         for c in self.choices:
             message = names.get(c.key)
             if message is not None:
                 problems.append(f"{c.entry.name}: {message.title}. {message.text}")
-        self.preflight_problems = problems
         if problems:
-            self.review.refresh()
-            self._update_buttons()
+            self._back_to_review(problems)
             return
+        self.preflight_problems = []
         self.run_batch(batch)
 
     def run_batch(self, batch: pipeline.Batch, journal=None):
