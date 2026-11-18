@@ -1025,3 +1025,147 @@ def test_join_during_step_one_the_only_button_is_disabled(window, qtbot, tmp_pat
     page.next()
     assert page.step == J.STEP_RUN
     qtbot.waitUntil(lambda: page.handle is not None and page.handle.is_finished, timeout=120_000)
+
+
+# --------------------------------------------------------------------------
+# Item 2: a requested Stop always wins, also over a check that returns normally
+
+
+def deaf(fn, entered):
+    """The task, then a wait for Stop to be pressed, then a NORMAL return: the
+    check "finished" although Stop had been requested (the review's race)."""
+
+    def wrapper(ctx, *args, **kwargs):
+        result = fn(ctx, *args, **kwargs)
+        entered.set()
+        end = time.monotonic() + 15
+        while not ctx.cancelled and time.monotonic() < end:
+            time.sleep(0.02)
+        return result
+
+    return wrapper
+
+
+def press(qtbot, button):
+    from PySide6.QtCore import Qt
+
+    qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
+
+
+def wait_set(qtbot, event):
+    qtbot.waitUntil(event.is_set, timeout=60_000)
+
+
+def test_anonymize_a_check_that_returns_after_stop_writes_nothing(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    import threading
+
+    import mef3io_studio.anonymizer.page as P
+
+    window, page = window_page
+    out = anonymizer_at_review(window, page, qtbot, tmp_path)
+    entered = threading.Event()
+    monkeypatch.setattr(P, "preflight_batch", deaf(P.preflight_batch, entered))
+    press(qtbot, page.next_button)  # Make the copies
+    handle = page.preflight_handle
+    wait_set(qtbot, entered)
+    press(qtbot, page.run_step.progress.cancel_button)  # Stop
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: page.step == STEP_REVIEW, timeout=10_000)
+    qtbot.wait(500)
+    assert page.step == STEP_REVIEW and page.handle is None  # no run was started
+    assert "check was stopped" in page.review.blocked.text()
+    assert list(out.iterdir()) == []  # nothing written
+    assert page.next_button.isEnabled()  # every choice is kept
+
+
+def test_join_a_check_that_returns_after_stop_writes_nothing(window, qtbot, tmp_path, monkeypatch):
+    import threading
+
+    import mef3io_studio.joiner.page as J
+
+    page, out = _join_page_at_new(window, qtbot, tmp_path)
+    entered = threading.Event()
+    monkeypatch.setattr(J, "check_join", deaf(J.check_join, entered))
+    press(qtbot, page.next_button)
+    check = page.check_handle
+    wait_set(qtbot, entered)
+    press(qtbot, page.run_step.progress.cancel_button)
+    qtbot.waitUntil(lambda: check.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: page.step == J.STEP_NEW, timeout=10_000)
+    qtbot.wait(500)
+    assert page.step == J.STEP_NEW and page.handle is None
+    assert "check was stopped" in page.new.notice.text()
+    assert list(out.iterdir()) == [] and page.new.name.text() == "joined"
+
+
+def test_make_new_a_check_that_returns_after_stop_makes_nothing(
+    window, qtbot, tmp_path, monkeypatch
+):
+    import threading
+
+    import mef3io_studio.makenew.run as R
+    from mef3io_studio.makenew import dialog as dlg
+
+    dialog, out = _make_new_at_where(window, qtbot, tmp_path)
+    entered = threading.Event()
+    monkeypatch.setattr(R, "preflight_batch", deaf(R.preflight_batch, entered))
+    press(qtbot, dialog.start_button)
+    handle = dialog.handle
+    wait_set(qtbot, entered)
+    press(qtbot, dialog.progress_slot.itemAt(0).widget().cancel_button)
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: dialog.step == dlg.STEP_WHERE, timeout=10_000)
+    qtbot.wait(500)
+    assert dialog.step == dlg.STEP_WHERE and dialog.handle is handle  # no run started
+    assert "check was stopped" in dialog.problem.text()
+    assert list(out.iterdir()) == [] and dialog.passwords.passwords() == PW
+
+
+def test_edit_details_a_check_that_returns_after_stop_saves_nothing(
+    window, qtbot, tmp_path, monkeypatch
+):
+    import threading
+
+    import mef3io_studio.explorer.edit_details as E
+
+    dialog, out = _edit_dialog(window, qtbot, tmp_path)
+    entered = threading.Event()
+    monkeypatch.setattr(E, "check_changes", deaf(E.check_changes, entered))
+    press(qtbot, dialog.save_button)
+    handle = dialog._check_handle
+    wait_set(qtbot, entered)
+    press(qtbot, dialog.progress_slot.itemAt(0).widget().cancel_button)
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=60_000)
+    qtbot.waitUntil(lambda: not dialog._busy, timeout=10_000)
+    qtbot.wait(500)
+    assert "check was stopped" in dialog.result_label.text()
+    assert dialog.handle is None and list(out.iterdir()) == []
+    assert dialog.name.text() == "edited"
+
+
+def test_the_check_tasks_look_for_a_stop_after_their_last_stage(tmp_path):
+    """A stop that arrives while the last stage runs is not lost: the task
+    ends as stopped instead of returning a verdict."""
+    from mef3io_studio.model import join as join_model
+    from mef3io_studio.model.cancel import CancelToken, JobCancelled
+    from mef3io_studio.model.changes import ChangeRequest
+    from mef3io_studio.workers import tasks
+    from mef3io_studio.workers.jobs import JobContext, ProgressSlot
+
+    class StopWhileRunning(JobContext):
+        def run_isolated(self, fn, *args, **kwargs):  # the last stage ends, Stop arrived
+            self.cancel_token.cancel()
+            return []
+
+    def ctx():
+        return StopWhileRunning(CancelToken(), ProgressSlot())
+
+    change = ChangeRequest(str(tmp_path / "a.mefd"), str(tmp_path / "b.mefd"))
+    with pytest.raises(JobCancelled):
+        tasks.check_changes(ctx(), change)
+    source = join_model.JoinSource(key="k", source=str(tmp_path / "a.mefd"))
+    request = join_model.JoinRequest((source,), str(tmp_path / "j.mefd"))
+    with pytest.raises(JobCancelled):
+        tasks.check_join(ctx(), request)

@@ -115,7 +115,11 @@ class BatchRunMixin:
     def _checked_if_current(self, batch: pipeline.Batch, verdict: dict) -> None:
         """The run starts only from a check of the choices that are on the
         wizard now (they cannot be changed from the run page; this holds for
-        any other way a choice could change)."""
+        any other way a choice could change). A requested Stop always wins,
+        also over a check that returned normally."""
+        if self.handle is not None and self.handle.record.cancel_requested:
+            self._check_stopped()
+            return
         if pipeline.what_is_written(self.make_batch()) != pipeline.what_is_written(batch):
             self._clear(self.progress_slot)
             self._back_to_choices(CHANGED_DURING_CHECK)

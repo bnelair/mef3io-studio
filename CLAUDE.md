@@ -254,7 +254,10 @@ Code (app shell, #2/#3):
   the run both use it, and the run starts only if `pipeline.what_is_written(make_batch())`
   still equals the checked one (new passwords excluded: the form is emptied when the page is
   left). A refusal lists EVERY reason and goes back to the last step with every choice kept;
-  Stop in the check does the same (never leave a dialog on a page with only Close). After a
+  Stop in the check does the same (never leave a dialog on a page with only Close). A REQUESTED STOP ALWAYS WINS: a check that returns normally after Stop was pressed
+  (it was past its last stop point) is read as stopped (`handle.record.cancel_requested` in
+  each wizard's success handler), never as a go-ahead; the preflight tasks also poll between
+  their stages. After a
   run, also a stopped one, "Back to my choices" and "Show the last result" (until the next
   run starts). mef3io's own `anonymize_session`/`transform_session`/`merge_sessions` run
   their pre-flight again and cannot be handed a result: the app does not add a third

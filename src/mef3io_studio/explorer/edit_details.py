@@ -520,6 +520,11 @@ class EditDetailsDialog(QDialog):
             request, self._pending = self._pending, None
             if generation != self._generation or request is None:
                 return
+            if handle.record.cancel_requested:
+                # Stop was pressed and the check returned normally anyway: a
+                # requested stop always wins.
+                self._check_stopped()
+                return
             self._clear(self.progress_slot)
             if replace(self.make_request(), output_password=None) != replace(
                 request, output_password=None

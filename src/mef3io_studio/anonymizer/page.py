@@ -2122,6 +2122,12 @@ class AnonymizerPage(QWidget):
         self._back_to_review([CHECK_STOPPED])
 
     def _preflight_done(self, batch: pipeline.Batch, verdict: dict) -> None:
+        handle = self.preflight_handle
+        if handle is not None and handle.record.cancel_requested:
+            # Stop was pressed and the check returned normally anyway (it was
+            # past its last stop point): a requested stop always wins.
+            self._back_to_review([CHECK_STOPPED])
+            return
         if self._check_is_stale(batch):
             self._back_to_review([CHANGED_DURING_CHECK])
             return

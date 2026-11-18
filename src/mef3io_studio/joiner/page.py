@@ -1143,6 +1143,11 @@ class JoinerPage(QWidget):
             self.new.say(text)
 
         def checked(findings) -> None:
+            if handle.record.cancel_requested:
+                # Stop was pressed and the check returned normally anyway: a
+                # requested stop always wins.
+                back_to_the_choices(CHECK_STOPPED)
+                return
             if self._check_is_stale(request):
                 back_to_the_choices(CHANGED_DURING_CHECK)
                 return
