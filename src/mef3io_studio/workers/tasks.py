@@ -237,12 +237,14 @@ def check_recording(
     location: str,
     password: str = "",
     quick: bool = False,
+    read_back: bool = False,
 ) -> CheckReport:
-    phase = (
-        "Quick look at the recording's details and lists"
-        if quick
-        else "Reading the signal files to check them"
-    )
+    if read_back:
+        phase = "Reading all the signal back and checking every piece of it"
+    elif quick:
+        phase = "Quick look at the recording's details and the list of where the signal is kept"
+    else:
+        phase = "Checking the details, the list of where the signal is kept and the stored sizes"
     ctx.report(0, None, phase)
 
     def got(progress: ByteProgress) -> None:
@@ -256,9 +258,17 @@ def check_recording(
             on_message=got,
             stop_grace=STOP_GRACE_SECONDS,
             quick=quick,
+            read_back=read_back,
         )
     else:
-        report = source.check(location, password, send=got, cancel=ctx.cancel_token, quick=quick)
+        report = source.check(
+            location,
+            password,
+            send=got,
+            cancel=ctx.cancel_token,
+            quick=quick,
+            read_back=read_back,
+        )
     log.info(
         "job %d: checked %d part(s), %d problem(s)",
         ctx.job_id,

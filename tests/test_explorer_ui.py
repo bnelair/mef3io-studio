@@ -192,8 +192,8 @@ def test_check_for_problems(page, qtbot, tmp_path):
         pass
     qtbot.waitUntil(lambda: not entry.busy)
     assert entry.check.ok
-    assert page.check_panel.headline.text() == "No problems found"
-    assert page.model.display(entry, 8) == "No problems"
+    assert page.check_panel.headline.text() == "No problems found (full check)"
+    assert page.model.display(entry, 8) == "No problems (full check)"
 
 
 def test_pack_and_unpack_into_new_recordings(page, qtbot, tmp_path):

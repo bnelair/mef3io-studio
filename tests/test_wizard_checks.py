@@ -753,9 +753,35 @@ def test_the_quick_look_does_not_read_the_signal(tmp_path):
     assert (mid - before) * 10 < (after - mid)  # a small fraction of the full read
 
 
-def test_check_panel_says_what_it_reads_and_offers_both(window, qtbot, tmp_path):
+def _flip_signal_bytes(path):
+    """Damage 200 bytes inside the first signal file's blocks (tests may edit
+    bytes; the app never does)."""
+    import glob
+
+    target = sorted(glob.glob(str(path) + "/**/*.tdat", recursive=True))[0]
+    data = bytearray(open(target, "rb").read())  # noqa: SIM115
+    for i in range(1400, 1600):
+        data[i] ^= 0xFF
+    open(target, "wb").write(data)  # noqa: SIM115
+
+
+def _all_text(panel) -> str:
+    from PySide6.QtWidgets import QLabel
+
+    return " ".join(w.text() for w in panel.findChildren(QLabel))
+
+
+def test_check_panel_says_what_each_choice_reads_and_what_none_of_the_first_two_can_see(
+    window, qtbot, tmp_path
+):
+    """Review finding (item 1): the texts said the full check reads the signal
+    files "block by block" and "about as much as copying", and that the quick
+    look is the one that cannot see damage inside the signal. Neither is true:
+    NEITHER reads the signal values."""
     from PySide6.QtCore import QPoint, Qt
     from test_edit_details_ui import open_entry
+
+    from mef3io_studio.model.problems import MODE_FULL, MODE_QUICK, SIGNAL_NOT_READ
 
     window._closing = True
     window.show()
@@ -763,24 +789,150 @@ def test_check_panel_says_what_it_reads_and_offers_both(window, qtbot, tmp_path)
     entry = open_entry(qtbot, window, write_plain(tmp_path / "rec.mefd"))
     panel = page.check_panel
     page.select_entry(entry)
-    text = panel.intro.text().lower()
-    assert "signal" in text and "reads" in text
-    assert "only the details" not in text and "list of where" not in text.split("quick")[0]
+    intro = panel.intro.text().lower()
+    assert "do not read the signal values themselves" in intro
+    assert "damage inside the signal is not found by them" in intro
+    assert "only choice that can find damage inside the signal" in intro
+    assert (
+        "block by block" not in intro
+        and "about as much as copying" not in intro.split("read everything back")[0]
+    )
     assert panel.quick_button.text() == "Quick look"
-    assert panel.full_button.text().startswith("Full check (reads about ")
-    # A real click on Quick look: no signal is read, and the result says so.
+    assert panel.full_button.text() == "Full check"  # no invented figure in the button
+    assert panel.read_back_button.text() == "Read everything back"
+    assert "an estimate" in panel.estimate.text()
+    # A real click on Quick look: the result says what it did not do, once.
     qtbot.mouseClick(panel.quick_button, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
     qtbot.waitUntil(lambda: entry.check is not None, timeout=60_000)
-    assert entry.check.quick
-    assert "quick look" in panel.headline.text().lower()
-    shown = " ".join(
-        w.text()
-        for w in panel.findChildren(__import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)
-    )
-    assert "signal files were not read" in shown
+    assert entry.check.mode == MODE_QUICK
+    assert panel.headline.text() == "No problems found (quick look)"
+    assert SIGNAL_NOT_READ in _all_text(panel)
     qtbot.mouseClick(panel.full_button, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
-    qtbot.waitUntil(lambda: entry.check is not None and not entry.check.quick, timeout=60_000)
-    assert panel.headline.text() == "No problems found"
+    qtbot.waitUntil(
+        lambda: entry.check is not None and entry.check.mode == MODE_FULL, timeout=60_000
+    )
+    assert panel.headline.text() == "No problems found (full check)"
+    assert SIGNAL_NOT_READ in _all_text(panel)
+    qtbot.mouseClick(panel.read_back_button, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    qtbot.waitUntil(lambda: entry.check is not None and entry.check.read_back, timeout=60_000)
+    assert panel.headline.text() == "No problems found (read everything back)"
+    assert SIGNAL_NOT_READ not in _all_text(panel)
+    assert "read back and matched" in _all_text(panel)
+
+
+def test_damage_inside_the_signal_is_found_only_by_reading_everything_back(window, qtbot, tmp_path):
+    """The review's repro: 200 bytes flipped inside a signal block. mef3io's
+    validator (either size) returns no findings; reading every sample back
+    finds the block whose check value no longer matches."""
+    from PySide6.QtCore import QPoint, Qt
+    from test_edit_details_ui import open_entry
+
+    from mef3io_studio.model.problems import SIGNAL_NOT_READ, check_recording
+
+    path = write_plain(tmp_path / "damaged.mefd")
+    _flip_signal_bytes(path)
+    # The model: the two validator sizes see nothing, and say they did not look.
+    assert check_recording(str(path), quick=True).ok
+    assert check_recording(str(path)).ok
+    back = check_recording(str(path), read_back=True)
+    assert not back.ok and back.problem_count == 1
+    assert "does not match its check value" in back.groups[0].title
+
+    window._closing = True
+    window.show()
+    page = window.explorer
+    entry = open_entry(qtbot, window, path)
+    panel = page.check_panel
+    page.select_entry(entry)
+    qtbot.mouseClick(panel.full_button, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    qtbot.waitUntil(lambda: entry.check is not None, timeout=60_000)
+    assert panel.headline.text() == "No problems found (full check)"
+    assert SIGNAL_NOT_READ in _all_text(panel)  # the limit is in the result
+    qtbot.mouseClick(panel.read_back_button, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    qtbot.waitUntil(lambda: entry.check is not None and entry.check.read_back, timeout=60_000)
+    assert panel.headline.text() == "1 problem found (read everything back)"
+    assert "does not match its check value" in _all_text(panel)
+
+
+def test_reading_everything_back_can_be_stopped(window, qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import QPoint, Qt
+    from test_edit_details_ui import open_entry
+
+    import mef3io_studio.explorer.page as explorer_page
+
+    window._closing = True
+    window.show()
+    page = window.explorer
+    entry = open_entry(qtbot, window, write_plain(tmp_path / "rec.mefd"))
+    monkeypatch.setattr(explorer_page, "check_recording", slow(explorer_page.check_recording, 5.0))
+    page.select_entry(entry)
+    qtbot.mouseClick(page.check_panel.read_back_button, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    qtbot.waitUntil(lambda: bool(page._check_progress), timeout=10_000)
+    widget = next(iter(page._check_progress.values()))
+    assert "Stop ends it" in widget.note.text()
+    assert "hours" in widget.note.text()
+    qtbot.mouseClick(widget.cancel_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: not entry.busy, timeout=60_000)
+    assert entry.check is None
+
+
+@pytest.mark.skipif(not __import__("os").path.exists("/proc/self/io"), reason="Linux only")
+def test_the_reading_estimates_are_near_what_each_choice_really_reads(tmp_path):
+    """Measured, not guessed: bytes requested from the file system by each
+    choice against the estimate made from the parts and blocks in the
+    recording's details. (The figure the first version showed, the sum of the
+    channels' bytes for the full check, was wrong by orders of magnitude.)"""
+    import mef3io
+    import numpy as np
+    from explorer_sessions import write_large
+
+    from mef3io_studio.model.inspect import inspect_recording
+    from mef3io_studio.model.problems import check_recording, estimate_check
+
+    path = write_large(tmp_path / "big.mefd", channels=2, parts=2, seconds=1800)
+    details = inspect_recording(str(path)).details
+    est = estimate_check(details)
+    assert est.blocks > 100 and est.parts == 4
+    marks = {}
+    for name, kw in (
+        ("quick", {"quick": True}),
+        ("full", {}),
+        ("back", {"read_back": True}),
+    ):
+        before = _read_bytes()
+        check_recording(str(path), **kw)
+        marks[name] = _read_bytes() - before
+    assert 0.5 < est.quick_bytes / marks["quick"] < 2
+    assert 0.5 < est.full_bytes / marks["full"] < 2
+    assert 0.8 < est.read_back_bytes / marks["back"] < 1.25
+    assert marks["quick"] * 10 < marks["full"] < marks["back"]
+    assert mef3io and np  # imported for the writer used by the helper
+
+
+def test_the_kind_of_check_is_named_once_in_every_headline():
+    from mef3io_studio.model.problems import (
+        MODE_FULL,
+        MODE_QUICK,
+        MODE_READ_BACK,
+        CheckReport,
+        ProblemGroup,
+    )
+
+    bad = ProblemGroup("error", "t", "e", 1, "")
+    for mode, words in (
+        (MODE_QUICK, "quick look"),
+        (MODE_FULL, "full check"),
+        (MODE_READ_BACK, "read everything back"),
+    ):
+        for report in (
+            CheckReport(parts_checked=2, mode=mode),
+            CheckReport(parts_checked=2, groups=(bad,), mode=mode),
+            CheckReport(parts_checked=2, parts_skipped=1, mode=mode),
+        ):
+            assert report.headline().count(f"({words})") == 1
+            assert report.headline().lower().count(words) == 1
+        status = CheckReport(parts_checked=2, mode=mode).short_status()
+        assert status == f"No problems ({words})"
 
 
 def test_the_list_button_is_the_quick_look(window, qtbot, tmp_path):
@@ -794,7 +946,7 @@ def test_the_list_button_is_the_quick_look(window, qtbot, tmp_path):
     page.check_selected()
     qtbot.waitUntil(lambda: entry.check is not None, timeout=60_000)
     assert entry.check.quick
-    assert "quick look" in entry.check.short_status().lower()
+    assert entry.check.short_status() == "No problems (quick look)"
 
 
 # --------------------------------------------------------------------------

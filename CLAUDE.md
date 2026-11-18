@@ -263,9 +263,14 @@ Code (app shell, #2/#3):
   (setText, not clear(): undoable), only THAT they were cleared is kept; Start stays blocked,
   saying why, until new ones are typed or a choice is clicked ("No password" included). A
   dialog (Make new / Pieces) refuses X and Close while busy WITHOUT wiping anything and says
-  Stop comes first. "Check for problems" has two sizes (`check_recording(quick=)` =
-  `Validator(exact_difference_bytes=False)`): the list button is the quick look, the Check tab
-  says what each reads and how much. Tests: tests/test_wizard_checks.py.
+  Stop comes first. "Check for problems" has three choices (`check_recording(quick=, read_back=)`):
+  `Validator(exact_difference_bytes=False)` (quick look, the list button) and `=True` (full
+  check) BOTH leave the signal values unread (the validator has no check of them: flipped bytes
+  inside a block give no finding), and every result of them says so; "Read everything back"
+  (`problems.read_back_recording`: `Reader.read_raw` in windows, mef3io checks each block's CRC)
+  is the only one that finds such damage. The Check tab shows `estimate_check` figures (from
+  the parts and blocks in the details, measured, tested), never the sum of file sizes for the
+  validator. `CheckReport.mode` names the kind once in `headline()`/`short_status()`. Tests: tests/test_wizard_checks.py.
 - Signal viewer window (viewer/, spec docs/design/viewer.md; part 1 = window,
   data flow, navigation, montages, filters; recording band/banner/side panel,
   part 2 = recording band/boundaries/banner, side panel, notes and events

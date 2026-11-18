@@ -30,6 +30,15 @@ from ..common.dialogs import TechnicalDetails
 from ..common.pages import scaled_font
 from ..common.text import technical
 from ..common.theme import Theme
+from ..model.problems import (
+    CHECK_INTRO,
+    MODE_FULL,
+    MODE_QUICK,
+    MODE_READ_BACK,
+    describe_estimate,
+    done_note,
+    estimate_check,
+)
 from ..model.recording import ACCESS_BASIC, ACCESS_FULL, note_kind_label, operation_words
 from ..model.summary import DATE_OFFSET_NOTE, LEGACY_PASSWORD_NOTE, unverified_note
 from ..model.timefmt import (
@@ -716,27 +725,9 @@ class HistoryPanel(QWidget):
 # --------------------------------------------------------------------------
 
 
-CHECK_INTRO = (
-    "Compares what the recording says about itself with its data. Neither choice changes "
-    "the recording; you can stop at any time.\n"
-    "Quick look: reads only the recording's stored details and the lists of where its "
-    "signal is kept, not the signal itself, so it cannot see damage inside the signal "
-    "files. For a long continuous recording that is a tiny part of the files; for one cut "
-    "into very many small parts it can still be much of the reading, because every part "
-    "has its own details.\n"
-    "Full check: also reads through the signal files themselves, block by block. That is "
-    "about as much reading as copying the recording, so on a large recording or a network "
-    "drive it can take many minutes."
-)
-QUICK_DONE = (
-    "This was a quick look: the signal files were not read, so damage inside them would "
-    "not show. Use the full check to be sure."
-)
-
-
 class CheckPanel(QWidget):
-    #: True for the quick look, False for the full check.
-    check_requested = Signal(bool)
+    #: The kind of check asked for: ``MODE_QUICK``, ``MODE_FULL`` or ``MODE_READ_BACK``.
+    check_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -746,9 +737,14 @@ class CheckPanel(QWidget):
         self.intro.setWordWrap(True)
         self.quick_button = QPushButton("Quick look", inner)
         self.quick_button.setProperty("primary", True)
-        self.quick_button.clicked.connect(lambda: self.check_requested.emit(True))
+        self.quick_button.clicked.connect(lambda: self.check_requested.emit(MODE_QUICK))
         self.full_button = QPushButton("Full check", inner)
-        self.full_button.clicked.connect(lambda: self.check_requested.emit(False))
+        self.full_button.clicked.connect(lambda: self.check_requested.emit(MODE_FULL))
+        self.read_back_button = QPushButton("Read everything back", inner)
+        self.read_back_button.clicked.connect(lambda: self.check_requested.emit(MODE_READ_BACK))
+        self.estimate = QLabel("", inner)
+        self.estimate.setObjectName("Muted")
+        self.estimate.setWordWrap(True)
         self.progress_slot = QVBoxLayout()
         self.headline = QLabel("", inner)
         self.headline.setFont(scaled_font(self, 1.15, bold=True))
@@ -757,10 +753,12 @@ class CheckPanel(QWidget):
         row = QHBoxLayout()
         row.addWidget(self.quick_button)
         row.addWidget(self.full_button)
+        row.addWidget(self.read_back_button)
         row.addStretch(1)
         box = QVBoxLayout(inner)
         box.addWidget(self.intro)
         box.addLayout(row)
+        box.addWidget(self.estimate)
         box.addLayout(self.progress_slot)
         box.addWidget(self.headline)
         box.addLayout(self.results)
@@ -787,11 +785,9 @@ class CheckPanel(QWidget):
         can = not entry.busy and not entry.needs_password
         self.quick_button.setEnabled(can)
         self.full_button.setEnabled(can)
-        details = entry.details
-        size = sum(c.bytes for c in details.channels) if details is not None else 0
-        self.full_button.setText(
-            f"Full check (reads about {format_size(size)})" if size else "Full check"
-        )
+        self.read_back_button.setEnabled(can)
+        self.estimate.setText(describe_estimate(estimate_check(entry.details)))
+        self.estimate.setVisible(bool(self.estimate.text()))
         report = entry.check
         if entry.check_error is not None and report is None:
             self.headline.setText(entry.check_error.title)
@@ -804,9 +800,9 @@ class CheckPanel(QWidget):
         if report is None:
             self.headline.setText("" if entry.busy else "Not checked yet")
             return
-        self.headline.setText(report.headline() + (" (quick look)" if report.quick else ""))
-        if report.quick:
-            self.results.addWidget(_notice(QUICK_DONE))
+        self.headline.setText(report.headline())
+        if done_note(report):
+            self.results.addWidget(_notice(done_note(report)))
         if report.parts_skipped:
             self.results.addWidget(
                 _notice(
