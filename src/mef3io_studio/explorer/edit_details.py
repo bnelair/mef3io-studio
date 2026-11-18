@@ -509,6 +509,7 @@ class EditDetailsDialog(QDialog):
         self._set_busy(True)
         self.handle = None
         handle = self.jobs.submit("Checking before saving", check_changes, self._pending)
+        self._check_handle = handle
         generation = self._generation
         # Step 1 of the one button: what it does, how long, and Stop.
         self.progress_slot.addWidget(
@@ -578,6 +579,9 @@ class EditDetailsDialog(QDialog):
         return handle
 
     def stop(self) -> None:
+        check = getattr(self, "_check_handle", None)
+        if check is not None and not check.is_finished:
+            check.cancel()  # step 1: ends the check, nothing written
         if self.handle is not None:
             self.handle.cancel()
 

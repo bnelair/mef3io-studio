@@ -826,3 +826,50 @@ def test_anonymize_the_name_check_is_not_repeated_when_nothing_changed(
     page.next()
     assert len(window.jobs.handles) == before + 1
     qtbot.waitUntil(lambda: page.step == STEP_PASSWORDS, timeout=60_000)
+
+
+def test_anonymize_stop_in_step_one_ends_the_check_and_keeps_the_choices(
+    window_page, qtbot, tmp_path, monkeypatch
+):
+    """page.stop() ended only a run, so Stop did nothing during step 1."""
+    import mef3io_studio.anonymizer.page as P
+
+    window, page = window_page
+    out = anonymizer_at_review(window, page, qtbot, tmp_path)
+    monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 30.0))
+    handle = page.start()
+    qtbot.wait(100)
+    page.stop()
+    qtbot.waitUntil(lambda: handle.is_finished, timeout=30_000)
+    qtbot.waitUntil(lambda: page.step == STEP_REVIEW, timeout=10_000)
+    assert "check was stopped" in page.review.blocked.text()
+    assert page.choices[0].name == "S001" and page.review.folder == str(out)
+    assert page.next_button.isEnabled() and list(out.iterdir()) == []
+
+
+def test_the_time_since_start_counts_while_a_step_runs(window_page, qtbot, tmp_path, monkeypatch):
+    import mef3io_studio.anonymizer.page as P
+
+    window, page = window_page
+    anonymizer_at_review(window, page, qtbot, tmp_path)
+    monkeypatch.setattr(P, "preflight_batch", slow(P.preflight_batch, 3.0))
+    handle = page.start()
+    qtbot.waitUntil(
+        lambda: "Running for 1 second" in page.run_step.progress.elapsed.text(), timeout=5_000
+    )
+    handle.cancel()
+    qtbot.waitUntil(lambda: page.step == STEP_REVIEW, timeout=30_000)
+
+
+def test_join_during_step_one_the_only_button_is_disabled(window, qtbot, tmp_path, monkeypatch):
+    import mef3io_studio.joiner.page as J
+
+    page, _out = _join_page_at_new(window, qtbot, tmp_path)
+    monkeypatch.setattr(J, "check_join", slow(J.check_join, 1.0))
+    check = page.next()
+    qtbot.wait(100)
+    assert page.step == J.STEP_RUN and not check.is_finished
+    assert not page.next_button.isEnabled()  # "Join or trim more recordings" would drop everything
+    page.next()
+    assert page.step == J.STEP_RUN
+    qtbot.waitUntil(lambda: page.handle is not None and page.handle.is_finished, timeout=120_000)

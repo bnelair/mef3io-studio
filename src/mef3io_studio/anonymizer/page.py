@@ -145,6 +145,10 @@ PASSWORDS_CLEARED_AT_REVIEW = (
     "unless you say so. Go back to the Passwords step and type them again, or choose "
     "No password."
 )
+CHECK_REFUSED = (
+    "The check found something that must be fixed first, so nothing was written. Every "
+    "choice you made is kept. Fix what is listed, then choose Make the copies again."
+)
 CHECK_STOPPED = "The check was stopped. Nothing was written. Your choices are kept."
 
 STEPS = (
@@ -1314,6 +1318,7 @@ class RunStep(QWidget):
         _clear(self.messages)
         self.result_texts = {}
         self.table.setRowCount(0)
+        self.table.setVisible(False)  # nothing to list until step 2
         self.key_box.setVisible(False)
         self.heading.setText(
             f"Step 1 of 2: checking everything before {format_count(n, 'copy', 'copies')} "
@@ -1328,6 +1333,7 @@ class RunStep(QWidget):
         _clear(self.messages)
         self.result_texts = {}
         self.key_box.setVisible(False)
+        self.table.setVisible(True)
         self.heading.setText(
             f"Step 2 of 2: making "
             f"{format_count(len(requests), 'anonymized copy', 'anonymized copies')}…"
@@ -1865,6 +1871,10 @@ class AnonymizerPage(QWidget):
     def next(self) -> None:
         step = self.step
         if step == STEP_RUN:
+            # "Anonymize more recordings" drops everything: never while the
+            # check or the run is still going.
+            if self._checking() or (self.handle is not None and not self.handle.is_finished):
+                return
             self.restart()
             return
         if self._blocker_text():
@@ -2122,7 +2132,7 @@ class AnonymizerPage(QWidget):
             if message is not None:
                 problems.append(f"{c.entry.name}: {message.title}. {message.text}")
         if problems:
-            self._back_to_review(problems)
+            self._back_to_review([CHECK_REFUSED, *problems])
             return
         self.preflight_problems = []
         self.run_batch(batch)
@@ -2163,6 +2173,8 @@ class AnonymizerPage(QWidget):
         return handle
 
     def stop(self) -> None:
+        if self._checking():
+            self.preflight_handle.cancel()  # step 1: ends the check, nothing written
         if self.handle is not None:
             self.handle.cancel()
 

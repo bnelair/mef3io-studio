@@ -1079,6 +1079,10 @@ class JoinerPage(QWidget):
     def next(self):
         step = self.step
         if step == STEP_RUN:
+            # "Join or trim more recordings" drops everything: never while
+            # the check or the run is still going.
+            if self._checking() or (self.handle is not None and not self.handle.is_finished):
+                return None
             self.restart()
             return None
         if self._blocker_text():
@@ -1179,6 +1183,8 @@ class JoinerPage(QWidget):
         return handle
 
     def stop(self) -> None:
+        if self._checking():
+            self.check_handle.cancel()  # step 1: ends the check, nothing written
         if self.handle is not None:
             self.handle.cancel()
 
