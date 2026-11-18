@@ -272,6 +272,22 @@ def test_no_password_reaches_the_log(tmp_path, caplog):
 # Refusals, in words
 
 
+def test_a_recording_with_an_interrupted_notes_edit_is_refused_in_words_that_fit(tmp_path):
+    from explorer_sessions import interrupt_notes_edit
+
+    src = interrupt_notes_edit(write_plain(tmp_path / "orig.mefd"))
+    dst = tmp_path / "x.mefd"
+    r = request(src, dst, metadata={"subject_id": "ID-1"})
+    found = c.check_changes(r)
+    assert found, "the recording must be refused"
+    text = " ".join(f.message.title + " " + f.message.text for f in found)
+    assert "in the middle of a change" in text and "notes and events" in text
+    assert "Renaming one" not in text
+    result = c.make_changes(r)
+    assert not result.ok and "notes and events" in result.message.text
+    assert not dst.exists()
+
+
 def test_a_text_that_is_too_long_is_refused_never_cut(tmp_path):
     src = write_plain(tmp_path / "orig.mefd")
     dst = tmp_path / "x.mefd"

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import mef3io
 import numpy as np
+import pytest
 
 T0 = 946_684_800_000_000  # 2000-01-01 00:00:00 UTC
 SECOND = 1_000_000
@@ -72,6 +73,16 @@ def write_plain(path: Path, channels=("a1", "a2", "a3"), notes=True) -> Path:
             shutil.copy(
                 channel / f"{channels[0]}.{suffix}", part / f"{channels[0]}-000000.{suffix}"
             )
+    return path
+
+
+def interrupt_notes_edit(path: Path) -> Path:
+    """Leave ``path`` as a crash in the middle of removing a note does
+    (mef3io 2.4: the operation marker and the ``.old`` files stay). Uses the
+    library's PRIVATE crash hook, which only tests may do."""
+    notes = [n for n in mef3io.Reader(str(path)).records() if n["type"] == "Note"]
+    with pytest.raises(Exception, match="simulated crash"):
+        mef3io.annotations._remove_annotations(str(path), [notes[0]], [], _crash_at=5)
     return path
 
 
