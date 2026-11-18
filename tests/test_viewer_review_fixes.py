@@ -218,6 +218,11 @@ def test_the_geometry_of_a_row_identity_is_read_once_per_page_not_once_per_row(e
 
 def test_delete_and_backspace_on_a_combo_box_or_a_button_keep_the_draft_note(ed):
     win, spy, _ = ed
+    # The display toolbar (with the overview button of 0.1.5 and the time on screen) needs
+    # about 1290 px at the application's font; narrower, the colours box sits in the ">>" menu
+    # and cannot take the focus. (Run after any test that builds the main window, which sets
+    # that font, the 1200 px of the fixture was too narrow.)
+    win.resize(1700, 700)
     turn_on(win)
     item = win.edit.add(T0 + 30 * SEC, None, "Note", "kept")
     assert item is not None and win.edit.selected is not None

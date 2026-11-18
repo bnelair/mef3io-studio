@@ -805,11 +805,11 @@ class ViewController(QObject):
                 pass
         return all(f.done() for f in futures)
 
-    def _wait_quiet(self, epoch: int, limit: float = INDEX_WAIT) -> None:
+    def _wait_quiet(self, epoch: int, limit: float | None = None) -> None:
         """(Strip thread.) Let the page and its look-ahead be read first: wait
-        until no block is waiting or being made, at most ``limit`` seconds (so a
-        reader who never stops paging still gets the strip)."""
-        end = time.monotonic() + limit
+        until no block is waiting or being made, at most ``limit`` seconds
+        (:data:`INDEX_WAIT`; so a reader who never stops paging still gets the strip)."""
+        end = time.monotonic() + (INDEX_WAIT if limit is None else limit)
         while (
             time.monotonic() < end
             and not self._closed

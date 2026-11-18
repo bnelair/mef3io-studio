@@ -69,14 +69,16 @@ def test_two_recordings_share_one_budget(pair):
 # --- files are really held, and let go ------------------------------------------------------------
 
 
-def held_signal_files() -> list[str]:
+def held_signal_files(under) -> list[str]:
+    """The signal files below ``under`` that this process holds open right now (other tests'
+    windows may still hold theirs: only this test's folder counts)."""
     out = []
     for name in os.listdir("/proc/self/fd"):
         try:
             target = os.readlink(f"/proc/self/fd/{name}")
         except OSError:
             continue
-        if target.endswith(".tdat"):
+        if target.endswith(".tdat") and target.startswith(str(under)):
             out.append(target)
     return out
 
@@ -89,16 +91,16 @@ def test_files_stay_open_between_reads_and_release_closes_them(tmp_path):
         names = list(data.channels)
         rate = data.rate(names[0])
         data.read_tile(names, rate, 0)
-        held = held_signal_files()
+        held = held_signal_files(tmp_path)
         assert 0 < len(held) <= data.open_files  # kept, and never more than the budget
         data.read_tile(names, rate, 1)
-        assert sorted(held_signal_files()) == sorted(held)  # the same ones, not new ones
+        assert sorted(held_signal_files(tmp_path)) == sorted(held)  # the same, not new ones
         data.release_files()
-        assert held_signal_files() == []
+        assert held_signal_files(tmp_path) == []
         data.read_tile(names, rate, 0)  # the reader is still usable
-        assert held_signal_files()
+        assert held_signal_files(tmp_path)
         data.close()
-        assert held_signal_files() == []
+        assert held_signal_files(tmp_path) == []
     finally:
         data.close()
 
@@ -109,8 +111,8 @@ def test_a_quiet_viewer_lets_go_by_itself(make_window, tmp_path, qtbot, monkeypa
     win = make_window(write(tmp_path / "a.mefd"))
     names = list(win.data.channels)
     win.data.read_tile(names, win.data.rate(names[0]), 0)
-    assert held_signal_files()
-    qtbot.waitUntil(lambda: not held_signal_files(), timeout=10_000)
+    assert held_signal_files(tmp_path)
+    qtbot.waitUntil(lambda: not held_signal_files(tmp_path), timeout=10_000)
     assert win.data.open_files > 0  # only the held files went; the setting stays
 
 
@@ -119,9 +121,9 @@ def test_closing_the_window_lets_go_of_every_file(make_window, tmp_path, qtbot):
     win = make_window(write(tmp_path / "a.mefd"))
     names = list(win.data.channels)
     win.data.read_tile(names, win.data.rate(names[0]), 0)
-    assert held_signal_files()
+    assert held_signal_files(tmp_path)
     win.close()
-    qtbot.waitUntil(lambda: not held_signal_files(), timeout=10_000)
+    qtbot.waitUntil(lambda: not held_signal_files(tmp_path), timeout=10_000)
 
 
 def test_the_window_asks_the_data_to_release_when_it_closes(make_window, tmp_path, qtbot):
@@ -274,11 +276,11 @@ def test_starting_any_task_in_the_app_lets_the_viewers_go_of_their_files(window,
     try:
         names = list(data.channels)
         data.read_tile(names, data.rate(names[0]), 0)
-        assert held_signal_files()
+        assert held_signal_files(tmp_path)
         handle = window.jobs.submit("Some task", lambda ctx: 1)
         with qtbot.waitSignal(handle.finished, timeout=20_000):
             pass
-        assert held_signal_files() == []
+        assert held_signal_files(tmp_path) == []
     finally:
         window.viewers.clear()
         data.close()

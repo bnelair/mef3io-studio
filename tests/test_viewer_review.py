@@ -339,6 +339,9 @@ def test_closing_the_window_does_not_wait_for_the_workers(make_window, tmp_path,
     win.close()
     assert time.monotonic() - t < 0.5
     assert stopped.wait(10)
+    deadline = time.monotonic() + 10  # the data is closed right after, on the same thread
+    while not win.data.closed and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert win.data.closed
 
 
