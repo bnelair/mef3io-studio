@@ -19,16 +19,19 @@ Plain Python, no Qt.
 from __future__ import annotations
 
 import bisect
+import contextlib
 import itertools
 import os
 import re
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
+from . import open_files as kept_files
 from .cancel import CancelToken, JobCancelled, stopped_by_library
 from .errors import UserMessage
 from .quiet import library_warnings_caught
@@ -181,6 +184,13 @@ class ViewerData:
         #: The decode-thread cap for one read (None = mef3io's automatic).
         #: State of this object, so a reopen applies it again.
         self._read_threads: int | None = None
+        #: When the signal was last read (``time.monotonic``) and whether files may be
+        #: held open since (``open_files``): what the idle release looks at.
+        self._read_at = 0.0
+        self._holding = False
+        self._busy = 0
+        self._kept = 0  # the open_files setting, as plain Python
+        self._busy_lock = threading.Lock()
         names = [_session_name(p) for p in self._paths]
         self.recordings: tuple[RecordingInfo, ...] = tuple(
             RecordingInfo(i, _letter(i), i, names[i], starts[i], ends[i], tuple(rec_channels[i]))
@@ -388,7 +398,8 @@ class ViewerData:
 
     def envelope(self, channel: str, t0: int, t1: int) -> dict:
         """Min/max per block from the block index alone (never the samples)."""
-        return self._combined.block_envelope(channel, int(t0), int(t1))
+        with self._reading():
+            return self._combined.block_envelope(channel, int(t0), int(t1))
 
     def envelope_many(self, channels: Sequence[str], t0: int, t1: int) -> dict[str, dict]:
         """:meth:`envelope` of several channels in ONE library call, which
@@ -398,7 +409,8 @@ class ViewerData:
         names = list(dict.fromkeys(channels))
         if not names:
             return {}
-        got = self._combined.block_envelope(names, int(t0), int(t1))
+        with self._reading():
+            got = self._combined.block_envelope(names, int(t0), int(t1))
         return {name: got[name] for name in names}
 
     # -- annotations -----------------------------------------------------------------------
@@ -558,7 +570,7 @@ class ViewerData:
         if cancel is not None:
             cancel.raise_if_cancelled()
             kwargs["cancel"] = cancel.for_library()
-        with stopped_by_library():
+        with self._reading(), stopped_by_library():
             raw = self._combined.read(names, t0, t1, **kwargs)
         raw = np.asarray(raw, dtype=np.float32).reshape(len(names), -1)
         out = np.full((len(names), n), np.nan, dtype=np.float32)
@@ -583,6 +595,60 @@ class ViewerData:
         :meth:`reopen`. Raises if the library refuses the value."""
         self._read_threads = None if not n else int(n)
         self._apply_read_threads()
+
+    # -- signal files kept open between reads (mef3io 2.4 ``open_files``) ---------------------
+
+    @property
+    def open_files(self) -> int:
+        """How many signal files the reader may keep open between reads (0 = none)."""
+        return int(getattr(self._combined, "open_files", 0) or 0)
+
+    def set_open_files(self, n: int) -> None:
+        """Change how many files may be kept open (0 = keep nothing). A library without the
+        feature (before mef3io 2.4) keeps nothing open, as it always did."""
+        if hasattr(type(self._combined), "open_files"):
+            self._combined.open_files = max(0, int(n))
+            self._kept = max(0, int(n))
+
+    def release_files(self) -> None:
+        """Close every signal file the readers keep open, now. Safe from any thread and while
+        reads run (the next read opens what it needs again). Call it before anything else
+        needs the recording's files: writing notes into it, renaming or removing it."""
+        self._holding = False
+        for obj in [self._combined, *self._readers]:
+            release = getattr(obj, "release_files", None)
+            if release is None:
+                continue
+            try:
+                release()
+            except Exception:  # noqa: BLE001 - closed already: nothing is held
+                pass
+
+    def idle_with_files(self, seconds: float) -> bool:
+        """Whether files may be held open while nothing was read for ``seconds`` (plain
+        Python: the window's timer may ask; the release itself is a library call for a
+        thread, :meth:`release_files`)."""
+        return (
+            not self._closed
+            and self._holding
+            and self._kept > 0
+            and not self._busy
+            and time.monotonic() - self._read_at >= seconds
+        )
+
+    @contextlib.contextmanager
+    def _reading(self):
+        """Around every call that reads signal or block index: while one runs the viewer is
+        not idle, and when it ends the quiet time starts again."""
+        with self._busy_lock:
+            self._busy += 1
+            self._holding = True
+        try:
+            yield
+        finally:
+            with self._busy_lock:
+                self._busy -= 1
+                self._read_at = time.monotonic()
 
     def _apply_read_threads(self) -> None:
         wanted = self._read_threads or 0
@@ -615,8 +681,10 @@ class ViewerData:
         with self._notes_lock, self._lock:
             self.close()
             data_id, epoch, cap = self.data_id, self.epoch, self._read_threads
+            busy, busy_lock = self._busy, self._busy_lock  # a read that began keeps its books
             self.__dict__.update(fresh.__dict__)
             self.data_id, self.epoch, self._read_threads = data_id, epoch + 1, cap
+            self._busy, self._busy_lock = busy, busy_lock
             self._closed = False
             self._apply_read_threads()
         fresh._combined = fresh._readers = None  # the state moved to self
@@ -819,6 +887,10 @@ def open_recordings(
                         raise
                     raise refusal from exc
         data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels, prints)
+        # Only the viewer keeps signal files open between reads (paging reads the same few files
+        # again and again; on a network drive every open is a round trip). Let go: ``close``,
+        # ``release_files``, a quiet moment and every job the app starts (model/open_files.py).
+        data.set_open_files(kept_files.budget(len({c for cs in rec_channels for c in cs})))
         opened = []  # owned by `data` now
     finally:
         for r in opened:

@@ -254,6 +254,7 @@ def write_plan(
                 exc.user_message.detail,
             )
             return result
+        data.release_files()  # no signal file is held open while this recording is written to
         try:  # what the signal files are right before the write (names, sizes, times only)
             before = signal_snapshot(path)
         except OSError:

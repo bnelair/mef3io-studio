@@ -2693,6 +2693,7 @@ class ViewerWindow(QMainWindow):
         try:
             self.controller.finish_close()
         finally:
+            self.data.release_files()  # the recording is free for anything else at once
             thread = self._notes_thread
             if thread is not None and thread is not threading.current_thread():
                 # This runs on the shutdown thread, never the GUI thread: wait

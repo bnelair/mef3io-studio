@@ -150,6 +150,7 @@ def _build_main_window_class():
     from .explorer import ExplorerPage
     from .explorer.dialogs import TimeZoneDialog
     from .joiner import JoinerPage
+    from .model import open_files
     from .model.errors import UserMessage
     from .model.timefmt import zone_names
     from .workers.jobs import JobManager
@@ -210,6 +211,10 @@ def _build_main_window_class():
             self.explorer.in_use_keys = self._keys_in_viewers
             #: Open signal viewer windows.
             self.viewers: list = []
+            # A viewer keeps signal files open between reads: before any task starts (on its
+            # own thread) every viewer lets them go, so a task never meets a recording that is
+            # held open (a folder cannot be renamed or removed while one of its files is).
+            jobs.prologue = lambda: open_files.release_all(self.viewers)
             self._tray = None
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)

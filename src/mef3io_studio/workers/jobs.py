@@ -149,10 +149,20 @@ def _safe_describe(exc: BaseException) -> UserMessage:
 
 class _Runnable(QRunnable):
     def __init__(
-        self, fn, args, kwargs, token: CancelToken, slot: ProgressSlot, bridge, job_id, mailbox
+        self,
+        fn,
+        args,
+        kwargs,
+        token: CancelToken,
+        slot: ProgressSlot,
+        bridge,
+        job_id,
+        mailbox,
+        prologue=None,
     ):
         super().__init__()
         self.setAutoDelete(True)
+        self._prologue = prologue
         self._fn, self._args, self._kwargs = fn, args, kwargs
         self._token, self._slot, self._bridge, self._job_id = token, slot, bridge, job_id
         self._mailbox = mailbox
@@ -164,6 +174,11 @@ class _Runnable(QRunnable):
         try:
             bridge.started.emit()
             self._token.raise_if_cancelled()
+            if self._prologue is not None:
+                try:
+                    self._prologue()  # on this thread, before the job's own work
+                except Exception:  # noqa: BLE001 - never stops the job
+                    log.warning("the job prologue failed")
             payload = self._fn(ctx, *self._args, **self._kwargs)
             outcome = "succeeded"
         except BaseException as exc:  # noqa: BLE001 - incl. SystemExit/KeyboardInterrupt
@@ -300,6 +315,11 @@ class JobManager(QObject):
         if max_threads:
             self.pool.setMaxThreadCount(max_threads)
         self.handles: list[JobHandle] = []
+        #: Called on the job's own thread before every job's work (never on the GUI
+        #: thread). The app sets it to let the signal viewers close the files they keep
+        #: open between reads, so no job meets a recording that is held open (a rename, a
+        #: removal or a replaced file fails on Windows while a file is open).
+        self.prologue: Callable[[], None] | None = None
         self._timer = QTimer(self)
         self._timer.setInterval(1000 // UI_UPDATES_PER_SECOND)
         self._timer.timeout.connect(self._pull_progress)
@@ -322,7 +342,15 @@ class JobManager(QObject):
             self._timer.start()
         self.pool.start(
             _Runnable(
-                fn, args, kwargs, token, handle.slot, handle._bridge, record.id, handle.mailbox
+                fn,
+                args,
+                kwargs,
+                token,
+                handle.slot,
+                handle._bridge,
+                record.id,
+                handle.mailbox,
+                self.prologue,
             )
         )
         return handle

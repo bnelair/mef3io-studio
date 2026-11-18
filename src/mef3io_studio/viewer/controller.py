@@ -29,6 +29,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..common.privacy import scrub
 from ..model import dsp, montage
+from ..model import open_files as kept_files
 from ..model.cancel import CancelToken, JobCancelled, is_stop
 from ..model.viewer_view import Performance, aligned_block, memory_bytes
 from ..workers import viewer_pipeline as pipe
@@ -181,6 +182,7 @@ class ViewController(QObject):
         self._state_change = False
         self._loading = False
         self._closed = False
+        self._releasing = False
         self._watch = QTimer(self)  # a waiting job is looked at again now and then
         self._watch.setInterval(250)
         self._watch.timeout.connect(self._tick)
@@ -409,6 +411,30 @@ class ViewController(QObject):
     def _tick(self) -> None:
         self._pump()
         self._maybe_deepen()
+        self._maybe_release_idle()
+
+    def _maybe_release_idle(self) -> None:
+        """Nothing was read for a while: let go of the signal files the reader keeps open,
+        so a recording left open in a window does not stay locked for other programs (on
+        Windows, for a rename or a removal). The library call runs on a thread of its own:
+        this is the GUI thread."""
+        data = self.data
+        if (
+            self._closed
+            or self._releasing
+            or self._jobs
+            or not data.idle_with_files(kept_files.IDLE_RELEASE)
+        ):
+            return
+        self._releasing = True
+
+        def work() -> None:
+            try:
+                data.release_files()
+            finally:
+                self._releasing = False
+
+        threading.Thread(target=work, name="viewer-release", daemon=True).start()
 
     def _page_bytes(self, req: _Request) -> int:
         """About what one more page ahead holds in the cache: a block like the
