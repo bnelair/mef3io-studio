@@ -19,16 +19,19 @@ Plain Python, no Qt.
 from __future__ import annotations
 
 import bisect
+import contextlib
 import itertools
 import os
 import re
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
+from . import open_files as kept_files
 from .cancel import CancelToken, JobCancelled, stopped_by_library
 from .errors import UserMessage
 from .quiet import library_warnings_caught
@@ -152,11 +155,19 @@ _data_ids = itertools.count(1)
 class ViewerData:
     """What the viewer reads from: built by :func:`open_recordings`."""
 
-    def __init__(self, paths, passwords, readers, combined, starts, ends, rec_channels, facts=None):
-        #: Per recording (letter order): ``(encrypted, access, fingerprint)``
-        #: read at opening, or None when it could not be read. Edit mode's
-        #: save compares it with the disk before writing.
-        self._facts = list(facts) if facts is not None else [None] * len(paths)
+    def __init__(
+        self, paths, passwords, readers, combined, starts, ends, rec_channels, prints=None
+    ):
+        #: Per recording (letter order): the fingerprint as it was when the
+        #: recording was opened, taken from what opening read anyway (no extra
+        #: file access), or None when unknown.
+        self._prints = list(prints) if prints is not None else [None] * len(paths)
+        #: Per recording: ``(encrypted, access, fingerprint)``, read only when
+        #: edit mode's save first needs it (:meth:`read_facts`, a task thread),
+        #: never at opening and never by :meth:`reopen`.
+        self._facts: list = [None] * len(paths)
+        self._facts_loaded = False
+        self._facts_lock = threading.Lock()
         self._paths = list(paths)  # in recording order (letters)
         self._passwords = list(passwords)
         self._readers = list(readers)
@@ -173,6 +184,13 @@ class ViewerData:
         #: The decode-thread cap for one read (None = mef3io's automatic).
         #: State of this object, so a reopen applies it again.
         self._read_threads: int | None = None
+        #: When the signal was last read (``time.monotonic``) and whether files may be
+        #: held open since (``open_files``): what the idle release looks at.
+        self._read_at = 0.0
+        self._holding = False
+        self._busy = 0
+        self._kept = 0  # the open_files setting, as plain Python
+        self._busy_lock = threading.Lock()
         names = [_session_name(p) for p in self._paths]
         self.recordings: tuple[RecordingInfo, ...] = tuple(
             RecordingInfo(i, _letter(i), i, names[i], starts[i], ends[i], tuple(rec_channels[i]))
@@ -198,10 +216,34 @@ class ViewerData:
         the save task only; never logged."""
         return self._passwords[index]
 
+    @property
+    def facts_loaded(self) -> bool:
+        """Whether :meth:`read_facts` has run (what :meth:`facts` answers)."""
+        return self._facts_loaded
+
     def facts(self, index: int):
-        """``(encrypted, access, fingerprint)`` of recording ``index`` as it was
-        when opened ("access": "full", "level-1", ...), or None."""
+        """``(encrypted, access, fingerprint)`` of recording ``index`` ("access":
+        "full", "level-1", ...), with the fingerprint of the recording as it was
+        when opened, or None (not read yet, or it cannot be read). Only what
+        :meth:`read_facts` stored: it never touches the disk, so the window's
+        thread may call it."""
         return self._facts[index]
+
+    def read_facts(self) -> None:
+        """Read the facts of every recording, once (a task thread, never the
+        window's). It inspects each recording: edit mode's save needs it, so
+        opening and paging never do."""
+        with self._facts_lock:
+            if self._facts_loaded:
+                return
+            # A recording that could not be read is asked again next time (it
+            # may have come back); the ones read stay.
+            for i, (p, w, fp) in enumerate(
+                zip(self._paths, self._passwords, self._prints, strict=True)
+            ):
+                if self._facts[i] is None:
+                    self._facts[i] = _facts_of(p, w, fp)
+            self._facts_loaded = all(f is not None for f in self._facts)
 
     def is_archive(self, index: int) -> bool:
         """Whether recording ``index`` is a single-file archive (.mefd.tar)."""
@@ -356,12 +398,20 @@ class ViewerData:
 
     def envelope(self, channel: str, t0: int, t1: int) -> dict:
         """Min/max per block from the block index alone (never the samples)."""
-        return self._combined.block_envelope(channel, int(t0), int(t1))
+        with self._reading():
+            return self._combined.block_envelope(channel, int(t0), int(t1))
 
-    def envelopes(self, channels: Sequence[str], t0: int, t1: int) -> dict:
-        """Several channels at once: ONE call on the open reader (each index
-        read once, concurrently); a dict keyed by channel name."""
-        return self._combined.block_envelope(list(channels), int(t0), int(t1))
+    def envelope_many(self, channels: Sequence[str], t0: int, t1: int) -> dict[str, dict]:
+        """:meth:`envelope` of several channels in ONE library call, which
+        reads their indexes concurrently (on a network drive each index is
+        several round trips, so this is many times faster than one call per
+        channel). Keyed by channel name; a name given twice is returned once."""
+        names = list(dict.fromkeys(channels))
+        if not names:
+            return {}
+        with self._reading():
+            got = self._combined.block_envelope(names, int(t0), int(t1))
+        return {name: got[name] for name in names}
 
     # -- annotations -----------------------------------------------------------------------
 
@@ -411,6 +461,68 @@ class ViewerData:
         self._locked = tuple(locked)
         return list(out)
 
+    def refresh_notes(
+        self, appended: dict[int, int], signals_same: dict[int, bool] | None = None
+    ) -> bool:
+        """After notes were APPENDED to recordings (``appended``: recording
+        index -> how many): read only the notes again, keeping the readers, the
+        tile cache (``epoch`` stays) and everything cached about the signal.
+
+        It is done only when it is certain that the signal did not change: for each
+        written recording either the caller says its signal files are exactly as they
+        were just before the write (``signals_same``: names, sizes and times from one
+        directory walk, taken after the check against the fingerprint of opening, so
+        nothing is opened), False meaning "reopen"; or, without that, the recording is
+        inspected once more (the fingerprint after the write must be the one taken at
+        opening). The notes read back must hold exactly the notes that were appended
+        (an unlocked recording).
+        Returns False when either fails: nothing is changed then, and the
+        caller reopens the recordings (:meth:`reopen`). A task thread's call;
+        it holds the notes lock like :meth:`annotations`."""
+        import mef3io
+
+        with self._notes_lock:
+            before = self._annotations
+            if before is None or self._closed:
+                return False
+            same = signals_same or {}
+            for i in appended:
+                if i in same:
+                    if not same[i]:
+                        return False
+                    continue
+                facts = self._facts[i]
+                baseline = facts[2] if facts is not None else self._prints[i]
+                if baseline is None:
+                    return False
+                try:
+                    with library_warnings_caught():
+                        now = mef3io.inspect(self._paths[i], password=self._passwords[i])
+                except Exception:  # noqa: BLE001 - the caller reopens, and says what fails
+                    return False
+                if fingerprint_of(now) != baseline:
+                    return False
+            old_locked = self._locked
+            counts_before: dict[int, int] = {}
+            for rec in before:
+                counts_before[rec["recording"]] = counts_before.get(rec["recording"], 0) + 1
+            self._annotations = None
+            try:
+                after = self._annotations_locked()
+            except Exception:  # noqa: BLE001
+                self._annotations, self._locked = before, old_locked
+                return False
+            counts_after: dict[int, int] = {}
+            for rec in after:
+                counts_after[rec["recording"]] = counts_after.get(rec["recording"], 0) + 1
+            for i, n in appended.items():
+                if i in self._locked:
+                    continue  # its notes cannot be read at all: nothing to compare
+                if counts_after.get(i, 0) != counts_before.get(i, 0) + n:
+                    self._annotations, self._locked = before, old_locked
+                    return False
+            return True
+
     # -- tiles -------------------------------------------------------------------------------
 
     def _index_of(self, rate: float, t_us: float) -> float:
@@ -458,7 +570,7 @@ class ViewerData:
         if cancel is not None:
             cancel.raise_if_cancelled()
             kwargs["cancel"] = cancel.for_library()
-        with stopped_by_library():
+        with self._reading(), stopped_by_library():
             raw = self._combined.read(names, t0, t1, **kwargs)
         raw = np.asarray(raw, dtype=np.float32).reshape(len(names), -1)
         out = np.full((len(names), n), np.nan, dtype=np.float32)
@@ -483,6 +595,57 @@ class ViewerData:
         :meth:`reopen`. Raises if the library refuses the value."""
         self._read_threads = None if not n else int(n)
         self._apply_read_threads()
+
+    # -- signal files kept open between reads (mef3io 2.4 ``open_files``) ---------------------
+
+    @property
+    def open_files(self) -> int:
+        """How many signal files the reader may keep open between reads (0 = none)."""
+        return int(getattr(self._combined, "open_files", 0) or 0)
+
+    def set_open_files(self, n: int) -> None:
+        """Change how many files may be kept open (0 = keep nothing)."""
+        self._combined.open_files = max(0, int(n))
+        self._kept = max(0, int(n))
+
+    def release_files(self) -> None:
+        """Close every signal file the readers keep open, now. Safe from any thread and while
+        reads run (the next read opens what it needs again). Call it before anything else
+        needs the recording's files: writing notes into it, renaming or removing it."""
+        with self._busy_lock:
+            if not self._busy:  # a read that runs may hold files again: it keeps the flag
+                self._holding = False
+        for obj in [self._combined, *self._readers]:
+            try:
+                obj.release_files()
+            except Exception:  # noqa: BLE001 - closed already: nothing is held
+                pass
+
+    def idle_with_files(self, seconds: float) -> bool:
+        """Whether files may be held open while nothing was read for ``seconds`` (plain
+        Python: the window's timer may ask; the release itself is a library call for a
+        thread, :meth:`release_files`)."""
+        return (
+            not self._closed
+            and self._holding
+            and self._kept > 0
+            and not self._busy
+            and time.monotonic() - self._read_at >= seconds
+        )
+
+    @contextlib.contextmanager
+    def _reading(self):
+        """Around every call that reads signal or block index: while one runs the viewer is
+        not idle, and when it ends the quiet time starts again."""
+        with self._busy_lock:
+            self._busy += 1
+            self._holding = True
+        try:
+            yield
+        finally:
+            with self._busy_lock:
+                self._busy -= 1
+                self._read_at = time.monotonic()
 
     def _apply_read_threads(self) -> None:
         wanted = self._read_threads or 0
@@ -515,8 +678,10 @@ class ViewerData:
         with self._notes_lock, self._lock:
             self.close()
             data_id, epoch, cap = self.data_id, self.epoch, self._read_threads
+            busy, busy_lock = self._busy, self._busy_lock  # a read that began keeps its books
             self.__dict__.update(fresh.__dict__)
             self.data_id, self.epoch, self._read_threads = data_id, epoch + 1, cap
+            self._busy, self._busy_lock = busy, busy_lock
             self._closed = False
             self._apply_read_threads()
         fresh._combined = fresh._readers = None  # the state moved to self
@@ -601,14 +766,37 @@ def fingerprint_of(summary) -> tuple:
     )
 
 
-def _facts_of(path: str, password: str):
+def fingerprint_from_infos(infos) -> tuple:
+    """The same fingerprint as :func:`fingerprint_of`, from ``Reader.info``
+    dicts of the channels (name -> info), which opening has read anyway."""
+    return tuple(
+        sorted(
+            (
+                str(name),
+                int(i["start_time"]),
+                int(i["end_time"]),
+                int(i["number_of_samples"]),
+            )
+            for name, i in infos.items()
+        )
+    )
+
+
+def _facts_of(path: str, password: str, opened_print=None):
+    """Encryption and access from one inspect; the fingerprint is the one taken
+    when the recording was opened (so a change since then is seen), else the
+    inspect's own."""
     import mef3io
 
     try:
         with library_warnings_caught():
             summary = mef3io.inspect(path, password=password)
         enc = summary.encryption
-        return (bool(enc["encrypted"]), str(enc["access"]), fingerprint_of(summary))
+        return (
+            bool(enc["encrypted"]),
+            str(enc["access"]),
+            opened_print if opened_print is not None else fingerprint_of(summary),
+        )
     except Exception:  # noqa: BLE001 - edit mode then refuses to save
         return None
 
@@ -649,11 +837,15 @@ def open_recordings(
                 if cancel is not None:
                     cancel.raise_if_cancelled()
                 opened.append(mef3io.Reader(path, pwd))
-            starts, ends, rec_channels = [], [], []
+            starts, ends, rec_channels, prints = [], [], [], []
             for r in opened:
                 chans = list(r.channels)
                 infos = [r.info(c) for c in chans]
                 rec_channels.append(chans)
+                try:
+                    prints.append(fingerprint_from_infos(dict(zip(chans, infos, strict=True))))
+                except Exception:  # noqa: BLE001 - a missing key: the inspect's own is used
+                    prints.append(None)
                 starts.append(min((int(i["start_time"]) for i in infos), default=None))
                 ends.append(max((int(i["end_time"]) for i in infos), default=None))
             # recordings without data sort last, so the letters of the others hold
@@ -664,6 +856,7 @@ def open_recordings(
             starts = [starts[i] for i in order]
             ends = [ends[i] for i in order]
             rec_channels = [rec_channels[i] for i in order]
+            prints = [prints[i] for i in order]
             letters = [_letter(i) for i in range(len(readers))]
             empty = [letters[i] for i, st in enumerate(starts) if st is None]
             if empty:
@@ -690,8 +883,11 @@ def open_recordings(
                     if refusal is None:
                         raise
                     raise refusal from exc
-        facts = [_facts_of(p, w) for p, w in zip(paths_o, pwds_o, strict=True)]
-        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels, facts)
+        data = ViewerData(paths_o, pwds_o, readers, combined, starts, ends, rec_channels, prints)
+        # Only the viewer keeps signal files open between reads (paging reads the same few files
+        # again and again; on a network drive every open is a round trip). Let go: ``close``,
+        # ``release_files``, a quiet moment and every job the app starts (model/open_files.py).
+        data.set_open_files(kept_files.budget(len({c for cs in rec_channels for c in cs})))
         opened = []  # owned by `data` now
     finally:
         for r in opened:

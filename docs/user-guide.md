@@ -952,6 +952,9 @@ to see the full list of keys. The main ones:
 | More or less space between rows | Ctrl+Up and Ctrl+Down (on a Mac: Alt+Up and Alt+Down) |
 | Show other channels | Shift+Up and Shift+Down, or Page Up and Page Down |
 | Choose the timebase (10, 15, 30, 60 or 120 mm/s) | Alt+1 to Alt+5 |
+| One hour forward or back | Ctrl+Right and Ctrl+Left (on a Mac: Alt+Shift+Right and Alt+Shift+Left) |
+| One day forward or back | Ctrl+Shift+Right and Ctrl+Shift+Left (on a Mac: Command+Option+Right and Command+Option+Left) |
+| Next or previous stretch with data (over a gap) | `.` and `,` |
 | Go to a time | `G` |
 | Jump | Ctrl+K |
 | Choose channels | `C` |
@@ -972,7 +975,7 @@ band takes you there exactly as on the bar. Where the recording has a gap,
 the band stays empty. It is read in the background without loading the
 signals (it can take a moment on a big recording on a network drive; the band
 says "Loading the overview" meanwhile), and a channel already shown comes
-back at once. The **Overview** button in the second toolbar row chooses the
+back at once. The **Overview** button among the controls above the signal chooses the
 channels in the band: by default the first channel that is shown, and up to
 four, each drawn in its own row and scaled to its own size (so rows are not
 comparable with each other). A channel you hide leaves the band. The same
@@ -982,14 +985,41 @@ menu turns the band off.
 2 08:00`), a date and time (`2000-01-31 14:30`), a move from the page you
 are on (`+10m`, `-90s`, `+2h`), and a recording letter (`B`, the start of that
 recording). Shift+Enter finds the previous time of day instead of the next.
-The **Day** and time boxes in the toolbar do the same. Times are shown in
+The **Day** and time boxes in the toolbar do the same, and you can also type
+a date and time (`2000-01-31 14:30`) or just a date in the time box. Times are shown in
 the time zone you chose for the site (see *Times and time zones*).
+
+**Moving or renaming a recording that is shown (Windows).** To read quickly the viewer
+keeps the files of the recording open between pages. On Windows a folder cannot be moved
+or renamed by another program while a file in it is open, so a recording that a viewer
+window shows cannot be moved or renamed while it is being read; the viewer lets go 8
+seconds after the last read, at once when you close its window, and before anything else
+this app starts. (The app's own Rename refuses a recording that is open in a viewer.)
+
+**Long recordings.** The strip above the traces shows the whole recording:
+the data in colour, the gaps hatched (also a pause inside one recording, once
+the viewer has read where the data is, from one channel of each recording), a
+line and the date at every midnight; the first date also names the time zone
+the dates are in, as the time axis does.
+Move the pointer over it to read the time, the day, and how long a gap is.
+For a recording of days the toolbar offers **−1 day**, **−1 h**, **+1 h**,
+**+1 day** and **◀ Data** and **Data ▶**, which jump to the previous or next
+stretch with data and skip over a gap. The slowest timebases (0.002 mm/s and
+up) put a day or more on the screen.
 
 **Scales.** The toolbar sets the *sensitivity* (µV per millimetre; **Auto**
 chooses one that fits the signals), the *timebase* (millimetres per second)
-and the *spacing* between rows, in the usual clinical units. A list of
-colours changes the look of the traces. The viewer remembers the scales,
-colours and filters you chose for the next time.
+and the *spacing* between rows, in the usual clinical units. Beside the
+timebase, a grey **= 10 s** says how much time is on the screen. It follows
+the timebase, the size of the window and the screen the window is on: a wider
+window shows more time at the same timebase.
+
+A list of colours changes the look of the traces. Besides the ready-made
+ones, **Your own colours…** asks for a background colour and a trace colour;
+the text, the grid and the other marks are chosen to match. If the two colours
+are too close to read each other (less than 3 to 1 in contrast), the viewer
+says so beside the list and keeps the colours it had. The viewer remembers the
+scales, colours and filters you chose for the next time.
 
 ### Montages and channels
 
@@ -1000,11 +1030,57 @@ The **Montage** box in the toolbar chooses how the channels are shown:
   every other channel is shown against. You can also right-click a trace and
   choose **Use as reference**.
 - **Lead bipolar:** each contact shown against the next contact of the same
-  lead (for example A1 against A2).
+  lead (for example LA1 against LA2). Every row is named in full ("LA2 − LA3").
+  Referenced and lead-bipolar rows keep their full names, but the thin line
+  that groups the rows of a lead is drawn in them too.
 
 **Channels** (`C`) opens a list with a search box: tick the channels to show.
-Right-clicking a trace can also hide a channel or a whole lead, or show only
-that lead.
+Above the channels are the **leads**. A lead is a name with at least four
+contacts, one of them contact 1 (for example LA, made of LA1 to LA12); scalp
+names such as F3, F4, T3 or A1 are not leads, and neither is anything of a scalp cap
+(F1 to F8, FC1 to FC4, C1 to C6, P1 to P8 and so on) when the recording has a
+midline scalp channel such as Fz, Cz or Pz; electrode leads recorded beside a
+scalp set (LA1 to LA12) still are. Tick or untick a whole lead at once; a lead with only some of its channels
+shown is half ticked. Searching finds a lead by its name or by a channel in
+it. Right-clicking a trace can also hide a channel or a whole lead, or show
+only that lead.
+
+**Many channels.** When a recording has more channels than fit, the toolbar
+says which ones are on screen ("Rows 33-64 of 256") and a scroll bar appears
+beside the traces; Page Up and Page Down show the previous or next screenful.
+In the spacing box, **Fit all rows** puts as many channels on the screen as can
+still be read (never closer than 4 mm) and you scroll to the rest; a larger
+number in the same box gives fewer, larger rows. The viewer remembers the
+choice. Channels of one lead are drawn as a group: a thin line above the
+first, and the lead's name once (the first channel on screen always shows its
+full name, even when the top of its lead is scrolled away). Channels that are not
+EEG (ECG, EMG, DC, SpO2 and the like) come last; a channel that belongs to a lead
+is always taken for EEG, whatever its name (a lead called HR or DC stays with the
+others). Each channel that is not EEG has a sensitivity of its own, chosen from
+the same list as the toolbar's from what it shows when the recording opens (and
+again when you press **Auto**, change a filter, or zoom into or out of the overview),
+then kept while you move through the recording.
+It is never more magnified than the toolbar's value, so a disconnected ECG with
+only amplifier noise looks flat, as it is. When a row's sensitivity differs from
+the toolbar's, its name has a small second line ("500 µV/mm") and the status
+bar says it when the pointer is on the row.
+
+**Traces on open.** The viewer fits the sensitivity to the signals when a
+recording opens (a sensitivity you chose before, in this window or earlier, is
+kept). If the first page cannot tell (flat, empty, or too few values to judge),
+the viewer keeps the default and tries again on the next page, until you choose
+one yourself. It says so in the status line when it changed the number
+("Sensitivity set to 300 µV/mm to fit this recording."), and fits again when you
+zoom into or out of the overview, as long as the number is only the one it
+fitted. **Auto** also works in the overview, and says when it cannot decide. Every
+trace is drawn around a middle level kept for its row: it stays while the level of
+the page stays within half a row of it, so a small step in the level moves the
+trace and a large one starts the middle again; it also starts again after a far
+jump, and when the montage or the filters change. The hover line says what was
+taken off when it is large ("shown 4.0 mV lower"); measurements always read the
+true values. A trace that swings further than a row and a half is cut off there
+and the cut is marked with small arrows, also on the paler picture that stands
+in while a page loads; use **Auto**, or choose a larger µV/mm number, to see it whole.
 
 ### Filters
 
@@ -1028,6 +1104,12 @@ you use one) opens a small window:
   draw.
 - **Turn all filters off** puts everything back.
 
+A stretch of signal between two gaps can be too short for the filters to
+settle. It is then drawn paler and shown as recorded, without the filters. When
+the page on the screen holds such a stretch, the Filters window and the status
+line at the bottom say so, with the shortest length that can be filtered with
+the settings you chose.
+
 If you choose settings that cannot work together (for example a slow-drift
 cutoff above the fast-activity one), the window says so and keeps the
 previous filters. Under **Technical details** there is a line naming the
@@ -1043,6 +1125,21 @@ side panel with the time, the recording, the type, where it applies (a
 channel or the whole recording) and the text. You can search it, show one
 type only, and click a row to go there. `[` and `]` step to the previous and
 next one. **Types** (`T`) chooses which types are shown.
+
+When very many notes fall on the screen (for example hours of a recording
+with thousands of notes), they cannot be told apart, so they are merged: one
+short tick for each pixel column, taller for more notes and in the colour of
+the most important type. Hover a tick to see how many notes it holds; zoom in
+to see them one by one. A long note keeps its coloured band, and notes of
+your draft stay lines of their own. The list and `[` and `]` still reach every
+note.
+
+While a page is loading, the traces of the page before stay where they
+belong in time, drawn faint so that they never look like the real page, and a
+small spinner appears in the corner only if it takes longer than a moment.
+Zooming or changing the width keeps no old traces. If a channel cannot be
+read, its row says so instead of showing anything old. Changing the montage does not read the recording
+again.
 
 The text of notes can identify a patient. Like patient details in Explore,
 it is **hidden until you show it**: the viewer follows what you chose in
@@ -1070,9 +1167,65 @@ offers:
 
 ### Add notes and events (edit mode)
 
+**The quick way.** Put the pointer where the note belongs and press **`N`**.
+A small text field opens right there (edit mode turns itself on). Type, then
+press **Enter** to keep the note or **Esc** to drop it (if `N` was what turned
+edit mode on, **Esc** turns it off again). The note goes where the pointer is on
+the page you see, also after you turned pages with the keys and left the mouse
+where it was; with the pointer off the traces it goes to the middle of the page. To give the note a
+length, drag with **Shift** held over the stretch first (the selection stays
+until you use it), then press `N`: the note lasts as long as the selection.
+Under the field the app offers your last few texts and the types of note
+that the recording already holds: press **Alt+1**, **Alt+2** and so on, or
+click one (the up and down arrows walk through your last texts). Those texts
+are remembered only while this window is open and are never written to the
+settings, and they are offered only while the details of every recording are shown. Then press **Ctrl+S**: one line asks "Save 1 new note into
+Recording A?", and **Save** adds it to the recording. (Ctrl+S inside the text
+field keeps the note and goes straight to that question.) A quiet *3 notes not
+saved yet* in the status bar reminds you while a draft exists, and closing the
+window still asks.
+
+A note that is the same as one already stored, or already in your draft (same
+time, length, type, text and channel, in the same recording: recordings side by
+side can each hold the same note), is refused with a sentence, and a save
+never stores a note twice. In your draft you can change a note's text or
+remove it: right-click the note (its chip, its row in the list, or its mark on
+the traces) and choose **Change the text** or **Remove this note**, or select
+it and press **Delete** (or Backspace) while the traces, the note marks or the
+notes list have the keyboard; **Ctrl+Z** brings it back.
+
+**Removing a note that is already stored.** Choose **Remove this note** on it (or
+select it and press **Delete**). One line asks "Remove this note from Recording A?
+This cannot be undone." and **Remove** takes it out of the recording. Only the
+notes of that recording change (the signal and the details are not touched), and
+the note cannot be brought back from the app, so keep a copy of the original if you
+may need it. A note stored **twice** says so, and you can remove one copy or both
+(for a few special kinds of note, such as seizure or epoch marks that carry details,
+only all copies can be removed together).
+**Stop** works until the notes are being put in place: before that the recording
+stays exactly as it was. A change that is already being put in place is finished
+(it takes a moment), and the app then says the note was removed. If the recording
+cannot be changed (it is password-protected and you do not have both passwords, it
+is a single-file recording, its folder is read-only, another program is changing it,
+an earlier change was left unfinished, or its notes were changed since you opened
+it) a message says why and what to do, and what was and was not removed. A
+password-protected recording asks for the second password. A recording whose notes
+were being changed when a program stopped opens with its signal, and the notes list
+says why the notes are not shown and what to do.
+
+To **change the text** of a stored note, use **Change the text** or the Edit button
+of the notes list: the new wording appears next to the old one (struck through),
+and **Save** replaces the old note by the new one, after one line that says the old
+wording cannot be brought back. Only plain notes and events with a length can be
+changed; other kinds of note can be removed but not changed, because the change
+would turn them into plain notes. The note stays in its own recording, so its time
+must be one at which that recording holds data: to move a note into another
+recording, remove it and add a new one there. The text stays exactly as it was
+unless you change it.
+
 Edit mode is **off** every time you open the viewer. Turn it on with the
-**Edit mode** button in the toolbar. A banner then reminds you that your
-changes are **a draft until you save**.
+**Edit mode** button in the toolbar (or just press `N`). A banner then reminds
+you that your changes are **a draft until you save**.
 
 - **Add a note or event** at the pointer with `A`, the **Add…** button in the
   notes list, or the right-click menu (which can also add one to a single
@@ -1089,25 +1242,32 @@ changes are **a draft until you save**.
   you what it found. **Export…** saves the listed notes, or all of them, as
   CSV or JSON. These files hold real dates and the text of notes, so the app
   reminds you to store and share them with care.
-- **Change…** and **Take out** work on notes in the draft. For a note that
-  is **already stored** in a recording they only mark the change in the
-  draft: **changing or removing stored notes is not possible yet**, because
-  it would need a new copy of the recording. Those changes cannot be saved.
+- **Change…** works on notes in the draft and on notes **already stored** in a
+  recording (the new wording is saved in place of the old one, see above).
+  **Take out** removes a note from the draft, or, for a stored note, removes it
+  from the recording after one line that asks first.
 
-**Save.** Choose **Save…** in the banner. The app shows how many notes and
-events will be added to each recording, and from when to when. Nothing is
-written until you choose **Add them to the recordings**.
+**Save.** Press **Ctrl+S**, or choose **Save…** in the banner. When you only
+added notes, one line asks whether to save them (how many, and into which
+recording). In every other case (a choice of recording, a note outside every
+recording, a password to type, or changes to stored notes) the app shows how
+many notes and events will be added to each recording, and from when to when.
+Nothing is written until you choose **Save** (or **Add them to the
+recordings**).
 
-- Saving **only adds**. Notes already in the recording are never rewritten,
-  and a note you add cannot be removed from that recording afterwards, except
-  by making a new copy of it.
+- Saving new notes **only adds**: the notes already in the recording are never
+  rewritten. A note you added can be removed again later (Delete on it); that
+  cannot be undone.
 - If a note for the whole recording falls where two recordings both hold
   data, you choose which recording gets it.
 - For a **password-protected** recording the app needs **both** passwords
   (basic and full-access). It holds one of them from when you opened the
   recording and asks for the other here.
-- When the saving ends, the viewer reads the recordings again so the new
-  notes show. Anything that could not be saved stays in the draft.
+- When the saving ends, the viewer reads only the notes again, so the new
+  notes show at once and the page, the view and the overview stay as they
+  are. (If it cannot be sure that the signal itself is unchanged, it opens
+  the recordings again, as before.) Anything that could not be saved stays in
+  the draft.
 - A **single-file recording** (`.mefd.tar`) cannot get new notes; unpack the
   recording first (see *Pack into one file, or unpack*).
 - If you turn edit mode off or close the window with an unsaved draft, the
@@ -1118,7 +1278,7 @@ written until you choose **Add them to the recordings**.
 **File → Settings** has a *Signal viewer* section for big recordings and
 big screens. The three settings for loading and filtering and the memory
 setting are **Automatic** (0) unless you change them; *Pages loaded ahead*
-starts at 2 (0 to 8). A change applies to viewer windows you open
+starts at 4 (0 to 8). A change applies to viewer windows you open
 afterwards:
 
 - *Loading in parallel*, *Parts decoded at once, per read* and *Filtering in
@@ -1126,7 +1286,8 @@ afterwards:
   fast disks and with many cores, and often on network drives, at the cost of
   memory.
 - *Pages loaded ahead*: how many pages in the direction you are moving are
-  read before you get there.
+  read and filtered before you get there. When you stop for a second, the
+  viewer keeps looking further ahead, as far as a share of the memory allows.
 - *Memory for loaded data (MB)*: how much memory the viewer may use for
   loaded data. Automatic is 512 MB; you can choose from 128 MB to 16 GB.
 

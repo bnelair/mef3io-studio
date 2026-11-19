@@ -150,6 +150,7 @@ def _build_main_window_class():
     from .explorer import ExplorerPage
     from .explorer.dialogs import TimeZoneDialog
     from .joiner import JoinerPage
+    from .model import open_files
     from .model.errors import UserMessage
     from .model.timefmt import zone_names
     from .workers.jobs import JobManager
@@ -210,6 +211,10 @@ def _build_main_window_class():
             self.explorer.in_use_keys = self._keys_in_viewers
             #: Open signal viewer windows.
             self.viewers: list = []
+            # A viewer keeps signal files open between reads: before any task starts (on its
+            # own thread) every viewer lets them go, so a task never meets a recording that is
+            # held open (a folder cannot be renamed or removed while one of its files is).
+            jobs.prologue = lambda: open_files.release_all(self.viewers)
             self._tray = None
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)
@@ -591,10 +596,7 @@ def _build_main_window_class():
             recordings (opened by one background task)."""
             from .viewer.launch import launch
 
-            def add(window) -> None:
-                self.viewers.append(window)
-                window.closed.connect(lambda w=window: self._viewer_closed(w))
-
+            add = self.add_viewer
             launch(
                 self.jobs,
                 self.explorer.source,
@@ -608,6 +610,13 @@ def _build_main_window_class():
                 on_revealed=self.explorer.refresh_entry,
                 on_join=self.join_window_in_joiner,
             )
+
+        def add_viewer(self, window) -> None:
+            """A viewer window is open: it stays in ``viewers`` (Rename's refusal, every task's
+            release of kept files) until it has really let go of its recordings, which is
+            when it says ``released``, not when it is merely closed."""
+            self.viewers.append(window)
+            window.released.connect(lambda w=window: self._viewer_closed(w))
 
         def _keys_in_viewers(self) -> set[str]:
             """The recordings open in a signal viewer (they must not be renamed)."""

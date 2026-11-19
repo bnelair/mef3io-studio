@@ -14,13 +14,15 @@ Widgets here never import mef3io: the data arrives as ready-to-draw pieces
 
 from __future__ import annotations
 
+import ctypes
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, tzinfo
 
 import numpy as np
-from PySide6.QtCore import QByteArray, QDataStream, QPointF, QRectF, Qt, QTimer, Signal
+import shiboken6
+from PySide6.QtCore import QByteArray, QDataStream, QLineF, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -32,7 +34,15 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..model import timefmt
-from ..model.viewer_view import Palette, format_measure
+from ..model.montage import OTHER_GROUP
+from ..model.sampling import bounded_sample
+from ..model.viewer_view import (
+    Palette,
+    display_units,
+    format_measure,
+    format_offset,
+    rows_fitting,
+)
 from ..workers.viewer_pipeline import EnvelopePiece, ViewPiece, envelope_columns
 
 
@@ -48,6 +58,27 @@ class DrawRow:
     tag: str = ""  # recording letters, only when rows come from different recordings
     note: str | None = None
     minus: str | None = None  # the channel subtracted (reference and bipolar rows)
+    #: While ``piece`` is None: the picture of the page before, which this row
+    #: keeps showing where its time overlaps the new page (never gap-shaded:
+    #: where it holds nothing, the row is simply empty until the data arrives).
+    stale: ViewPiece | EnvelopePiece | None = None
+    stale_local: int = 0
+    #: The block of this row could not be read: the row says so and shows no
+    #: trace (an old picture never stands in for a failure).
+    failed: bool = False
+    #: Not an EEG channel (ECG, EMG, DC, SpO2 ...): it has a sensitivity of its
+    #: own (``own_sens``), since its units and size differ.
+    own_scale: bool = False
+    #: Where the row sits among its lead's rows (see ``montage.group_rows``).
+    group_first: bool = False
+    #: The label for the rows after a lead's first row: the lead is named once.
+    short: str = ""
+    #: A group of rows (a lead, or the channels that are not EEG) starts at this row.
+    group: str = ""
+    #: The row's own sensitivity (units per mm), chosen once from a robust
+    #: stretch of its data (``ViewerWindow._choose_own_scales``) and held; 0 =
+    #: not chosen yet. The row never draws finer than the toolbar's value.
+    own_sens: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -63,13 +94,24 @@ class CanvasMark:
     #: Edit mode: "" | "new" (a draft note, dashed) | "removed" (a stored note
     #: the draft takes out, dotted and faint).
     style: str = ""
+    #: A merged tick: how many notes share this pixel column of a crowded view
+    #: (``tick``), drawn short at the top in the colour of the most important
+    #: one. Its tooltip is made only when it is hovered (``TraceCanvas.tip_for``).
+    count: int = 1
+    tick: bool = False
+    #: The note behind it (a ``Mark``), for the menu on a note.
+    source: object = field(default=None, compare=False, repr=False)
 
 
 #: The export range's colour (light, dark): black or white, with a dashed edge.
 EDGE_GRAB_PX = 5
+#: A merged tick answers the pointer within this many pixels of the plot's top.
+TICK_HIT_PX = 30
+#: A page not complete after this long shows the small spinner in a corner.
+SPINNER_DELAY_MS = 400
 
 
-def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
+def _polygon_stream(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
     """Built in one step from QPolygonF's stream form (a big-endian point
     count, then x, y as big-endian doubles): about 40x faster than one
     QPointF per point, which cost ~11 ms per row."""
@@ -82,12 +124,73 @@ def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
     return poly
 
 
-def _trace_pen(colour: str) -> QPen:
+def _polygon_direct(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
+    """Built by writing the points into the polygon's own memory (a QPointF is
+    two doubles): the stream form above costs about ten times as much."""
+    n = len(xs)
+    poly = QPolygonF()
+    if n == 0:
+        return poly
+    poly.resize(n)
+    address = shiboken6.getCppPointer(poly.data())[0]
+    view = np.frombuffer((ctypes.c_double * (2 * n)).from_address(address), dtype="<f8")
+    view = view.reshape(n, 2)
+    view[:, 0] = xs
+    view[:, 1] = ys
+    return poly
+
+
+def _direct_polygon_is_sound() -> bool:
+    """Checked once: the direct build gives exactly what the stream build gives,
+    on small arrays, and the polygon stays usable. Anything else (another Qt
+    layout, a binding without ``data()``) and the stream build is used for good."""
+    try:
+        rng = np.random.default_rng(7)
+        for n in (1, 2, 5, 64):
+            xs, ys = rng.uniform(-1e4, 1e4, n), rng.uniform(-1e4, 1e4, n)
+            a, b = _polygon_stream(xs, ys), _polygon_direct(xs, ys)
+            if a.size() != b.size() or a != b:
+                return False
+            moved = b.translated(0.5, -0.5)
+            if moved.size() != n or moved.at(n - 1) != QPointF(xs[-1] + 0.5, ys[-1] - 0.5):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - any trouble: the old way
+        return False
+
+
+_use_direct: bool | None = None
+
+
+def _polygon(xs: np.ndarray, ys: np.ndarray) -> QPolygonF:
+    """A QPolygonF of the points ``(xs, ys)``: written into its own memory when a
+    one-time self-check says that gives the same polygon, else by stream."""
+    global _use_direct
+    if _use_direct is None:
+        _use_direct = _direct_polygon_is_sound()
+    return (_polygon_direct if _use_direct else _polygon_stream)(xs, ys)
+
+
+#: A row showing the picture of an earlier page (while the new one loads) is
+#: drawn this faint (0-255), from its first frame: an old trace never looks current.
+STALE_ALPHA = 80
+
+
+#: A trace may swing this many row heights above and below its row's centre;
+#: what is beyond is cut off at that line and marked (see ``_paint_gaps_and_traces``).
+CLIP_HALF_ROWS = 0.75
+#: Marks on a clipped trace are drawn at most this many pixels apart.
+CLIP_MARK_SPACING_PX = 16
+
+
+def _trace_pen(colour: str, alpha: int = 255) -> QPen:
     """One device pixel wide at any screen scale. Qt draws such a line on a
     fast path; any wider pen (1.2 px, or 1 px on a 2x screen) is stroked as
     an outline, about 100x slower, which made each page take seconds. On a
     2x screen the trace is drawn twice instead (``_paint_gaps_and_traces``)."""
-    pen = QPen(QColor(colour), 1)
+    c = QColor(colour)
+    c.setAlpha(alpha)
+    pen = QPen(c, 1)
     pen.setCosmetic(True)
     return pen
 
@@ -138,11 +241,25 @@ class TraceCanvas(QWidget):
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(80)
         self._spin_timer.timeout.connect(self._tick_spinner)
+        #: The corner spinner shows only when a page is still not complete
+        #: after this long: a quick page never flashes it.
+        self.spinner_delay_ms = SPINNER_DELAY_MS
+        self.spinner_shown = False
+        self._spin_delay = QTimer(self)
+        self._spin_delay.setSingleShot(True)
+        self._spin_delay.timeout.connect(self._show_spinner)
         #: Last measurement text (for tests and the status line).
         self.measure_text = ""
         #: Painted traces per row, for tests: row -> number of polyline points.
         self.drawn_points: dict[int, int] = {}
+        #: Rows whose trace was cut off at the top / bottom of its band (for tests).
+        self.clipped_rows: dict[int, tuple[bool, bool]] = {}
         self._shapes: dict = {}
+        #: (channel, minus) -> the level (in the data's unit) that sits at the
+        #: middle of the row: HELD while the page's own level stays within half a
+        #: row of it, so a step in the level moves the trace and an old picture
+        #: and the new one agree. Cleared on a far jump and when the rows change.
+        self._levels: dict[tuple, float] = {}
         self._pm_key = None
         self._wheel_rows = 0.0
         #: Labelled lines where the recordings change: (time, label).
@@ -176,7 +293,11 @@ class TraceCanvas(QWidget):
 
     @property
     def axis_height(self) -> int:
-        return int(self.fontMetrics().height() * 2.3)
+        # Two lines: the time labels (from 4 px under the axis line) and what the page is (the
+        # overview, edges: baseline ``descent + 2`` above the bottom). The air between them is
+        # ``axis - 2 * line - 6`` px, so ``2.6 * line + 10`` leaves ``0.6 * line + 4``: more
+        # than half a line at every font size (a fixed 2.7 lines left 3.8 px at 14 px: not).
+        return int(self.fontMetrics().height() * 2.6) + 10
 
     def plot_rect(self) -> QRectF:
         return QRectF(
@@ -195,7 +316,7 @@ class TraceCanvas(QWidget):
         return self.spacing_mm * self.px_per_mm
 
     def visible_rows(self) -> int:
-        return max(1, int(self.plot_rect().height() // self.row_height))
+        return rows_fitting(self.plot_rect().height(), self.row_height)
 
     def row_y(self, i: int) -> float:
         """Vertical centre of row ``i``."""
@@ -222,13 +343,26 @@ class TraceCanvas(QWidget):
         self.invalidate()
 
     def set_view(self, t0: int, t1: int, sens: float, spacing_mm: float, row_offset: int) -> None:
+        span = self.t1 - self.t0
+        if t1 < self.t0 - span or t0 > self.t1 + span:  # nothing in common with the last page
+            self._levels.clear()
         self.t0, self.t1 = t0, max(t1, t0 + 1)
         self.sens, self.spacing_mm, self.row_offset = sens, spacing_mm, row_offset
+        self.invalidate()
+
+    def reset_levels(self) -> None:
+        """Forget the held centres (the montage, a filter or the channels changed)."""
+        self._levels.clear()
         self.invalidate()
 
     def set_rows(self, rows: Sequence[DrawRow], overview: bool, multi: bool) -> None:
         self.rows = list(rows)
         self._shapes.clear()
+        if overview != self.overview:
+            self._levels.clear()
+        else:  # other rows (another montage, hidden channels): only theirs are kept
+            keep = {(r.channel, r.minus) for r in self.rows}
+            self._levels = {k: v for k, v in self._levels.items() if k in keep}
         self.overview = overview
         self.multi = multi
         self.invalidate()
@@ -238,10 +372,18 @@ class TraceCanvas(QWidget):
             return
         self.loading = loading
         if loading:
-            self._spin_timer.start()
+            self._spin_delay.start(self.spinner_delay_ms)
         else:
+            self._spin_delay.stop()
             self._spin_timer.stop()
+            self.spinner_shown = False
         self.update()
+
+    def _show_spinner(self) -> None:
+        if self.loading:
+            self.spinner_shown = True
+            self._spin_timer.start()
+            self.update()
 
     def invalidate(self) -> None:
         self._dirty = True
@@ -287,9 +429,11 @@ class TraceCanvas(QWidget):
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.drawn_points = {}
+        self.clipped_rows = {}
         plot = self.plot_rect()
         self._paint_grid(p, plot)
         self._paint_gap_spans(p, plot)
+        self._paint_group_lines(p, plot)
         p.save()
         p.setClipRect(plot)
         self._paint_gaps_and_traces(p, plot)
@@ -333,6 +477,18 @@ class TraceCanvas(QWidget):
                 if x1 > x0:
                     p.drawRect(QRectF(x0, 0, x1 - x0, plot.height()))
 
+    def _paint_group_lines(self, p: QPainter, plot: QRectF) -> None:
+        """A thin line above the first row of every group but the first on screen."""
+        first = self.row_offset
+        last = min(len(self.rows), first + self.visible_rows() + 1)
+        pen = QPen(QColor(self.palette_.muted), 1)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        for i in range(first + 1, last):
+            if self.rows[i].group_first:
+                y = round(self.row_y(i) - self.row_height / 2) + 0.5
+                p.drawLine(QPointF(0, y), QPointF(plot.right(), y))
+
     def _ticks(self) -> tuple[list[int], int]:
         span = int(self.t1 - self.t0)
         step = timefmt.tick_step(
@@ -347,7 +503,7 @@ class TraceCanvas(QWidget):
         w = max(1, int(plot.width()))
         pen = _trace_pen(pal.trace)
         dim = _trace_pen(pal.trace_dim)
-        px_uv = self.px_per_mm / max(1e-9, self.sens)
+        old_pen = _trace_pen(pal.trace, STALE_ALPHA)
         half = self.row_height / 2
         # On a 2x screen a one-device-pixel line is a hairline: draw it again
         # one device pixel down and right (still the fast path, ~1 ms a row).
@@ -356,38 +512,145 @@ class TraceCanvas(QWidget):
         for i in range(first, last):
             row = self.rows[i]
             yc = self.row_y(i)
-            if row.piece is None:
-                p.setPen(QPen(QColor(pal.time_grid), 1, Qt.PenStyle.DashLine))
-                p.drawLine(QPointF(plot.left(), yc), QPointF(plot.right(), yc))
+            if row.failed:
+                p.setPen(QColor(pal.muted))
+                p.drawText(QPointF(plot.left() + 8, yc + 4), "This channel could not be read.")
                 continue
-            shape = self._row_shape(row, w)
+            stale = row.piece is None
+            if stale and row.stale is None:
+                continue  # nothing to show yet: the row stays empty
+            shape = (
+                self._row_shape(row.stale, row.stale_local, w)
+                if stale
+                else self._row_shape(row.piece, row.local, w)
+            )
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(pal.gap))
-            for a, b in shape.gaps:
+            for a, b in () if stale else shape.gaps:
                 p.drawRect(QRectF(plot.left() + a, yc - half, b - a, self.row_height))
-            limit = self.row_height * 40
+            limit = self.row_height * CLIP_HALF_ROWS
+            row_px = self.px_per_mm / self.row_sensitivity(i)
+            level = self._level(i, shape, stale)
             total = 0
+            marks_up: list[float] = []
+            marks_down: list[float] = []
             for xs, ys, seg_dim in shape.segments:
-                ys = np.clip(yc - ys * px_uv, yc - limit, yc + limit)
-                p.setPen(dim if seg_dim else pen)
+                # centred on the row: the held level is where the row's middle
+                # is (a DC offset never moves the trace away)
+                y = yc - (ys - level) * row_px
+                up, down = y < yc - limit, y > yc + limit
+                if up.any():
+                    marks_up.extend(xs[up].tolist())
+                if down.any():
+                    marks_down.extend(xs[down].tolist())
+                ys = np.clip(y, yc - limit, yc + limit)
+                p.setPen(old_pen if stale else (dim if seg_dim else pen))
                 poly = _polygon(plot.left() + xs, ys)
                 p.drawPolyline(poly)
                 if echo:
                     p.drawPolyline(poly.translated(echo, echo))
                 total += xs.size
+            if marks_up or marks_down:  # an old picture says so too, only fainter
+                alpha = STALE_ALPHA + 60 if stale else 255
+                self._paint_clipped(p, plot.left(), yc, limit, marks_up, marks_down, alpha)
+            self.clipped_rows[i] = (len(marks_up) > 0, len(marks_down) > 0)
             self.drawn_points[i] = total
 
-    def _row_shape(self, row: DrawRow, w: int) -> _RowShape:
+    def row_sensitivity(self, i: int) -> float:
+        """The sensitivity (units per mm) row ``i`` is drawn at: the toolbar's,
+        or, for a row with a scale of its own, that one when it is coarser (a
+        row is never drawn finer than the toolbar says)."""
+        row = self.rows[i]
+        if row.own_scale and row.own_sens > self.sens:
+            return row.own_sens
+        return max(1e-9, self.sens)
+
+    def _level(self, i: int, shape, stale: bool) -> float:
+        """The level at the middle of row ``i``: the held one, unless the page's
+        own level (its median) is more than half a row away from it, which
+        takes the page's. An old picture never moves it."""
+        row = self.rows[i]
+        key = (row.channel, row.minus)
+        held = self._levels.get(key)
+        here = shape.centre
+        if not math.isfinite(here):
+            return held if held is not None else 0.0
+        half_row = 0.5 * self.spacing_mm * self.row_sensitivity(i)
+        if held is None or (not stale and abs(here - held) > half_row):
+            held = self._levels[key] = here
+        return held
+
+    def row_level(self, i: int) -> float | None:
+        """The level at the middle of row ``i`` (None before it was drawn)."""
+        row = self.rows[i]
+        return self._levels.get((row.channel, row.minus))
+
+    def row_offset_text(self, i: int) -> str:
+        """ "shown 4.0 mV lower" when centring took off a level worth a half
+        millimetre or more from row ``i``, else ''."""
+        level = self.row_level(i)
+        if level is None or abs(level) < 0.5 * self.row_sensitivity(i):
+            return ""
+        return format_offset(level, self.rows[i].units)
+
+    def row_scale_text(self, i: int) -> str:
+        """ "500 µV/mm" when row ``i`` is not at the toolbar's sensitivity, else ''."""
+        scale = self.row_sensitivity(i)
+        if scale == max(1e-9, self.sens):
+            return ""
+        return f"{scale:g} {display_units(self.rows[i].units) or 'µV'}/mm"
+
+    def row_name(self, i: int) -> str:
+        """The name drawn for row ``i``: the part after the lead's name for the
+        rows after a lead's first, except for the first row on screen, which is
+        always named in full (the rows above it are scrolled away)."""
+        row = self.rows[i]
+        return row.label if i == self.row_offset else (row.short or row.label)
+
+    def gutter_lines(self, i: int) -> list[str]:
+        """The texts of row ``i``'s gutter: its name, then (small) what is
+        special about it, in this order."""
+        row = self.rows[i]
+        lines = [self.row_name(i)]
+        for extra in (self.row_scale_text(i), row.note and "as recorded"):
+            if extra:
+                lines.append(extra)
+        return lines
+
+    def _paint_clipped(self, p, left, yc, limit, up, down, alpha: int = 255) -> None:
+        """Small arrows on the line where a trace was cut off, every few pixels:
+        the trace goes on beyond it, and a flat run along that line is not the
+        signal."""
+        p.save()
+        colour = QColor(self.palette_.selection)
+        colour.setAlpha(alpha)
+        pen = QPen(colour, 1.6)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        lines = []
+        for xs, edge, sign in ((up, yc - limit, 1.0), (down, yc + limit, -1.0)):
+            last = -1e9
+            for x in sorted(set(round(v) for v in xs)):
+                if x - last < CLIP_MARK_SPACING_PX:
+                    continue
+                last = x
+                a = left + x
+                # a small arrowhead on the line, pointing the way the trace went
+                lines.append(QLineF(a - 3, edge + sign * 4, a, edge))
+                lines.append(QLineF(a + 3, edge + sign * 4, a, edge))
+        p.drawLines(lines)
+        p.restore()
+
+    def _row_shape(self, piece, local: int, w: int) -> _RowShape:
         """What to draw for a row: polylines (x in pixels from the plot's
         left edge, y in microvolts) and gap bands (pixel ranges). Built from
         the pieces' prepared arrays (already about one (min, max) pair per
         pixel), cached by (piece, row, page, width)."""
-        piece = row.piece
-        key = (id(piece), row.local, self.t0, self.t1, w)
+        key = (id(piece), local, self.t0, self.t1, w)
         hit = self._shapes.get(key)
         if hit is not None:
             return hit
-        shape = self._build_shape(piece, row.local, w)
+        shape = self._build_shape(piece, local, w)
         if len(self._shapes) > 256:
             self._shapes.clear()
         self._shapes[key] = shape
@@ -433,12 +696,21 @@ class TraceCanvas(QWidget):
             if yc - self.row_height / 2 > plot.height():
                 break
             p.setPen(QColor(pal.text))
-            label = fm.elidedText(
-                row.label,
+            shortened = row.short and i != self.row_offset
+            indent = fm.horizontalAdvance("AA") if shortened else 0
+            bold = row.group_first and row.group != OTHER_GROUP
+            if bold:
+                f = QFont(font)
+                f.setBold(True)
+                p.setFont(f)
+            label = (p.fontMetrics() if bold else fm).elidedText(
+                self.row_name(i),
                 Qt.TextElideMode.ElideRight,
-                self.gutter - 8 - (fm.horizontalAdvance("AA") if row.tag else 0),
+                self.gutter - 8 - indent - (fm.horizontalAdvance("AA") if row.tag else 0),
             )
-            p.drawText(QPointF(4, yc + fm.ascent() / 2 - 1), label)
+            p.drawText(QPointF(4 + indent, yc + fm.ascent() / 2 - 1), label)
+            if bold:
+                p.setFont(font)
             if row.tag:
                 tw = fm.horizontalAdvance(row.tag)
                 x = self.gutter - tw - 4
@@ -448,13 +720,25 @@ class TraceCanvas(QWidget):
                     p.setPen(QColor(colour) if colour else QColor(pal.muted))
                     p.drawText(QPointF(x, y), ch)
                     x += fm.horizontalAdvance(ch)
-            if row.note:
+            extra = self.gutter_lines(i)[1:]
+            if extra:
                 p.setPen(QColor(pal.muted))
                 small = QFont(font)
                 small.setPointSizeF(font.pointSizeF() * 0.8)
                 p.setFont(small)
-                p.drawText(QPointF(4, yc + fm.ascent() + 2), "as recorded")
+                sfm = p.fontMetrics()
+                y = yc + fm.ascent() / 2 + 1 + sfm.ascent()
+                for line in extra:
+                    shown = sfm.elidedText(line, Qt.TextElideMode.ElideRight, self.gutter - 8)
+                    p.drawText(QPointF(4, y), shown)
+                    y += sfm.height()
                 p.setFont(font)
+
+    def _note_baseline(self, fm, top: float) -> float:
+        """The baseline of the second line under the axis (the overview text, the
+        note about edges): at the bottom of the axis area, a whole line below the
+        time labels, so the two never touch."""
+        return top + self.axis_height - fm.descent() - 2
 
     def _paint_axis(self, p: QPainter, plot: QRectF) -> None:
         pal = self.palette_
@@ -495,10 +779,10 @@ class TraceCanvas(QWidget):
             p.setPen(QColor(pal.text))
             text = self.overview_text
             tw = fm.horizontalAdvance(text)
-            p.drawText(QPointF(self.width() - tw - 6, top + 4 + 2 * fm.ascent() - 2), text)
+            p.drawText(QPointF(self.width() - tw - 6, self._note_baseline(fm, top)), text)
         if self.edges_note:
             p.setPen(QColor(pal.muted))
-            p.drawText(QPointF(self.gutter + 6, top + 4 + 2 * fm.ascent() - 2), self.edges_note)
+            p.drawText(QPointF(self.gutter + 6, self._note_baseline(fm, top)), self.edges_note)
 
     # -- the overlay -----------------------------------------------------------------
 
@@ -549,22 +833,21 @@ class TraceCanvas(QWidget):
                 p.drawRoundedRect(tb, 3, 3)
                 p.setPen(QColor(pal.text))
                 p.drawText(tb, Qt.AlignmentFlag.AlignCenter, self.measure_text)
-        if self.loading:
-            c = plot.center()
-            r = min(plot.width(), plot.height()) * 0.05 + 10
+        if self.loading and self.spinner_shown:
+            # small, in the top right corner: the traces stay readable
+            r = 9.0
+            cx, cy = plot.right() - r - 12, plot.top() + r + 12
             p.setBrush(Qt.BrushStyle.NoBrush)
             for k in range(12):
                 alpha = int(255 * (((k - self._spin) % 12) / 12.0))
                 col = QColor(pal.text)
                 col.setAlpha(max(25, alpha))
-                p.setPen(QPen(col, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.setPen(QPen(col, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 ang = 2 * math.pi * k / 12
                 p.drawLine(
-                    QPointF(c.x() + r * 0.6 * math.cos(ang), c.y() + r * 0.6 * math.sin(ang)),
-                    QPointF(c.x() + r * math.cos(ang), c.y() + r * math.sin(ang)),
+                    QPointF(cx + r * 0.55 * math.cos(ang), cy + r * 0.55 * math.sin(ang)),
+                    QPointF(cx + r * math.cos(ang), cy + r * math.sin(ang)),
                 )
-            p.setPen(QColor(pal.muted))
-            p.drawText(QPointF(c.x() - 30, c.y() + r + p.fontMetrics().height()), "Loading…")
 
     def _row_spans(self, channel: str | None, plot: QRectF) -> list[tuple[float, float]]:
         """Top and height of everything a mark bound to ``channel`` covers:
@@ -583,12 +866,22 @@ class TraceCanvas(QWidget):
     def _paint_marks(self, p: QPainter, plot: QRectF) -> None:
         p.save()
         p.setClipRect(plot)
+        ticks: dict[tuple[str, float], list[QLineF]] = {}
+        left, scale = plot.left(), plot.width() / max(1.0, self.t1 - self.t0)
         for m in self.marks:
             end = m.end if m.end is not None and m.end > m.time else None
             if m.time > self.t1 or (end or m.time) < self.t0:
                 continue
+            if m.tick:  # a crowded view: thousands of ticks, batched by colour and height
+                x = left + (m.time - self.t0) * scale
+                h = min(plot.height(), 6.0 + 3.0 * math.log2(max(1, m.count)))
+                ticks.setdefault((m.colour, round(h)), []).append(QLineF(x, 0.0, x, h))
+                continue
             for top, height in self._row_spans(m.channel, plot):
                 self._paint_mark(p, m, end, top, height)
+        for (colour, _h), lines in ticks.items():
+            p.setPen(QPen(QColor(colour), 1.6))
+            p.drawLines(lines)
         p.restore()
 
     def _paint_mark(self, p: QPainter, m: CanvasMark, end, top: float, height: float) -> None:
@@ -712,6 +1005,15 @@ class TraceCanvas(QWidget):
             p.drawText(box, Qt.AlignmentFlag.AlignCenter, self.export_text)
         p.restore()
 
+    def tip_for(self, m: CanvasMark) -> str:
+        """The tooltip of a mark; a merged tick's is made now, not when built."""
+        if m.tip or not m.tick:
+            return m.tip
+        when = timefmt.format_time(m.time, self.zone, 3)
+        if m.count == 1:
+            return f"1 note or event\n{when}"
+        return f"{m.count} notes and events from\n{when}\nZoom in to see them one by one."
+
     def mark_at(self, pos: QPointF) -> CanvasMark | None:
         """The note or event under ``pos`` (a line within 4 pixels, or a
         band), for the tooltip."""
@@ -725,7 +1027,10 @@ class TraceCanvas(QWidget):
             if not any(a <= pos.y() <= a + h for a, h in self._row_spans(m.channel, plot)):
                 continue
             end = m.end if m.end is not None and m.end > m.time else None
-            if end is not None and m.time - 3 * px <= t <= end + 3 * px:
+            if m.tick:
+                if pos.y() <= plot.top() + TICK_HIT_PX and abs(t - m.time) <= 3 * px:
+                    return m
+            elif end is not None and m.time - 3 * px <= t <= end + 3 * px:
                 best = best or m
             elif end is None and abs(t - m.time) <= 4 * px:
                 return m
@@ -767,7 +1072,7 @@ class TraceCanvas(QWidget):
         near = self._edge_near(pos)
         self.setCursor(Qt.CursorShape.SizeHorCursor if near else Qt.CursorShape.ArrowCursor)
         mark = self.mark_at(pos) if near is None and self._drag is None else None
-        self.setToolTip(mark.tip if mark is not None else "")
+        self.setToolTip(self.tip_for(mark) if mark is not None else "")
         if self._measure_from is not None:
             self.measure_text = self.measurement()
         elif self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
@@ -778,6 +1083,15 @@ class TraceCanvas(QWidget):
         row = self.row_at(pos.y()) if self.plot_rect().contains(pos) else None
         self.pointer_changed.emit(self._t_at(pos), row)
         self.update()
+
+    def refresh_pointer(self) -> None:
+        """The page changed under a resting mouse: tell what time and row the pointer is over
+        now (no mouse move comes), so a key that adds at the pointer uses the page shown."""
+        pos = self._pointer
+        if pos is None:
+            return
+        row = self.row_at(pos.y()) if self.plot_rect().contains(pos) else None
+        self.pointer_changed.emit(self._t_at(pos), row)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         self._pointer = None
@@ -804,6 +1118,7 @@ class TraceCanvas(QWidget):
                 span = (self.t1 - self.t0) / self.plot_rect().width()
                 self._drag = (pos, span, self.row_offset)
         elif event.button() == Qt.MouseButton.RightButton:
+            self._pointer = pos
             row = self.row_at(pos.y())
             self.context_requested.emit(
                 -1 if row is None else row,
@@ -867,6 +1182,32 @@ class _RowShape:
     segments: list
     #: pixel ranges without data
     gaps: list
+    _centre: float | None = None
+
+    @property
+    def centre(self) -> float:
+        """The level the trace sits at (about its median, from a sample of at most
+        a thousand points at fixed pseudo-random positions, so a periodic signal
+        cannot be read at one phase only: made only when a row is drawn); NaN when
+        there is nothing to draw."""
+        if self._centre is None:
+            segs = self.segments
+            n = sum(len(sg[1]) for sg in segs)
+            if not n:
+                ys = None
+            elif len(segs) == 1:
+                ys = bounded_sample(segs[0][1], 1024)
+            else:
+                ys = np.concatenate(
+                    [bounded_sample(sg[1], max(1, round(1024 * len(sg[1]) / n))) for sg in segs]
+                )
+            if ys is not None:
+                ys = ys[np.isfinite(ys)]
+            if ys is None or not ys.size:
+                self._centre = float("nan")
+            else:
+                self._centre = float(np.partition(ys, ys.size // 2)[ys.size // 2])
+        return self._centre
 
 
 def _columns_shape(mn, mx, dimmed) -> _RowShape:

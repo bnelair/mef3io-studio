@@ -19,6 +19,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import tzinfo
 
+import numpy as np
+
 from . import timefmt
 
 # --- the recording band ---------------------------------------------------------
@@ -137,6 +139,50 @@ def kind_of(code: str, text: str | None, text_known: bool) -> tuple[str, str]:
     if quick:
         return QUICK_PREFIX + quick, quick
     return TYPE_PREFIX + code, MEF_TYPES.get(code, UNKNOWN_TYPE)[0]
+
+
+#: How much a type matters when notes share one pixel column and only one
+#: colour can be drawn: a seizure outranks an event, an event a plain note.
+_IMPORTANCE = {
+    "Seiz": 9,
+    "CSti": 6,
+    "ESti": 6,
+    "EDFA": 5,
+    "Epoc": 4,
+    "Curs": 4,
+    "Note": 3,
+    "SyLg": 2,
+    "LNTP": 2,
+}
+
+
+def kind_importance(key: str) -> int:
+    """Higher = drawn in preference when notes are merged per pixel column."""
+    if key.startswith(QUICK_PREFIX):
+        return 9 if key[len(QUICK_PREFIX) :].startswith("Seizure") else 5
+    return _IMPORTANCE.get(key[len(TYPE_PREFIX) :], 1)
+
+
+def merge_columns(
+    times: np.ndarray, importance: np.ndarray, t0: int, t1: int, columns: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Merge notes sorted by ``times`` (all inside ``[t0, t1)``) into ``columns``
+    equal pixel columns. Returns, for each column that holds a note, the index
+    of its first note, how many it holds and the index of its most important
+    one (the first of equals). Work is proportional to the notes in numpy, the
+    result to the columns."""
+    if len(times) == 0 or columns <= 0:
+        empty = np.zeros(0, dtype=np.int64)
+        return empty, empty, empty
+    span = max(1, int(t1) - int(t0))
+    col = np.clip(((times.astype(np.int64) - int(t0)) * columns) // span, 0, columns - 1)
+    starts = np.flatnonzero(np.concatenate(([True], col[1:] != col[:-1])))
+    counts = np.diff(np.concatenate((starts, [len(times)])))
+    top = np.maximum.reduceat(importance, starts)
+    best_here = np.flatnonzero(importance == np.repeat(top, counts))
+    group = np.repeat(np.arange(len(starts)), counts)[best_here]
+    _, first_best = np.unique(group, return_index=True)
+    return starts, counts, best_here[first_best]
 
 
 def kind_colour(key: str, dark: bool) -> str:

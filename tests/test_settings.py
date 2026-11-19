@@ -50,6 +50,8 @@ def test_preferences_are_exactly_the_reviewed_list():
         "viewer/timebase",
         "viewer/spacing",
         "viewer/profile",
+        "viewer/custom_background",
+        "viewer/custom_trace",
         "viewer/filters",
         "viewer/load_workers",
         "viewer/decode_threads",

@@ -339,6 +339,9 @@ def test_closing_the_window_does_not_wait_for_the_workers(make_window, tmp_path,
     win.close()
     assert time.monotonic() - t < 0.5
     assert stopped.wait(10)
+    deadline = time.monotonic() + 10  # the data is closed right after, on the same thread
+    while not win.data.closed and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert win.data.closed
 
 
@@ -350,7 +353,7 @@ def test_blocks_are_computed_in_chunks_with_the_same_result(one, monkeypatch):
     settings = dsp.FilterSettings(0.5, 70.0)
 
     def tile_of(plan):
-        return lambda k: data.read_tile(list(plan.channels), plan.rate, k)
+        return lambda group, k: data.read_tile(list(group), plan.rate, k)
 
     plan = plans[0]
     whole = pipe.compute_piece(data, tile_of(plan), plan, rows, span, settings, 1000)
@@ -465,7 +468,7 @@ def test_performance_settings_reach_the_scheduler_pool_and_reader(make_window, t
 
 
 def test_performance_settings_are_validated_and_default_to_automatic(settings):
-    assert performance_from(settings) == vv.Performance(0, 0, 0, 2, 0)
+    assert performance_from(settings) == vv.Performance(0, 0, 0, 4, 0)
     assert vv.memory_bytes(performance_from(settings)) == 512 * 1024 * 1024
     settings.set("viewer/load_workers", 999)
     settings.set("viewer/lookahead_pages", 99)
@@ -482,7 +485,7 @@ def test_settings_dialog_has_a_signal_viewer_section(qtbot, settings):
     spins = dlg.viewer_spins
     assert spins["viewer/load_workers"].specialValueText() == "Automatic"
     assert spins["viewer/load_workers"].value() == 0
-    assert spins["viewer/lookahead_pages"].value() == 2
+    assert spins["viewer/lookahead_pages"].value() == 4
     spins["viewer/lookahead_pages"].setValue(5)
     spins["viewer/memory_mb"].setValue(1024)
     spins["viewer/memory_mb"].setValue(20)  # below the lowest allowed amount

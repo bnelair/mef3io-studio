@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from datetime import tzinfo
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -105,6 +105,8 @@ class NotesTab(QWidget):
     remove_requested = Signal()
     import_requested = Signal()
     export_requested = Signal(str, str)  # kind ("csv" | "json"), scope ("listed" | "all")
+    #: Right-click on a row: (the Mark, global position).
+    menu_requested = Signal(object, object)
 
     COLUMNS = ("Time", "Rec.", "Type", "Where", "Text")
 
@@ -182,6 +184,8 @@ class NotesTab(QWidget):
             lambda _i: None if self._busy else self.changed.emit()
         )
         self.table.cellClicked.connect(self._clicked)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._row_menu)
         self.add_button.clicked.connect(self.add_requested)
         self.edit_button.clicked.connect(self.edit_requested)
         self.remove_button.clicked.connect(self.remove_requested)
@@ -198,6 +202,9 @@ class NotesTab(QWidget):
         for row, m in enumerate(self.rows):
             if mark is not None and m == mark and m.state == mark.state and m.uid == mark.uid:
                 self.table.selectRow(row)
+                item = self.table.item(row, 0)
+                if item is not None:  # a note just added is brought into view
+                    self.table.scrollToItem(item)
                 return
 
     def selected_type(self) -> str | None:
@@ -214,7 +221,9 @@ class NotesTab(QWidget):
         self.type_box.setCurrentIndex(max(0, i))
         self._busy = False
 
-    def set_failed(self, failed: bool) -> None:
+    def set_failed(self, failed: bool, why: str = "") -> None:
+        """The notes could not be read: ``why`` (plain words with what to do) when known."""
+        self.failed.setText(why or "The notes and events could not be read.")
         self.failed.setVisible(failed)
         if failed:
             self.count.setText("")
@@ -252,9 +261,31 @@ class NotesTab(QWidget):
             self.show_buttons[index] = button
 
     def set_rows(self, marks: Sequence[vm.Mark], shown, letter_of, zone: tzinfo) -> None:
+        for _ in self.fill_steps(marks, shown, letter_of, zone, chunk=max(1, len(marks))):
+            pass
+
+    def fill_steps(
+        self,
+        marks: Sequence[vm.Mark],
+        shown,
+        letter_of,
+        zone: tzinfo,
+        chunk: int = 200,
+        note: str | None = None,
+    ):
+        """Fill the table ``chunk`` rows at a time (a generator for
+        ``SlicedRunner``: a long list never holds the window up). ``rows`` is
+        the whole list at once; the columns are sized from the first rows.
+        ``note`` replaces the count line (a list cut short says so from the
+        first row on, not only when it is full)."""
         self.rows = list(marks)
         self.table.setRowCount(len(marks))
+        self.count.setText(note or (f"{len(marks)} listed" if marks else "Nothing to list."))
         for row, m in enumerate(marks):
+            if row and row % chunk == 0:
+                if row == chunk:
+                    self.table.resizeColumnsToContents()
+                yield
             ok = shown(m.recording)
             _, label = vm.kind_for(m, ok)
             where = m.channel if m.channel else "Whole recording"
@@ -280,11 +311,15 @@ class NotesTab(QWidget):
                         item.setText(text + ("  (new)" if m.state == "new" else "  (changed)"))
                 self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
-        self.count.setText(f"{len(marks)} listed" if marks else "Nothing to list.")
 
     def cell_text(self, row: int, col: int) -> str:
         item = self.table.item(row, col)
         return item.text() if item else ""
+
+    def _row_menu(self, pos) -> None:
+        row = self.table.rowAt(pos.y())
+        if 0 <= row < len(self.rows):
+            self.menu_requested.emit(self.rows[row], self.table.viewport().mapToGlobal(pos))
 
     def _clicked(self, row: int, _col: int) -> None:
         if 0 <= row < len(self.rows):

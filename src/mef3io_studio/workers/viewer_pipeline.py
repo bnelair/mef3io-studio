@@ -21,7 +21,7 @@ import numpy as np
 from ..model import dsp, montage
 from ..model.cancel import CancelToken
 from ..model.viewer_source import TILE_SAMPLES
-from .viewer_scheduler import ChannelGroup, group_channels
+from .viewer_scheduler import GROUP_SIZE
 
 #: A block's intermediate arrays (rows x samples, margins included) stay under
 #: this many samples: bigger blocks are computed in chunks of rows.
@@ -70,6 +70,19 @@ class ViewPiece:
             return None
         return float(w.min()), float(w.max())
 
+    def has_unfiltered(self, row: int, ta: float, tb: float) -> bool:
+        """Whether the row has samples in [ta, tb] that were too short a stretch
+        to filter (shown as recorded)."""
+        lo, hi = (ta, tb) if ta <= tb else (tb, ta)
+        n = self.n_points
+        j0 = max(0, math.ceil((lo - self.t_first_us) / self.dt_us))
+        j1 = min(n, math.floor((hi - self.t_first_us) / self.dt_us) + 1)
+        if j1 <= j0:
+            return False
+        if self.paired:
+            return bool(self.unfiltered[row, 2 * j0 : 2 * j1].any())
+        return bool(self.unfiltered[row, j0:j1].any())
+
 
 def reduce_pairs(
     values: np.ndarray, mask: np.ndarray, t_first: float, dt: float, bins_wanted: int
@@ -117,32 +130,58 @@ class EnvelopePiece:
 
 @dataclass(frozen=True)
 class GroupPlan:
+    """One view block's rows. ``sources`` are the FIXED tile groups
+    (:func:`fixed_groups`) holding every channel the rows need: they depend on
+    the channels only, never on the montage, so a montage change finds its
+    tiles in the cache."""
+
     rate: float
-    channels: tuple[str, ...]  # tile channels (rows' channels + partners)
+    channels: tuple[str, ...]  # the channels the rows need (rows' own + partners)
     rows: tuple[int, ...]  # indexes into the montage row list
+    sources: tuple[tuple[str, ...], ...] = ()  # fixed tile groups to read from
+
+
+def fixed_groups(data, size: int = GROUP_SIZE) -> dict[str, tuple[str, ...]]:
+    """Channel -> its FIXED tile group: per sampling rate, the recording's
+    channels in their own order, ``size`` at a time. Raw tiles are read and
+    cached in these groups whatever the montage, so reference and bipolar
+    partners are taken from whichever group holds them."""
+    by_rate: dict[float, list[str]] = {}
+    for ch in data.channels:
+        by_rate.setdefault(float(data.rate(ch)), []).append(ch)
+    out: dict[str, tuple[str, ...]] = {}
+    for names in by_rate.values():
+        for i in range(0, len(names), size):
+            group = tuple(names[i : i + size])
+            for ch in group:
+                out[ch] = group
+    return out
 
 
 def plan_groups(data, rows: Sequence[montage.Row]) -> list[GroupPlan]:
-    """Split montage rows into groups sharing a rate, with each row's
-    partner channel fetched in the same group (docs: "always fetched with
-    the group that needs them")."""
-    plus = list(dict.fromkeys(r.plus for r in rows))
-    partners: dict[str, set[str]] = {}
-    for r in rows:
-        if r.minus:
-            partners.setdefault(r.plus, set()).add(r.minus)
-    groups: list[ChannelGroup] = group_channels(data, plus, partners=partners)
-    members: list[list[int]] = [[] for _ in groups]
+    """Split montage rows into view groups: rows whose own channel lies in the
+    same fixed tile group (so as recorded, one group = one fixed group). Each
+    group lists the fixed groups it reads, partners included."""
+    fixed = fixed_groups(data)
+    members: dict[tuple[str, ...], list[int]] = {}
     for i, r in enumerate(rows):
-        for gi, g in enumerate(groups):
-            if r.plus in g.channels and (r.minus is None or r.minus in g.channels):
-                members[gi].append(i)
-                break
-        else:  # pragma: no cover - group_channels puts partners of equal rate in
+        group = fixed.get(r.plus)
+        if group is None:
             raise ValueError(f"No group for the row '{r.label}'.")
-    return [
-        GroupPlan(g.rate, g.channels, tuple(m)) for g, m in zip(groups, members, strict=True) if m
-    ]
+        members.setdefault(group, []).append(i)
+    plans = []
+    for group, idx in members.items():
+        rate = float(data.rate(group[0]))
+        mine = [rows[i] for i in idx]
+        names = montage.required_channels(mine)
+        sources: dict[tuple[str, ...], None] = {}
+        for name in names:
+            g = fixed.get(name)
+            if g is None or abs(float(data.rate(name)) - rate) > 1e-9:
+                raise ValueError("a partner channel at another rate")
+            sources[g] = None
+        plans.append(GroupPlan(rate, tuple(names), tuple(idx), tuple(sources)))
+    return plans
 
 
 def sample_range(data, rate: float, span: tuple[int, int]) -> tuple[int, int]:
@@ -195,7 +234,7 @@ def view_key(plan: GroupPlan, rows: Sequence[montage.Row], settings, step: int) 
 
 def compute_piece(
     data,
-    get_tile: Callable[[int], np.ndarray],
+    get_tile: Callable[[tuple[str, ...], int], np.ndarray],
     plan: GroupPlan,
     rows: Sequence[montage.Row],
     span: tuple[int, int],
@@ -223,17 +262,24 @@ def compute_piece(
     for a in range(0, len(my_rows), per_chunk):
         chunk = my_rows[a : a + per_chunk]
         names = montage.required_channels(chunk)
-        index = {name: plan.channels.index(name) for name in names}
+        where: dict[tuple[str, ...], list[tuple[int, int]]] = {}
+        for j, nm in enumerate(names):
+            group = next(g for g in plan.sources if nm in g)
+            where.setdefault(group, []).append((j, group.index(nm)))
         x = np.full((len(names), length), np.nan, dtype=np.float32)
         for k in tiles:
             if cancel is not None:
                 cancel.raise_if_cancelled()
-            tile = get_tile(k)
             lo = max(i_a, k * TILE_SAMPLES)
             hi = min(i_b, (k + 1) * TILE_SAMPLES)
-            if hi > lo:
-                x[:, lo - i_a : hi - i_a] = tile[
-                    [index[nm] for nm in names], lo - k * TILE_SAMPLES : hi - k * TILE_SAMPLES
+            if hi <= lo:
+                continue
+            for group, pairs in where.items():
+                tile = get_tile(group, k)
+                dst = [j for j, _ in pairs]
+                src = [c for _, c in pairs]
+                x[dst, lo - i_a : hi - i_a] = tile[
+                    src, lo - k * TILE_SAMPLES : hi - k * TILE_SAMPLES
                 ]
         y = montage.apply(chunk, {nm: x[j] for j, nm in enumerate(names)})
         del x
@@ -249,11 +295,12 @@ def compute_envelope(
     data, channels: Sequence[str], span: tuple[int, int], cancel: CancelToken | None = None
 ) -> EnvelopePiece:
     """Index-only min/max rows for ``channels`` over ``span`` (as recorded)."""
+    if cancel is not None:
+        cancel.raise_if_cancelled()
+    got = data.envelope_many(list(channels), span[0], span[1])
     rows = []
     for ch in channels:
-        if cancel is not None:
-            cancel.raise_if_cancelled()
-        e = data.envelope(ch, span[0], span[1])
+        e = got[ch]
         rows.append(
             np.vstack(
                 [

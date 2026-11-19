@@ -295,3 +295,93 @@ def test_control_characters_are_refused_in_the_draft_and_in_imports():
     j = ad.read_rows(json.dumps([{"start": T0, "text": "x\u0007"}]), "json")
     assert not j.rows and "control character" in j.invalid[0][1]
     assert ad.parse_quick_types("Good\nBad\x00\nAlso") == ("Good", "Also")
+
+
+# --- the same note twice (docs/design/viewer.md, "Adding notes quickly") -------------------------
+
+
+def with_stored(*marks):
+    d = ad.Draft()
+    keys = frozenset(ad.mark_key(m) for m in marks)
+    d.stored_keys = lambda: keys
+    return d
+
+
+def test_a_copy_of_a_draft_note_is_refused_with_one_sentence():
+    d = ad.Draft()
+    d.add(T0, None, "Spike", "sharp", None)
+    with pytest.raises(ad.DuplicateNote) as err:
+        d.add(T0, None, "Spike", "sharp", None)
+    assert str(err.value) == ad.DUPLICATE_DRAFT and len(d.items) == 1
+    assert not d.can_undo or len(d._undo) == 1  # the refused copy left no undo step
+    # any difference makes it another note: time, length, type, text, channel
+    d.add(T0 + 1, None, "Spike", "sharp", None)
+    d.add(T0, T0 + SEC, "Spike", "sharp", None)
+    d.add(T0, None, "Artifact", "sharp", None)
+    d.add(T0, None, "Spike", "sharper", None)
+    d.add(T0, None, "Spike", "sharp", "Fp1")
+    assert len(d.items) == 6
+
+
+def test_a_copy_of_a_stored_note_is_refused():
+    old = stored(T0 + 5 * SEC, "Spike: sharp", channel="Fp1")
+    d = with_stored(old)
+    with pytest.raises(ad.DuplicateNote) as err:
+        d.add(T0 + 5 * SEC, None, "Spike", "sharp", "Fp1")
+    assert str(err.value) == ad.DUPLICATE_STORED and not d.dirty
+    d.add(T0 + 5 * SEC, None, "Spike", "sharp", None)  # the whole recording: another note
+    d.add(T0 + 5 * SEC, T0 + 6 * SEC, "Spike", "sharp", "Fp1")  # a span is another note
+    assert len(d.items) == 2
+
+
+def test_the_length_counts_for_a_stored_span():
+    span = vm.Mark(T0, T0 + 2 * SEC, "EDFA", 0, "session", None, "same text")
+    d = with_stored(span)
+    with pytest.raises(ad.DuplicateNote):
+        d.add(T0, T0 + 2 * SEC, "Note", "same text")
+    d.add(T0, T0 + 3 * SEC, "Note", "same text")  # a longer one is not the same note
+    d.add(T0, None, "Note", "same text")  # nor a point
+
+
+def test_changing_a_draft_note_into_a_copy_is_refused_but_keeping_it_is_not():
+    d = ad.Draft()
+    a = d.add(T0, None, "Note", "one")
+    b = d.add(T0, None, "Note", "two")
+    with pytest.raises(ad.DuplicateNote):
+        d.update(b.uid, text="one")
+    assert d.get(b.uid).text == "two"
+    d.update(a.uid, text="one")  # itself is no copy
+
+
+def test_an_import_leaves_copies_out_and_says_how_many():
+    old = stored(T0, "kept")
+    d = with_stored(old)
+    d.add(T0 + SEC, None, "Note", "in the draft")
+    rows = [
+        {"time": T0, "end": None, "label": "Note", "text": "kept", "channel": None},  # stored
+        {"time": T0 + SEC, "end": None, "label": "Note", "text": "in the draft"},  # drafted
+        {"time": T0 + 2 * SEC, "end": None, "label": "Note", "text": "new"},
+        {"time": T0 + 2 * SEC, "end": None, "label": "Note", "text": "new"},  # twice in the file
+    ]
+    assert d.add_many(rows) == 1 and d.skipped_duplicates == 3
+    assert len(d.items) == 2
+    assert d.add_many(rows) == 0 and d.skipped_duplicates == 4 and len(d._undo) == 2
+
+
+def test_a_save_plan_leaves_out_what_is_stored_and_repeats():
+    d = ad.Draft()
+    one = d.add(T0 + 5 * SEC, None, "Note", "stored by someone")
+    d.add(T0 + 6 * SEC, None, "Note", "fresh")
+    d.stored_keys = lambda: {ad.item_key(one)}  # stored after it was drafted
+    plan = d.save_plan(holders_for({None: [(T0, T0 + 60 * SEC, 0)]}))
+    assert [i.uid for i in plan.duplicates] == [one.uid] and plan.count == 1
+    assert plan.by_recording[0].items[0].text == "fresh"
+
+
+def test_the_matching_of_a_stopped_save_uses_the_same_rule_and_the_length():
+    item = ad.Draft().add(T0, T0 + 2 * SEC, "Note", "same text")
+    before = []
+    longer = [vm.Mark(T0, T0 + 3 * SEC, "EDFA", 0, "session", None, "same text")]
+    exact = [vm.Mark(T0, T0 + 2 * SEC, "EDFA", 0, "session", None, "same text")]
+    assert ad.items_now_stored([item], before, longer) == []
+    assert ad.items_now_stored([item], before, exact) == [item.uid]

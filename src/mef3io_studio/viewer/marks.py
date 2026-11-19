@@ -46,6 +46,11 @@ class Chip:
     state: str = ""
     #: What edit mode selects: the mark behind the chip.
     mark: object = None
+    #: A merged chip (crowded view): how many notes it stands for.
+    count: int = 1
+    #: Where a click goes, when that is not ``time`` (the group of notes that
+    #: continue from before the page sits at the left edge and leads to them).
+    jump: int | None = None
 
 
 class ChipsRow(QWidget):
@@ -56,6 +61,8 @@ class ChipsRow(QWidget):
     clicked = Signal(object)  # the chip's time (µs)
     #: The chip that was pressed (edit mode selects it), before ``clicked``.
     picked = Signal(object)
+    #: Right-click on a chip: (the chip's mark, global position).
+    menu_requested = Signal(object, object)
     #: The chip drawn as selected (edit mode), or None.
     selected_mark: object = None
 
@@ -140,7 +147,13 @@ class ChipsRow(QWidget):
         chip = self.chip_at(event.position())
         if chip is not None and event.button() == Qt.MouseButton.LeftButton:
             self.picked.emit(chip)
-            self.clicked.emit(chip.time)
+            self.clicked.emit(chip.time if chip.jump is None else chip.jump)
+        elif (
+            chip is not None
+            and chip.mark is not None
+            and (event.button() == Qt.MouseButton.RightButton)
+        ):
+            self.menu_requested.emit(chip.mark, event.globalPosition().toPoint())
 
     def paintEvent(self, event) -> None:  # noqa: N802
         pal = self.palette_

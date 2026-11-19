@@ -8,6 +8,7 @@ logical resolution, so a second is the same length on every screen.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 from .dsp import FilterSettings
@@ -22,13 +23,22 @@ SPACING_STEPS = (2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 25, 30)
 #: Timebase, millimetres per second (default 30): the clinical steps...
 TIMEBASE_CLINICAL = (3, 5, 7.5, 10, 15, 20, 30, 40, 60, 90, 120, 180, 240)
 #: ...and the slower ones that zoom out into the overview.
-TIMEBASE_OVERVIEW = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2)
+#: Down to 0.002 mm/s, where an ordinary window holds two to three days.
+TIMEBASE_OVERVIEW = (0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2)
 TIMEBASE_STEPS = TIMEBASE_OVERVIEW + TIMEBASE_CLINICAL
 #: Alt+1 ... Alt+5.
 TIMEBASE_KEYS = (10, 15, 30, 60, 120)
 DEFAULT_SENSITIVITY = 100
 DEFAULT_TIMEBASE = 30
 DEFAULT_SPACING = 7
+#: The least distance between rows that "Fit all rows" goes down to: closer
+#: rows cannot be read, so with more rows than fit at this distance the rest
+#: are reached by scrolling (and the window says which rows are on screen).
+READABLE_SPACING_MM = 4.0
+#: How much under the exact division "fit all rows" stays (relative).
+FIT_MARGIN = 1e-9
+#: The remembered spacing that means "fit all rows" (a real spacing is never 0).
+FIT_ALL = 0.0
 #: Pages longer than this many seconds are drawn as an overview.
 OVERVIEW_PAGE_S = 300.0
 
@@ -49,6 +59,8 @@ PROFILE_NAMES = {
     "green": "Green (paper grid)",
     "dark": "Dark",
     "contrast": "High contrast",
+    # Colours the user picked (model/viewer_colours.py derives the rest).
+    "custom": "Your own colours…",
 }
 
 
@@ -62,6 +74,76 @@ def nearest_step(steps, value: float) -> float:
     return min(steps, key=lambda s: abs(s - value))
 
 
+def fit_spacing(plot_height_px: float, px_per_mm: float, n_rows: int) -> float:
+    """The distance between rows (mm) that puts ``n_rows`` into the plot, never
+    under :data:`READABLE_SPACING_MM` and never over the largest choice."""
+    if n_rows <= 0 or px_per_mm <= 0 or plot_height_px <= 0:
+        return float(DEFAULT_SPACING)
+    # A hair under the exact division: the rows then add up to no more than the
+    # plot however the floating point rounds (an exact fit once showed n - 1 rows).
+    exact = plot_height_px / px_per_mm / n_rows * (1 - FIT_MARGIN)
+    return float(min(SPACING_STEPS[-1], max(READABLE_SPACING_MM, exact)))
+
+
+def stretch_start(starts, t0: int, direction: int, eps: int = 1) -> int | None:
+    """The start of the next (``direction`` > 0) or previous stretch with data,
+    counted from the page that starts at ``t0``: the first start after ``t0`` or
+    the last one before it. ``starts`` is sorted. None when there is none."""
+    import bisect
+
+    if direction > 0:
+        i = bisect.bisect_right(starts, t0 + eps)
+        return starts[i] if i < len(starts) else None
+    i = bisect.bisect_left(starts, t0 - eps)
+    return starts[i - 1] if i > 0 else None
+
+
+def unreached(
+    spans: Sequence[tuple[int, int, int]], reached: Sequence[tuple[int, int, int]]
+) -> list[tuple[int, int, int]]:
+    """The parts of ``spans`` (``(t0, t1, recording)``) that no span of ``reached``
+    covers: the time the strip's block-index read says nothing about, which
+    keeps what the segment coverage says."""
+    union: list[list[int]] = []
+    for a, b, *_ in sorted(reached):
+        if union and a <= union[-1][1]:
+            union[-1][1] = max(union[-1][1], b)
+        else:
+            union.append([a, b])
+    out = []
+    for a, b, rec in spans:
+        t = a
+        for ua, ub in union:
+            if ub <= t:
+                continue
+            if ua >= b:
+                break
+            if ua > t:
+                out.append((t, ua, rec))
+            t = max(t, ub)
+            if t >= b:
+                break
+        if t < b:
+            out.append((t, b, rec))
+    return out
+
+
+def rows_fitting(plot_height_px: float, row_height_px: float) -> int:
+    """How many whole rows fit in the plot (at least one). The same rounding
+    tolerance as :func:`fit_spacing`, so a fit is never one row short."""
+    if row_height_px <= 0:
+        return 1
+    return max(1, int(plot_height_px / row_height_px + 1e-6))
+
+
+def rows_text(first: int, shown: int, total: int) -> str:
+    """ "Rows 33-64 of 256" (empty when all rows are on screen)."""
+    if total <= 0 or shown >= total:
+        return ""
+    last = min(total, first + shown)
+    return f"Rows {first + 1}-{last} of {total}"
+
+
 def page_us(plot_px: float, px_per_mm: float, timebase: float) -> int:
     """Length of a page in microseconds."""
     if plot_px <= 0 or px_per_mm <= 0 or timebase <= 0:
@@ -71,6 +153,60 @@ def page_us(plot_px: float, px_per_mm: float, timebase: float) -> int:
 
 def is_overview(length_us: float) -> bool:
     return length_us > OVERVIEW_PAGE_S * 1e6
+
+
+def format_length(length_us: float) -> str:
+    """How long a stretch is, in plain words and few figures: "800 ms",
+    "2.5 s", "10 s", "4 min 30 s", "12 min", "2 h 10 min", "1 day 6 h".
+
+    Rounded to what is worth reading at that size (a tenth of a second under
+    ten seconds, whole seconds under ten minutes, whole minutes under a day,
+    whole hours after that); a value that rounds up into the next unit is
+    written in that unit ("59.7 s" is "1 min")."""
+    s = max(0.0, float(length_us) / 1e6)
+    if s < 1:
+        ms = max(1, round(s * 1000))
+        if ms < 1000:
+            return f"{ms} ms"
+    if s < 10:
+        r = round(s, 1)
+        if r < 10:
+            return f"{r:g} s"
+    if s < 60:
+        r = round(s)
+        if r < 60:
+            return f"{r} s"
+    if s < 600:
+        total = round(s)
+        if total < 600:
+            m, sec = divmod(total, 60)
+            return f"{m} min" + (f" {sec} s" if sec else "")
+    if s < 3600:
+        m = round(s / 60)
+        if m < 60:
+            return f"{m} min"
+    if s < 86400:
+        total_m = round(s / 60)
+        if total_m < 1440:
+            h, m = divmod(total_m, 60)
+            return f"{h} h" + (f" {m} min" if m else "")
+    total_h = round(s / 3600)
+    d, h = divmod(total_h, 24)
+    return f"{d} {'day' if d == 1 else 'days'}" + (f" {h} h" if h else "")
+
+
+LENGTH_TIP = (
+    "How much time fits on the screen at this timebase. A wider window shows more time "
+    "at the same timebase."
+)
+
+
+def short_stretch_text(settling_us: float) -> str:
+    """The sentence for stretches too short to filter (drawn paler)."""
+    return (
+        "Paler stretches are too short to filter with these settings "
+        f"(shorter than {format_length(settling_us)}) and are shown as recorded."
+    )
 
 
 @dataclass(frozen=True)
@@ -87,7 +223,11 @@ class ViewState:
     filters: FilterSettings = field(default_factory=FilterSettings)
     #: First visible row (rows scroll in whole rows).
     row_offset: int = 0
+    #: "Fit all rows": ``spacing`` is worked out from the rows and the window.
+    fit_rows: bool = False
     profile: str = "auto"
+    #: The background and trace colours (``#rrggbb``) of the "custom" profile.
+    custom: tuple[str, str] | None = None
 
     def with_(self, **changes) -> ViewState:
         return replace(self, **changes)
@@ -245,6 +385,18 @@ def format_measure(dt_us: float, vmin: float | None, vmax: float | None, units: 
     return " · ".join(parts)
 
 
+def format_offset(level: float, units: str) -> str:
+    """What a row's centring took off, in plain words: "shown 4.0 mV lower" (the
+    trace really sits 4 mV higher than where it is drawn), "shown 250 µV higher"."""
+    word = "lower" if level > 0 else "higher"
+    v = abs(level)
+    if display_units(units) in ("µV", ""):
+        amount = f"{v / 1000:.1f} mV" if v >= 1000 else f"{v:.0f} µV"
+    else:
+        amount = f"{v:.3g} {display_units(units)}"
+    return f"shown {amount} {word}"
+
+
 @dataclass(frozen=True)
 class Performance:
     """The viewer's performance settings; 0 = automatic (where it applies)."""
@@ -252,7 +404,7 @@ class Performance:
     load_workers: int = 0
     decode_threads: int = 0
     filter_workers: int = 0
-    lookahead_pages: int = 2
+    lookahead_pages: int = 4
     memory_mb: int = 0
 
 

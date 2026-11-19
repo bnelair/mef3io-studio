@@ -146,6 +146,31 @@ def test_visible_tiles_are_read_before_lookahead_before_screens():
         sched.close()
 
 
+def test_no_lookahead_or_screen_read_starts_while_a_visible_one_is_queued_or_running():
+    """The disk serves what is on screen first: with idle workers to spare,
+    look-ahead and neighbour screens still wait for every visible tile."""
+    gate = threading.Event()
+    data = FakeData(gate)
+    sched = TileScheduler(data, TileCache(), workers=4, on_ready=lambda k, a: None)
+    try:
+        sched.request(256.0, ("v",), 0, VISIBLE, 0)  # one visible read runs, three workers idle
+        assert data.started.wait(5)
+        sched.request(256.0, ("l",), 1, LOOKAHEAD, 0)
+        sched.request(256.0, ("s",), 2, SCREENS, 0)
+        sched.request(256.0, ("v",), 3, VISIBLE, 0)  # more visible work, queued behind
+        time.sleep(0.3)
+        started = [c[0] for c, _ in data.order]
+        assert "l" not in started and "s" not in started and "v" in started
+        gate.set()
+        assert sched.wait_idle(10)
+        done = [c[0] for c, _ in data.order]
+        assert sorted(done) == ["l", "s", "v", "v"]
+        assert max(done.index("l"), done.index("s")) > done.index("v")
+        assert done.index("l") > 1 and done.index("s") > 1  # both visible reads came first
+    finally:
+        sched.close()
+
+
 def test_a_later_request_can_raise_the_urgency():
     gate = threading.Event()
     data = FakeData(gate)
@@ -507,3 +532,37 @@ def test_several_workers_get_a_small_share_of_the_decode_threads():
     assert data.threads in (1, 2)
     TileScheduler(data, TileCache(), workers=1).close()
     assert data.threads is None  # a lone worker restores mef3io's automatic count
+
+
+def test_a_queued_lookahead_tile_raised_to_visible_is_read_at_once():
+    """Workers idle while look-ahead waits behind a running visible read; a
+    tile raised to visible meanwhile must wake one, not wait for that read."""
+    hold = threading.Event()
+
+    class OneHeld(FakeData):
+        def read_tile(self, channels, rate, k, cancel=None):
+            if channels[0] == "held":
+                with self.lock:
+                    self.order.append((tuple(channels), k))
+                self.started.set()
+                hold.wait(10)
+                return np.zeros((1, 4), dtype=np.float32)
+            return super().read_tile(channels, rate, k, cancel)
+
+    data = OneHeld()
+    done = []
+    sched = TileScheduler(data, TileCache(), workers=3, on_ready=lambda k, a: done.append(k))
+    try:
+        sched.request(256.0, ("held",), 0, VISIBLE, 0)
+        assert data.started.wait(5)
+        sched.request(256.0, ("l",), 1, LOOKAHEAD, 0)
+        time.sleep(0.2)  # the workers have looked at it and gone back to waiting
+        assert not any(c[0] == "l" for c, _ in data.order)
+        sched.request(256.0, ("l",), 1, VISIBLE, 0)  # it is on the next page now
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not any(c[0] == "l" for c, _ in data.order):
+            time.sleep(0.01)
+        assert any(c[0] == "l" for c, _ in data.order), "the raised tile waited for the held read"
+    finally:
+        hold.set()
+        sched.close()

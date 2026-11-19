@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 import threading
 import time
 from collections.abc import Sequence
@@ -28,8 +29,9 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..common.privacy import scrub
 from ..model import dsp, montage
+from ..model import open_files as kept_files
 from ..model.cancel import CancelToken, JobCancelled, is_stop
-from ..model.viewer_view import Performance, aligned_block, memory_bytes, next_block_start
+from ..model.viewer_view import Performance, aligned_block, memory_bytes
 from ..workers import viewer_pipeline as pipe
 from ..workers.viewer_scheduler import (
     LOOKAHEAD,
@@ -42,8 +44,16 @@ from ..workers.viewer_scheduler import (
     data_key_of,
 )
 from .overview import summarise
+from .strip import block_stretches
 
-MAX_COMPUTE = 2
+
+def default_compute_workers() -> int:
+    """Block computations at once: half the cores, at least 2, at most 8 (the
+    ``viewer/filter_workers`` preference overrides it)."""
+    return max(2, min(8, (os.cpu_count() or 2) // 2))
+
+
+MAX_COMPUTE = default_compute_workers()
 log = logging.getLogger(__name__)
 #: A lost tile is asked for again at most this often / this many times.
 RETRY_AFTER = 3.0
@@ -52,6 +62,15 @@ MAX_RETRIES = 3
 HELD_SHARE = 0.25
 #: ... but never less than this (a tiny budget must still let a block finish).
 HELD_FLOOR = 32 << 20
+#: The automatic read of the whole recording's block index (strip + overview
+#: band) waits at most this long for the page and its look-ahead to be loaded.
+INDEX_WAIT = 20.0
+#: Idle for this long, the look-ahead deepens one page at a time ...
+IDLE_BEFORE_DEEPENING = 1.0
+#: ... as long as what is cached stays under this share of the cache budget ...
+DEEPEN_SHARE = 0.5
+#: ... and at most this many pages further than the preference.
+MAX_DEEPER = 24
 
 
 @dataclass(eq=False)
@@ -69,7 +88,10 @@ class _Job:
     state: str = "waiting"  # waiting | computing
     token: CancelToken = field(default_factory=CancelToken)
     seq: int = 0
-    tile_numbers: list = field(default_factory=list)
+    #: Distance in pages from the visible one (0): nearer blocks come first.
+    rank: int = 0
+    #: ``(fixed tile group, tile number)`` of every tile the block reads
+    tile_refs: list = field(default_factory=list)
     retries: int = 0
     last_ask: float = field(default_factory=time.monotonic)
     arrays: dict = field(default_factory=dict)
@@ -85,6 +107,11 @@ class _Request:
     span: tuple[int, int]
     plot_px: int
     visible: tuple[int, int]
+    #: The page itself: where it starts and its real length in microseconds.
+    #: The visible block and every look-ahead block come from these two
+    #: (``ViewController._block``), never from the block's own length.
+    page_start: int = 0
+    page_len: int = 1
     #: plan index -> job/cache keys
     keys: dict[int, tuple] = field(default_factory=dict)
     pieces: dict[int, object] = field(default_factory=dict)
@@ -101,11 +128,13 @@ class ViewController(QObject):
     failed = Signal(str)
     #: The overview band's cache changed (or a read failed): see ``overview``.
     overview_changed = Signal()
+    #: The real stretches with data, from the block index: ``([(t0, t1)], channels read)``.
+    strip_stretches = Signal(object)
 
     _tile = Signal(object)
     _done = Signal(object, object)  # (job, (outcome, error))
     _error = Signal(object, object, object)  # (tile key, error, generation when it failed)
-    _overview = Signal(object)
+    _index = Signal(object)
 
     def __init__(self, data, perf: Performance | None = None, parent=None):
         super().__init__(parent)
@@ -126,6 +155,13 @@ class ViewController(QObject):
         self.max_compute = perf.filter_workers or MAX_COMPUTE
         self._pool = ThreadPoolExecutor(self.max_compute, thread_name_prefix="viewer-compute")
         self._strip_pool = ThreadPoolExecutor(1, thread_name_prefix="viewer-strip")
+        #: A channel the user picks for the overview band has a thread of its own: it must not
+        #: wait behind the automatic read, which may sit in ``_wait_quiet`` for seconds or
+        #: read a multi-day index for minutes (the library call is safe beside another).
+        self._pick_pool = ThreadPoolExecutor(1, thread_name_prefix="viewer-pick")
+        self._strip_futures: list = []
+        #: Bumped by ``drain_strip``: a read of an older epoch never reports.
+        self._strip_epoch = 0
         #: Tiles handed over by the scheduler that a waiting job still needs
         #: (the cache may evict, or refuse, a big one).
         self._held: dict[tuple, np.ndarray] = {}
@@ -136,17 +172,29 @@ class ViewController(QObject):
         self._jobs: dict[tuple, _Job] = {}
         self._seq = itertools.count()
         self._generation = 0
+        #: Extra pages looked ahead while idle (reset by every new page).
+        self._deeper = 0
+        self._shown_at = time.monotonic()
+        self._direction = 1
+        self.idle_before_deepening = IDLE_BEFORE_DEEPENING
         self._req: _Request | None = None
+        #: False while the window is hidden or minimised (no idle deepening then).
+        self.active = True
+        #: A read failed since the last page: idle deepening waits for the next one.
+        self._read_failed = False
+        self._sig: tuple | None = None
+        self._state_change = False
         self._loading = False
         self._closed = False
+        self._releasing = False
         self._watch = QTimer(self)  # a waiting job is looked at again now and then
         self._watch.setInterval(250)
-        self._watch.timeout.connect(self._pump)
+        self._watch.timeout.connect(self._tick)
         self._watch.start()
         self._tile.connect(self._pump)
         self._done.connect(self._on_done)
         self._error.connect(self._on_error)
-        self._overview.connect(self._on_overview)
+        self._index.connect(self._on_index)
         #: channel -> (min, max, scale), for the open recording (GUI thread only)
         self.overview: dict = {}
         self._overview_asked: set[str] = set()
@@ -196,7 +244,22 @@ class ViewController(QObject):
             return
         self._generation += 1
         gen = self._generation
+        self._deeper = 0
+        self._read_failed = False
+        self._shown_at = time.monotonic()
+        self._direction = direction
         data = self.data
+        # A page made with other filters, rows or width than the last one:
+        # its blocks all have to be made new, so for now only the visible
+        # ones are computed (see ``_pump``). Plain paging is never held back.
+        sig = (
+            settings if not overview else None,
+            tuple((r.plus, r.minus) for r in rows),
+            plot_px,
+            overview,
+        )
+        self._state_change = self._req is not None and sig != self._sig
+        self._sig = sig
         length = max(1, page[1] - page[0])
         span = aligned_block(page[0], length, data.timeline_start)
         if overview:
@@ -210,7 +273,9 @@ class ViewController(QObject):
                 self.failed.emit("These channels cannot be shown together this way.")
                 self._set_loading(False)
                 return
-        req = _Request(gen, list(rows), plans, overview, settings, span, plot_px, visible)
+        req = _Request(
+            gen, list(rows), plans, overview, settings, span, plot_px, visible, page[0], length
+        )
         for gi, plan in enumerate(plans):
             for local, ri in enumerate(plan.rows):
                 req.location[ri] = (gi, local)
@@ -221,14 +286,18 @@ class ViewController(QObject):
             if any(first <= ri < last for ri in plan.rows):
                 key = self._ensure(req, gi, span, VISIBLE, wanted)
                 req.keys[gi] = key
-        self._drop_stale(gen, wanted)
         self._collect()
         self._set_loading(self._visible_pending(req))
         if not overview:
             self._look_ahead(req, direction, wanted)
+        # once, after every wanted block is known: a block that the old page
+        # looked ahead to and the new one still wants keeps its running work
+        self._drop_stale(gen, wanted)
         self._pump()
 
-    def _ensure(self, req: _Request, gi: int, span, priority: int, wanted: set) -> tuple:
+    def _ensure(
+        self, req: _Request, gi: int, span, priority: int, wanted: set, rank: int = 0
+    ) -> tuple:
         plan = req.plans[gi]
         settings = req.settings
         if req.overview:
@@ -247,7 +316,14 @@ class ViewController(QObject):
         job = self._jobs.get(key)
         if job is not None and not job.token.cancelled:
             job.priority = min(job.priority, priority)
+            job.rank = min(job.rank, rank)
             job.generation = req.generation
+            if job.state == "waiting":
+                # the tiles it still needs are asked for again with the new
+                # generation (and priority): the stale sweep that follows
+                # cancels every tile request older than this page's
+                for group, k in self._missing(job):
+                    self.scheduler.request(plan.rate, group, k, job.priority, req.generation)
             return key
         job = _Job(
             key,
@@ -260,15 +336,17 @@ class ViewController(QObject):
             priority,
             req.generation,
             seq=next(self._seq),
+            rank=rank,
         )
         if not req.overview:
-            for k in pipe.tiles_needed(self.data, plan.rate, span, settings):
-                job.tile_numbers.append(k)
-                job.tile_keys.append(TileScheduler.key_of(plan.rate, plan.channels, k, dk))
+            for group in plan.sources:
+                for k in pipe.tiles_needed(self.data, plan.rate, span, settings):
+                    job.tile_refs.append((group, k))
+                    job.tile_keys.append(TileScheduler.key_of(plan.rate, group, k, dk))
             with self._held_lock:  # before asking: a fast tile must be kept
                 self._needed.update(job.tile_keys)
-            for k in job.tile_numbers:
-                self.scheduler.request(plan.rate, plan.channels, k, priority, req.generation)
+            for group, k in job.tile_refs:
+                self.scheduler.request(plan.rate, group, k, priority, req.generation)
         self._jobs[key] = job
         self._update_needed()
         return key
@@ -294,13 +372,19 @@ class ViewController(QObject):
         self.scheduler.cancel_stale(gen)
 
     def _look_ahead(self, req: _Request, direction: int, wanted: set) -> None:
-        """Tiles 2 pages ahead and 1 behind; the filtered block of the next
-        page in the direction of travel; the screens above and below."""
-        length = req.span[1] - req.span[0]
-        page_len = int(length / 1.5)
-        groups = [
-            ChannelGroup(p.rate, p.channels) for gi, p in enumerate(req.plans) if gi in req.keys
-        ]
+        """Raw tiles for the pages ahead and one behind; the filtered blocks of
+        the next ``lookahead_pages`` pages in the direction of travel (nearest
+        first) and of one page behind; the screens above and below."""
+        page_len = req.page_len
+        depth = self.perf.lookahead_pages + self._deeper
+        groups = list(
+            dict.fromkeys(
+                ChannelGroup(p.rate, g)
+                for gi, p in enumerate(req.plans)
+                if gi in req.keys
+                for g in p.sources
+            )
+        )
         t0 = req.span[0]
         plan = self.scheduler.prefetch_plan(
             t0,
@@ -308,15 +392,17 @@ class ViewController(QObject):
             direction,
             groups,
             generation=req.generation,
-            ahead_pages=self.perf.lookahead_pages,
+            ahead_pages=depth,
         )
         self.scheduler.request_all(plan)
-        nxt = aligned_block(
-            next_block_start(req.span, page_len, direction), page_len, self.data.timeline_start
-        )
-        if nxt[0] >= self.data.timeline_start - page_len and nxt[0] < self.data.timeline_end:
-            for gi in list(req.keys):
-                self._ensure(req, gi, nxt, LOOKAHEAD, wanted)
+        sign = 1 if direction >= 0 else -1
+        tl = self.data.timeline_start
+        pages = [(sign * i, i) for i in range(1, depth + 1)] + [(-sign, 2)]
+        for j, rank in pages:
+            nxt = aligned_block(req.page_start + j * page_len, page_len, tl)
+            if nxt[0] >= tl - page_len and nxt[0] < self.data.timeline_end:
+                for gi in list(req.keys):
+                    self._ensure(req, gi, nxt, LOOKAHEAD, wanted, rank)
         # the screens above and below
         first, last = req.visible
         n = max(1, last - first)
@@ -325,7 +411,69 @@ class ViewController(QObject):
                 continue
             if any(first - n <= ri < last + n for ri in p.rows):
                 self._ensure(req, gi, req.span, SCREENS, wanted)
-        self._drop_stale(req.generation, wanted)
+
+    def _tick(self) -> None:
+        self._pump()
+        self._maybe_deepen()
+        self._maybe_release_idle()
+
+    def _maybe_release_idle(self) -> None:
+        """Nothing was read for a while: let go of the signal files the reader keeps open,
+        so a recording left open in a window does not stay locked for other programs (on
+        Windows, for a rename or a removal). The library call runs on a thread of its own:
+        this is the GUI thread."""
+        data = self.data
+        if (
+            self._closed
+            or self._releasing
+            or self._jobs
+            or not data.idle_with_files(kept_files.IDLE_RELEASE)
+        ):
+            return
+        self._releasing = True
+
+        def work() -> None:
+            try:
+                data.release_files()
+            finally:
+                self._releasing = False
+
+        threading.Thread(target=work, name="viewer-release", daemon=True).start()
+
+    def _page_bytes(self, req: _Request) -> int:
+        """About what one more page ahead holds in the cache: a block like the
+        visible ones, and the raw tiles of its groups."""
+        page_s = max(1, req.page_len) / 1e6
+        blocks = sum(int(getattr(p, "nbytes", 0)) for p in req.pieces.values())
+        sources = {(p.rate, g) for p in req.plans for g in p.sources}
+        raw = sum(len(g) * 4 * r * page_s for r, g in sources)
+        return int(blocks + raw)
+
+    def _maybe_deepen(self) -> bool:
+        """Idle for a while: look one page further ahead, while what is
+        cached stays under a share of the budget. Returns whether it did."""
+        req = self._req
+        if (
+            self._closed
+            or not self.active
+            or self._read_failed
+            or req is None
+            or req.overview
+            or self._jobs
+            or self._zombies
+            or self.scheduler.pending()
+            or self._deeper >= MAX_DEEPER
+            or time.monotonic() - self._shown_at < self.idle_before_deepening
+            or self._visible_pending(req)
+        ):
+            return False
+        if self.cache.bytes_used + self._page_bytes(req) > DEEPEN_SHARE * self.cache.budget:
+            return False
+        self._deeper += 1
+        wanted: set = set()
+        self._look_ahead(req, self._direction, wanted)
+        self._pump()
+        return True
 
     # -- compute pool ----------
 
@@ -336,11 +484,23 @@ class ViewController(QObject):
         inflight += len(self._zombies)
         waiting = sorted(
             (j for j in self._jobs.values() if j.state == "waiting"),
-            key=lambda j: (j.priority, j.seq),
+            key=lambda j: (j.priority, j.rank, j.seq),
         )
+        # slots are always kept for the visible page: look-ahead takes at most two thirds
+        ahead_cap = max(1, self.max_compute * 2 // 3)
+        ahead = sum(
+            1 for j in self._jobs.values() if j.state == "computing" and j.priority > VISIBLE
+        )
+        # After a change of filters, montage or width every block is new work
+        # and the look-ahead ones slow the visible ones down (they share the
+        # cores): they wait until the visible blocks are done, then go on.
+        hold_ahead = self._state_change and any(j.priority == VISIBLE for j in self._jobs.values())
+        gave_up = False
         for job in waiting:
             if inflight >= self.max_compute:
                 break
+            if job.priority > VISIBLE and (ahead >= ahead_cap or hold_ahead):
+                continue
             missing = self._missing(job)
             if missing:
                 now = time.monotonic()
@@ -348,20 +508,26 @@ class ViewController(QObject):
                     # a tile is neither here nor on its way (lost): ask again
                     if job.retries >= MAX_RETRIES:
                         self._give_up(job)
+                        gave_up = True
                         continue
                     job.retries += 1
                     job.last_ask = now
-                    for k in missing:
+                    for group, k in missing:
                         self.scheduler.request(
-                            job.plan.rate, job.plan.channels, k, job.priority, job.generation
+                            job.plan.rate, group, k, job.priority, job.generation
                         )
                 continue
             self._take_tiles(job)
             job.state = "computing"
             self._update_needed()
             inflight += 1
+            ahead += job.priority > VISIBLE
             self._pool.submit(self._compute, job)
         self._collect()
+        if gave_up:
+            # a visible block that is gone ends the hold on the look-ahead: go on now,
+            # not at the next watch tick (each pass gives up at most the jobs it holds)
+            self._pump()
 
     def _give_up(self, job: _Job) -> None:
         job.token.cancel()
@@ -377,12 +543,12 @@ class ViewController(QObject):
                 if key in self._held:
                     job.arrays[key] = self._held[key]
 
-    def _missing(self, job: _Job) -> list[int]:
+    def _missing(self, job: _Job) -> list[tuple]:
         out = []
         with self._held_lock:
-            for k, key in zip(job.tile_numbers, job.tile_keys, strict=True):
+            for ref, key in zip(job.tile_refs, job.tile_keys, strict=True):
                 if key not in self._held and key not in self.cache:
-                    out.append(k)
+                    out.append(ref)
         return out
 
     def _compute(self, job: _Job) -> None:
@@ -395,14 +561,14 @@ class ViewController(QObject):
             else:
                 dk = data_key_of(data)
 
-                def get_tile(k: int):
-                    key = TileScheduler.key_of(plan.rate, plan.channels, k, dk)
+                def get_tile(group, k: int):
+                    key = TileScheduler.key_of(plan.rate, group, k, dk)
                     tile = job.arrays.get(key)
                     if tile is None:
                         tile = cache.get(key)
                     if tile is None:  # lost meanwhile: read it here
                         job.token.raise_if_cancelled()
-                        tile = data.read_tile(list(plan.channels), plan.rate, k, job.token)
+                        tile = data.read_tile(list(group), plan.rate, k, job.token)
                         cache.put(key, tile)
                     return tile
 
@@ -456,8 +622,8 @@ class ViewController(QObject):
             if j.generation > generation:
                 if j.state != "waiting" or tile_key in j.arrays:
                     continue  # it already has the tile
-                tile = j.tile_numbers[j.tile_keys.index(tile_key)]
-                self.scheduler.request(j.plan.rate, j.plan.channels, tile, j.priority, j.generation)
+                group, tile = j.tile_refs[j.tile_keys.index(tile_key)]
+                self.scheduler.request(j.plan.rate, group, tile, j.priority, j.generation)
             else:
                 broken.add(k)
         if not broken:
@@ -466,14 +632,23 @@ class ViewController(QObject):
             del self._jobs[k]
         self._update_needed()
         self._fail_keys(broken)
+        self._pump()  # look-ahead held back for the failed visible block may go now
 
     def _fail_keys(self, keys: set) -> None:
+        self._read_failed = True  # no idle deepening until the next navigation
         req = self._req
+        on_screen = False
         if req is not None:
             for gi, k in req.keys.items():
                 if k in keys:
                     req.failed.add(gi)
-        self.failed.emit("Part of the signal could not be read. Nothing was changed.")
+                    on_screen = True
+        if on_screen:
+            # a failed row is drawn as failed, not as an old picture; a failed
+            # look-ahead block that is not on screen says nothing: the page
+            # that needs it asks again
+            self.pieces_changed.emit()
+            self.failed.emit("Part of the signal could not be read. Nothing was changed.")
         self._set_loading(self._visible_pending(req) if req else False)
 
     # -- results ----------
@@ -520,6 +695,13 @@ class ViewController(QObject):
             out.append(None if piece is None else (piece, local))
         return out
 
+    def failed_rows(self) -> set[int]:
+        """Rows of the current request whose block could not be made."""
+        req = self._req
+        if req is None or not req.failed:
+            return set()
+        return {ri for ri, (gi, _local) in req.location.items() if gi in req.failed}
+
     def wait_idle(self, timeout: float = 30.0) -> bool:
         """Block until the scheduler and compute pool are idle (tests)."""
         import time
@@ -548,43 +730,120 @@ class ViewController(QObject):
 
     # -- the strip ----------
 
+    def request_strip_envelope(self, channels, band: Sequence[str] = ()) -> None:
+        """Read the block index of ``channels`` (a name or several: one that each
+        recording has) for the real stretches with data (their union; emits
+        ``strip_stretches`` as ``(stretches, channels)``) and, in the SAME call
+        on the open reader, of the ``band`` channels the overview band still
+        lacks. Every channel read is kept for the band (``overview``), so the
+        index of a channel is read once per open recording. This is the one
+        automatic read of the whole recording: it waits until the page and its
+        look-ahead have been loaded (``_wait_quiet``) and never runs again on
+        paging."""
+        names = [channels] if isinstance(channels, str) else list(dict.fromkeys(channels))
+        self._read_index(names, band, wait=True)
+
     def request_overview(self, channels: Sequence[str]) -> None:
-        """Compute the overview band's columns for the channels not cached yet
-        (the whole recording, block index only) with ONE multi-channel call on
-        the viewer's own Reader, in the background. Cached and already-asked
-        channels are skipped, so no index is read twice. The result arrives
-        through ``overview_changed``."""
-        want = [
+        """The overview band's columns for the channels not cached yet (the
+        whole recording, block index only) with ONE multi-channel call on the
+        viewer's own Reader, in the background (a pick made by the user: it does
+        not wait). Cached and already-asked channels are skipped, so no index is
+        read twice. The result arrives through ``overview_changed``."""
+        self._read_index([], channels, wait=False)
+
+    def _read_index(self, strip: list[str], band: Sequence[str], wait: bool) -> None:
+        want_band = [
             c
-            for c in dict.fromkeys(channels)
-            if c not in self.overview and c not in self._overview_asked
+            for c in dict.fromkeys(band)
+            if c not in self.overview and c not in self._overview_asked and c not in strip
         ]
-        if not want:
+        names = list(dict.fromkeys([*strip, *want_band]))
+        if self._closed or not names:  # a timer that fires after the window closed
             return
-        self._overview_asked.update(want)
+        self._overview_asked.update(names)
         data = self.data
-        span = (data.timeline_start, data.timeline_end)
+        epoch = self._strip_epoch
 
         def work():
+            if epoch != self._strip_epoch:  # drained before it started
+                return
+            if wait:
+                self._wait_quiet(epoch)
+            tl = (data.timeline_start, data.timeline_end)
+            found = done = None
             try:
-                parts = data.envelopes(want, span[0], span[1])
-                done = {c: summarise(parts[c], span) for c in want}
+                if len(names) == 1:
+                    got = {names[0]: data.envelope(names[0], *tl)}
+                else:
+                    got = data.envelope_many(names, *tl)
+                done = {c: summarise(got[c], tl) for c in names}
+                if strip:
+                    parts = [got[n] for n in strip]
+                    starts = np.concatenate([np.asarray(e["start_uutc"]) for e in parts])
+                    ends = np.concatenate([np.asarray(e["end_uutc"]) for e in parts])
+                    found = (block_stretches(starts, ends), strip)
             except BaseException:  # noqa: BLE001 - the band says it is not available
-                done = None
+                done = found = None
             if not self._closed:
-                self._overview.emit((tuple(want), done))
+                self._index.emit((epoch, tuple(names), done, found))
 
-        self._strip_pool.submit(work)
+        try:
+            future = (self._strip_pool if wait else self._pick_pool).submit(work)
+        except RuntimeError:  # the pool is already shut down
+            return
+        self._strip_futures = [f for f in self._strip_futures if not f.done()] + [future]
 
-    def _on_overview(self, result) -> None:
-        want, done = result
-        self._overview_asked.difference_update(want)
+    def drain_strip(self, timeout: float | None = None) -> bool:
+        """Stop the strip's read and wait for one that is running to end; its
+        result is dropped. Call (off the GUI thread) before ``data.reopen()``,
+        which fails reads that are running. False on timeout."""
+        self._strip_epoch += 1
+        futures, self._strip_futures = self._strip_futures, []
+        for f in futures:
+            f.cancel()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for f in futures:
+            try:
+                f.result(None if deadline is None else max(0.0, deadline - time.monotonic()))
+            except BaseException:  # noqa: BLE001 - cancelled, timed out or failed: either way over
+                pass
+        return all(f.done() for f in futures)
+
+    def _wait_quiet(self, epoch: int, limit: float | None = None) -> None:
+        """(Strip thread.) Let the page and its look-ahead be read first: wait
+        until no block is waiting or being made, at most ``limit`` seconds
+        (:data:`INDEX_WAIT`; so a reader who never stops paging still gets the strip)."""
+        end = time.monotonic() + (INDEX_WAIT if limit is None else limit)
+        while (
+            time.monotonic() < end
+            and not self._closed
+            and epoch == self._strip_epoch
+            and (self._jobs or self.scheduler.pending() or self._loading)
+        ):
+            time.sleep(0.05)
+
+    def _on_index(self, result) -> None:
+        epoch, names, done, found = result
+        self._overview_asked.difference_update(names)
+        if epoch != self._strip_epoch:  # drained meanwhile: the recording is being reopened
+            return
         if done is None:
             self.overview_failed = True
         else:
             self.overview.update(done)
             self.overview_failed = False
+        if found is not None:
+            self.strip_stretches.emit(found)
         self.overview_changed.emit()
+
+    def reset_overview(self, keep: bool) -> None:
+        """After the recording was reopened (GUI thread): forget what was asked
+        (a read that was ended is asked for again) and, unless the signal is as
+        it was (``keep``), what was read."""
+        self._overview_asked.clear()
+        if not keep:
+            self.overview.clear()
+            self.overview_failed = False
 
     # -- lifecycle ----------
 
@@ -603,6 +862,7 @@ class ViewController(QObject):
         self.scheduler.close()
         self._pool.shutdown(wait=True, cancel_futures=True)
         self._strip_pool.shutdown(wait=True, cancel_futures=True)
+        self._pick_pool.shutdown(wait=True, cancel_futures=True)
         self.cache.clear()
 
 

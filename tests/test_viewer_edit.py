@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 import mef3io
+import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
@@ -22,6 +23,7 @@ from test_viewer_marks_ui import at as _at
 from mef3io_studio.common.theme import DARK
 from mef3io_studio.model import annotation_draft as ad
 from mef3io_studio.model.errors import UserMessage
+from mef3io_studio.viewer import edit_mode
 from mef3io_studio.viewer.edit_dialogs import ImportPreview, SavePreview
 from mef3io_studio.viewer.edit_mode import BANNER_TEXT
 
@@ -81,6 +83,15 @@ class Spy:
         win.edit.show_problem = self.problems.append
         win.edit.ask_unsaved = lambda what: (self.asked.append(what), self.answer)[1]
         win.edit.ask_save = lambda plan_for: ({}, self.extra)
+        #: The question before a stored note is taken out or replaced (default: yes, all of
+        #: them) and the other password of a protected recording.
+        self.stored_lines: list[str] = []
+        self.stored_answer = "all"
+        win.edit.ask_remove_stored = lambda line, copies: (
+            self.stored_lines.append(line),
+            self.stored_answer,
+        )[1]
+        win.edit.ask_other_password = lambda label, letter: self.extra.get(0)
         win.confirm = lambda *a: True
         win.ask_show = lambda indices: True
 
@@ -256,7 +267,7 @@ def test_save_appends_and_leaves_the_old_notes_untouched(ed, qtbot):
     epoch = win.data.epoch
     finish_save(qtbot, win)
     assert not spy.problems
-    assert win.data.epoch == epoch + 1  # the data was reopened
+    assert win.data.epoch == epoch  # only the notes were read again: nothing was reopened
     after_a, after_b = records(a), records(b)
     # the old ones are all still there, unchanged
     for old, new in ((before_a, after_a), (before_b, after_b)):
@@ -308,8 +319,8 @@ def test_the_save_preview_lists_each_recording_the_warning_and_the_copy_sentence
     assert "Recording A: Alpha_case: 2 notes and events, 2000-01-01 00:00:30.000 UTC to" in text
     assert "Recording B: Beta_case: 1 note or event, 2000-01-01 00:02:00.000 UTC" in text
     assert "cannot be undone in place" in dialog.warning.text()
-    assert "1 change to a stored note needs a new copy" in dialog.copy_note.text()
-    assert "available in a later version" in dialog.copy_note.text()
+    assert "1 change to a stored note is saved first" in dialog.copy_note.text()
+    assert "cannot be undone" in dialog.copy_note.text()
     assert dialog.ok.isEnabled() and dialog.ok.text() == "Add them to the recordings"
     assert not BANNED_RE.search(" ".join([text, dialog.warning.text(), dialog.copy_note.text()]))
 
@@ -373,36 +384,37 @@ def test_side_by_side_recordings_ask_where_a_whole_recording_note_goes(
     assert right[0][:2] == ("channel", "Cz")
 
 
-# --- stored notes: shown as changed, never written --------------------------------------------
+# --- stored notes: shown as changed, written by "remove + add" after one question -------------
+# (docs/design/viewer.md, "Removing and changing a stored note"; tests/test_viewer_remove_notes.py)
 
 
-def test_removing_a_stored_note_is_shown_but_nothing_is_written(ed):
+def test_a_stored_note_taken_out_in_the_draft_is_shown_and_saved_after_one_question(ed, qtbot):
     win, spy, (a, b) = ed
-    snap = {p: tree_hash(p) for p in (a, b)}
     turn_on(win)
     stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
-    win.edit.on_row(stored)
-    assert win.edit.remove_selected()
+    win.edit.draft.remove(stored)  # the draft's own way to mark a stored note as taken out
+    win.edit.refresh()
     shown = [m for m in win.notes_tab.rows if m.state == "removed"]
     assert [m.text for m in shown] == ["Alpha plain note"]  # still listed, struck through
     assert [c.state for c in win.chips.chips if c.state] == ["removed"]
     assert [m.style for m in win.canvas.marks if m.style] == ["removed"]
     assert win.edit.draft.stored_changes == 1
     assert "1 change to stored notes" in win.edit.count_label.text()
-    # saving with only stored changes writes nothing and says so
-    assert win.edit.save() is False
-    assert spy.problems and "need a new copy" in spy.problems[0].text
-    assert "later version" in spy.problems[0].text
-    assert {p: tree_hash(p) for p in (a, b)} == snap  # bytes AND modification times
-    assert win.edit.draft.dirty  # it stays in the draft
-    # undo brings the note back
+    # undo brings the note back, nothing was asked or written
+    snap = tree_hash(a)
     key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
-    assert not [m for m in win.notes_tab.rows if m.state]
+    assert not [m for m in win.notes_tab.rows if m.state] and not spy.stored_lines
+    assert tree_hash(a) == snap
+    # Save removes it, after one plain line
+    win.edit.draft.remove(stored)
+    win.edit.refresh()
+    finish_save(qtbot, win)
+    assert len(spy.stored_lines) == 1 and "cannot be brought back" in spy.stored_lines[0]
+    assert "Alpha plain note" not in [c[4] for c in comparable(records(a))]
+    assert not win.edit.draft.dirty and not spy.problems
 
 
-def test_changing_a_stored_note_keeps_both_visible_and_a_mixed_save_writes_only_additions(
-    ed, qtbot
-):
+def test_changing_a_stored_note_keeps_both_visible_and_a_mixed_save_replaces_then_adds(ed, qtbot):
     win, spy, (a, _b) = ed
     turn_on(win)
     stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
@@ -414,15 +426,12 @@ def test_changing_a_stored_note_keeps_both_visible_and_a_mixed_save_writes_only_
     states = sorted(m.state for m in win.notes_tab.rows if m.state)
     assert states == ["changed", "removed"]  # the new wording and the struck-through original
     win.edit.add(T0 + 40 * SEC, None, "Spike", "new one")
-    before = comparable(records(a))
     finish_save(qtbot, win)
-    after = comparable(records(a))
-    assert [c for c in after if c not in before] == [
-        ("session", None, "Note", T0 + 40 * SEC, "Spike: new one", None)
-    ]
-    assert all(c in after for c in before)  # the original wording is still stored
-    assert win.edit.draft.stored_changes == 1  # the change waits for a new copy
-    assert any(m.state == "removed" for m in win.notes_tab.rows)
+    got = [c[4] for c in comparable(records(a))]
+    assert "Artifact: reworded" in got and "Alpha plain note" not in got  # replaced
+    assert "Spike: new one" in got  # and the new note was added after it
+    assert len(spy.stored_lines) == 1 and spy.stored_lines[0].startswith("Replace 1 stored note")
+    assert not win.edit.draft.dirty and not spy.problems
 
 
 def test_changing_a_stored_note_of_a_hidden_recording_needs_it_shown(make_window, pair, qtbot):
@@ -714,6 +723,9 @@ def test_a_moved_or_replaced_recording_is_refused_before_anything_is_written(ed,
     win.edit.add(T0 + 120 * SEC, None, "Spike", "y")  # recording B: fine
     before_b = tree_hash(b)
     moved = Path(a).with_name("Renamed.mefd")
+    # On Windows a folder cannot be renamed while a file in it is held open, and the viewer
+    # keeps its signal files open between reads: let go of them, as the idle release does.
+    win.data.release_files()
     Path(a).rename(moved)
     finish_save(qtbot, win)
     assert "not where it was opened" in spy.problems[-1].title
@@ -959,3 +971,945 @@ def test_quick_types_preference_changes_the_keys(make_window, pair, qtbot, tmp_p
     key(win, Qt.Key.Key_3)
     key(win, Qt.Key.Key_4)  # no fourth type: nothing
     assert [i.label for i in win.edit.draft.items] == ["Tremor"]
+
+
+# --- opening never inspects -------------------------------------------------------------------
+
+
+def test_opening_and_paging_never_inspect_but_a_save_does_on_a_task_thread(
+    ed, qtbot, monkeypatch, tmp_path
+):
+    win, spy, (a, b) = ed
+    calls = []
+    real = mef3io.inspect
+
+    def counting(*args, **kw):
+        calls.append(threading.current_thread() is threading.main_thread())
+        return real(*args, **kw)
+
+    monkeypatch.setattr(mef3io, "inspect", counting)
+    # a fresh data object (as the open job makes it) and a reopen: no inspect
+    from mef3io_studio.model.viewer_source import open_recordings
+
+    fresh = open_recordings([a, b])
+    fresh.reopen()
+    fresh.close()
+    win.go_to(T0 + 30 * SEC)
+    assert calls == [] and not win.data.facts_loaded
+    # the first save reads them, off the GUI thread
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    finish_save(qtbot, win)
+    assert not spy.problems and calls and not any(calls)
+    assert win.data.facts_loaded  # nothing was reopened, so what was read stays
+
+
+# --- the save never leaves the draft locked ----------------------------------------------------
+
+
+def _unlocked(win):
+    assert not win.edit.saving
+    assert win.edit.save_button.isEnabled() and win.edit.draft.dirty
+    assert win.edit.set_on(True) is True
+
+
+def test_a_stopped_facts_task_unlocks_the_draft(ed, qtbot, monkeypatch):
+    from mef3io_studio.model.cancel import JobCancelled
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+
+    def stopped():
+        raise JobCancelled()
+
+    monkeypatch.setattr(win.data, "read_facts", stopped)
+    assert win.edit.save() is True
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
+    _unlocked(win)
+    spy.answer = "stay"
+    assert win.edit.confirm_close() is False  # asks; it is not "busy"
+    assert spy.asked == ["close"]
+    assert not spy.problems
+
+
+def test_a_cancelled_preview_after_the_lazy_read_changes_nothing(ed, qtbot):
+    """Same outcome as a cancelled preview always had: not saved, the mode and
+    the window stay as they were, for a plain save, then_off and then_close."""
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.edit.ask_save = lambda plan_for: None  # the user cancels the preview
+    for kw in ({}, {"then_off": True}, {"then_close": True}):
+        win.data._facts_loaded = False  # the lazy read runs again
+        win.edit.save(**kw)
+        qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
+        _unlocked(win)
+        assert win.edit.on and win.isVisible() and not win._closed
+        assert not spy.problems
+
+
+def test_a_preview_that_raises_unlocks_the_draft(ed, qtbot):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+
+    def broken(plan_for):
+        raise RuntimeError("boom")
+
+    win.edit.ask_save = broken
+    win.edit.save()
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
+    _unlocked(win)
+    assert len(spy.problems) == 1
+
+
+def test_a_window_that_moved_on_unlocks_the_draft(ed, qtbot):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.edit.saving = True  # as save() leaves it while the facts are read
+    assert win.edit._ask_then_save(object(), lambda c: None, False, False) is False
+    _unlocked(win)
+
+
+def _wait_saved(qtbot, win):
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
+    assert win.edit.save_button.isEnabled() and win.edit.draft.dirty
+
+
+def test_a_save_task_that_is_stopped_frees_the_draft_and_the_window(ed, qtbot, monkeypatch):
+    """A stop that reaches the task from outside the write loop (queued task
+    removed, a stop inside the library before the first write) used to leave
+    the window locked: Save and Discard grey, closing refused."""
+    from mef3io_studio.model.cancel import JobCancelled
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.data.read_facts()
+    win.edit.ask_save = lambda plan_for: ({}, {})
+
+    def stopped(*a, **k):
+        raise JobCancelled()
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", stopped)
+    win.edit.save()
+    _wait_saved(qtbot, win)
+    assert win.edit.discard_button.isEnabled()
+    assert win.edit.set_on(True) is True
+
+
+def test_a_stop_after_the_first_write_began_reads_the_recordings_again(ed, qtbot, monkeypatch):
+    from mef3io_studio.model.cancel import JobCancelled
+
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.data.read_facts()
+    win.edit.ask_save = lambda plan_for: ({}, {})
+
+    def stopped_in_the_middle(data, plan, pw, check, *rest):
+        check()  # the loop asks before each write
+        raise JobCancelled()
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", stopped_in_the_middle)
+    win.edit.save()
+    _wait_saved(qtbot, win)
+    qtbot.waitUntil(lambda: bool(spy.problems), timeout=20_000)
+    assert len(spy.problems) == 1
+    # the recordings were read again: nothing was stored, so the item is still the draft's
+    assert "Nothing had been added" in spy.problems[0].text
+    assert win.edit.draft.dirty and win.edit.save_button.isEnabled()
+
+
+def test_a_failure_starting_the_save_frees_the_draft(ed, qtbot, monkeypatch):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    win.data.read_facts()
+    win.edit.ask_save = lambda plan_for: ({}, {})
+    jobs = win.edit.jobs
+    real = jobs.submit
+    calls = []
+
+    def broken(title, *a, **k):
+        if title == "Adding notes and events":
+            calls.append(1)
+            raise RuntimeError("boom")
+        return real(title, *a, **k)
+
+    monkeypatch.setattr(jobs, "submit", broken)
+    win.edit.save()
+    assert calls
+    _wait_saved(qtbot, win)
+    assert len(spy.problems) == 1 and "Nothing was saved" in spy.problems[0].text
+
+
+def test_a_save_of_notes_does_not_read_the_strip_again_nor_interrupt_a_read(ed, qtbot):
+    win, spy, _ = ed
+    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
+    stretches = list(win._stretches)
+    data, ctl = win.data, win.controller
+    # a strip read that is RUNNING while the save happens: it waits at the gate inside the read
+    gate, started = threading.Event(), threading.Event()
+    real_env, real_many = data.envelope, data.envelope_many
+
+    def gated(real):
+        def call(*a, **k):
+            started.set()
+            assert gate.wait(30)
+            return real(*a, **k)
+
+        return call
+
+    data.envelope, data.envelope_many = gated(real_env), gated(real_many)
+    win._stretches = []  # what the read delivers is seen arriving
+    win.request_strip_envelope()
+    qtbot.waitUntil(started.is_set, timeout=20_000)
+    epoch = ctl._strip_epoch
+    order, asked = [], []
+    real_drain, real_reopen, real_ask = ctl.drain_strip, data.reopen, ctl.request_strip_envelope
+    ctl.drain_strip = lambda *a, **k: (order.append("drain"), real_drain(*a, **k))[1]
+    data.reopen = lambda: (order.append("reopen"), real_reopen())[1]
+    ctl.request_strip_envelope = lambda *a, **k: (asked.append(a), real_ask(*a, **k))[1]
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "once")
+    finish_save(qtbot, win)
+    qtbot.wait(300)
+    assert not gate.is_set() and win._stretches == []  # the read is still in flight
+    assert order == []  # nothing is reopened, so no read has to end first
+    assert not asked  # only notes were added: the signal is as it was
+    assert ctl._strip_epoch == epoch  # and the running read was not given up
+    gate.set()  # it now ends, and its result is shown as it would have been
+    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
+    assert win._stretches == stretches
+
+
+def _count(path, text):
+    return sum(1 for r in records(path) if r.get("text") == text)
+
+
+def test_a_save_that_ends_after_writing_does_not_store_the_notes_twice(ed, qtbot, monkeypatch):
+    """The write happened but the task's report was lost (here: it raises after
+    the real write). The recordings are read again, what is stored leaves the
+    draft, and a second save cannot add it again."""
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored once")
+    win.edit.add(T0 + 31 * SEC, None, "Spike", "stored once")  # the same twice: both are ours
+    win.data.read_facts()
+    real = edit_mode.asave.write_plan
+
+    def write_then_lose_the_report(*args, **kw):
+        real(*args, **kw)
+        raise RuntimeError("the report was lost")
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", write_then_lose_the_report)
+    win.edit.save()
+    qtbot.waitUntil(lambda: bool(spy.problems), timeout=30_000)
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    assert _count(a, "Spike: stored once") == 2
+    assert "2 notes and events had already been added" in spy.problems[0].text
+    assert not win.edit.draft.dirty  # nothing left to save: a second save cannot duplicate
+    assert win.edit.save() is False
+    monkeypatch.setattr(edit_mode.asave, "write_plan", real)
+    assert win.edit.save() is False
+    assert _count(a, "Spike: stored once") == 2
+    assert len(win.marks) == len(records(a)) + len(records(_b))  # and the list shows them
+
+
+def test_a_save_whose_recordings_cannot_be_read_again_stays_off(ed, qtbot, monkeypatch):
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "maybe stored")
+    win.data.read_facts()
+    real = edit_mode.asave.write_plan
+
+    def write_then_lose_the_report(*args, **kw):
+        real(*args, **kw)
+        raise RuntimeError("the report was lost")
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", write_then_lose_the_report)
+
+    def cannot():
+        raise OSError("gone")
+
+    monkeypatch.setattr(win.data, "reopen", cannot)
+    win.edit.save()
+    qtbot.waitUntil(lambda: bool(spy.problems), timeout=30_000)
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    assert "open the recordings again" in spy.problems[0].text
+    assert BANNED_RE.search(spy.problems[0].text) is None
+    assert win.edit.draft.dirty and not win.edit.save_button.isEnabled()  # saving is off
+    assert win.edit.save() is False
+    assert "Saving is off" in win.edit.count_label.text()
+    assert win.edit.discard_button.isEnabled()  # the window can still be left
+
+
+def test_a_stop_before_any_write_is_not_taken_for_a_stop_after_one(ed, qtbot, monkeypatch):
+    """The loop asks before each write; a stop answered THERE is before the
+    write, so it is not "may already have been added"."""
+    import time
+
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "never written")
+    win.data.read_facts()
+
+    def late(data, plan, pw, check, *rest):
+        time.sleep(0.4)  # the stop arrives while it waits ...
+        check()  # ... and is answered here, before any write
+        raise AssertionError("not reached")
+
+    monkeypatch.setattr(edit_mode.asave, "write_plan", late)
+    before = len(records(a))
+    win.edit.save()
+    win.edit.last_job.cancel()
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    assert len(records(a)) == before
+    assert win.edit.draft.dirty and win.edit.save_button.isEnabled() and not win.edit.stale
+    assert win.status_message.text() == "The save was stopped. Nothing was added."
+    assert not spy.problems
+
+
+# --- the same note twice ------------------------------------------------------------------------
+
+
+def test_a_note_equal_to_a_stored_or_drafted_one_is_refused_at_once(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    # "Alpha plain note" is stored at +5 s (a point, the whole recording)
+    assert win.edit.add(T0 + 5 * SEC, None, "Note", "Alpha plain note") is None
+    assert win.status_message.text() == ad.DUPLICATE_STORED and not win.edit.draft.dirty
+    assert win.edit.add(T0 + 5 * SEC, None, "Note", "another text") is not None
+    assert win.edit.add(T0 + 5 * SEC, None, "Note", "another text") is None
+    assert win.status_message.text() == ad.DUPLICATE_DRAFT
+    assert len(win.edit.draft.items) == 1
+
+
+def test_the_editor_stays_open_with_the_sentence_for_a_copy(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    editor = win.edit._make_editor("Add a note or event")
+    editor.set_values(T0 + 5 * SEC, None, "Note", "Alpha plain note", None)
+    editor.ok.click()
+    assert editor.error.text() == ad.DUPLICATE_STORED and editor.result() != 1
+
+
+def test_a_save_never_stores_a_note_twice(ed, qtbot):
+    win, spy, _ = ed
+    turn_on(win)
+    before = len(records(win.data.location_of(0)))
+    draft = win.edit.draft
+    saved = draft.stored_keys
+    draft.stored_keys = None  # a copy that got into the draft before it was stored
+    draft.add(T0 + 5 * SEC, None, "Note", "Alpha plain note")
+    draft.stored_keys = saved
+    win.edit.refresh()
+    assert win.edit.save() is False  # only copies: nothing to write
+    assert not draft.dirty and "already stored" in win.status_message.text()
+    assert len(records(win.data.location_of(0))) == before
+    # a mixed draft writes only the new one and the copy leaves the draft too
+    draft.stored_keys = None
+    draft.add(T0 + 5 * SEC, None, "Note", "Alpha plain note")
+    draft.stored_keys = saved
+    win.edit.add(T0 + 7 * SEC, None, "Note", "really new")
+    finish_save(qtbot, win)
+    assert len(records(win.data.location_of(0))) == before + 1 and not draft.dirty
+
+
+# --- adding fast: the key N and the inline field -------------------------------------------------
+
+
+def type_in(win, text):
+    QTest.keyClicks(win.edit.inline.field, text)
+
+
+def press(win, k, mods=Qt.KeyboardModifier.NoModifier):
+    QTest.keyClick(win.edit.inline.field, k, mods)
+
+
+def test_n_adds_a_note_at_the_pointer_without_first_choosing_a_mode(ed, qtbot):
+    win, spy, _ = ed
+    assert not win.edit.on
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    inline = win.edit.inline
+    assert win.edit.on and inline.isVisible() and inline.field.hasFocus()
+    # right there: its left edge is at the note's time on the page
+    assert abs(inline.x() - win.canvas.x_of(T0 + 12 * SEC)) <= 4
+    type_in(win, "eyes closed")
+    press(win, Qt.Key.Key_Return)
+    assert not inline.isVisible()
+    (item,) = win.edit.draft.items
+    assert abs(item.time - (T0 + 12 * SEC)) < 300_000 and item.end is None
+    assert (item.label, item.text) == ("Note", "eyes closed")
+    # a draft: marked as not stored in the list and on the traces, and nothing is written yet
+    assert [m.state for m in win.notes_tab.rows if m.state == "new"] == ["new"]
+    assert "1 new note or event" in win.edit.count_label.text()
+    assert "not in the recording yet" in win.status_message.text()
+    assert win.canvas.hasFocus()
+
+
+def test_esc_drops_the_note_and_an_empty_enter_keeps_a_bare_marker(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "never kept")
+    press(win, Qt.Key.Key_Escape)
+    assert not win.edit.inline.isVisible() and not win.edit.draft.dirty
+    key(win, Qt.Key.Key_N)
+    press(win, Qt.Key.Key_Return)
+    assert [(i.label, i.text) for i in win.edit.draft.items] == [("Note", "")]
+
+
+def test_after_shift_drag_n_adds_a_note_with_a_duration(ed):
+    win, spy, _ = ed
+    win.canvas.selection = (T0 + 20 * SEC, T0 + 25 * SEC, 0)
+    key(win, Qt.Key.Key_N)
+    assert "lasting 5 s" in win.edit.inline.head.text()
+    type_in(win, "run of spikes")
+    press(win, Qt.Key.Key_Return)
+    (item,) = win.edit.draft.items
+    assert (item.time, item.end, item.is_span) == (T0 + 20 * SEC, T0 + 25 * SEC, True)
+    assert win.canvas.selection is None  # used up
+
+
+def test_a_typed_type_is_kept_as_the_type(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "Spike: sharp wave")
+    press(win, Qt.Key.Key_Return)
+    (item,) = win.edit.draft.items
+    assert (item.label, item.text) == ("Spike", "sharp wave")
+
+
+def test_the_last_texts_and_the_types_in_the_recording_are_one_key_away(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    assert [h.kind for h in win.edit.inline.hints][:1] == ["type"]  # no text typed yet
+    assert "Spike" in [h.value for h in win.edit.inline.hints]  # the recording holds one
+    type_in(win, "first words")
+    press(win, Qt.Key.Key_Return)
+    at(win, T0 + 14 * SEC)
+    key(win, Qt.Key.Key_N)
+    inline = win.edit.inline
+    assert inline.hints[0].kind == "text" and inline.hints[0].value == "first words"
+    press(win, Qt.Key.Key_1, Qt.KeyboardModifier.AltModifier)
+    assert inline.field.text() == "first words"
+    spike = next(i for i, h in enumerate(inline.hints) if h.value == "Spike")
+    inline.field.setText("blunt")
+    press(win, Qt.Key.Key_1 + spike, Qt.KeyboardModifier.AltModifier)
+    assert inline.field.text() == "Spike: blunt"  # the type goes in front, the text stays
+    press(win, Qt.Key.Key_Return)
+    assert win.edit.recent_texts[0] == "Spike: blunt"
+    assert len(win.edit.draft.items) == 2
+
+
+def test_typed_texts_are_never_stored_in_the_preferences(make_window, pair, qtbot, tmp_path):
+    from mef3io_studio.common.settings import Settings
+
+    path = tmp_path / "prefs.ini"
+    s = Settings(str(path))
+    win = make_window(*pair, settings=s)
+    wait_marks(qtbot, win)
+    wide(win)
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "patient-detail-xyz")
+    press(win, Qt.Key.Key_Return)
+    win.save_preferences()
+    assert "patient-detail-xyz" not in (path.read_text() if path.exists() else "")
+    assert win.edit.recent_texts == ["patient-detail-xyz"]
+
+
+def test_n_outside_every_recording_says_why_and_a_copy_is_refused(ed):
+    win, spy, _ = ed
+    at(win, T0 + 75 * SEC)  # the gap between A and B
+    key(win, Qt.Key.Key_N)
+    assert not win.edit.inline.isVisible() and not win.edit.draft.dirty
+    assert "No recording holds data" in win.status_message.text()
+    # a copy of a stored note ("Alpha plain note" at 5 s) is refused when it is kept
+    at(win, T0 + 5 * SEC)
+    win.edit.quick_note()
+    win.edit._inline_for = ("new", T0 + 5 * SEC, None)  # exactly the stored time
+    type_in(win, "Alpha plain note")
+    press(win, Qt.Key.Key_Return)
+    assert not win.edit.draft.dirty and win.status_message.text() == ad.DUPLICATE_STORED
+
+
+def test_a_click_elsewhere_keeps_typed_words_and_drops_an_empty_field(ed, qtbot):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "kept by a click")
+    win.canvas.setFocus(Qt.FocusReason.MouseFocusReason)
+    assert not win.edit.inline.isVisible()
+    assert [i.text for i in win.edit.draft.items] == ["kept by a click"]
+    at(win, T0 + 14 * SEC)
+    key(win, Qt.Key.Key_N)
+    win.canvas.setFocus(Qt.FocusReason.MouseFocusReason)
+    assert len(win.edit.draft.items) == 1  # an empty field is dropped
+
+
+def test_n_on_a_packed_recording_is_refused_in_plain_words(make_window, pair, tmp_path, qtbot):
+    win = make_window(*pair)
+    wait_marks(qtbot, win)
+    win.data.is_archive = lambda i: True
+    key(win, Qt.Key.Key_N)
+    assert not win.edit.on and not win.edit.inline.isVisible()
+    assert "packed in a single file" in win.status_message.text()
+
+
+def test_n_is_in_the_key_table_and_the_help(ed):
+    from mef3io_studio.viewer import keymap
+
+    entry = next(e for e in keymap.KEYMAP if e.action == "new_note")
+    assert entry.keys == ("N",) and entry.feature == ""
+    clashes = [e.action for e in keymap.KEYMAP if "N" in e.keys]
+    assert clashes == ["new_note"]
+    assert not BANNED_RE.search(entry.text)
+
+
+# --- saving fast: Ctrl+S and one line -------------------------------------------------------------
+
+
+class Line:
+    """Answers the one-line question of a save and records what it said."""
+
+    def __init__(self, win, answer=True):
+        self.said: list[str] = []
+        self.answer = answer
+        del win.edit.ask_save  # the real one (the Spy replaced it)
+        win.edit.ask_quick_save = self.ask
+
+        def no_preview(*a, **k):
+            raise AssertionError("the full preview must not open for a save that only adds")
+
+        self._real = edit_mode.SavePreview
+        edit_mode.SavePreview = no_preview
+
+    def ask(self, text):
+        self.said.append(text)
+        return self.answer
+
+    def restore(self):
+        edit_mode.SavePreview = self._real
+
+
+@pytest.fixture
+def line(ed):
+    win, spy, pr = ed
+    made = Line(win)
+    yield win, spy, pr, made
+    made.restore()
+
+
+def test_ctrl_s_saves_a_draft_that_only_adds_with_one_line(line, qtbot):
+    win, spy, (a, b), asked = line
+    before = len(records(a))
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "Spike: one")
+    press(win, Qt.Key.Key_Return)
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    assert win.status_draft.isVisible() and win.status_draft.text() == "2 notes not saved yet"
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        key(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    (said,) = asked.said
+    assert said.startswith("Save 2 new notes into Recording A: Alpha_case?")
+    assert "\n" not in said
+    assert not spy.problems and not win.edit.draft.dirty
+    assert len(records(a)) == before + 2
+    assert not win.status_draft.isVisible()  # nothing is waiting any more
+
+
+def test_stopping_the_one_line_stores_nothing_and_keeps_the_draft(line, qtbot):
+    win, spy, (a, b), asked = line
+    asked.answer = False
+    win.edit.set_on(True)
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    snap = tree_hash(a)
+    assert win.edit.save() is True
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert len(asked.said) == 1 and tree_hash(a) == snap and win.edit.draft.dirty
+
+
+def test_ctrl_s_in_the_text_field_keeps_the_note_and_saves_it(line, qtbot):
+    win, spy, (a, b), asked = line
+    before = len(records(a))
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "straight to the recording")
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        press(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert len(asked.said) == 1 and len(records(a)) == before + 1
+
+
+def test_ctrl_s_without_a_draft_says_so(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    key(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    assert win.status_message.text() == "There are no new notes to save."
+
+
+def test_the_line_names_the_recordings_by_letter_while_hidden(make_window, pair, qtbot):
+    win = make_window(*pair)  # nothing shown: names are hidden
+    wait_marks(qtbot, win)
+    wide(win)
+    spy = Spy(win)
+    made = Line(win)
+    try:
+        win.edit.set_on(True)
+        win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+        win.edit.add(T0 + 120 * SEC, None, "Note", "three")
+        win.edit.save()
+        qtbot.waitUntil(lambda: not win.edit.saving)
+        assert made.said[0].startswith("Save 2 new notes into Recording A and Recording B? ")
+        assert "Alpha" not in made.said[0] and "Beta" not in made.said[0]
+        assert not spy.problems
+    finally:
+        made.restore()
+
+
+def test_anything_but_additions_keeps_the_full_preview(line, qtbot, monkeypatch):
+    win, spy, (a, b), asked = line
+    win.edit.set_on(True)
+    stored = next(m for m in win.notes_tab.rows if m.text == "Alpha plain note")
+    win.edit.draft.remove(stored)  # a change to a stored note
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    plan = win.edit.draft.save_plan(win.data.holders_at, {})
+    assert win.edit.quick_save_text(plan) is None  # needs the copy sentence
+    plan = ad.SavePlan()
+    assert win.edit.quick_save_text(plan) is None  # nothing to add
+    win.edit.draft.clear()
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    plan = win.edit.draft.save_plan(win.data.holders_at, {})
+    assert win.edit.quick_save_text(plan)
+    monkeypatch.setattr(win.edit, "other_password_label", lambda i: "basic password")
+    assert win.edit.quick_save_text(plan) is None  # a password has to be typed: the preview
+    monkeypatch.undo()
+    # a note falling where two recordings hold data needs a choice: the preview
+    ambiguous = ad.make_plan(win.edit.draft.additions(), 0, lambda ch, t: [0, 1])
+    assert ambiguous.ambiguous and win.edit.quick_save_text(ambiguous) is None
+
+
+def test_the_refusals_of_a_save_still_stand_after_the_one_line(line, qtbot):
+    win, spy, (a, b), asked = line
+    win.edit.set_on(True)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "x")
+    moved = Path(a).with_name("Renamed.mefd")
+    win.data.release_files()  # (Windows: no rename while the viewer holds a file open)
+    Path(a).rename(moved)
+    assert win.edit.save()
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert len(asked.said) == 1
+    assert "not where it was opened" in spy.problems[-1].title
+    assert not Path(a).exists() and win.edit.draft.dirty
+
+
+def test_the_one_line_has_plain_words_and_the_indicator_follows_the_draft(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    assert not win.status_draft.isVisible()
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    assert win.status_draft.text() == "1 note not saved yet"
+    win.edit.undo()
+    assert not win.status_draft.isVisible()
+    win.edit.add(T0 + 14 * SEC, None, "Note", "two")
+    win.edit.discard()
+    assert not win.status_draft.isVisible()
+    plan = win.edit.draft.save_plan(win.data.holders_at, {})
+    assert not BANNED_RE.search(win.edit.quick_save_text(plan) or "x")
+
+
+def test_closing_with_a_draft_still_asks(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "unsaved")
+    press(win, Qt.Key.Key_Return)
+    spy.answer = "stay"
+    assert win.edit.confirm_close() is False and spy.asked == ["close"]
+    spy.answer = "discard"
+    assert win.edit.confirm_close() is True
+
+
+# --- saving without starting over -------------------------------------------------------------
+
+
+def watch_the_page(win, monkeypatch, qtbot):
+    """What a save may not do to the page: reopen, read tiles again, blank the canvas.
+    (The banner of edit mode changes the canvas' height once: that settles first.)"""
+    from test_viewer_ui import settle
+
+    settle(qtbot, win)
+    from mef3io_studio.model import viewer_source as vs
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    seen = {"reopen": 0, "open": 0, "tiles": 0, "loading": []}
+    real_reopen, real_tile, real_open = ViewerData.reopen, ViewerData.read_tile, vs.open_recordings
+
+    def reopen(self):
+        seen["reopen"] += 1
+        return real_reopen(self)
+
+    def tile(self, *a, **k):
+        seen["tiles"] += 1
+        return real_tile(self, *a, **k)
+
+    def opened(*a, **k):
+        seen["open"] += 1
+        return real_open(*a, **k)
+
+    monkeypatch.setattr(ViewerData, "reopen", reopen)
+    monkeypatch.setattr(ViewerData, "read_tile", tile)
+    monkeypatch.setattr(vs, "open_recordings", opened)
+    real_loading = win.canvas.set_loading
+    monkeypatch.setattr(
+        win.canvas, "set_loading", lambda v: (seen["loading"].append(v), real_loading(v))[1]
+    )
+    return seen
+
+
+def test_a_save_of_notes_keeps_the_page_the_tile_cache_and_the_readers(ed, qtbot, monkeypatch):
+    win, spy, (a, b) = ed
+    turn_on(win)
+    data = win.data
+    readers, combined = list(data._readers), data._combined
+    info, key0 = data._info, (data.data_id, data.epoch)
+    tiles_cached = len(win.controller.cache)
+    seen = watch_the_page(win, monkeypatch, qtbot)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "kept page")
+    win.edit.add(T0 + 120 * SEC, None, "Note", "in B")
+    finish_save(qtbot, win)
+    assert not spy.problems and not win.edit.draft.dirty
+    # The page is never shown as loading. (A block that arrives late may redraw the rows
+    # and say "not loading" again: that blanks nothing.)
+    assert not any(seen.pop("loading"))
+    assert seen == {"reopen": 0, "open": 0, "tiles": 0}
+    assert (data.data_id, data.epoch) == key0 and win.data is data
+    assert data._readers == readers and data._combined is combined and data._info is info
+    assert len(win.controller.cache) >= tiles_cached  # nothing was thrown away
+    # the new notes are there, stored, no longer drafts
+    texts = [m.text for m in win.marks]
+    assert "Spike: kept page" in texts and "in B" in texts
+    assert [m for m in win.notes_tab.rows if m.state] == []
+    assert win.notes_button.text() == f"Notes and events ({len(win.marks)})"
+    assert len(records(a)) + len(records(b)) == len(win.marks)
+
+
+def test_a_second_save_after_a_notes_only_save_checks_the_recording_as_before(ed, qtbot):
+    win, spy, (a, b) = ed
+    turn_on(win)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "first")
+    finish_save(qtbot, win)
+    win.edit.add(T0 + 31 * SEC, None, "Spike", "second")
+    finish_save(qtbot, win)
+    stored = [c[4] for c in comparable(records(a))]
+    assert not spy.problems and "Spike: first" in stored and "Spike: second" in stored
+    # a different recording is put where it was: the next save is refused, as it was
+    # after a reopen (the fingerprint of the signal is the one taken at opening)
+    write(Path(a), start=T0 + 1000 * SEC, seconds=10)
+    win.edit.add(T0 + 32 * SEC, None, "Spike", "third")
+    before = tree_hash(a)
+    finish_save(qtbot, win)
+    assert "has changed" in spy.problems[-1].title and win.edit.draft.dirty
+    assert tree_hash(a) == before
+
+
+def test_a_signal_that_changed_during_the_save_makes_the_window_reopen(ed, qtbot, monkeypatch):
+    import os
+
+    win, spy, (a, b) = ed
+    turn_on(win)
+
+    class Touching(mef3io.Writer):
+        """A writer after which a signal file of the recording differs (another program)."""
+
+        def __exit__(self, *exc):
+            out = super().__exit__(*exc)
+            tdat = next(Path(a).rglob("*.tdat"))
+            st = tdat.stat()
+            os.utime(tdat, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+            return out
+
+    monkeypatch.setattr(mef3io, "Writer", Touching)
+    seen = watch_the_page(win, monkeypatch, qtbot)
+    epoch = win.data.epoch
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored")
+    finish_save(qtbot, win)
+    assert seen["reopen"] == 1 and win.data.epoch == epoch + 1  # shown as it is now
+    assert not spy.problems and not win.edit.draft.dirty
+    assert "Spike: stored" in [m.text for m in win.marks]
+
+
+def test_refresh_notes_refuses_what_it_cannot_prove_and_changes_nothing(ed):
+    win, _spy, (a, b) = ed
+    data = win.data
+    before = data.annotations()
+    # it claims more notes than were written: the read-back does not match
+    assert data.refresh_notes({0: 3}) is False
+    assert data.annotations() == before and data.annotations_locked == ()
+    # one note was appended: it matches
+    with mef3io.Writer(str(a), overwrite=False) as w:
+        w.write_annotations([{"time": T0 + 8 * SEC, "type": "Note", "text": "late"}])
+    assert data.refresh_notes({0: 1}) is True
+    assert len(data.annotations()) == len(before) + 1
+    # a closed or never-read data cannot be refreshed
+    fresh_data = type(data).__new__(type(data))
+    fresh_data._annotations, fresh_data._closed = None, False
+    fresh_data._notes_lock = threading.Lock()
+    assert fresh_data.refresh_notes({0: 1}) is False
+
+
+def test_when_the_notes_cannot_be_proved_the_save_reopens_like_before(ed, qtbot, monkeypatch):
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    win, spy, _ = ed
+    turn_on(win)
+    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended, *rest: False)
+    seen = watch_the_page(win, monkeypatch, qtbot)
+    order = []
+    real_drain = win.controller.drain_strip
+    win.controller.drain_strip = lambda *a, **k: (order.append("drain"), real_drain(*a, **k))[1]
+    epoch = win.data.epoch
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "after a reopen")
+    finish_save(qtbot, win)
+    assert order == ["drain"]  # a read of the index ends before the data is reopened
+    assert seen["reopen"] == 1 and win.data.epoch == epoch + 1 and seen["loading"][:1] == [True]
+    assert not spy.problems and not win.edit.draft.dirty and not win.edit.saving
+    assert "Spike: after a reopen" in [m.text for m in win.marks]
+
+
+def test_a_reopen_that_fails_after_the_notes_were_stored_says_so(ed, qtbot, monkeypatch):
+    from mef3io_studio.model.viewer_source import ViewerData
+
+    win, spy, (a, b) = ed
+    turn_on(win)
+    monkeypatch.setattr(ViewerData, "refresh_notes", lambda self, appended, *rest: False)
+
+    def broken(self):
+        raise OSError("gone")
+
+    monkeypatch.setattr(ViewerData, "reopen", broken)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "stored anyway")
+    finish_save(qtbot, win)
+    assert "cannot be shown" in spy.problems[-1].title
+    assert not win.edit.draft.dirty and not win.edit.saving  # stored, so not in the draft
+    assert "Spike: stored anyway" in [c[4] for c in comparable(records(a))]
+
+
+# --- removing and changing: a draft note yes, a stored note not yet ------------------------------
+
+
+def entries(menu):
+    return {a.text(): a for a in menu.actions() if a.text()}
+
+
+def test_delete_removes_a_draft_note_and_undo_brings_it_back(ed):
+    win, spy, _ = ed
+    at(win, T0 + 12 * SEC)
+    key(win, Qt.Key.Key_N)
+    type_in(win, "to be removed")
+    press(win, Qt.Key.Key_Return)
+    (item,) = win.edit.draft.items
+    win.edit.select_item(item)
+    key(win, Qt.Key.Key_Delete)
+    assert not win.edit.draft.dirty and "left the draft" in win.status_message.text()
+    assert not [m for m in win.notes_tab.rows if m.state]
+    key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert [i.text for i in win.edit.draft.items] == ["to be removed"]
+    # without a selection Delete says what to do
+    win.edit.select(None)
+    key(win, Qt.Key.Key_Delete)
+    assert win.status_message.text() == "Select a note or event first."
+
+
+def test_the_menu_on_a_draft_note_removes_it_and_changes_its_text_in_the_field(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    item = win.edit.add(T0 + 12 * SEC, None, "Note", "first words")
+    mark = next(m for m in win.notes_tab.rows if m.state == "new")
+    from PySide6.QtWidgets import QMenu
+
+    menu = QMenu()
+    win.edit.note_menu(menu, mark)
+    found = entries(menu)
+    assert set(found) == {"Change the text", "Remove this note (Delete)"}
+    assert all(a.isEnabled() for a in found.values())
+    found["Change the text"].trigger()
+    inline = win.edit.inline
+    assert inline.isVisible() and inline.field.text() == "first words"
+    assert "Change the note" in inline.head.text()
+    inline.field.setText("better words")
+    press(win, Qt.Key.Key_Return)
+    assert [(i.uid, i.text) for i in win.edit.draft.items] == [(item.uid, "better words")]
+    mark = next(m for m in win.notes_tab.rows if m.state == "new")
+    menu = QMenu()
+    win.edit.note_menu(menu, mark)
+    entries(menu)["Remove this note (Delete)"].trigger()
+    assert not win.edit.draft.dirty
+
+
+def test_changing_the_text_into_a_copy_is_refused(ed):
+    win, spy, _ = ed
+    turn_on(win)
+    win.edit.add(T0 + 12 * SEC, None, "Note", "one")
+    other = win.edit.add(T0 + 12 * SEC, None, "Note", "two")
+    win.edit.change_text(other.uid)
+    win.edit.inline.field.setText("one")
+    press(win, Qt.Key.Key_Return)
+    assert win.status_message.text() == ad.DUPLICATE_DRAFT
+    assert win.edit.draft.get(other.uid).text == "two"
+
+
+def test_a_right_click_on_a_chip_and_on_a_list_row_opens_that_menu(ed, qtbot):
+    win, spy, _ = ed
+    from PySide6.QtCore import QPoint
+
+    win.edit.add(T0 + 12 * SEC, None, "Note", "draft")  # (turns nothing on: add works)
+    rect = next(r for r, c, _l in win.chips.drawn if c.state == "new")
+    QTest.mouseClick(
+        win.chips,
+        Qt.MouseButton.RightButton,
+        Qt.KeyboardModifier.NoModifier,
+        rect.center().toPoint(),
+    )
+    assert "Remove this note (Delete)" in entries(win._menu)
+    win._menu.close()
+    row = next(i for i, m in enumerate(win.notes_tab.rows) if m.text == "Alpha plain note")
+    table = win.notes_tab.table
+    pos = table.visualItemRect(table.item(row, 0)).center()
+    win.notes_tab._row_menu(QPoint(pos.x(), pos.y()))
+    assert entries(win._menu)["Remove this note"].isEnabled()  # (mef3io 2.4 can take it out)
+    win._menu.close()
+    # on the traces: right-click on the drawn mark of a stored note
+    from PySide6.QtCore import QPointF
+
+    mark = next(
+        m for m in win.canvas.marks if m.source is not None and m.source.text == "Alpha plain note"
+    )
+    win.canvas._pointer = QPointF(win.canvas.x_of(mark.time), win.canvas.plot_rect().top() + 5)
+    win._context_menu(0, mark.time, win.canvas.mapToGlobal(QPoint(5, 5)), False)
+    assert "Remove this note" in entries(win._menu)
+    win._menu.close()
+
+
+def test_the_only_calls_that_change_a_recordings_notes_are_in_one_module():
+    """Appending (the Writer) and taking out (remove_annotations) are each called once, in
+    annotation_save; nothing there deletes, renames or truncates a file."""
+    import inspect as _inspect
+
+    from mef3io_studio.model import annotation_save as asave
+
+    source = _inspect.getsource(asave)
+    assert source.count("mef3io.Writer(") == 1 and "write_annotations" in source
+    assert source.count("mef3io.remove_annotations(") == 1
+    for word in ("unlink", "os.remove", "shutil", "truncate", "os.rename", "os.replace"):
+        assert word not in source

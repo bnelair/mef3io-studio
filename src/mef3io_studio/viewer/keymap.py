@@ -2,8 +2,12 @@
 (docs/design/viewer.md, "Navigation"), so the two cannot drift.
 
 Keys are written in Qt's portable text (``Shift+Right``). On macOS the
-spec's "Ctrl+Up / Ctrl+Down" for row spacing is "Alt+Up / Alt+Down"
-(Ctrl+Arrow is taken by the system there).
+Ctrl+Arrow keys of the spec belong to the system (Mission Control, and Qt's
+"Ctrl" is the Command key there), so the table is built for the platform
+(:func:`build_keymap`): row spacing is "Alt+Up / Alt+Down", one hour is
+"Alt+Shift+Left / Right" and one day "Ctrl+Alt+Left / Right" (Command+Option);
+on Windows and Linux they stay Ctrl+Up / Down, Ctrl+Left / Right and
+Ctrl+Shift+Left / Right.
 """
 
 from __future__ import annotations
@@ -29,61 +33,97 @@ class KeyEntry:
     feature: str = ""
 
 
-_SPACING = ("Alt+Up", "Alt+Down") if MAC else ("Ctrl+Up", "Ctrl+Down")
+def build_keymap(mac: bool) -> tuple[KeyEntry, ...]:
+    """The key table for macOS (``mac``) or for Windows and Linux."""
+    spacing = ("Alt+Up", "Alt+Down") if mac else ("Ctrl+Up", "Ctrl+Down")
+    hour = ("Alt+Shift+Right", "Alt+Shift+Left") if mac else ("Ctrl+Right", "Ctrl+Left")
+    day = ("Ctrl+Alt+Right", "Ctrl+Alt+Left") if mac else ("Ctrl+Shift+Right", "Ctrl+Shift+Left")
+    return tuple(_entries(spacing, hour, day))
 
-KEYMAP: tuple[KeyEntry, ...] = (
-    KeyEntry("page_forward", ("Right",), "Page forward", True),
-    KeyEntry("page_back", ("Left",), "Page back", True),
-    KeyEntry("half_forward", ("Shift+Right",), "Half a page forward", True),
-    KeyEntry("half_back", ("Shift+Left",), "Half a page back", True),
-    KeyEntry("second_forward", ("Alt+Right",), "One second forward", True),
-    KeyEntry("second_back", ("Alt+Left",), "One second back", True),
-    KeyEntry("start", ("Home",), "Go to the start"),
-    KeyEntry("end", ("End",), "Go to the end"),
-    KeyEntry("sens_up", ("Up", "+", "="), "Larger signals (more sensitive)", True),
-    KeyEntry("sens_down", ("Down", "-"), "Smaller signals (less sensitive)", True),
-    KeyEntry("spacing_up", (_SPACING[0],), "More space between rows", True),
-    KeyEntry("spacing_down", (_SPACING[1],), "Less space between rows", True),
-    KeyEntry("rows_up", ("Shift+Up", "PgUp"), "Channels up by a screenful", True),
-    KeyEntry("rows_down", ("Shift+Down", "PgDown"), "Channels down by a screenful", True),
-    KeyEntry("timebase_1", ("Alt+1",), "Timebase 10 mm/s"),
-    KeyEntry("timebase_2", ("Alt+2",), "Timebase 15 mm/s"),
-    KeyEntry("timebase_3", ("Alt+3",), "Timebase 30 mm/s"),
-    KeyEntry("timebase_4", ("Alt+4",), "Timebase 60 mm/s"),
-    KeyEntry("timebase_5", ("Alt+5",), "Timebase 120 mm/s"),
-    KeyEntry("note_back", ("[",), "Previous note or event", False, "notes"),
-    KeyEntry("note_forward", ("]",), "Next note or event", False, "notes"),
-    KeyEntry("boundary_back", ("{",), "Previous recording boundary"),
-    KeyEntry("boundary_forward", ("}",), "Next recording boundary"),
-    KeyEntry("goto", ("G",), "Go to a time"),
-    KeyEntry("jump", ("Ctrl+K",), "Jump (times, days, moves, recording letters)"),
-    KeyEntry("channels", ("C",), "Choose channels"),
-    KeyEntry("types", ("T",), "Types of notes and events", False, "notes"),
-    KeyEntry("note_list", ("M",), "List of notes and events", False, "notes"),
-    KeyEntry("montage", ("B",), "Next montage"),
-    KeyEntry("filters", ("F",), "Filters"),
-    KeyEntry("export_start", ("S",), "Set the export start at the pointer", False, "export"),
-    KeyEntry("export_end", ("E",), "Set the export end at the pointer", False, "export"),
-    KeyEntry(
-        "add_note",
-        ("A", "1", "2", "3", "4", "5", "6", "7", "8", "9"),
-        "Add a note (edit mode only)",
-        False,
-        "edit",
-    ),  # fmt: skip
-    KeyEntry(
-        "undo", ("Ctrl+Z",), "Undo the last change to the draft (edit mode only)", False, "edit"
-    ),
-    KeyEntry(
-        "redo",
-        ("Ctrl+Shift+Z", "Ctrl+Y"),
-        "Redo (edit mode only)",
-        False,
-        "edit",
-    ),
-    KeyEntry("escape", ("Esc",), "Clear the selection and close panels"),
-    KeyEntry("help", ("?", "Shift+/"), "Show this help"),
-)
+
+def _entries(spacing, hour, day):
+    return (
+        KeyEntry("page_forward", ("Right",), "Page forward", True),
+        KeyEntry("page_back", ("Left",), "Page back", True),
+        KeyEntry("half_forward", ("Shift+Right",), "Half a page forward", True),
+        KeyEntry("half_back", ("Shift+Left",), "Half a page back", True),
+        KeyEntry("second_forward", ("Alt+Right",), "One second forward", True),
+        KeyEntry("second_back", ("Alt+Left",), "One second back", True),
+        KeyEntry("hour_forward", (hour[0],), "One hour forward", True),
+        KeyEntry("hour_back", (hour[1],), "One hour back", True),
+        KeyEntry("day_forward", (day[0],), "One day forward", True),
+        KeyEntry("day_back", (day[1],), "One day back", True),
+        KeyEntry("stretch_forward", (".",), "Next stretch with data (over a gap)"),
+        KeyEntry("stretch_back", (",",), "Previous stretch with data"),
+        KeyEntry("start", ("Home",), "Go to the start"),
+        KeyEntry("end", ("End",), "Go to the end"),
+        KeyEntry("sens_up", ("Up", "+", "="), "Larger signals (more sensitive)", True),
+        KeyEntry("sens_down", ("Down", "-"), "Smaller signals (less sensitive)", True),
+        KeyEntry("spacing_up", (spacing[0],), "More space between rows", True),
+        KeyEntry("spacing_down", (spacing[1],), "Less space between rows", True),
+        KeyEntry("rows_up", ("Shift+Up", "PgUp"), "Channels up by a screenful", True),
+        KeyEntry("rows_down", ("Shift+Down", "PgDown"), "Channels down by a screenful", True),
+        KeyEntry("timebase_1", ("Alt+1",), "Timebase 10 mm/s"),
+        KeyEntry("timebase_2", ("Alt+2",), "Timebase 15 mm/s"),
+        KeyEntry("timebase_3", ("Alt+3",), "Timebase 30 mm/s"),
+        KeyEntry("timebase_4", ("Alt+4",), "Timebase 60 mm/s"),
+        KeyEntry("timebase_5", ("Alt+5",), "Timebase 120 mm/s"),
+        KeyEntry("note_back", ("[",), "Previous note or event", False, "notes"),
+        KeyEntry("note_forward", ("]",), "Next note or event", False, "notes"),
+        KeyEntry("boundary_back", ("{",), "Previous recording boundary"),
+        KeyEntry("boundary_forward", ("}",), "Next recording boundary"),
+        KeyEntry("goto", ("G",), "Go to a time"),
+        KeyEntry("jump", ("Ctrl+K",), "Jump (times, days, moves, recording letters)"),
+        KeyEntry("channels", ("C",), "Choose channels"),
+        KeyEntry("types", ("T",), "Types of notes and events", False, "notes"),
+        KeyEntry("note_list", ("M",), "List of notes and events", False, "notes"),
+        KeyEntry("montage", ("B",), "Next montage"),
+        KeyEntry("filters", ("F",), "Filters"),
+        KeyEntry("export_start", ("S",), "Set the export start at the pointer", False, "export"),
+        KeyEntry("export_end", ("E",), "Set the export end at the pointer", False, "export"),
+        KeyEntry(
+            "new_note",
+            ("N",),
+            "Add a note at the pointer (a text field opens; Enter keeps it, Esc drops it). "
+            "After Shift+drag the note lasts as long as the selection",
+        ),
+        KeyEntry(
+            "add_note",
+            ("A", "1", "2", "3", "4", "5", "6", "7", "8", "9"),
+            "Add a note (edit mode only)",
+            False,
+            "edit",
+        ),  # fmt: skip
+        KeyEntry(
+            "undo", ("Ctrl+Z",), "Undo the last change to the draft (edit mode only)", False, "edit"
+        ),
+        KeyEntry(
+            "redo",
+            ("Ctrl+Shift+Z", "Ctrl+Y"),
+            "Redo (edit mode only)",
+            False,
+            "edit",
+        ),
+        KeyEntry(
+            "save_notes",
+            ("Ctrl+S",),
+            "Save the new notes into the recordings (edit mode only)",
+            False,
+            "edit",
+        ),
+        KeyEntry(
+            "remove_note",
+            ("Delete", "Backspace"),
+            "Remove the selected note from the draft (edit mode only)",
+            False,
+            "edit",
+        ),
+        KeyEntry("escape", ("Esc",), "Clear the selection and close panels"),
+        KeyEntry("help", ("?", "Shift+/"), "Show this help"),
+    )
+
+
+KEYMAP: tuple[KeyEntry, ...] = build_keymap(MAC)
 
 NAVIGATION_ACTIONS = frozenset(e.action for e in KEYMAP if e.repeat)
 
@@ -135,6 +175,12 @@ def keys_text(entry: KeyEntry) -> str:
     return "  /  ".join(
         QKeySequence(k).toString(QKeySequence.SequenceFormat.NativeText) for k in entry.keys[:3]
     ) + ("  ..." if len(entry.keys) > 3 else "")
+
+
+def key_hint(action: str) -> str:
+    """The first key of ``action`` as this platform writes it (for a tooltip)."""
+    entry = next(e for e in KEYMAP if e.action == action)
+    return QKeySequence(entry.keys[0]).toString(QKeySequence.SequenceFormat.NativeText)
 
 
 class HelpOverlay(QWidget):

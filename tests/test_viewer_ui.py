@@ -87,12 +87,14 @@ def one(make_window, tmp_path):
 
 
 def test_opens_on_one_recording(one):
-    assert one.row_labels() == sorted(
+    natural = sorted(
         CHANNELS,
         key=lambda n: (
             [int(p) if p.isdigit() else p.lower() for p in __import__("re").split(r"(\d+)", n)]
         ),
     )
+    # the channels that are not EEG (ECG) come after the others
+    assert one.row_labels() == [n for n in natural if n != "ECG"] + ["ECG"]
     assert one.canvas.drawn_points and all(n > 0 for n in one.canvas.drawn_points.values())
     assert not one.multi and one.windowTitle() == "Signal viewer"
     assert one.status_mode.text() == "As recorded; No filters"
@@ -262,8 +264,10 @@ def test_channel_menu_actions_hide_and_show(one, qtbot):
     assert "Pz" not in one.row_labels()
     one.hide_lead("LA2")
     assert [n for n in one.row_labels() if n.startswith("LA")] == []
-    one.show_only_lead("Fp1")
-    assert one.row_labels() == ["Fp1", "Fp2"]
+    one.show_only_lead("Fp1")  # a scalp name is not part of a lead: only itself
+    assert one.row_labels() == ["Fp1"]
+    one.show_only_lead("LA2")  # LA1 ... LA4 are a lead
+    assert one.row_labels() == ["LA1", "LA2", "LA3", "LA4"]
     chooser = one.channel_chooser
     chooser.show_all.click()
     assert len(one.row_labels()) == len(CHANNELS)

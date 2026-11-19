@@ -16,7 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta, tzinfo
 
@@ -157,6 +157,68 @@ class DraftItem:
         return rec
 
 
+#: Said when a note equals one that is already stored / already in the draft.
+DUPLICATE_STORED = (
+    "This note is already stored: the recording holds one with the same time, length, "
+    "type, text and channel."
+)
+DUPLICATE_DRAFT = (
+    "This note is already in the draft: there is one with the same time, length, type, "
+    "text and channel."
+)
+
+
+class DuplicateNote(ValueError):
+    """A note that is the same as one already stored or already in the draft."""
+
+
+def note_key(time, code, end, text, channel) -> tuple:
+    """What makes two notes the SAME note: time, record type, length, stored text
+    and channel. ONE rule: the draft refuses a copy of a stored or drafted note
+    with it, a save leaves such a copy out, and :func:`items_now_stored` finds
+    what a save that ended in an unknown place has stored with it."""
+    duration = int(end) - int(time) if end is not None and int(end) > int(time) else 0
+    return (int(time), code, duration, text or "", channel or None)
+
+
+def mark_key(mark) -> tuple:
+    """:func:`note_key` of a stored note (a ``Mark``)."""
+    return note_key(mark.time, mark.code, mark.end, mark.text, mark.channel)
+
+
+def item_key(item: DraftItem) -> tuple:
+    """:func:`note_key` of a draft item as it would be stored."""
+    return note_key(item.time, item.code, item.end, item.stored_text, item.channel)
+
+
+def _same_place(a: DraftItem, b: DraftItem) -> bool:
+    """Whether two items could go to the same recording: not when each is chosen for another."""
+    return a.recording is None or b.recording is None or a.recording == b.recording
+
+
+def items_now_stored(items: Sequence[DraftItem], before, after) -> list[int]:
+    """The uids of the draft's new items that the recordings hold now, though
+    nothing said so (a save that ended without telling what it had written):
+    the same note (:func:`note_key`), counted against what the recordings
+    held ``before`` (the marks of the stored notes then) and ``after`` (now), so
+    a note that was already there is not taken for ours, and equal items are
+    taken only as often as the recordings gained them."""
+    gained: dict[tuple, int] = {}
+    for m in after:
+        k = mark_key(m)
+        gained[k] = gained.get(k, 0) + 1
+    for m in before:
+        k = mark_key(m)
+        gained[k] = gained.get(k, 0) - 1
+    out = []
+    for it in items:
+        k = item_key(it)
+        if gained.get(k, 0) > 0:
+            gained[k] -= 1
+            out.append(it.uid)
+    return out
+
+
 @dataclass(frozen=True)
 class _Snapshot:
     items: tuple[DraftItem, ...]
@@ -173,6 +235,16 @@ class Draft:
         self._undo: list[_Snapshot] = []
         self._redo: list[_Snapshot] = []
         self._next = 1
+        #: Bumped by every change (a view of the draft is rebuilt only when it moved).
+        self.version = 0
+        #: Gives the keys (:func:`mark_key`) of the notes already stored; set by
+        #: the window. None = nothing is stored (as in a test).
+        self.stored_keys: Callable[[], Collection[tuple]] | None = None
+        #: The same notes as ``(recording index, key)`` pairs: a note chosen for ONE recording is
+        #: the same as a stored note only of that recording. None = judged without the recording.
+        self.stored_pairs: Callable[[], Collection[tuple]] | None = None
+        #: How many rows the last :meth:`add_many` left out as copies.
+        self.skipped_duplicates = 0
 
     # -- state ----------
 
@@ -184,6 +256,7 @@ class Draft:
         self._removed = set(snap.removed)
 
     def _push(self) -> None:
+        self.version += 1
         self._undo.append(self._snap())
         self._redo.clear()
 
@@ -202,6 +275,7 @@ class Draft:
     def undo(self) -> bool:
         if not self._undo:
             return False
+        self.version += 1
         self._redo.append(self._snap())
         self._restore(self._undo.pop())
         return True
@@ -209,6 +283,7 @@ class Draft:
     def redo(self) -> bool:
         if not self._redo:
             return False
+        self.version += 1
         self._undo.append(self._snap())
         self._restore(self._redo.pop())
         return True
@@ -216,13 +291,26 @@ class Draft:
     def written(self, uids: Iterable[int]) -> None:
         """These items were saved: they leave the draft, and so does the
         undo history (a saved addition cannot be undone in place)."""
+        self.version += 1
         for uid in set(uids):
             self._items.pop(uid, None)
         self._undo.clear()
         self._redo.clear()
 
+    def stored_done(self, marks: Iterable) -> None:
+        """These stored notes were taken out of their recordings: they leave the draft's
+        list of removed ones (and so does the undo history)."""
+        gone = set(marks)
+        if not gone:
+            return
+        self.version += 1
+        self._removed -= gone
+        self._undo.clear()
+        self._redo.clear()
+
     def clear(self) -> None:
         """Forget everything (after a discard)."""
+        self.version += 1
         self._items.clear()
         self._removed.clear()
         self._undo.clear()
@@ -259,6 +347,27 @@ class Draft:
         """How many stored notes are changed or removed (these need a new copy)."""
         return len(self._removed) + len(self.changed_stored())
 
+    # -- the same note twice ----------
+
+    def duplicate_reason(self, item: DraftItem, ignore_uid: int | None = None) -> str:
+        """One sentence when ``item`` is the same note as a stored one or as
+        another item of the draft (not ``ignore_uid``), else ""."""
+        key = item_key(item)
+        if item.recording is not None and self.stored_pairs is not None:
+            if (item.recording, key) in self.stored_pairs():
+                return DUPLICATE_STORED
+        elif self.stored_keys is not None and key in self.stored_keys():
+            return DUPLICATE_STORED
+        for other in self._items.values():
+            if other.uid != ignore_uid and item_key(other) == key and _same_place(item, other):
+                return DUPLICATE_DRAFT
+        return ""
+
+    def _refuse_duplicate(self, item: DraftItem, ignore_uid: int | None = None) -> None:
+        reason = self.duplicate_reason(item, ignore_uid)
+        if reason:
+            raise DuplicateNote(reason)
+
     # -- changing ----------
 
     def add(
@@ -274,33 +383,50 @@ class Draft:
         if end is not None and end <= time:
             end = None
         _refuse_controls(label, text, channel)
-        self._push()
         item = DraftItem(
             self._next, int(time), None if end is None else int(end), label, text, channel,
             recording, None, imported,
         )  # fmt: skip
+        self._refuse_duplicate(item)
+        self._push()
         self._next += 1
         self._items[item.uid] = item
         return item
 
     def add_many(self, rows: Iterable[dict]) -> int:
-        """Add imported rows as ONE undo step."""
+        """Add imported rows as ONE undo step. A row that is the same note as a
+        stored one, one of the draft or an earlier row is left out
+        (:attr:`skipped_duplicates` says how many); returns how many were added."""
         rows = list(rows)
+        self.skipped_duplicates = 0
         if not rows:
             return 0
         for r in rows:
             _refuse_controls(r.get("label"), r.get("text"), r.get("channel"))
-        self._push()
+        fresh: list[DraftItem] = []
+        keys: set[tuple] = set()
+        number = self._next
         for r in rows:
             end = r.get("end")
             item = DraftItem(
-                self._next, int(r["time"]), int(end) if end and end > r["time"] else None,
+                number, int(r["time"]), int(end) if end and end > r["time"] else None,
                 r.get("label") or PLAIN, r.get("text") or "", r.get("channel") or None,
                 r.get("recording"), None, True,
             )  # fmt: skip
-            self._next += 1
+            key = (item.recording, item_key(item))
+            if key in keys or self.duplicate_reason(item):
+                self.skipped_duplicates += 1
+                continue
+            keys.add(key)
+            fresh.append(item)
+            number += 1
+        if not fresh:
+            return 0
+        self._push()
+        for item in fresh:
             self._items[item.uid] = item
-        return len(rows)
+        self._next = number
+        return len(fresh)
 
     def update(self, uid: int, **changes) -> DraftItem:
         """Change a draft item (new, or the changed version of a stored one)."""
@@ -309,6 +435,7 @@ class Draft:
         _refuse_controls(new.label, new.text, new.channel)
         if new.end is not None and new.end <= new.time:
             new = replace(new, end=None)
+        self._refuse_duplicate(new, ignore_uid=uid)
         self._push()
         self._items[uid] = new
         return new
@@ -363,7 +490,9 @@ class Draft:
         holders: Callable[[str | None, int], list[int]],
         choices: dict[tuple[int, ...], int] | None = None,
     ) -> SavePlan:
-        return make_plan(self.additions(), self.stored_changes, holders, choices)
+        stored = self.stored_keys() if self.stored_keys is not None else ()
+        pairs = self.stored_pairs() if self.stored_pairs is not None else None
+        return make_plan(self.additions(), self.stored_changes, holders, choices, stored, pairs)
 
 
 # --- routing -----------------------------------------------------------------------------
@@ -440,6 +569,9 @@ class SavePlan:
     refused: list[tuple[DraftItem, str]] = field(default_factory=list)
     #: Stored notes changed or removed: shown, never written (a new copy is needed).
     needs_copy: int = 0
+    #: New items that are the same note as a stored one or an earlier item: left
+    #: out of the write (a note is never stored twice), and they leave the draft.
+    duplicates: list[DraftItem] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -461,12 +593,31 @@ def make_plan(
     needs_copy: int,
     holders: Callable[[str | None, int], list[int]],
     choices: dict[tuple[int, ...], int] | None = None,
+    stored: Collection[tuple] = (),
+    stored_pairs: Collection[tuple] | None = None,
 ) -> SavePlan:
+    """``stored``: the keys of the stored notes (judged without the recording);
+    ``stored_pairs``: ``(recording, key)`` of each stored note, which, when given, replaces it:
+    a note is the same as a stored or earlier one only in the recording it goes to, so two
+    recordings side by side can each hold the same note."""
     plan = SavePlan(needs_copy=needs_copy)
+    seen: set[tuple] = set()
     for item in additions:
+        key = item_key(item)
+        if stored_pairs is None and key in stored:
+            plan.duplicates.append(item)
+            continue
         r = route(item, holders)
         if r.status == "ambiguous" and choices and choices.get(r.choices) in r.choices:
             r = Routing("ok", choices[r.choices])
+        where = r.recording if r.status == "ok" else None  # None: not decided (yet)
+        if (where is not None and stored_pairs is not None and (where, key) in stored_pairs) or (
+            where,
+            key,
+        ) in seen:
+            plan.duplicates.append(item)
+            continue
+        seen.add((where, key))
         if r.status == "outside":
             plan.refused.append((item, r.reason))
             continue

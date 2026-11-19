@@ -17,7 +17,6 @@ thread of their own and arrive by a signal.
 from __future__ import annotations
 
 import bisect
-import dataclasses
 import json
 import os
 import threading
@@ -26,21 +25,22 @@ from datetime import UTC, tzinfo
 
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QColorDialog,
     QComboBox,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
-    QSizePolicy,
+    QScrollBar,
     QSpinBox,
     QSplitter,
     QTabWidget,
-    QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -48,9 +48,14 @@ from PySide6.QtWidgets import (
 
 from ..common.theme import LIGHT, Theme
 from ..model import dsp, montage, timefmt
+from ..model import viewer_colours as vc
+from ..model import viewer_display as vd
 from ..model import viewer_marks as vm
 from ..model import viewer_view as vv
+from ..model.inspect import NOTES_EDIT_INTERRUPTED
+from ..model.sampling import bounded_sample
 from ..model.viewer_view import ViewState
+from ..workers.slices import SlicedRunner
 from ..workers.viewer_pipeline import EnvelopePiece
 from . import jump as jumping
 from .canvas import CanvasMark, DrawRow, TraceCanvas
@@ -59,7 +64,15 @@ from .dialogs import JumpDialog
 from .edit_mode import EditMode
 from .export_range import IDENTIFYING_NOTE, RangeListDialog
 from .filters import FilterPanel, ResponseDialog
-from .keymap import KEYMAP, NAVIGATION_ACTIONS, TIMEBASE_ACTIONS, HelpOverlay, entry_for
+from .flow import Controls
+from .keymap import (
+    KEYMAP,
+    NAVIGATION_ACTIONS,
+    TIMEBASE_ACTIONS,
+    HelpOverlay,
+    entry_for,
+    key_hint,
+)
 from .marks import Chip, ChipsRow, TypesPanel
 from .montage_bar import ChannelChooser, MontageBar
 from .overview import MAX_LANES, OverviewBand
@@ -69,6 +82,31 @@ from .strip import OverviewStrip
 
 #: The notes list shows at most this many rows (search or filter to narrow).
 MAX_LISTED = 5000
+#: More notes than this per 4 pixels (at least DENSE_MIN_MARKS) in view are merged per column.
+DENSE_PX_PER_MARK = 4
+DENSE_MIN_MARKS = 40
+#: In a crowded view this many notes lasting more than a pixel (the longest) keep their band.
+MAX_BANDS = 200
+#: Auto makes the typical trace this share of the distance between rows.
+CLIP_FILL = 0.9
+#: A page must hold at least this many values of a trace (ordinary pieces; the
+#: overview's block extremes: ``MIN_JUDGE_ENVELOPE``) for its size to be judged.
+MIN_JUDGE_VALUES = 200
+MIN_JUDGE_ENVELOPE = 20
+#: A row's size is judged from at most this many of its values (fixed pseudo-random
+#: positions: the 98th percentile of 8192 values is as good as of 240000, and 30 times cheaper
+#: on the GUI thread).
+JUDGE_SAMPLE = 8192
+#: Pages one undecided fit looks at before it gives up and keeps the default.
+MAX_FIT_TRIES = 5
+#: A held key asks for its page this long after the first repeat of a batch.
+REPEAT_FRAME_MS = 12
+#: How many of the notes carried into the page the group's tooltip lists.
+GROUP_LISTED = 8
+#: Notes looked through between two events when the side list is filtered.
+LIST_SLICE = 400
+#: Up to this many notes the filtered list is made at once.
+LIST_SYNC_LIMIT = 2000
 
 PROFILE_ORDER = tuple(vv.PROFILE_NAMES)
 
@@ -77,8 +115,21 @@ def default_state(settings, timeline_start: int) -> ViewState:
     """The starting view: the saved defaults, else the clinical ones."""
     sens = vv.nearest_step(vv.SENS_STEPS, settings.get("viewer/sensitivity") if settings else 100)
     tb = vv.nearest_step(vv.TIMEBASE_STEPS, settings.get("viewer/timebase") if settings else 30)
-    sp = vv.nearest_step(vv.SPACING_STEPS, settings.get("viewer/spacing") if settings else 7)
+    saved_sp = settings.get("viewer/spacing") if settings else 7
+    fit_rows = saved_sp == vv.FIT_ALL
+    sp = vv.nearest_step(vv.SPACING_STEPS, vv.DEFAULT_SPACING if fit_rows else saved_sp)
     profile = settings.get("viewer/profile") if settings else "auto"
+    custom = None
+    if settings:
+        # What is stored may have been edited by hand: only two real colours
+        # that can be told apart count; anything else is the white profile.
+        pair = vc.clean_pair(
+            settings.get("viewer/custom_background"), settings.get("viewer/custom_trace")
+        )
+        if pair is not None and vc.problem(*pair) is None:
+            custom = pair
+    if profile == vc.PROFILE_CUSTOM and custom is None:
+        profile = "white"
     filters = dsp.FilterSettings()
     if settings:
         try:
@@ -91,7 +142,9 @@ def default_state(settings, timeline_start: int) -> ViewState:
         sensitivity=sens,
         timebase=tb,
         spacing=sp,
+        fit_rows=fit_rows,
         profile=profile,
+        custom=custom,
         filters=filters,
     )
 
@@ -113,7 +166,15 @@ def performance_from(settings) -> vv.Performance:
 class ViewerWindow(QMainWindow):
     """Shows ``data`` (a ``ViewerData``) in a window of its own."""
 
+    #: Fit the sensitivity to the signals when a recording opens (tests switch it off).
+    FIT_ON_OPEN = True
+
     closed = Signal()
+    #: Emitted once the window has really let go of its recordings (every read ended, every
+    #: file closed): from then on nothing here holds them. The app keeps the window in its
+    #: list of open viewers until then, so renaming stays refused and every task still
+    #: releases its files.
+    released = Signal()
     #: Hooks for what comes next: (what, time in µs). what = "start" | "end".
     export_edge = Signal(str, object)
     #: The page changed: (start, end) in µs.
@@ -154,18 +215,43 @@ class ViewerWindow(QMainWindow):
         self._pointer_t: int | None = None
         self._pointer_row: int | None = None
         self._row_cache: dict[tuple, list[montage.Row]] = {}
+        #: row identity -> (piece, local row) last drawn: stands in while a page loads
+        self._stale: dict[tuple, tuple] = {}
         self._direction = 1
         self._ready = False
         self._pan_base: int | None = None
         self._closed = False
+        self._screen_hooked = False
         self._rate_of = data.rate
         self._channels = list(data.channels)
+        #: The leads among all recorded channels (see ``montage.real_leads``).
+        self._leads = montage.real_leads(self._channels)
         self._rates = sorted({float(data.rate(c)) for c in self._channels}) or [256.0]
         self.perf = performance_from(settings)
         self.controller = ViewController(data, self.perf, parent=self)
         self._chosen: set[str] = set()
+        #: (channel, minus) -> the sensitivity a row that is not EEG was given
+        #: (chosen once, held across pages; see ``_choose_own_scales``).
+        self._own_sens: dict[tuple, float] = {}
+        self._own_filters = self.state.filters  # the filters ``_own_sens`` was chosen under
+        #: Hours, days and stretches: the buttons, and the flow item that holds them.
+        self._long_buttons: tuple = ()
+        #: Fit the sensitivity once on the first complete page (not when the
+        #: person has chosen a sensitivity before: that one is kept).
+        self._sens_stored = settings is not None and "viewer/sensitivity" in settings.stored_keys()
+        self._auto_open = self.FIT_ON_OPEN and not self._sens_stored
+        #: The last complete page the fit looked at (it is not tried twice on one).
+        self._fit_tried: tuple | None = None
+        #: Complete pages the fit could not judge (it stops after ``MAX_FIT_TRIES``).
+        self._fit_failures = 0
+        #: The montage, reference, filters and hidden channels the held centres are for.
+        self._look: tuple | None = None
+        #: Whether the page was an overview the last time ``_refresh`` looked.
+        self._was_overview: bool | None = None
         self._last_row: int | None = None
         self._coverage = data.segments_coverage()
+        #: The real stretches with data, once the block index has been read.
+        self._stretches: list[tuple[int, int, int]] = []
         self._boundaries = data.boundaries()
         self._page_set: tuple[int, ...] | None = None
         self.marks: list[vm.Mark] = []
@@ -174,7 +260,22 @@ class ViewerWindow(QMainWindow):
         self.hidden_kinds: frozenset[str] = frozenset()
         self._visible: list[vm.Mark] = []
         self._visible_times: list[int] = []
+        self._visible_keys: list[str] = []
+        self._times_np = np.zeros(0, dtype=np.int64)
+        self._importance_np = np.zeros(0, dtype=np.int64)
+        self._drafted: list[int] = []
+        self._ends_np = np.zeros(0, dtype=np.int64)  # a note's end (its time when it has none)
+        self._drafted_np = np.zeros(0, dtype=bool)
+        self._list_runner = SlicedRunner(self)
+        self._list_runner.done.connect(self._list_ready)
+        self._fill_runner = SlicedRunner(self)
         self._max_span = 0
+        self._stored: vd.Stored | None = None
+        self._stored_for = None  # the marks _stored was made from
+        self._stored_flags: tuple = ()
+        self._shape: tuple | None = None
+        self._hay: dict[vm.Mark, str] = {}  # folded search text per note (see _haystack)
+        self._hay_flags: tuple = ()
         self._privacy_sig: tuple | None = None
         self.export_start: int | None = None
         self.export_end: int | None = None
@@ -185,16 +286,19 @@ class ViewerWindow(QMainWindow):
         self._banner_has_name = False
         self._notes_thread: threading.Thread | None = None
         self.notes_failed = False
+        #: Why the notes could not be read, when that is known (plain words, with what to do).
+        self.notes_failed_why = ""
         self.controller.pieces_changed.connect(self._apply_pieces)
         self.controller.loading_changed.connect(lambda on: self.canvas.set_loading(on))
         self.controller.failed.connect(self._failed)
+        self.controller.strip_stretches.connect(self._on_stretches)
         self.controller.overview_changed.connect(self._overview_data)
         self.setWindowFlag(Qt.WindowType.Window, True)
         em = self.fontMetrics().height()
         self.resize(em * 80, em * 44)
         self.setMinimumSize(em * 36, em * 22)
 
-        palette = vv.resolve_profile(self.state.profile, theme.dark)
+        palette = vc.resolve_palette(self.state.profile, theme.dark, self.state.custom)
         self.canvas = TraceCanvas(palette, self)
         self.canvas.zone = zone
         self.strip = OverviewStrip(palette, self)
@@ -227,12 +331,30 @@ class ViewerWindow(QMainWindow):
         box.addWidget(self.edit.banner)
         for w in (self.overview_band, self.strip, self.band_slot, self.chips_slot):
             box.addWidget(w)
-        box.addWidget(self.canvas, 1)
+        self.row_scroll = QScrollBar(Qt.Orientation.Vertical, self)
+        self.row_scroll.setToolTip("Scroll the channels")
+        self.row_scroll.setAccessibleName("Channels scroll bar")
+        self.row_scroll.setVisible(False)
+        self._syncing_rows = False
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self.canvas, 1)
+        body.addWidget(self.row_scroll)
+        box.addLayout(body, 1)
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.splitter.addWidget(left)
         self.splitter.addWidget(self.side_panel)
         self.splitter.setStretchFactor(0, 1)
-        self.setCentralWidget(self.splitter)
+        # The controls wrap (viewer/flow.py) over the signal: nothing is lost to a ">>" menu.
+        self.controls = Controls(self)
+        central = QWidget(self)
+        stack = QVBoxLayout(central)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(0)
+        stack.addWidget(self.controls)
+        stack.addWidget(self.splitter, 1)
+        self.setCentralWidget(central)
 
         self.filter_panel = FilterPanel(self.state.filters, self._rates, self)
         self.channel_chooser = ChannelChooser(self)
@@ -253,6 +375,11 @@ class ViewerWindow(QMainWindow):
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(120)
         self._debounce.timeout.connect(self._refresh)
+        self._repeating = False
+        self._repeat_timer = QTimer(self)
+        self._repeat_timer.setSingleShot(True)
+        self._repeat_timer.setInterval(REPEAT_FRAME_MS)
+        self._repeat_timer.timeout.connect(self._refresh)
         self.canvas.setFocus()
         self._install_handlers()
         self.context_hooks.append(self._export_context)
@@ -264,6 +391,17 @@ class ViewerWindow(QMainWindow):
 
     # -- construction ----------
 
+    def _sync_long_buttons(self) -> None:
+        """Hours, days and stretches with data: only offered where the recording
+        is long enough (or gappy enough) for them to mean something."""
+        span = self.data.timeline_end - self.data.timeline_start
+        hour, day = span >= 2 * 3600 * 1_000_000, span >= 2 * 86_400 * 1_000_000
+        stretches = len(self._stretch_starts()) >= 2
+        wanted = (day, hour, hour, day, stretches, stretches)
+        for button, on in zip(self._long_buttons, wanted, strict=True):
+            button.setVisible(on)
+        self._long_group.setVisible(any(wanted))
+
     def _build_toolbars(self) -> None:
         def tool(text: str, tip: str, slot, visible: bool = True) -> QToolButton:
             b = QToolButton(self)
@@ -274,8 +412,6 @@ class ViewerWindow(QMainWindow):
             b.setVisible(visible)
             return b
 
-        row1 = QToolBar("Navigation", self)
-        row1.setMovable(False)
         self.prev_button = tool(
             "◀ Previous page", "Go back one page (Left arrow)", lambda: self.page(-1)
         )
@@ -288,10 +424,38 @@ class ViewerWindow(QMainWindow):
         self.day_box.setMaximum(max(1, self._days()))
         self.day_box.setToolTip("The day of the recording")
         self.time_edit = QLineEdit(self)
-        self.time_edit.setMaximumWidth(self.fontMetrics().height() * 7)
-        self.time_edit.setInputMask("99:99:99")
-        self.time_edit.setToolTip("Time of day (hours:minutes:seconds) in the site time zone")
+        self.time_edit.setMaximumWidth(self.fontMetrics().height() * 13)
+        self.time_edit.setMinimumWidth(self.fontMetrics().height() * 7)
+        self.time_edit.setPlaceholderText("hh:mm:ss or 2000-01-31 14:30")
+        self.time_edit.setToolTip(
+            "Time of day (hours:minutes:seconds) in the site time zone, or a date and time "
+            "such as 2000-01-31 14:30"
+        )
         self.go_button = tool("Go", "Go to this day and time", self._go_clicked)
+        long_tip = "Move through a long recording"
+        self.back_day_button = tool(
+            "−1 day", f"One day back ({key_hint('day_back')})", lambda: press("day_back")
+        )
+        self.back_hour_button = tool(
+            "−1 h", f"One hour back ({key_hint('hour_back')})", lambda: press("hour_back")
+        )
+        self.forward_hour_button = tool(
+            "+1 h", f"One hour forward ({key_hint('hour_forward')})", lambda: press("hour_forward")
+        )
+        self.forward_day_button = tool(
+            "+1 day", f"One day forward ({key_hint('day_forward')})", lambda: press("day_forward")
+        )
+        self.prev_stretch_button = tool(
+            "◀ Data", "The previous stretch with data (,)", lambda: press("stretch_back")
+        )
+        self.next_stretch_button = tool(
+            "Data ▶", "The next stretch with data, over a gap (.)", lambda: press("stretch_forward")
+        )
+        for b in (
+            self.back_day_button, self.back_hour_button, self.forward_hour_button,
+            self.forward_day_button, self.prev_stretch_button, self.next_stretch_button,
+        ):  # fmt: skip
+            b.setAccessibleDescription(long_tip)
         self.jump_button = tool(
             "Jump…", "Jump to a time, a move or a recording (Ctrl+K)", self.open_jump
         )
@@ -334,33 +498,6 @@ class ViewerWindow(QMainWindow):
             lambda: press("note_list"),
         )
         self.help_button = tool("?", "Keys and mouse (?)", self.toggle_help)
-        for w in (
-            self.prev_button,
-            self.next_button,
-            self.day_box,
-            self.time_edit,
-            self.go_button,
-            self.jump_button,
-        ):
-            row1.addWidget(w)
-        row1.addSeparator()
-        for w in (
-            self.notes_button,
-            self.edit_button,
-            self.export_start_button,
-            self.export_end_button,
-            self.range_button,
-        ):
-            row1.addWidget(w)
-        spacer = QWidget(self)
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row1.addWidget(spacer)
-        row1.addWidget(self.help_button)
-        self.addToolBar(row1)
-        self.addToolBarBreak()
-
-        row2 = QToolBar("Display", self)
-        row2.setMovable(False)
         self.montage_bar = MontageBar(self)
         self.channels_button = tool(
             "Channels", "Choose the channels to show (C)", self.toggle_channels
@@ -375,6 +512,19 @@ class ViewerWindow(QMainWindow):
         self.overview_button.setMenu(self.overview_menu)
         self.overview_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.spacing_box = self._steps_box(vv.SPACING_STEPS, "{:g} mm", "Distance between rows")
+        self.spacing_box.insertItem(0, "Fit all rows", vv.FIT_ALL)
+        self.spacing_box.setToolTip(
+            'Distance between rows. "Fit all rows" puts as many channels on screen as can '
+            f"be read (not closer than {vv.READABLE_SPACING_MM:g} mm); the rest are reached "
+            "by scrolling."
+        )
+        # Which rows of how many are on screen, when not all of them are.
+        self.rows_label = QLabel("", self)
+        self.rows_label.setObjectName("Muted")
+        self.rows_label.setAccessibleName("Rows on screen")
+        self.rows_label.setToolTip(
+            "The channels on screen. Scroll with Page Up and Page Down, Shift+wheel or the bar."
+        )
         self.sens_box = self._steps_box(vv.SENS_STEPS, "{:g} µV/mm", "Sensitivity")
         self.auto_button = tool(
             "Auto", "Choose the sensitivity that fits the signals", self.auto_sensitivity
@@ -385,21 +535,59 @@ class ViewerWindow(QMainWindow):
         for key in PROFILE_ORDER:
             self.profile_box.addItem(vv.PROFILE_NAMES[key], key)
         self.profile_box.setToolTip("Colours")
+        # How much time the screen holds (read only), beside the timebase.
+        self.length_label = QLabel("", self)
+        self.length_label.setObjectName("Muted")
+        self.length_label.setToolTip(vv.LENGTH_TIP)
+        self.length_label.setAccessibleName("Time on screen")
+        # Why "Your own colours" was not applied (empty = nothing to say).
+        self.colour_note = QLabel("", self)
+        self.colour_note.setObjectName("Danger")
         self.types_button = tool("Types", "Types of notes and events (T)", lambda: press("types"))
-        row2.addWidget(self.montage_bar)
-        row2.addWidget(self.channels_button)
-        row2.addWidget(self.overview_button)
-        for label, w in (("Spacing", self.spacing_box), ("Sensitivity", self.sens_box)):
-            row2.addWidget(QLabel(label, self))
-            row2.addWidget(w)
-        row2.addWidget(self.auto_button)
-        row2.addWidget(QLabel("Timebase", self))
-        row2.addWidget(self.timebase_box)
-        row2.addWidget(self.filters_button)
-        row2.addWidget(self.profile_box)
-        row2.addWidget(self.types_button)
-        self.addToolBar(row2)
+        # The controls in their order. A group (a label and its control, a button pair) is one
+        # flow item: it is never split between two rows. They wrap as the width needs.
+        label = lambda text: QLabel(text, self)  # noqa: E731
+        c = self.controls
+        c.add(self.prev_button, self.next_button)
+        c.add(self.day_box, self.time_edit, self.go_button, self.jump_button)
+        self._long_buttons = (
+            self.back_day_button,
+            self.back_hour_button,
+            self.forward_hour_button,
+            self.forward_day_button,
+            self.prev_stretch_button,
+            self.next_stretch_button,
+        )
+        self._long_group = c.add(*self._long_buttons)
+        c.add(self.notes_button, self.edit_button)
+        c.add(self.export_start_button, self.export_end_button, self.range_button)
+        c.add(self.montage_bar)
+        c.add(self.channels_button)
+        c.add(label("Spacing"), self.spacing_box)
+        c.add(label("Sensitivity"), self.sens_box, self.auto_button)
+        c.add(label("Timebase"), self.timebase_box, self.length_label)
+        c.add(self.filters_button, self.types_button)
+        c.add(self.rows_label)
+        c.add(self.overview_button)
+        self.colour_note.setVisible(False)
+        c.add(self.colour_note, self.profile_box)
+        c.add(self.help_button)
+        self._tab_in_visual_order()
         self._sync_boxes()
+        self._sync_long_buttons()
+
+    def _tab_in_visual_order(self) -> None:
+        """Tab goes through the controls in the order they are shown (grouping them
+        reparented the widgets, which would have changed it)."""
+        chain: list[QWidget] = []
+        flow = self.controls.flow
+        for i in range(flow.count()):
+            item = flow.itemAt(i).widget()
+            inner = item.layout() if item.layout() is not None else None
+            parts = [inner.itemAt(k).widget() for k in range(inner.count())] if inner else [item]
+            chain += [w for w in parts if w.focusPolicy() != Qt.FocusPolicy.NoFocus]
+        for a, b in zip(chain, chain[1:], strict=False):
+            QWidget.setTabOrder(a, b)
 
     def _steps_box(self, steps, fmt: str, tip: str) -> QComboBox:
         box = QComboBox(self)
@@ -415,16 +603,28 @@ class ViewerWindow(QMainWindow):
         self.status_recording = QLabel("", self)
         self.status_mode = QLabel("", self)
         self.status_message = QLabel("", self)
-        for w in (self.status_time, self.status_recording):
+        #: What is special about the row under the pointer (its own scale).
+        self.status_row = QLabel("", self)
+        for w in (self.status_time, self.status_recording, self.status_row):
             bar.addWidget(w)
         bar.addWidget(self.status_message, 1)
+        #: Why some stretches are paler (empty = none on this page).
+        self.status_short = QLabel("", self)
+        #: "3 notes not saved yet" while the draft holds something (quiet, no alert).
+        self.status_draft = QLabel("", self)
+        self.status_draft.setObjectName("Muted")
+        self.status_draft.setVisible(False)
+        bar.addPermanentWidget(self.status_draft)
+        bar.addPermanentWidget(self.status_short)
         bar.addPermanentWidget(self.status_mode)
 
     def _connect(self) -> None:
         c = self.canvas
         c.size_changed.connect(self._schedule)
+        c.size_changed.connect(self._sync_length)  # at once, before the page is refreshed
         c.pointer_changed.connect(self._pointer)
         c.wheel_time.connect(lambda n: self.move_by(-n * self.page_us() / 10, direction=-n))
+        self.row_scroll.valueChanged.connect(self._row_scrolled)
         c.wheel_rows.connect(lambda n: self.scroll_rows(-1 if n > 0 else 1))
         c.wheel_zoom.connect(self.zoom_at)
         c.panned.connect(self._panned)
@@ -434,6 +634,8 @@ class ViewerWindow(QMainWindow):
         c.edge_dragged.connect(self._edge_dragged)
         c.size_changed.connect(self.banner.place)
         self.chips.picked.connect(self.edit.on_chip)
+        self.chips.menu_requested.connect(self._note_menu)
+        self.notes_tab.menu_requested.connect(self._note_menu)
         self.chips.clicked.connect(self._chip_clicked)
         self.types_panel.hidden_changed.connect(self._types_chosen)
         self.recordings_tab.go_to.connect(self.go_to)
@@ -481,6 +683,12 @@ class ViewerWindow(QMainWindow):
         h["half_back"] = lambda: self.page(-0.5)
         h["second_forward"] = lambda: self.move_by(1_000_000, 1)
         h["second_back"] = lambda: self.move_by(-1_000_000, -1)
+        h["hour_forward"] = lambda: self.move_by(3600 * 1_000_000, 1)
+        h["hour_back"] = lambda: self.move_by(-3600 * 1_000_000, -1)
+        h["day_forward"] = lambda: self.move_by(86_400 * 1_000_000, 1)
+        h["day_back"] = lambda: self.move_by(-86_400 * 1_000_000, -1)
+        h["stretch_forward"] = lambda: self.go_to_stretch(1)
+        h["stretch_back"] = lambda: self.go_to_stretch(-1)
         h["start"] = lambda: self.go_to_edge(False)
         h["end"] = lambda: self.go_to_edge(True)
         h["sens_up"] = lambda: self.step_sensitivity(-1)
@@ -507,6 +715,9 @@ class ViewerWindow(QMainWindow):
         h["types"] = lambda: self._toggle_tool(self.types_panel, self.types_button)
         h["note_list"] = self.toggle_side_panel
         h["add_note"] = self._add_key
+        h["new_note"] = self.edit.quick_note
+        h["save_notes"] = self.edit.save_key
+        h["remove_note"] = self.edit.remove_note
         h["undo"] = self.edit.undo
         h["redo"] = self.edit.redo
 
@@ -540,7 +751,22 @@ class ViewerWindow(QMainWindow):
         if event.isAutoRepeat() and entry.action not in NAVIGATION_ACTIONS:
             event.accept()
             return
+        if event.isAutoRepeat():
+            # A held key: the position follows every repeat, but the picture is
+            # asked for once per batch of repeats (see ``set_state``).
+            self._repeating = True
+            try:
+                self._key_pressed(event, entry)
+            finally:
+                self._repeating = False
+            return
+        self._key_pressed(event, entry)
+
+    def _key_pressed(self, event: QKeyEvent, entry) -> None:
         self.last_key_text = event.text()
+        if entry.action == "remove_note" and not self._focus_on_notes():
+            super().keyPressEvent(event)  # a combo box or a button is not a place to remove a note
+            return
         if self.canvas.active_edge and entry.action in ("page_forward", "page_back"):
             self.nudge_edge(1 if entry.action == "page_forward" else -1)
             event.accept()
@@ -549,6 +775,17 @@ class ViewerWindow(QMainWindow):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def _focus_on_notes(self) -> bool:
+        """Whether the keyboard is on the traces, the note chips or the notes list: the only
+        places where Delete and Backspace take the selected draft note out."""
+        focus = QApplication.focusWidget()
+        if focus is None:
+            return False
+        for w in (self.canvas, self.chips, self.notes_tab.table):
+            if focus is w or w.isAncestorOf(focus):
+                return True
+        return False
 
     # -- geometry and the page ----------
 
@@ -568,7 +805,25 @@ class ViewerWindow(QMainWindow):
 
     def set_state(self, **changes) -> None:
         self.state = self.state.with_(**changes)
+        if self._repeating:
+            self._refresh_soon()
+            return
+        self._repeat_timer.stop()
         self._refresh()
+
+    def _refresh_soon(self) -> None:
+        """A repeat of a held key: the state is already where the key put it
+        (kept inside the recording), the page for it is asked for after the
+        repeats that arrived together, once. The window can be busy painting
+        for longer than the key's period; then the repeats queue up, and one
+        request per repeat would read and compute pages nobody sees."""
+        t0 = vv.clamp_start(
+            self.state.t0, self.page_us(), self.data.timeline_start, self.data.timeline_end
+        )
+        if t0 != self.state.t0:
+            self.state = self.state.with_(t0=t0)
+        if not self._repeat_timer.isActive():
+            self._repeat_timer.start()
 
     def move_by(self, delta_us: float, direction: int = 1) -> None:
         self._direction = 1 if direction >= 0 else -1
@@ -581,6 +836,53 @@ class ViewerWindow(QMainWindow):
         length = self.page_us()
         self._direction = 1 if end else -1
         self.set_state(t0=self.data.timeline_end - length if end else self.data.timeline_start)
+
+    def _on_stretches(self, payload) -> None:
+        """The block index of one channel per recording arrived: the strip and the
+        stretch keys now use the real stretches with data (a pause inside one
+        recording is a gap), each given to the recording that holds it. Time that
+        the channels read do not reach at all (a recording that lacks them, a
+        part of the recording they were not in) keeps what the segment coverage
+        says: it is never shown as "no data" by the index of a channel that was
+        not there."""
+        stretches, names = payload
+        if self._closed or not stretches:
+            return
+        cover = sorted(self._coverage)
+        starts = [c[0] for c in cover]
+        out = []
+        for a, b in stretches:
+            i = max(0, bisect.bisect_right(starts, (a + b) // 2) - 1)
+            near = cover[i] if cover else (a, b, 0)
+            out.append((a, b, near[2]))
+        reached = [c for ch in names for c in self.data.segments_coverage(ch)]
+        out.extend(vv.unreached(cover, reached))
+        out.sort()
+        self._stretches = out
+        self.strip.set_timeline(self.data.timeline_start, self.data.timeline_end, out)
+        self._sync_long_buttons()
+
+    def _stretch_starts(self) -> list[int]:
+        """Where each stretch with data begins (any recording), sorted."""
+        starts, last_end = [], None
+        for a, b, _rec in sorted(self._stretches or self._coverage):
+            if last_end is None or a > last_end:
+                starts.append(a)
+            last_end = b if last_end is None else max(last_end, b)
+        return starts
+
+    def go_to_stretch(self, direction: int) -> None:
+        """The next or previous stretch with data: jumps over a gap."""
+        t = vv.stretch_start(self._stretch_starts(), self.state.t0, direction)
+        if t is None:
+            self.status_message.setText(
+                "There is no later stretch with data."
+                if direction > 0
+                else "There is no earlier stretch with data."
+            )
+            return
+        self._direction = 1 if direction > 0 else -1
+        self.go_to(t)
 
     def centre_at(self, t: int) -> None:
         self.set_state(t0=int(t - self.page_us() / 2))
@@ -620,7 +922,9 @@ class ViewerWindow(QMainWindow):
 
     def step_spacing(self, delta: int) -> None:
         self._chosen.add("spacing")
-        self.set_state(spacing=vv.step_value(vv.SPACING_STEPS, self.state.spacing, delta))
+        self.set_state(
+            spacing=vv.step_value(vv.SPACING_STEPS, self.state.spacing, delta), fit_rows=False
+        )
 
     def go_to_boundary(self, direction: int) -> None:
         centre = self.state.t0 + self.page_us() / 2
@@ -667,8 +971,10 @@ class ViewerWindow(QMainWindow):
         self._sync_overview()
 
     def _lead_members(self, channel: str) -> set[str]:
-        lead = montage.lead_and_contact(channel)[0]
-        return {c for c in self._channels if montage.lead_and_contact(c)[0] == lead}
+        lead = montage.lead_of(channel, self._leads)
+        if lead is None:  # not in a lead: it is on its own
+            return {channel}
+        return {c for c in self._channels if montage.lead_of(c, self._leads) == lead}
 
     def hide_channel(self, channel: str) -> None:
         self.set_hidden(self.state.hidden | {channel})
@@ -717,31 +1023,172 @@ class ViewerWindow(QMainWindow):
         dlg.raise_()
 
     def _profile_chosen(self, _i: int) -> None:
+        key = self.profile_box.currentData()
+        if key == vc.PROFILE_CUSTOM:
+            if not self.choose_own_colours():  # stopped or refused: the list shows what is used
+                self.profile_box.setCurrentIndex(PROFILE_ORDER.index(self.state.profile))
+            self.canvas.setFocus()
+            return
         self._chosen.add("profile")
-        self.set_state(profile=self.profile_box.currentData())
+        self._show_colour_note("")
+        # Colours only repaint: no page is asked for again.
+        self.state = self.state.with_(profile=key)
+        self._apply_profile()
         self.canvas.setFocus()
+
+    def pick_colour(self, title: str, initial: str) -> str | None:
+        """Ask for a colour (replaced in tests): ``#rrggbb``, or None when the
+        person stopped."""
+        chosen = QColorDialog.getColor(QColor(initial), self, title)
+        return chosen.name() if chosen.isValid() else None
+
+    def choose_own_colours(self) -> bool:
+        """ "Your own colours…": ask for the background, then the trace.
+        True when they were applied."""
+        pal = self.canvas.palette_
+        bg0, trace0 = self.state.custom or (pal.background, pal.trace)
+        background = self.pick_colour("Background colour", bg0)
+        if background is None:
+            return False
+        trace = self.pick_colour("Trace colour", trace0)
+        if trace is None:
+            return False
+        return self.set_custom_colours(background, trace)
+
+    def set_custom_colours(self, background: str, trace: str) -> bool:
+        """Use these two colours (``#rrggbb``) for the background and the
+        traces. Colours that are too close to read are refused with a sentence
+        and nothing changes. Only repaints: no signal is read again."""
+        why = vc.problem(background, trace)
+        if why is not None:
+            self._show_colour_note(why)
+            return False
+        self._chosen.update(("profile", "colours"))
+        self._show_colour_note("")
+        self.state = self.state.with_(
+            profile=vc.PROFILE_CUSTOM, custom=vc.clean_pair(background, trace)
+        )
+        self.profile_box.setCurrentIndex(PROFILE_ORDER.index(vc.PROFILE_CUSTOM))
+        self._apply_profile()
+        return True
+
+    def _show_colour_note(self, why: str) -> None:
+        """The reason colours were not used, beside the colour choice (short)
+        and in the status line (whole); empty clears both."""
+        self.colour_note.setText("Too close to read: not applied." if why else "")
+        self.colour_note.setToolTip(why)
+        self.colour_note.setVisible(bool(why))
+        if why:
+            self.status_message.setText(why)
+        elif self.status_message.text() == vc.TOO_CLOSE:
+            self.status_message.setText("")
 
     def _box_chose(self, field: str, box: QComboBox) -> None:
         self._chosen.add(field)
-        self.set_state(**{field: box.currentData()})
+        value = box.currentData()
+        if field == "spacing":
+            if value == vv.FIT_ALL:
+                self.set_state(fit_rows=True, row_offset=0)
+            else:
+                self.set_state(spacing=value, fit_rows=False)
+        else:
+            self.set_state(**{field: value})
         self.canvas.setFocus()
 
-    def auto_sensitivity(self) -> None:
+    def _page_spread(self, r) -> float | None:
+        """How far the trace of row ``r`` usually swings from its own middle on
+        the page (98th percentile of the distance from the median, so a DC
+        offset, a drift or a few spikes do not count), or None when the page
+        cannot tell: not loaded, flat, only gaps, or too few values."""
+        piece = r.piece
+        if piece is None:
+            return None
+        t0, t1 = self.state.t0, self.state.t0 + self.page_us()
+        if isinstance(piece, EnvelopePiece):  # the overview: the blocks' lowest and highest
+            a = piece.rows[r.local]
+            sel = (a[1] > t0) & (a[0] < t1)
+            w = np.concatenate((a[2][sel], a[3][sel]))
+            least = MIN_JUDGE_ENVELOPE
+        else:
+            w = piece.window(r.local, t0, t1)
+            least = MIN_JUDGE_VALUES
+        total = w.size
+        w = bounded_sample(w, JUDGE_SAMPLE)
+        finite = w[np.isfinite(w)]
+        if not finite.size or finite.size * (total / w.size) < least:
+            return None
+        w = finite
+        spread = float(np.percentile(np.abs(w - np.median(w)), 98))
+        return spread if spread > 0 else None
+
+    def _sensitivity_for(self, spread: float) -> float:
+        """The step of the toolbar's list at which a swing of ``spread`` fills
+        the row's band (the next coarser step when none fits exactly)."""
+        wanted = 2 * spread / (CLIP_FILL * self.state.spacing)
+        larger = [s for s in vv.SENS_STEPS if s >= wanted]
+        return larger[0] if larger else vv.SENS_STEPS[-1]
+
+    def _choose_own_scales(self, force: bool = False) -> int:
+        """Give each row on screen that is not EEG its own sensitivity, from the
+        same list as the toolbar's, taken from the page on screen. Chosen once
+        (when the row first has a page it can be judged from, and when Auto is
+        pressed: ``force``) and then held across pages, so a trace that gets
+        smaller looks smaller. A row is never drawn finer than the toolbar
+        (the canvas takes the coarser of the two). Returns how many were chosen."""
+        first = self.state.row_offset
+        chosen = 0
+        for r in self.canvas.rows[first : first + self.canvas.visible_rows() + 1]:
+            if not r.own_scale or r.piece is None:
+                continue
+            key = (r.channel, r.minus)
+            if key in self._own_sens and not force:
+                continue
+            spread = self._page_spread(r)
+            if spread is None:
+                continue
+            self._own_sens[key] = r.own_sens = self._sensitivity_for(spread)
+            chosen += 1
+        if chosen:
+            self.canvas.invalidate()
+        return chosen
+
+    def _fit_sensitivity(self) -> float | None:
+        """The sensitivity that fits the EEG rows on screen, or None when the
+        page cannot tell (rows still loading, flat, only gaps, too few values).
+        Nothing is changed here."""
         first = self.state.row_offset
         last = first + self.canvas.visible_rows()
-        peaks = []
+        peaks, others = [], []
         for r in self.canvas.rows[first:last]:
-            if r.piece is None or isinstance(r.piece, EnvelopePiece):
-                continue
-            w = r.piece.window(r.local, self.state.t0, self.state.t0 + self.page_us())
-            w = w[np.isfinite(w)]
-            if w.size:
-                peaks.append(float(np.percentile(np.abs(w - np.median(w)), 98)))
+            peak = self._page_spread(r)
+            if peak is not None:
+                (others if r.own_scale else peaks).append(peak)
+        peaks = peaks or others
         if not peaks:
-            return
-        wanted = 2 * float(np.median(peaks)) / (0.9 * self.state.spacing)
-        larger = [s for s in vv.SENS_STEPS if s >= wanted]
-        self.set_state(sensitivity=larger[0] if larger else vv.SENS_STEPS[-1])
+            return None
+        return self._sensitivity_for(float(np.median(peaks)))
+
+    def auto_sensitivity(self, announce: bool = True) -> bool:
+        """Choose the sensitivity from the signals on screen: the typical swing
+        (98th percentile of the distance from each trace's own middle, so a DC
+        offset or a drift does not count) of the typical channel, from the
+        values on the page, or from the blocks' lowest and highest in the
+        overview. Robust: the MEDIAN over the EEG channels in view, so one flat
+        channel or one huge one does not move it; channels that are not EEG
+        (ECG, EMG, DC, SpO2) have their own sensitivity (chosen again here) and
+        do not take part. Returns whether it could decide; when it cannot and
+        ``announce`` (the button), the status line says so."""
+        value = self._fit_sensitivity()
+        self._choose_own_scales(force=True)
+        if value is None:
+            if announce:
+                self.status_message.setText(
+                    "Could not choose a sensitivity: the channels on screen are flat, "
+                    "empty or still loading. Go to a page with signal and try again."
+                )
+            return False
+        self.set_state(sensitivity=value)
+        return True
 
     # -- jump ----------
 
@@ -778,7 +1225,10 @@ class ViewerWindow(QMainWindow):
     def _go_clicked(self) -> None:
         text = self.time_edit.text().strip()
         try:
-            t = self.parse_jump(f"day {self.day_box.value()} {text}")
+            if text[:4].isdigit() and "-" in text[:5]:  # a date (and time) was typed
+                t = self.parse_jump(text)
+            else:
+                t = self.parse_jump(f"day {self.day_box.value()} {text}")
         except jumping.JumpError as exc:
             self.status_message.setText(str(exc))
             return
@@ -804,7 +1254,8 @@ class ViewerWindow(QMainWindow):
         overview = self.overview()
         key = vv.MONTAGE_RECORDED if overview else self.state.montage
         rows = self._rows_for(key, self.state.reference)
-        return [r for r in rows if r.plus not in self.state.hidden]
+        shown = [r for r in rows if r.plus not in self.state.hidden]
+        return montage.non_eeg_last(shown, self._leads)
 
     def _refresh(self) -> None:
         if self._closed or self.canvas.width() < 10 or self.edit.saving:
@@ -812,12 +1263,32 @@ class ViewerWindow(QMainWindow):
         length = self.page_us()
         t0 = vv.clamp_start(self.state.t0, length, self.data.timeline_start, self.data.timeline_end)
         rows = self.current_rows()
+        if self.state.fit_rows:
+            fit = vv.fit_spacing(self.canvas.plot_rect().height(), self.canvas.px_per_mm, len(rows))
+            if fit != self.state.spacing:
+                self.state = self.state.with_(spacing=fit)
+        self.canvas.spacing_mm = self.state.spacing  # the rows that fit depend on it
         visible = self.canvas.visible_rows()
         offset = max(0, min(self.state.row_offset, max(0, len(rows) - visible)))
         if (t0, offset) != (self.state.t0, self.state.row_offset):
             self.state = self.state.with_(t0=t0, row_offset=offset)
         overview = vv.is_overview(length)
+        if overview != self._was_overview:
+            # Zooming out into the overview (or back) changes what the page shows:
+            # a sensitivity that was only fitted, never chosen, is fitted again.
+            if self._was_overview is not None and self._fit_allowed():
+                self._auto_open = True
+                self._fit_failures = 0
+            self._was_overview = overview
+            self._own_sens.clear()  # a row that is not EEG is judged again by what it now shows
         s = self.state
+        if s.filters != self._own_filters:  # another filtering: another size, judged again
+            self._own_filters = s.filters
+            self._own_sens.clear()
+        look = (s.montage, s.reference, s.filters, s.hidden)
+        if look != self._look:  # other rows or other filtering: the held centres are void
+            self._look = look
+            self.canvas.reset_levels()
         self.canvas.overview_text = (
             "Overview: the lowest and highest value of each stretch" if overview else ""
         )
@@ -839,14 +1310,58 @@ class ViewerWindow(QMainWindow):
         )
         self._apply_pieces()
         self._sync_boxes()
+        self._sync_rows(len(rows), visible, offset)
         self._sync_toolbar_time()
         self._update_status_mode()
         self.filter_panel.set_notice(self._notice())
+        self.canvas.refresh_pointer()  # a resting mouse is now over another time
+        first = not self._ready
         self._ready = True
+        if first:  # once the first page is asked for: the strip learns where the data really is
+            QTimer.singleShot(0, self.request_strip_envelope)
         self.page_changed.emit(t0, t0 + length)
 
+    def _sync_rows(self, total: int, visible: int, offset: int) -> None:
+        """ "Rows 33-64 of 256" and the scroll bar, when not every row fits."""
+        text = vv.rows_text(offset, visible, total)
+        self.rows_label.setText(text)
+        self.rows_label.setVisible(bool(text))
+        bar = self.row_scroll
+        self._syncing_rows = True
+        try:
+            bar.setRange(0, max(0, total - visible))
+            bar.setPageStep(max(1, visible))
+            bar.setSingleStep(1)
+            bar.setValue(offset)
+        finally:
+            self._syncing_rows = False
+        bar.setVisible(total > visible)
+
+    def _row_scrolled(self, value: int) -> None:
+        if not self._syncing_rows and value != self.state.row_offset:
+            self.set_state(row_offset=value)
+
     def _set_rows_loading(self, rows) -> None:
+        """A new page asked for: each row keeps the picture it had (drawn at
+        the times it holds, so where the pages overlap it does not move) until
+        its block arrives; rows without one stay empty."""
         self.canvas.set_rows(self._draw_rows(rows, [None] * len(rows)), self.overview(), self.multi)
+
+    def _ident_tail(self) -> tuple:
+        """The part of every row's identity that is the same for all rows (asked once per
+        page, not once per row: it reads the screen's geometry)."""
+        return (
+            self.state.filters,
+            self.overview(),
+            self.state.timebase,
+            int(self.canvas.plot_width),
+        )
+
+    def _row_ident(self, row, tail: tuple | None = None) -> tuple:
+        """What a row's picture is of: another channel, montage partner, filter,
+        zoom or width, or the overview's other kind of picture never stands in
+        for it (its min/max bins would be drawn blocky and look real)."""
+        return (row.plus, row.minus, *(self._ident_tail() if tail is None else tail))
 
     def _apply_pieces(self) -> None:
         if self._closed:
@@ -855,10 +1370,99 @@ class ViewerWindow(QMainWindow):
         pieces = self.controller.current_pieces()
         if len(pieces) != len(rows):
             return
-        self.canvas.set_rows(self._draw_rows(rows, pieces), self.overview(), self.multi)
+        self.canvas.set_rows(
+            self._draw_rows(rows, pieces, failed=self.controller.failed_rows()),
+            self.overview(),
+            self.multi,
+        )
         self.canvas.set_loading(self.controller.loading)
+        self._choose_own_scales()
+        self._auto_on_open()
+        self._sync_short_stretches(rows, pieces)
+        # what is drawn now stands in for these rows while the next page loads
+        # (a row that failed has nothing to stand in: it says so)
+        failed = self.controller.failed_rows()
+        kept = {}
+        tail = self._ident_tail()
+        for i, row in enumerate(rows):
+            if i not in failed:
+                ident = self._row_ident(row, tail)
+                kept[ident] = pieces[i] if pieces[i] is not None else self._stale.get(ident)
+        self._stale = kept
+        self._stale = {k: v for k, v in self._stale.items() if v is not None}
 
-    def _draw_rows(self, rows, pieces) -> list[DrawRow]:
+    def _fit_allowed(self) -> bool:
+        """The sensitivity may be fitted: the person has not chosen one (neither
+        in this window nor, earlier, saved)."""
+        return self.FIT_ON_OPEN and "sensitivity" not in self._chosen and not self._sens_stored
+
+    def _auto_on_open(self) -> None:
+        """When a page is complete: fit the sensitivity to the signals, unless the
+        person chose one (this window or saved earlier). A page that cannot be
+        judged (flat, gaps, too few values) leaves the default and the next
+        complete page tries again; once the person chooses, it never tries
+        again. Says so once in the status line when it changed the value."""
+        if not self._auto_open:
+            return
+        if not self._fit_allowed():
+            self._auto_open = False
+            return
+        first = self.state.row_offset
+        shown = self.canvas.rows[first : first + self.canvas.visible_rows()]
+        if not shown or any(r.piece is None and not r.failed for r in shown):
+            return
+        page = (self.state.t0, self.page_us(), tuple(id(r.piece) for r in shown))
+        if page == self._fit_tried:  # the same complete page: nothing new to learn
+            return
+        self._fit_tried = page
+        before = self.state.sensitivity
+        if not self.auto_sensitivity(announce=False):
+            # a page that cannot be judged: a few more pages are tried, then the default stays
+            self._fit_failures += 1
+            if self._fit_failures >= MAX_FIT_TRIES:
+                self._auto_open = False
+            return
+        self._auto_open = False  # decided: kept until Auto, a chosen value or the overview
+        if self.state.sensitivity != before:
+            self.status_message.setText(
+                f"Sensitivity set to {self.state.sensitivity:g} µV/mm to fit this recording."
+            )
+
+    def short_stretch_seconds(self, rows, pieces) -> float | None:
+        """How long a stretch must be to be filtered with these settings, when
+        the page on screen holds samples that were too short (drawn paler);
+        None when it holds none (or this is not yet known: a row still loads)."""
+        first = self.state.row_offset
+        last = first + self.canvas.visible_rows() + 1
+        t0, t1 = self.state.t0, self.state.t0 + self.page_us()
+        rates = set()
+        for row, pc in zip(rows[first:last], pieces[first:last], strict=True):
+            if pc is None:
+                return None
+            piece, local = pc
+            if not isinstance(piece, EnvelopePiece) and piece.has_unfiltered(local, t0, t1):
+                rates.add(float(self._rate_of(row.plus)))
+        if not rates:
+            return 0.0
+        return max(dsp.settling_samples(self.state.filters, r)[0] / r for r in rates)
+
+    def _sync_short_stretches(self, rows, pieces) -> None:
+        """One plain sentence, in the filter window and the status bar, when
+        the page holds stretches too short to filter (they are drawn paler)."""
+        if self.state.filters.is_off or self.overview():
+            self._set_short_note("")
+            return
+        seconds = self.short_stretch_seconds(rows, pieces)
+        if seconds is None:  # still loading: say what was said until it is known
+            return
+        self._set_short_note(vv.short_stretch_text(seconds * 1e6) if seconds > 0 else "")
+
+    def _set_short_note(self, text: str) -> None:
+        self.filter_panel.set_short_note(text)
+        self.status_short.setText(text)
+        self.status_short.setToolTip(text)
+
+    def _draw_rows(self, rows, pieces, failed=frozenset()) -> list[DrawRow]:
         data = self.data
         t0, t1 = self.state.t0, self.state.t0 + self.page_us()
         out = []
@@ -879,8 +1483,16 @@ class ViewerWindow(QMainWindow):
         # A letter tag is only worth its space where rows differ (recordings
         # side by side); with recordings in turn the band says it.
         keep_tags = len(set(tags)) > 1
-        for row, pc, tag in zip(rows, pieces, tags, strict=True):
+        groups = (
+            montage.group_rows(rows, self._leads)
+            if not self.overview()
+            else [montage.RowGroup()] * len(rows)
+        )
+        tail = self._ident_tail()
+        for i, (row, pc, tag) in enumerate(zip(rows, pieces, tags, strict=True)):
             tag = tag if keep_tags else ""
+            bad = i in failed
+            old = None if pc is not None or bad else self._stale.get(self._row_ident(row, tail))
             out.append(
                 DrawRow(
                     row.label,
@@ -891,6 +1503,14 @@ class ViewerWindow(QMainWindow):
                     tag,
                     row.note,
                     row.minus,
+                    None if old is None else old[0],
+                    0 if old is None else old[1],
+                    bad,
+                    montage.is_non_eeg(row.plus, self._leads),
+                    groups[i].first,
+                    groups[i].short,
+                    groups[i].group,
+                    self._own_sens.get((row.plus, row.minus), 0.0),
                 )
             )
         return out
@@ -912,7 +1532,7 @@ class ViewerWindow(QMainWindow):
     def _sync_boxes(self) -> None:
         s = self.state
         for box, value in (
-            (self.spacing_box, s.spacing),
+            (self.spacing_box, vv.FIT_ALL if s.fit_rows else s.spacing),
             (self.sens_box, s.sensitivity),
             (self.timebase_box, s.timebase),
         ):
@@ -921,11 +1541,24 @@ class ViewerWindow(QMainWindow):
                 box.setCurrentIndex(i)
         self.profile_box.setCurrentIndex(PROFILE_ORDER.index(s.profile))
         self._apply_profile()
+        self._sync_length()
         overview = self.overview()
         self.filters_button.setText(
             "Overview: as recorded, no filters" if overview else s.filters.summary()
         )
         self.montage_bar.setEnabled(not overview)
+
+    def _sync_length(self) -> None:
+        """ "= 10 s": how much time the screen holds now (also in the overview)."""
+        text = f"= {vv.format_length(self.page_us())}"
+        if self.length_label.text() != text:
+            self.length_label.setText(text)
+
+    def _screen_changed(self, *_args) -> None:
+        """The window moved to a display with another resolution: the same
+        millimetres hold another number of pixels, so another length of time."""
+        self._sync_length()
+        self._schedule()
 
     def _sync_toolbar_time(self) -> None:
         t = self.state.t0
@@ -952,8 +1585,8 @@ class ViewerWindow(QMainWindow):
         self.status_mode.setText(text)
 
     def _apply_profile(self) -> None:
-        palette = vv.resolve_profile(self.state.profile, self.theme.dark)
-        if palette is not self.canvas.palette_:
+        palette = vc.resolve_palette(self.state.profile, self.theme.dark, self.state.custom)
+        if palette != self.canvas.palette_:  # equal colours need no repaint
             self.canvas.set_palette(palette)
             self.strip.set_palette(palette)
             self.overview_band.set_palette(palette)
@@ -980,11 +1613,22 @@ class ViewerWindow(QMainWindow):
             if owner:
                 text = " and ".join(self.recording_label(i) for i in owner)
         self.status_recording.setText(text)
+        self.status_row.setText(self._row_note(row))
+
+    def _row_note(self, row: int | None) -> str:
+        """What the pointer's row says about its size: its own scale, and a
+        level that was taken off to centre it."""
+        if row is None or not 0 <= row < len(self.canvas.rows):
+            return ""
+        c = self.canvas
+        parts = [t for t in (c.row_scale_text(row), c.row_offset_text(row)) if t]
+        return f"{c.rows[row].label}: {'; '.join(parts)}" if parts else ""
 
     # -- which recording is which: band, boundaries, banner ----------
 
     def _rec_colour(self, i: int) -> str:
-        return vv.recording_colour(i, self.canvas.palette_.dark)
+        pal = self.canvas.palette_
+        return vc.legible_on(pal, vv.recording_colour(i, pal.dark))
 
     def _rec_letter(self, i: int) -> str:
         return self.data.recordings[i].letter
@@ -1062,8 +1706,12 @@ class ViewerWindow(QMainWindow):
         def run() -> None:
             try:
                 records, locked = data.annotations(), tuple(data.annotations_locked)
-            except Exception:
+                self.notes_failed_why = ""
+            except Exception as exc:
                 records, locked = None, ()
+                # an earlier change of the notes that was left unfinished says so, with what to do
+                interrupted = str(getattr(exc, "code", "")) == "edit-interrupted"
+                self.notes_failed_why = NOTES_EDIT_INTERRUPTED.text if interrupted else ""
             try:
                 self.annotations_ready.emit(records, locked)
             except RuntimeError:
@@ -1078,7 +1726,7 @@ class ViewerWindow(QMainWindow):
         self.notes_failed = records is None
         if records is None:
             records = []
-        self.notes_tab.set_failed(self.notes_failed)
+        self.notes_tab.set_failed(self.notes_failed, self.notes_failed_why)
         self.marks = vm.build_marks(records)
         self.locked_recordings = tuple(locked)
         self.marks_loaded = True
@@ -1089,7 +1737,7 @@ class ViewerWindow(QMainWindow):
 
     def _rebuild_types(self) -> None:
         dark = self.canvas.palette_.dark
-        counts = vm.type_counts(self._display_marks(), self._shown)
+        counts = self._shaped().counts
         self.types_panel.set_types(
             [(k, label, n, vm.kind_colour(k, dark)) for k, label, n in counts], self.hidden_kinds
         )
@@ -1100,51 +1748,71 @@ class ViewerWindow(QMainWindow):
             else f"Notes and events ({len(self.marks)})"
         )
         self.notes_button.setToolTip(
-            "The notes and events could not be read."
+            (self.notes_failed_why or "The notes and events could not be read.")
             if self.notes_failed
             else "The list of notes and events, and the recordings (M)"
         )
         self._set_visible()
 
+    def _shaped(self) -> vd.Display:
+        """The notes as shown (:func:`vd.compose`). What the stored notes give is
+        made once per read of the notes; adding a note to the draft only inserts
+        it, so a recording with 60,000 notes stays quick."""
+        flags = tuple(bool(self._shown(r.index)) for r in self.data.recordings)
+        if self._stored_for is not self.marks or self._stored_flags != flags:
+            self._stored = vd.Stored(self.marks, self._shown)
+            self._stored_for, self._stored_flags = self.marks, flags
+            self._shape = None
+            self._hay = {}
+        d = self.edit.draft
+        hidden = self.hidden_kinds
+        stamp = (d.version, hidden)
+        if self._shape is None or self._shape[0] != stamp:
+            drafts, changed = [], []
+            if d.dirty:
+                changed = [i.replaces for i in d.items if i.replaces is not None]
+                changed += d.removed_stored()
+                for item in d.items:
+                    holders = self.data.holders_at(item.channel, item.time)
+                    recording = (
+                        item.recording
+                        if item.recording is not None
+                        else (holders[0] if holders else 0)
+                    )
+                    drafts.append(
+                        vm.Mark(
+                            item.time,
+                            item.end,
+                            item.code,
+                            recording,
+                            "channel" if item.channel else "session",
+                            item.channel,
+                            item.stored_text,
+                            "changed" if item.replaces is not None else "new",
+                            item.uid,
+                        )
+                    )
+            self._shape = (stamp, vd.compose(self._stored, drafts, changed, hidden, self._shown))
+        return self._shape[1]
+
     def _display_marks(self) -> list[vm.Mark]:
         """What is shown: the stored notes and events, with the draft's
         changes on top (a taken-out or changed stored note stays, marked; a
         new one is added)."""
-        d = self.edit.draft
-        if not d.dirty:
-            return self.marks
-        changed = {i.replaces: i for i in d.items if i.replaces is not None}
-        out: list[vm.Mark] = []
-        for m in self.marks:
-            if d.is_removed(m) or m in changed:
-                out.append(dataclasses.replace(m, state="removed"))
-            else:
-                out.append(m)
-        for item in d.items:
-            holders = self.data.holders_at(item.channel, item.time)
-            recording = (
-                item.recording if item.recording is not None else (holders[0] if holders else 0)
-            )
-            out.append(
-                vm.Mark(
-                    item.time,
-                    item.end,
-                    item.code,
-                    recording,
-                    "channel" if item.channel else "session",
-                    item.channel,
-                    item.stored_text,
-                    "changed" if item.replaces is not None else "new",
-                    item.uid,
-                )
-            )
-        out.sort(key=lambda m: (m.time, m.recording, m.channel or ""))
-        return out
+        return self._shaped().marks
 
     def _set_visible(self) -> None:
-        self._visible = vm.visible(self._display_marks(), self.hidden_kinds, self._shown)
-        self._visible_times = [m.time for m in self._visible]
-        self._max_span = max((m.end - m.time for m in self._visible if m.end), default=0)
+        shape = self._shaped()
+        self._visible = shape.visible
+        self._visible_keys = shape.keys
+        self._visible_times = shape.times
+        # arrays for the crowded view: merging per pixel column is numpy over these
+        self._times_np = shape.times_np
+        self._importance_np = shape.importance_np
+        self._drafted = shape.drafted
+        self._drafted_np = shape.drafted_np
+        self._ends_np = shape.ends_np
+        self._max_span = shape.max_span
 
     def _types_chosen(self, hidden) -> None:
         self.hidden_kinds = frozenset(hidden)
@@ -1173,61 +1841,239 @@ class ViewerWindow(QMainWindow):
             lines.append(m.text)
         return "\n".join(lines)
 
+    def _mark_and_chip(self, m: vm.Mark, pal, dark: bool) -> tuple[CanvasMark, Chip]:
+        ok = self._shown(m.recording)
+        key, _label = vm.kind_for(m, ok)
+        colour = vc.legible_on(pal, vm.kind_colour(key, dark))
+        tip = self._mark_tip(m)
+        style = {"new": "new", "changed": "new", "removed": "removed"}.get(m.state, "")
+        text = self._mark_text(m, ok)
+        letter = self._rec_letter(m.recording) if self.multi else ""
+        mark = CanvasMark(m.time, m.end, colour, m.channel, tip, style, source=m)
+        chip = Chip(
+            m.time,
+            m.end,
+            colour,
+            f"{letter} · {text}" if letter else text,
+            tip,
+            letter,
+            key,
+            m.channel,
+            m.state,
+            m,
+        )
+        return mark, chip
+
     def _update_marks_view(self) -> None:
         t0, t1 = self.state.t0, self.state.t0 + self.page_us()
         times = self._visible_times
         lo = bisect.bisect_left(times, t0 - self._max_span)
+        start = bisect.bisect_left(times, t0)
         hi = bisect.bisect_right(times, t1)
-        dark = self.canvas.palette_.dark
-        canvas_marks, chips = [], []
-        for m in self._visible[lo:hi]:
-            if (m.end or m.time) < t0:
-                continue
-            ok = self._shown(m.recording)
-            key, _label = vm.kind_for(m, ok)
-            colour = vm.kind_colour(key, dark)
-            tip = self._mark_tip(m)
-            style = {"new": "new", "changed": "new", "removed": "removed"}.get(m.state, "")
-            canvas_marks.append(CanvasMark(m.time, m.end, colour, m.channel, tip, style))
-            text = self._mark_text(m, ok)
-            letter = self._rec_letter(m.recording) if self.multi else ""
-            chips.append(
-                Chip(
-                    m.time,
-                    m.end,
-                    colour,
-                    f"{letter} · {text}" if letter else text,
-                    tip,
-                    letter,
-                    key,
-                    m.channel,
-                    m.state,
-                    m,
-                )
-            )
+        # In view = starts inside the page, or starts before it and still lasts
+        # into it (found by one array compare, never by walking [lo:start]).
+        # The same rule serves the crowded and the sparse path.
+        left = (lo + np.flatnonzero(self._ends_np[lo:start] >= t0)).tolist() if start > lo else []
+        pal = self.canvas.palette_
+        dark = pal.dark
+        width = max(1, int(self.canvas.plot_width))
+        if hi - start + len(left) > max(DENSE_MIN_MARKS, width // DENSE_PX_PER_MARK):
+            canvas_marks, chips = self._crowded_marks(t0, t1, left, start, hi, width, pal, dark)
+        else:
+            canvas_marks, chips = [], []
+            for i in (*left, *range(start, hi)):
+                mark, chip = self._mark_and_chip(self._visible[i], pal, dark)
+                canvas_marks.append(mark)
+                chips.append(chip)
         self.canvas.marks = canvas_marks
         self.canvas.update()
         self.chips.setVisible(bool(self._visible))
         self.chips.set_view(t0, t1, self.canvas.gutter)
         self.chips.set_chips(chips)
 
+    def _crowded_marks(self, t0, t1, left, start, hi, width, pal, dark):
+        """More notes in view than can be told apart: what is built and drawn
+        is bounded by the pixels. Notes that start in the page merge per pixel
+        column into one tick (a count, the colour of the most important type)
+        and per 8 pixels into one chip. Left out of the merge, because a tick
+        would lose what they are: a note lasting more than a pixel (a band,
+        the longest ``MAX_BANDS`` of them), one that began before the page,
+        and the draft's own notes, which stay lines of their own. Tooltips of
+        ticks are made when hovered."""
+        keys = self._visible_keys
+        colours: dict[str, str] = {}
+
+        def colour_of(key: str) -> str:
+            c = colours.get(key)
+            if c is None:
+                c = colours[key] = vc.legible_on(pal, vm.kind_colour(key, dark))
+            return c
+
+        canvas_marks, chips = [], []
+        idx = np.arange(start, hi)
+        px_us = max(1, (int(t1) - int(t0)) // width)
+        long_ = idx[self._ends_np[start:hi] - self._times_np[start:hi] > px_us]
+        if len(long_) > MAX_BANDS:  # the longest ones keep their band, the rest merge
+            span = self._ends_np[long_] - self._times_np[long_]
+            long_ = np.sort(long_[np.argsort(span, kind="stable")[-MAX_BANDS:]])
+        if len(left) > MAX_BANDS:  # too many to draw one by one: ONE group at the left edge
+            group = self._carried_group(t0, left, colour_of)
+            canvas_marks.append(group[0])
+            chips.append(group[1])
+            left = []
+        single = [*left, *long_.tolist()]
+        single_set = set(single)
+        for i in self._drafted:
+            if start <= i < hi and i not in single_set:
+                single.append(i)
+        keep = ~self._drafted_np[start:hi]
+        keep[long_ - start] = False
+        idx = idx[keep]
+        times = self._times_np[idx]
+        rank = self._importance_np[idx]
+        first, counts, best = vm.merge_columns(times, rank, t0, t1, width)
+        canvas_marks += [
+            CanvasMark(int(times[f]), None, colour_of(keys[idx[b]]), None, "", "", int(c), True)
+            for f, c, b in zip(first.tolist(), counts.tolist(), best.tolist(), strict=True)
+        ]
+        first, counts, best = vm.merge_columns(times, rank, t0, t1, max(1, width // 8))
+        for f, c, b in zip(first.tolist(), counts.tolist(), best.tolist(), strict=True):
+            t = int(times[f])
+            if c == 1:
+                _mark, chip = self._mark_and_chip(self._visible[idx[f]], pal, dark)
+            else:
+                when = timefmt.format_time(t, self.zone, 3)
+                tip = f"{c} notes and events from\n{when}\nZoom in to see them one by one."
+                chip = Chip(
+                    t,
+                    None,
+                    colour_of(keys[idx[b]]),
+                    str(c),
+                    tip,
+                    "",
+                    keys[idx[b]],
+                    None,
+                    "",
+                    None,
+                    c,
+                )
+            chips.append(chip)
+        for i in single:
+            mark, chip = self._mark_and_chip(self._visible[i], pal, dark)
+            canvas_marks.append(mark)
+            chips.append(chip)
+        return canvas_marks, chips
+
+    def _carried_group(self, t0, left, colour_of) -> tuple[CanvasMark, Chip]:
+        """The notes that began before the page and last into it, when there
+        are more than ``MAX_BANDS``: one marker at the left edge with their
+        count. Hover lists the nearest few; a click on its chip goes to the
+        latest of them; ``[`` steps to them like to any note."""
+        n = len(left)
+        arr = np.asarray(left)
+        best = int(arr[int(np.argmax(self._importance_np[arr]))])
+        colour = colour_of(self._visible_keys[best])
+        nearest = left[-GROUP_LISTED:][::-1]
+        lines = [f"{n} notes and events continue from before this page."]
+        for i in nearest:
+            m = self._visible[i]
+            text = self._mark_text(m, self._shown(m.recording))
+            lines.append(f"{timefmt.format_time(m.time, self.zone, 0)}  {text}")
+        if n > len(nearest):
+            lines.append(f"and {n - len(nearest)} more. Click to go to the latest, or step with [.")
+        else:
+            lines.append("Click to go to the latest, or step with [.")
+        tip = "\n".join(lines)
+        mark = CanvasMark(int(t0), None, colour, None, tip, "", n, True)
+        latest = int(self._times_np[left[-1]])
+        chip = Chip(
+            int(t0),
+            None,
+            colour,
+            f"{n} from before",
+            tip,
+            "",
+            self._visible_keys[best],
+            None,
+            "",
+            None,
+            n,
+            latest,
+        )
+        return mark, chip
+
     def _refresh_note_list(self) -> None:
+        """The side list. Without a type or a search it is the first rows at
+        once; with one, the notes are looked through in short slices between
+        other events, so the window never waits for 60,000 of them."""
         tab = self.notes_tab
         wanted = tab.selected_type()
         query = tab.search.text()
-        rows = [
-            m
-            for m in self._visible
-            if (wanted is None or vm.kind_for(m, self._shown(m.recording))[0] == wanted)
-            and vm.matches(m, query, self._shown(m.recording), self._rec_letter(m.recording))
-        ]
-        shown = rows[:MAX_LISTED]
-        tab.set_rows(shown, self._shown, self._rec_letter, self.zone)
-        if len(rows) > MAX_LISTED:
-            tab.count.setText(
-                f"The first {MAX_LISTED} of {len(rows)} are listed. Search or choose a type "
-                "to narrow the list."
-            )
+        if wanted is None and not query.strip():
+            self._list_runner.cancel()
+            rows = self._visible[:MAX_LISTED]
+            # a note of the draft is always listed (marked as not stored), also far
+            # down a very long list: it is what the user just wrote
+            rows += [self._visible[i] for i in self._drafted if i >= MAX_LISTED]
+            self._list_ready((rows, len(self._visible)))
+            return
+        steps = self._list_steps(wanted, query, self._visible, self._visible_keys)
+        if len(self._visible) <= LIST_SYNC_LIMIT:  # small: done at once, as before
+            self._list_runner.cancel()
+            try:
+                while True:
+                    next(steps)
+            except StopIteration as done:
+                self._list_ready(done.value)
+            return
+        self._list_runner.submit(steps)
+
+    def _haystack(self, m: vm.Mark) -> str:
+        """What a search looks through for one note (:func:`vm.matches`: its type, the
+        recording's letter, its channel and, only when that recording is shown, its text),
+        folded once and kept until the notes are read again: a longer search then costs
+        one substring test per note, not a fresh look at every note."""
+        found = self._hay.get(m)
+        if found is None:
+            ok = self._shown(m.recording)
+            _key, label = vm.kind_for(m, ok)
+            found = "\0".join(
+                (label, self._rec_letter(m.recording), m.channel or "", m.text if ok else "")
+            ).casefold()
+            self._hay[m] = found
+        return found
+
+    def _list_steps(self, wanted, query, marks, keys):
+        rows, total = [], 0
+        q = query.strip().casefold()
+        flags = tuple(bool(self._shown(r.index)) for r in self.data.recordings)
+        if flags != self._hay_flags:  # a recording was shown or hidden since
+            self._hay, self._hay_flags = {}, flags
+        for i, m in enumerate(marks):
+            if (wanted is None or keys[i] == wanted) and (not q or q in self._haystack(m)):
+                total += 1
+                if len(rows) < MAX_LISTED or m.state:  # a draft note is always listed
+                    rows.append(m)
+            if i % LIST_SLICE == LIST_SLICE - 1:
+                yield
+        return rows, total
+
+    def _list_ready(self, result) -> None:
+        if self._closed:
+            return
+        rows, total = result
+        note = (
+            f"The first {len(rows)} of {total} are listed. Search or choose a type "
+            "to narrow the list."
+            if total > len(rows) or len(rows) > MAX_LISTED
+            else None
+        )
+        steps = self.notes_tab.fill_steps(rows, self._shown, self._rec_letter, self.zone, note=note)
+        if len(rows) <= LIST_SYNC_LIMIT // 8:  # a short list: at once
+            for _ in steps:
+                pass
+            return
+        self._fill_runner.submit(steps)
 
     def _refresh_hidden_notice(self) -> None:
         with_marks = {m.recording for m in self.marks}
@@ -1262,17 +2108,43 @@ class ViewerWindow(QMainWindow):
     def begin_data_change(self) -> None:
         """Before the recordings are reopened: nothing else asks them for data."""
         self.controller.abandon_all()
+        self._stale = {}  # the recordings are read again: no old picture stands in
         self.canvas.set_loading(True)
 
     def end_data_change(self, records, locked, reopened: bool = True) -> None:
         """After a save: show what is stored now (when the data was reopened)."""
         if reopened:
-            self._coverage = self.data.segments_coverage()
-            self._boundaries = self.data.boundaries()
+            coverage, boundaries = self.data.segments_coverage(), self.data.boundaries()
+            changed = (coverage, boundaries) != (self._coverage, self._boundaries)
+            # a read of the index that was ended for the save is asked for again; what
+            # was read stays while the signal is as it was
+            self.controller.reset_overview(keep=not changed)
+            if changed:
+                # the signal is not what it was: the stretches (and the overview band)
+                # are looked for again (a save of notes leaves them as they were)
+                self._coverage = coverage
+                self._stretches = []
+                self._sync_long_buttons()
+                self._overview_data()
+                QTimer.singleShot(0, self.request_strip_envelope)
+            elif not self._stretches:
+                # the signal is as it was, but the read of the real stretches was ended for the
+                # reopen before it reported: it is asked for again (with the band's channels)
+                QTimer.singleShot(0, self.request_strip_envelope)
+            else:
+                self._sync_overview()
+            self._boundaries = boundaries
             self.marks_loaded = False
             self._on_annotations(records, locked)
         self.canvas.invalidate()
         self._refresh()
+
+    def notes_refreshed(self, records, locked) -> None:
+        """After a save of notes only: show what the recordings hold now. The
+        signal, the page on screen, the tile cache and the strip stay as they
+        are; only the notes, their types, the list and the chips are redone."""
+        self.marks_loaded = False
+        self._on_annotations(records, locked)
 
     def go_to_mark(self, direction: int) -> None:
         """[ and ]: the previous or next note or event (of the types shown)."""
@@ -1575,8 +2447,22 @@ class ViewerWindow(QMainWindow):
 
     # -- context menu ----------
 
+    def _note_menu(self, mark, pos) -> None:
+        """Right-click on a note (a chip, a row of the list, a mark on the traces)."""
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        self.edit.note_menu(menu, mark)
+        self._menu = menu
+        menu.popup(pos)
+
     def _context_menu(self, row: int, t: int, pos, on_name: bool) -> None:
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        pointer = self.canvas._pointer
+        found = self.canvas.mark_at(pointer) if pointer is not None and not on_name else None
+        if found is not None and found.source is not None:
+            self.edit.note_menu(menu, found.source)
+            menu.addSeparator()
         if 0 <= row < len(self.canvas.rows):
             ch = self.canvas.rows[row].channel
             menu.addAction("Use as reference", lambda: self.use_as_reference(ch))
@@ -1664,6 +2550,37 @@ class ViewerWindow(QMainWindow):
     def row_labels(self) -> list[str]:
         return [r.label for r in self.canvas.rows]
 
+    def _strip_channels(self) -> list[str]:
+        """One channel per recording, the one that recording holds most of: the
+        first channel alone would leave a recording without it unreachable."""
+        chosen: list[str] = []
+        for rec in self.data.recordings:
+            best, best_cover = None, -1
+            for ch in self._channels:
+                cover = sum(
+                    min(b, rec.end_us) - max(a, rec.start_us)
+                    for a, b, i in self.data.ownership(ch)
+                    if i == rec.index and b > rec.start_us and a < rec.end_us
+                )
+                if cover > best_cover:
+                    best, best_cover = ch, cover
+                if cover >= rec.end_us - rec.start_us:
+                    break
+            if best is not None and best_cover > 0 and best not in chosen:
+                chosen.append(best)
+        return chosen or self._channels[:1]
+
+    def request_strip_envelope(self) -> None:
+        """The ONE automatic read of the block index of the whole recording, once
+        the first page has been asked for (and again only when a save changed the
+        signal): the real stretches with data for the strip, from one channel of
+        each recording, and the overview band's channels, in one call. It starts
+        after the page and its look-ahead are loaded; paging never repeats it."""
+        if self._channels and not self._closed and not self.edit.saving:
+            self.controller.request_strip_envelope(
+                self._strip_channels(), band=self.overview_channels() if self.overview_on else ()
+            )
+
     # -- the overview band ----------
 
     def overview_channels(self) -> list[str]:
@@ -1681,7 +2598,9 @@ class ViewerWindow(QMainWindow):
         self.overview_band.setVisible(bool(chans))
         self.overview_band.set_channels(chans)
         self._overview_data()
-        if chans and not self.edit.saving:
+        # Before the first page was asked for nothing is read: the one automatic read
+        # (``request_strip_envelope``) comes after the page and brings these channels.
+        if chans and self._ready and not self.edit.saving:
             self.controller.request_overview(chans)
 
     def _overview_data(self) -> None:
@@ -1724,9 +2643,24 @@ class ViewerWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
             self.refresh_privacy()  # details may have been shown or hidden in Explore
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_active()
+
+    def _sync_active(self) -> None:
+        """Idle look-ahead deepening only runs while the window can be seen."""
+        self.controller.active = self.isVisible() and not self.isMinimized()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._sync_active()
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        self._sync_active()
+        handle = self.windowHandle()
+        if handle is not None and not self._screen_hooked:
+            self._screen_hooked = True
+            handle.screenChanged.connect(self._screen_changed)
         QTimer.singleShot(0, self._refresh)
 
     def save_preferences(self) -> None:
@@ -1739,11 +2673,14 @@ class ViewerWindow(QMainWindow):
         if "sensitivity" in self._chosen:
             s.set("viewer/sensitivity", float(st.sensitivity))
         if "spacing" in self._chosen:
-            s.set("viewer/spacing", float(st.spacing))
+            s.set("viewer/spacing", vv.FIT_ALL if st.fit_rows else float(st.spacing))
         if "timebase" in self._chosen and st.timebase in vv.TIMEBASE_CLINICAL:
             s.set("viewer/timebase", float(st.timebase))
         if "profile" in self._chosen:
             s.set("viewer/profile", st.profile)
+        if "colours" in self._chosen and st.custom is not None:
+            s.set("viewer/custom_background", st.custom[0])
+            s.set("viewer/custom_trace", st.custom[1])
         if "filters" in self._chosen:
             f = st.filters
             s.set(
@@ -1764,15 +2701,41 @@ class ViewerWindow(QMainWindow):
     def _shut_down(self) -> None:
         """Stop the scheduler, then the pools, then close the data (in that order)."""
         try:
-            self.controller.finish_close()
+            try:
+                self.controller.finish_close()
+            finally:
+                self.data.release_files()  # again: a read that was running held files
+                thread = self._notes_thread
+                if thread is not None and thread is not threading.current_thread():
+                    # This runs on the shutdown thread, never the GUI thread: wait
+                    # for a notes read to end, however long, so the data is never
+                    # closed under it.
+                    thread.join()
+                self.data.close()
         finally:
-            thread = self._notes_thread
-            if thread is not None and thread is not threading.current_thread():
-                # This runs on the shutdown thread, never the GUI thread: wait
-                # for a notes read to end, however long, so the data is never
-                # closed under it.
-                thread.join()
-            self.data.close()
+            try:
+                self.released.emit()  # now the recordings are really free
+            except RuntimeError:
+                pass  # the window object is gone
+
+    def _let_go_now(self) -> None:
+        """The very first thing a closing window does: keep no signal file open any more and
+        let go of those held, BEFORE anything is waited for (a running read of the index can
+        take minutes on a network drive) and before ``closed`` is emitted. The library call is
+        a few closes; it runs on a thread of its own that is waited for at most 2 s, so the
+        GUI thread never hangs on a slow drive (``_shut_down`` releases once more)."""
+        data = self.data
+
+        def work() -> None:
+            try:
+                data.set_open_files(0)  # a read that is still running keeps nothing after it
+                data.release_files()
+            except Exception:  # noqa: BLE001 - closed already
+                pass
+
+        thread = threading.Thread(target=work, daemon=True, name="viewer-let-go")
+        thread.start()
+        thread.join(2.0)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self._closed:
@@ -1782,7 +2745,9 @@ class ViewerWindow(QMainWindow):
             self.edit.dispose()
             self._closed = True
             self._debounce.stop()
+            self._repeat_timer.stop()
             self.save_preferences()
+            self._let_go_now()
             self.controller.close()  # cancels at once; the stopping happens off this thread
             threading.Thread(target=self._shut_down, daemon=True).start()
             self.closed.emit()

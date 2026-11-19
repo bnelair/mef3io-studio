@@ -520,3 +520,49 @@ def test_the_thread_cap_survives_a_reopen(sequential):
         assert data._combined.n_threads == 0
     finally:
         data.close()
+
+
+# --- the overview reads many channels in one call ------------------------------------------------
+
+
+def _same_envelope(a, b):
+    return all(np.array_equal(np.asarray(a[k]), np.asarray(b[k]), equal_nan=True) for k in a)
+
+
+@pytest.mark.parametrize("several", [False, True])
+def test_the_envelope_of_many_channels_in_one_call_equals_one_call_each(sequential, several):
+    from mef3io_studio.workers import viewer_pipeline as pipe
+
+    paths = [str(p) for p in (sequential if several else sequential[:1])]
+    data = open_recordings(paths)
+    orig = data._combined
+    try:
+        span = (data.timeline_start, data.timeline_end)
+        calls = []
+        orig = data._combined
+        real = orig.block_envelope
+
+        many = data.envelope_many(["Fz", "Cz", "Fz"], *span)  # a duplicate is returned once
+        assert list(many) == ["Fz", "Cz"]
+        for ch in many:
+            assert _same_envelope(many[ch], data.envelope(ch, *span))
+        assert data.envelope_many([], *span) == {}
+
+        class Counting:
+            def __getattr__(self, name):
+                return getattr(orig, name)
+
+            def block_envelope(self, channel, *a, **k):
+                calls.append(channel)
+                return real(channel, *a, **k)
+
+        data._combined = Counting()
+        piece = pipe.compute_envelope(data, ["Cz", "Fz"], span)
+        assert len(calls) == 1 and list(calls[0]) == ["Cz", "Fz"]  # one library call
+        for row, ch in zip(piece.rows, ["Cz", "Fz"], strict=True):
+            e = real(ch, *span)
+            assert np.array_equal(row[2], np.asarray(e["min"], dtype=np.float64), equal_nan=True)
+            assert np.array_equal(row[3], np.asarray(e["max"], dtype=np.float64), equal_nan=True)
+    finally:
+        data._combined = orig
+        data.close()
