@@ -4,7 +4,7 @@ Desktop app (PySide6) for exploring, organizing, protecting and anonymizing
 MEF 3.0 recordings, built
 on the mef3io library (github.com/bnelair/mef3io). Status: early development;
 0.1.0 = first full release (after dev1-dev6; dev5 Join or trim #31, dev6 signal
-viewer + edit mode, additions only), on mef3io 2.4.0 (since 0.1.6; 0.1.5 was on 2.3.0): Rename window (#12,
+viewer + edit mode; 0.1.6: nothing written until Write to file, stored notes removable/changeable in place), on mef3io 2.4.0 (since 0.1.6; 0.1.5 was on 2.3.0): Rename window (#12,
 undo until close), Edit details copy (#14), shared password choice (#15),
 "Make new recordings" with saved channel choices (#16). Still to come:
 metadata edit in place (change/remove stored notes: built, in the viewer). Cutting into pieces is built
@@ -315,7 +315,7 @@ Code (app shell, #2/#3):
   -> `JoinerPage.choose_window` (the joiner works in whole seconds: start
   rounded down, end up); the joiner's "View these recordings" emits
   `view_requested` -> `App.view_signals`.
-- Viewer edit mode (phase 2, additions only): Qt-free `model/annotation_draft.py`
+- Viewer edit mode (phase 2 began with additions only; see the write-to-file rules below): Qt-free `model/annotation_draft.py`
   (Draft with undo/redo; items are new or the changed version of a stored
   note (`replaces`); `route`/`make_plan` -> `SavePlan`: channel note -> the
   recording holding that channel then, whole-recording -> the recording

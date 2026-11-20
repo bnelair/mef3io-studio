@@ -6,18 +6,21 @@
 [![Installers](https://img.shields.io/github/actions/workflow/status/bnelair/mef3io-studio/build.yml?branch=main&label=installer%20build)](https://github.com/bnelair/mef3io-studio/actions/workflows/build.yml)
 [![License](https://img.shields.io/github/license/bnelair/mef3io-studio)](LICENSE)
 
-**0.1.5** is the latest release (0.1.0 was the first full release). **If you
-made a recording with Join or trim in 0.1.4 and chose a time window for a
-recording whose saved times were wrong, please make it again with 0.1.5**:
-0.1.4 could leave out that recording's chosen part without saying so (see the
-[release notes](docs/release-notes/0.1.5.md)). The app is
+**0.1.6** is the latest release (0.1.0 was the first full release). It adds a
+signal viewer made for long recordings, and in the viewer **nothing you change
+in a recording's notes is written until you press "Write to file"** (see the
+[release notes](docs/release-notes/0.1.6.md)). **If you made a recording with
+Join or trim in 0.1.4 and chose a time window for a recording whose saved times
+were wrong, please make it again with 0.1.5 or later**: 0.1.4 could leave out
+that recording's chosen part without saying so (see the
+[0.1.5 notes](docs/release-notes/0.1.5.md)). The app is
 still early, so expect rough edges and tell us about them. It can explore recordings, make anonymized
 copies, keep part of a recording or join parts of several into one, show
-their signals in a viewer (where you can also add notes and events), rename
+their signals in a viewer (where you can also add, change and remove notes and events), rename
 recordings safely, change their details into a new copy, give new copies
 passwords, and make new recordings from many at once with a saved choice of
 channels. See [Project status](#project-status) and the
-[release notes](docs/release-notes/0.1.5.md).
+[release notes](docs/release-notes/0.1.6.md).
 
 ## Getting the app
 
@@ -285,7 +288,7 @@ after a crash.
 
 - **Data coverage:** see when data exists and at what rate, per channel. The
   fastest way to spot dropouts and gaps.
-- **Change or remove stored notes and events,** as a new, checked copy.
+- **Change notes and events of a recording as a new, checked copy** (in the viewer they can now be changed in place, after a list of every change).
 - **Export** to other formats (e.g. EDF, NWB).
 - **Remote recordings** kept on a secure server.
 
@@ -478,11 +481,11 @@ point to a commit on `main`.
 
 mef3io-studio is an **early** app: **0.1.0 is the first full release**, built
 on mef3io 2.4.0. It has the installers; **Explore**; **Anonymize**;
-**Join or trim** and **Cut into pieces**; the **signal viewer** with its optional edit mode for adding
-notes and events; **rename** in time order with undo; **edit details** into a
+**Join or trim** and **Cut into pieces**; the **signal viewer** with its optional edit mode for adding, changing and
+removing notes and events (written only when you press Write to file); **rename** in time order with undo; **edit details** into a
 new copy; **passwords** on every new copy; and **Make new recordings** with
-saved channel choices. Not built yet: changing or removing stored notes,
-changes in place. Releases are published
+saved channel choices. Not built yet: data coverage, export to other formats and
+remote recordings. Releases are published
 on the [Releases page](https://github.com/bnelair/mef3io-studio/releases);
 what changed in each is in [docs/release-notes/](docs/release-notes/).
 Progress is tracked in the [roadmap](docs/roadmap.md) and the

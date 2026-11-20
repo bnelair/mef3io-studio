@@ -53,8 +53,10 @@ def main(out_dir: str) -> None:
             ctx.check_cancelled()
 
         window.run_self_check()
-        window.jobs.submit("Packing 3 recordings into one file", stepping, 100, 62)
-        window.jobs.submit("Looking for recordings", unknown)
+        window.jobs.submit(
+            "Packing 3 recordings into one file", stepping, 100, 62, changes_recordings=False
+        )
+        window.jobs.submit("Looking for recordings", unknown, changes_recordings=False)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             app.processEvents()
@@ -299,7 +301,76 @@ def anonymizer_shots(app, out: Path, tmp: Path) -> None:
         window.set_theme_mode(mode)
         _settle(app)
         window.grab().save(str(out / f"explorer-privacy-{mode}.png"))
+    viewer_shots(app, window, out)
     window.jobs.shutdown()
+
+
+def viewer_shots(app, window, out: Path) -> None:
+    """The signal viewer in edit mode with changes not written yet (the red bar), and the list
+    of changes that "Write to file" shows. A made-up recording; no patient details anywhere."""
+    import mef3io
+    import numpy as np
+
+    from mef3io_studio.model.viewer_source import open_recordings
+    from mef3io_studio.viewer.window import ViewerWindow
+    from mef3io_studio.viewer.write_dialog import WriteDialog
+
+    t0, sec, fs = 946_684_800_000_000, 1_000_000, 128.0
+    notes = [
+        {"time": t0 + 6 * sec, "type": "Note", "text": "Eyes closed"},
+        {"time": t0 + 14 * sec, "type": "Note", "text": "Artifact on Cz"},
+        {"time": t0 + 24 * sec, "type": "Note", "text": "Technician note"},
+        {"time": t0 + 41 * sec, "type": "Note", "text": "Photic stimulation"},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Demo.mefd"
+        t = np.arange(int(60 * fs)) / fs
+        with mef3io.Writer(str(path), overwrite=True, units="uV") as w:
+            for k, name in enumerate(("Fp1", "Fp2", "Cz", "Pz")):
+                signal = 40 * np.sin(2 * np.pi * (5 + k) * t) + 8 * np.sin(2 * np.pi * 23 * t)
+                w.write(name, np.round(signal, 2), t0, fs)
+            w.write_annotations(notes)
+        data = open_recordings([str(path)])
+        for ch in data.channels:
+            data.rate(ch), data.units(ch), data.ownership(ch)
+        for mode in ("light", "dark"):
+            window.set_theme_mode(mode)
+            _settle(app)
+            win = ViewerWindow(data, theme=window.themes.theme, reveal=lambda i: True)
+            win.resize(1280, 780)
+            win.show()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not (win._ready and win.marks_loaded):
+                app.processEvents()
+                time.sleep(0.02)
+            _settle(app)
+            win.set_timebase(2)  # the whole minute on the page
+            win.go_to(t0)
+            deadline = time.monotonic() + 30  # the page and the overview are read
+            while time.monotonic() < deadline and (
+                win.controller.loading or not win.controller.wait_idle(0.05)
+            ):
+                app.processEvents()
+            _settle(app, 1.5)
+            win.edit.set_on(True)
+            win.edit.add(t0 + 33 * sec, None, "Spike", "sharp wave")
+            marks = {m.text: m for m in win.marks}
+            win.edit.remove_mark(marks["Technician note"])
+            win.edit.draft.edit_stored(marks["Artifact on Cz"], text="Artifact on Cz (chewing)")
+            win.edit.refresh()
+            win.side_panel.setCurrentWidget(win.notes_tab)
+            win.notes_button.click()
+            _settle(app)
+            win.grab().save(str(out / f"viewer-edit-mode-{mode}.png"))
+            dialog = WriteDialog(win.edit.summary(), win.edit._where, win._shown, win.zone, win)
+            dialog.resize(900, 360)
+            dialog.show()
+            _settle(app)
+            dialog.grab().save(str(out / f"viewer-write-list-{mode}.png"))
+            dialog.close()
+            win.edit.draft.clear()
+            win.close()
+        data.close()
 
 
 if __name__ == "__main__":
