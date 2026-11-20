@@ -758,7 +758,7 @@ def test_patched_display_equals_a_full_rebuild_after_every_operation(make_window
     kinds = sorted({k for k, _l, _n in win._shaped().counts})
     for step in range(300):
         marks = list(win.marks)
-        op = rng.choice(["mark", "mark", "keep", "many", "undo", "redo", "filter"])
+        op = rng.choice(["mark", "keep", "many", "copies", "copies", "undo", "redo", "filter"])
         spy.stored_answer = rng.choice(["one", "all"])
         if op == "mark":
             win.edit.remove_mark(rng.choice(marks))
@@ -768,6 +768,16 @@ def test_patched_display_equals_a_full_rebuild_after_every_operation(make_window
                 win.edit.keep_mark(rng.choice(gone))
         elif op == "many":
             win.edit.mark_many(rng.sample(marks, k=min(len(marks), rng.randint(2, 6))))
+        elif op == "copies":
+            # several rows that are identical copies of one note, then keep one remaining copy
+            groups = {}
+            for m in marks:
+                groups.setdefault(m, []).append(m)
+            group = rng.choice([g for g in groups.values() if len(g) > 1])
+            win.edit.mark_many(group[: rng.randint(2, len(group))] + rng.sample(marks, k=2))
+            marked = [m for m in win._shaped().marks if m.state == "removed" and m == group[0]]
+            if marked:
+                win.edit.keep_mark(marked[-1])
         elif op == "undo":
             win.edit.undo()
         elif op == "redo":
@@ -779,8 +789,64 @@ def test_patched_display_equals_a_full_rebuild_after_every_operation(make_window
         assert display_state(win) == patched, (step, op)
         win._shape = shape  # and the patched display carries on
         shown = {id(m) for m in win._shaped().visible}
+        gone = {id(m) for m in win._shaped().visible if m.state == "removed"}
+        # what is drawn says the same as the model: struck through exactly when the note is
+        assert all(
+            (c.state == "removed") == (id(c.mark) in gone)
+            for c in win.chips.chips
+            if c.mark is not None
+        ), (step, op)
+        assert all(
+            (c.style == "removed") == (id(c.source) in gone)
+            for c in win.canvas.marks
+            if c.source is not None
+        ), (step, op)
         assert all(id(c.mark) in shown for c in win.chips.chips if c.mark is not None), (step, op)
         assert all(id(c.source) in shown for c in win.canvas.marks if c.source is not None), (
             step,
             op,
         )
+
+
+def duplicate_after_removal(win):
+    """A removal plus an addition that equals a stored note (dropped as a duplicate in step 2)."""
+    stored_note = stored(win, "Alpha Cz note")
+    win.edit.remove_mark(stored(win, "Alpha plain note"))
+    win.edit.draft.stored_keys = lambda: frozenset()
+    win.edit.draft.stored_pairs = lambda: frozenset()
+    label, text = ad.split_text(stored_note.text)
+    win.edit.draft.add(stored_note.time, None, label, text, "Cz", 0)
+    win.edit.draft.stored_keys = win.edit._stored_keys
+    win.edit.draft.stored_pairs = win.edit._stored_pairs
+
+
+def test_a_close_that_ends_in_only_duplicates_still_closes_the_window(ed, qtbot):
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    duplicate_after_removal(win)
+    spy.answer = "save"  # Close -> "Write to file"
+    win.close()
+    qtbot.waitUntil(lambda: win._closed, timeout=60_000)
+    assert "Alpha plain note" not in texts(a) and not win.edit.draft.dirty
+
+
+def test_a_close_with_something_left_in_the_draft_stays_open(ed, qtbot, monkeypatch):
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    duplicate_after_removal(win)
+    win.edit.add(T0 + 40 * SEC, None, "Spike", "stays")
+    win.edit.ask_save = lambda plan_for: None  # the second step's own dialog is cancelled
+    spy.answer = "save"
+    win.close()
+    qtbot.waitUntil(lambda: not win.edit.saving and bool(spy.problems), timeout=60_000)
+    assert not win._closed and win.isVisible() and win.edit.draft.dirty
+    assert "Alpha plain note" not in texts(a)  # the first step is in the file
+
+
+def test_leaving_edit_mode_through_a_write_that_ends_in_duplicates_leaves_it(ed, qtbot):
+    win, spy, _ = ed
+    turn_on(win)
+    duplicate_after_removal(win)
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        win.edit.write_to_file(then_off=True)
+    assert not win.edit.on and not win.edit.draft.dirty

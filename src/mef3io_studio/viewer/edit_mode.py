@@ -1189,9 +1189,11 @@ class EditMode(QObject):
         if message is not None:
             self.show_problem(message)
 
-    def _end_chain(self, extra: str = "") -> None:
+    def _end_chain(self, extra: str = "", then_off: bool = False, then_close: bool = False) -> None:
         """The second step found nothing to write (everything left was already stored): the
-        first step's work is said, with ``extra``, and the tally ends."""
+        first step's work is said, with ``extra``, and the tally ends. The write was a success
+        when nothing is left in the draft, so a pending "leave edit mode" or "close the window"
+        is carried out as after any successful write; with something left, the window stays."""
         if not self._tally:
             return
         where = "recording" if len(self._tally) == 1 else "recordings"
@@ -1202,6 +1204,11 @@ class EditMode(QObject):
             + (f" {extra}" if extra else "")
         )
         self._tally, self._chain = {}, False
+        if not self.draft.dirty:
+            if then_off:
+                self._apply_mode(False)
+            if then_close:
+                self.win.close()
         self.save_finished.emit(None)
 
     def _chain_ended_quietly(self) -> None:
@@ -1615,10 +1622,10 @@ class EditMode(QObject):
         if first.count == 0 and first.duplicates and not first.ambiguous and not first.refused:
             # Everything new is already stored: nothing to write, and nothing twice.
             self._drop_duplicates(first)
-            self._end_chain(w.status_message.text())
+            self._end_chain(w.status_message.text(), then_off, then_close)
             return False
         if first.count == 0 and not first.ambiguous and not first.refused:
-            self._end_chain()
+            self._end_chain(then_off=then_off, then_close=then_close)
             return False  # nothing left to write
         if not data.facts_loaded:
             # What the preview needs (which recordings are protected) is read
