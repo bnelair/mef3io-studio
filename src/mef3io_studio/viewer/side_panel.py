@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from ..model import timefmt
 from ..model import viewer_marks as vm
+from .flow import FlowLayout
 from .recordings import readable_on
 
 ALL_TYPES = "All types"
@@ -139,8 +140,7 @@ class NotesTab(QWidget):
         top.addWidget(self.type_box)
         # Edit mode: add / change / take out / import; Export is always there.
         self.edit_bar = QWidget(self)
-        bar = QHBoxLayout(self.edit_bar)
-        bar.setContentsMargins(0, 0, 0, 0)
+        bar = FlowLayout(self.edit_bar, margin=0)  # the buttons wrap when the panel is narrow
         self.add_button = QPushButton("Add…", self.edit_bar)
         self.add_button.setToolTip("Add a note or event at the pointer (A)")
         self.edit_button = QPushButton("Change…", self.edit_bar)
@@ -164,7 +164,6 @@ class NotesTab(QWidget):
             self.import_button,
         ):
             bar.addWidget(b)
-        bar.addStretch(1)
         self.edit_bar.setVisible(False)
         self.export_button = QToolButton(self)
         self.export_button.setText("Export…")

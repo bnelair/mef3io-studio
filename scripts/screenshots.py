@@ -9,7 +9,6 @@ PR review.
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -330,12 +329,12 @@ def viewer_shots(app, window, out: Path) -> None:
                 signal = 40 * np.sin(2 * np.pi * (5 + k) * t) + 8 * np.sin(2 * np.pi * 23 * t)
                 w.write(name, np.round(signal, 2), t0, fs)
             w.write_annotations(notes)
-        data = open_recordings([str(path)])
-        for ch in data.channels:
-            data.rate(ch), data.units(ch), data.ownership(ch)
         for mode in ("light", "dark"):
             window.set_theme_mode(mode)
             _settle(app)
+            data = open_recordings([str(path)])  # closing a viewer closes its data: open anew
+            for ch in data.channels:
+                data.rate(ch), data.units(ch), data.ownership(ch)
             win = ViewerWindow(data, theme=window.themes.theme, reveal=lambda i: True)
             win.resize(1280, 780)
             win.show()
@@ -351,7 +350,16 @@ def viewer_shots(app, window, out: Path) -> None:
                 win.controller.loading or not win.controller.wait_idle(0.05)
             ):
                 app.processEvents()
-            _settle(app, 1.5)
+            deadline = time.monotonic() + 60  # the overview band has every lane it shows
+            band = win.overview_band
+            while time.monotonic() < deadline and not (
+                band.channels and all(ch in band.data for ch in band.channels)
+            ):
+                app.processEvents()
+                time.sleep(0.02)
+            if not (band.channels and all(ch in band.data for ch in band.channels)):
+                raise SystemExit("the overview did not load: no screenshot of an empty page")
+            _settle(app, 0.5)
             win.edit.set_on(True)
             win.edit.add(t0 + 33 * sec, None, "Spike", "sharp wave")
             marks = {m.text: m for m in win.marks}
@@ -370,8 +378,15 @@ def viewer_shots(app, window, out: Path) -> None:
             dialog.close()
             win.edit.draft.clear()
             win.close()
-        data.close()
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "screenshots")
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Render the app offscreen (light and dark) for the documentation: the main "
+        "window, Explore, the Anonymize steps and the signal viewer in edit mode. "
+        "Made-up recordings only."
+    )
+    parser.add_argument("folder", nargs="?", default="screenshots", help="where to save the PNGs")
+    main(parser.parse_args().folder)
