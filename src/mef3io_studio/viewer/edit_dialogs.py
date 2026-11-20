@@ -421,22 +421,30 @@ class ImportPreview(QDialog):
 def ask_unsaved(parent, what: str = "leave") -> str:
     """Save / Discard / Cancel with unsaved changes. Returns "save",
     "discard" or "stay". (Qt's own standard buttons.)"""
+    if what == "task":
+        tail = (
+            "The task you started uses the recording as it is in the file, without these changes."
+        )
+    else:
+        tail = (
+            "If you leave edit mode" if what == "leave" else "If you close the window"
+        ) + " without writing them to the file, they are lost."
     box = QMessageBox(
-        QMessageBox.Icon.Question,
-        "Save the changes?",
-        "You have changes that are not saved yet. If you "
-        + ("leave edit mode" if what == "leave" else "close the window")
-        + " without saving, they are lost.",
-        QMessageBox.StandardButton.Save
-        | QMessageBox.StandardButton.Discard
-        | QMessageBox.StandardButton.Cancel,
+        QMessageBox.Icon.Warning,
+        "Changes to the notes are not written",
+        "Your changes to the notes are not in the recording yet: they exist only in this "
+        "window. " + tail,
+        QMessageBox.StandardButton.NoButton,
         parent,
     )
-    box.setDefaultButton(QMessageBox.StandardButton.Save)
+    write = box.addButton("Write to file…", QMessageBox.ButtonRole.AcceptRole)
+    discard = box.addButton("Discard changes", QMessageBox.ButtonRole.DestructiveRole)
+    stay = box.addButton("Stay", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(stay)
     box.exec()
-    clicked = box.standardButton(box.clickedButton())
-    if clicked == QMessageBox.StandardButton.Save:
+    clicked = box.clickedButton()
+    if clicked is write:
         return "save"
-    if clicked == QMessageBox.StandardButton.Discard:
+    if clicked is discard:
         return "discard"
     return "stay"

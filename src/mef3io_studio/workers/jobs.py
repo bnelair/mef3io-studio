@@ -320,6 +320,10 @@ class JobManager(QObject):
         #: open between reads, so no job meets a recording that is held open (a rename, a
         #: removal or a replaced file fails on Windows while a file is open).
         self.prologue: Callable[[], None] | None = None
+        #: Called on the GUI thread with the job's function before it is queued; False = the
+        #: job is not to run (it ends as stopped at once). The app uses it to ask about notes
+        #: that are not written yet before a task that uses the recordings starts.
+        self.guard: Callable[[Callable], bool] | None = None
         self._timer = QTimer(self)
         self._timer.setInterval(1000 // UI_UPDATES_PER_SECOND)
         self._timer.timeout.connect(self._pull_progress)
@@ -340,6 +344,8 @@ class JobManager(QObject):
         self.running_changed.emit(self.running_count())
         if not self._timer.isActive():
             self._timer.start()
+        if self.guard is not None and not self.guard(fn):
+            token.cancel()  # the job starts and ends as stopped, so its page reacts as to a Stop
         self.pool.start(
             _Runnable(
                 fn,

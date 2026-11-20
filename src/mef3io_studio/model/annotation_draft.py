@@ -230,7 +230,7 @@ def items_now_stored(items: Sequence[DraftItem], before, after) -> list[int]:
 @dataclass(frozen=True)
 class _Snapshot:
     items: tuple[DraftItem, ...]
-    removed: frozenset
+    removed: frozenset  # of (stored mark, copies)
 
 
 class Draft:
@@ -239,7 +239,8 @@ class Draft:
 
     def __init__(self) -> None:
         self._items: dict[int, DraftItem] = {}
-        self._removed: set = set()
+        #: stored note -> how many of its identical copies are marked for removal
+        self._removed: dict = {}
         self._undo: list[_Snapshot] = []
         self._redo: list[_Snapshot] = []
         self._next = 1
@@ -257,11 +258,11 @@ class Draft:
     # -- state ----------
 
     def _snap(self) -> _Snapshot:
-        return _Snapshot(tuple(self._items.values()), frozenset(self._removed))
+        return _Snapshot(tuple(self._items.values()), frozenset(self._removed.items()))
 
     def _restore(self, snap: _Snapshot) -> None:
         self._items = {i.uid: i for i in snap.items}
-        self._removed = set(snap.removed)
+        self._removed = dict(snap.removed)
 
     def _push(self) -> None:
         self.version += 1
@@ -312,7 +313,8 @@ class Draft:
         if not gone:
             return
         self.version += 1
-        self._removed -= gone
+        for mark in gone:
+            self._removed.pop(mark, None)
         self._undo.clear()
         self._redo.clear()
 
@@ -339,7 +341,16 @@ class Draft:
         return [(i.replaces, i) for i in self.items if i.replaces is not None]
 
     def removed_stored(self) -> list:
+        """The stored notes marked for removal (each once, whatever its copies)."""
         return list(self._removed)
+
+    def removed_copies(self, stored) -> int:
+        """How many identical copies of ``stored`` are marked for removal (0 = none)."""
+        return self._removed.get(stored, 0)
+
+    def removed_total(self) -> int:
+        """How many stored notes are marked for removal, copies counted."""
+        return sum(self._removed.values())
 
     def is_removed(self, stored) -> bool:
         return stored in self._removed
@@ -353,7 +364,7 @@ class Draft:
     @property
     def stored_changes(self) -> int:
         """How many stored notes are changed or removed (these need a new copy)."""
-        return len(self._removed) + len(self.changed_stored())
+        return self.removed_total() + len(self.changed_stored())
 
     # -- the same note twice ----------
 
@@ -472,24 +483,34 @@ class Draft:
         item = DraftItem(self._next, replaces=stored, **base)
         self._next += 1
         self._items[item.uid] = item
-        self._removed.discard(stored)
+        self._removed.pop(stored, None)
         return item
 
-    def remove(self, target) -> None:
-        """Take out a draft item (by uid), or mark a stored note (a ``Mark``)
-        as removed: it stays shown, struck through, until a new copy is made."""
+    def remove(self, target, copies: int = 1) -> None:
+        """Take out a draft item (by uid), or mark a stored note (a ``Mark``) as removed:
+        it stays shown, struck through, until the file is written. ``copies``: how many of
+        its identical stored copies go (marking again changes the number)."""
         if isinstance(target, int):
             if target not in self._items:
                 return
             self._push()
             del self._items[target]  # a taken-out change leaves the stored note plain again
             return
-        if target in self._removed:
+        copies = max(1, int(copies))
+        if self._removed.get(target) == copies:
             return
         self._push()
         for uid in [u for u, i in self._items.items() if i.replaces == target]:
             del self._items[uid]
-        self._removed.add(target)
+        self._removed[target] = copies
+
+    def keep(self, stored) -> bool:
+        """Bring back a stored note that was marked for removal (an undo of just that)."""
+        if stored not in self._removed:
+            return False
+        self._push()
+        del self._removed[stored]
+        return True
 
     # -- where it goes ----------
 

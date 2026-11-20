@@ -79,6 +79,7 @@ from .overview import MAX_LANES, OverviewBand
 from .recordings import Banner, RecordingBand
 from .side_panel import SidePanel
 from .strip import OverviewStrip
+from .write_bar import WriteBar
 
 #: The notes list shows at most this many rows (search or filter to narrow).
 MAX_LISTED = 5000
@@ -352,6 +353,14 @@ class ViewerWindow(QMainWindow):
         stack = QVBoxLayout(central)
         stack.setContentsMargins(0, 0, 0, 0)
         stack.setSpacing(0)
+        # The red bar: the very top, a row of its own, only while changes are not written.
+        self.write_bar = WriteBar(self, dark=theme.dark)
+        self.write_bar.write_requested.connect(lambda: self.edit.write_to_file())
+        self.write_bar.show_requested.connect(self.edit.show_changes)
+        self.write_bar.discard_requested.connect(self.edit.discard_ask)
+        #: The last list of changes the window showed (for tests and screenshots).
+        self.last_write_dialog = None
+        stack.addWidget(self.write_bar)
         stack.addWidget(self.controls)
         stack.addWidget(self.splitter, 1)
         self.setCentralWidget(central)
@@ -461,8 +470,8 @@ class ViewerWindow(QMainWindow):
         )
         self.edit_button = tool(
             "Edit mode",
-            "Add notes and events: changes are a draft until you save (off every time a "
-            "recording is opened)",
+            "Add notes and events: changes stay in this window until you write them to the "
+            "file (off every time a recording is opened)",
             lambda: None,
         )
         self.edit_button.setCheckable(True)
@@ -1771,7 +1780,8 @@ class ViewerWindow(QMainWindow):
             drafts, changed = [], []
             if d.dirty:
                 changed = [i.replaces for i in d.items if i.replaces is not None]
-                changed += d.removed_stored()
+                for stored_mark in d.removed_stored():  # once for each copy that goes
+                    changed += [stored_mark] * d.removed_copies(stored_mark)
                 for item in d.items:
                     holders = self.data.holders_at(item.channel, item.time)
                     recording = (
@@ -2544,6 +2554,7 @@ class ViewerWindow(QMainWindow):
 
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
+        self.write_bar.set_dark(theme.dark)
         self.edit.style_banner(theme)
         self._apply_profile()
 

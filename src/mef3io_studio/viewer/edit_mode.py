@@ -36,14 +36,16 @@ from ..model import annotation_draft as ad
 from ..model import annotation_save as asave
 from ..model import timefmt
 from ..model import viewer_marks as vm
+from ..model import write_changes as wc
 from ..model.errors import UserMessage
 from ..workers.jobs import JobManager
 from .edit_dialogs import ImportPreview, NoteEditor, SavePreview, ask_unsaved
 from .inline_note import Hint, InlineNote
+from .write_dialog import WriteDialog
 
 log = logging.getLogger(__name__)
 
-BANNER_TEXT = "Edit mode: changes are a draft until you save"
+BANNER_TEXT = "Edit mode: changes stay in this window until you write them to the file"
 #: How many of the last texts typed are kept for one-key reuse (this window only).
 RECENT_TEXTS = 8
 #: An import file bigger than this is refused (it is read in one go).
@@ -106,6 +108,7 @@ class EditMode(QObject):
         self._types_shown: tuple = ()
         #: N turned edit mode on (it was off): Esc on its field turns it off again.
         self._on_by_n = False
+        self._writable: dict[int, bool] = {}  # recording -> its folder takes writes (asked once)
         self._counts_of: list | None = None  # the marks the copy counts were made from
         self._counts: Counter = Counter()
         self._pairs_of: list | None = None
@@ -124,9 +127,9 @@ class EditMode(QObject):
         self.undo_button.setToolTip("Undo the last change to the draft (Ctrl+Z)")
         self.redo_button = QPushButton("Redo", self.banner)
         self.redo_button.setToolTip("Redo (Ctrl+Shift+Z)")
-        self.save_button = QPushButton("Save…", self.banner)
-        self.save_button.setToolTip("See what will be added to the recordings, then add it")
-        self.discard_button = QPushButton("Discard the draft", self.banner)
+        self.save_button = QPushButton("Write to file…", self.banner)
+        self.save_button.setToolTip("See every change, then update the recording (Ctrl+S)")
+        self.discard_button = QPushButton("Discard changes…", self.banner)
         for w in (self.banner_label, self.count_label):
             row.addWidget(w)
         row.addStretch(1)
@@ -134,8 +137,8 @@ class EditMode(QObject):
             row.addWidget(w)
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
-        self.save_button.clicked.connect(lambda: self.save())
-        self.discard_button.clicked.connect(self.discard)
+        self.save_button.clicked.connect(lambda: self.write_to_file())
+        self.discard_button.clicked.connect(self.discard_ask)
         self.style_banner(window.theme)
         self._sync_buttons()
 
@@ -210,15 +213,8 @@ class EditMode(QObject):
                 )
                 self.win.status_message.setText(self.win.last_refusal)
                 return self.on
-        if not on and self.draft.dirty:
-            answer = self.ask_unsaved("leave")
-            if answer == "stay":
-                return self.on
-            if answer == "save":
-                if not self.save(then_off=True):
-                    return self.on
-                return self.on  # turned off when the save ends
-            self.draft.clear()
+        # Turning edit mode off keeps the draft: the changes stay in this window and the red bar
+        # stays until they are written or discarded (they are never lost by leaving the mode).
         self._apply_mode(on)
         return self.on
 
@@ -251,8 +247,28 @@ class EditMode(QObject):
         if answer == "discard":
             self.draft.clear()
             return True
+        if answer == "save":  # "Write to file": the list is shown, then the window closes
+            self.write_to_file(then_close=True)
+        return False
+
+    def settle_before_task(self) -> bool:
+        """A task that uses the recordings is about to start: the notes that are only in this
+        window would not be in what it reads. True when it may start (nothing unwritten, or the
+        changes were discarded); "Write to file" starts the write and the task is not started
+        (press its start again afterwards), "Stay" leaves things as they are."""
+        if self._busy() or self.saving:
+            return False
+        if not self.draft.dirty:
+            return True
+        self.win.raise_()
+        answer = self.ask_unsaved("task")
+        if answer == "discard":
+            self.draft.clear()
+            self.select(None)
+            self.refresh()
+            return True
         if answer == "save":
-            self.save(then_close=True)
+            self.write_to_file()
         return False
 
     # -- selection and views ----------
@@ -279,6 +295,10 @@ class EditMode(QObject):
         self.redo_button.setEnabled(d.can_redo and not self.saving)
         self.save_button.setEnabled(d.dirty and not self.saving and not self.stale)
         self.discard_button.setEnabled(d.dirty and not self.saving)
+        bar = getattr(w, "write_bar", None)  # not built yet at construction
+        if bar is not None:
+            bar.show_counts(len(d.additions()), len(d.changed_stored()), d.removed_total())
+            bar.setEnabled(not self.saving)
         n_add = len(d.additions())
         n_copy = d.stored_changes
         parts = []
@@ -599,10 +619,10 @@ class EditMode(QObject):
         if end is not None:
             self.win.canvas.clear_selection()
         self.win.status_message.setText(
-            "Note added to the draft. Ctrl+S saves it; it is not in the recording yet."
+            "Note added. It is not in the recording yet: Ctrl+S (Write to file) puts it there."
         )
         if save:
-            self.save()
+            self.write_to_file()
 
     # -- changing and taking out ----------
 
@@ -628,7 +648,9 @@ class EditMode(QObject):
             stored = None
         else:
             if m.state == "removed" or self.draft.is_removed(m):
-                w.status_message.setText("This note is taken out. Undo to bring it back.")
+                w.status_message.setText(
+                    "This note is marked for removal. Bring it back first to change it."
+                )
                 return None
             if not w._shown(m.recording):
                 w.last_refusal = (
@@ -640,6 +662,8 @@ class EditMode(QObject):
             reason = asave.can_edit_stored(m)
             if reason:  # a kind of note whose type or fields an edit would lose
                 return self._refuse_here(reason) or None
+            if self._refuse_stored(m):  # a single-file recording, a folder that is read-only
+                return None
             stored = m
             label, text = ad.split_text(m.text)
             values0 = (m.time, m.end, label, text, m.channel)
@@ -687,11 +711,32 @@ class EditMode(QObject):
             self.draft.remove(m.uid)
             self.select(None)
             self.refresh()
-            w.status_message.setText("The note left the draft. Ctrl+Z brings it back.")
+            w.status_message.setText(
+                "The change was taken back. Ctrl+Z brings it back."
+                if m.state == "changed"
+                else "The note left the draft. Ctrl+Z brings it back."
+            )
             return True
+        if m.state == "removed" or self.draft.is_removed(m):
+            return self.keep_mark(m)  # Delete on a note marked for removal brings it back
         return self._remove_stored(m)
 
-    # -- taking out a STORED note (mef3io 2.4): ask once, then one task ----------
+    def keep_mark(self, m) -> bool:
+        """Bring back a stored note that is marked for removal, or take back a change made
+        to it: one click or key. (Ctrl+Z does the same for the last change.)"""
+        if self._busy():
+            return False
+        item = self.draft.changed_version(m)
+        if item is not None:
+            self.draft.remove(item.uid)
+        elif not self.draft.keep(m):
+            return False
+        self.select(None)
+        self.refresh()
+        self.win.status_message.setText("The note stays as it is in the recording.")
+        return True
+
+    # -- marking a STORED note for removal: nothing is written until "Write to file" ----------
 
     def _copy_counts(self) -> dict:
         """How many stored notes of each exact content the viewer shows, counted ONCE per read
@@ -711,53 +756,75 @@ class EditMode(QObject):
         self.win.status_message.setText(text)
         return False
 
-    def _remove_stored(self, m) -> bool:
-        """Delete / the menu on a stored note: one plain line asks first (this cannot be
-        undone from the app), then a task takes it out of the recording and the notes are
-        read again. A note stored twice is said so, and one copy or all of them can go."""
+    def _refuse_stored(self, m) -> bool:
+        """Why a stored note of this recording cannot be changed at all, said when the person
+        tries (not when writing): a single-file recording, a folder that cannot be written
+        to. Returns True when it is refused."""
         w = self.win
         if w.data.is_archive(m.recording):
-            return self._refuse_here(
+            self._refuse_here(
                 "A single-file recording cannot be changed: unpack it in Explore first."
             )
-        copies = self._identical_copies(m)
-        where = w.recording_label(m.recording)
-        times = "twice" if copies == 2 else f"{copies} times"
-        one_by_one = m.code in asave.COPYABLE_TYPES
-        if copies == 1:
-            line = f"Remove this note from {where}? This cannot be undone."
-        elif one_by_one:
-            line = (
-                f"This note is stored {times} in {where}. Remove one copy, or all of them? "
-                "This cannot be undone."
+            return True
+        if m.recording not in self._writable:
+            self._writable[m.recording] = not asave._not_writable(w.data.location_of(m.recording))
+        if not self._writable[m.recording]:
+            self._refuse_here(
+                f"{w.recording_label(m.recording)} cannot be written to: its folder is read-only, "
+                "or you do not have permission to change it. Its notes can be read but not "
+                "changed here."
             )
-        else:  # a kind of note whose copies cannot be written back one by one
-            line = (
-                f"This note is stored {times} in {where}, and this kind of note can only be "
-                f"removed with all its copies. Remove all {copies}? This cannot be undone."
-            )
-        answer = self.ask_remove_stored(line, copies if one_by_one else 1)
-        if not answer or (answer == "one" and not one_by_one):
+            return True
+        return False
+
+    def _remove_stored(self, m) -> bool:
+        """Delete / the menu on a stored note: it is MARKED for removal (struck through in the
+        list and on the traces) and stays in the recording until "Write to file". A note stored
+        more than once asks, in plain words, whether one copy or all of them go."""
+        w = self.win
+        if self._refuse_stored(m):
             return False
-        keep = 1 if answer == "one" else copies
-        self._run_stored([asave.StoredChange(m, copies, keep)])
+        copies = self._identical_copies(m)
+        n = copies
+        if copies > 1:
+            where = w.recording_label(m.recording)
+            times = "twice" if copies == 2 else f"{copies} times"
+            one_by_one = m.code in asave.COPYABLE_TYPES
+            if one_by_one:
+                line = (
+                    f"This note is stored {times} in {where}. Mark one copy for removal, or all "
+                    f"{copies}?"
+                )
+            else:  # a kind of note whose copies cannot be written back one by one
+                line = (
+                    f"This note is stored {times} in {where}, and this kind of note can only be "
+                    f"removed with all its copies. Mark all {copies} for removal?"
+                )
+            answer = self.ask_remove_stored(line, copies if one_by_one else 1)
+            if not answer or (answer == "one" and not one_by_one):
+                return False
+            n = 1 if answer == "one" else copies
+        self.draft.remove(m, n)
+        self.select(None)
+        self.refresh()
+        w.status_message.setText(
+            "Marked for removal: it stays in the recording until you press Write to file."
+        )
         return True
 
     def ask_remove_stored(self, line: str, copies: int):
-        """The one line before a stored note is taken out (replaced in tests). Returns
-        ``"all"`` (remove it, with every copy), ``"one"`` (remove one of several identical
-        copies) or None (do nothing)."""
-        verb = "Replace" if line.startswith("Replace") else "Remove"
+        """Which copies of a note that is stored more than once are marked for removal
+        (replaced in tests). Returns ``"all"``, ``"one"`` or None (do nothing)."""
         box = QMessageBox(
-            QMessageBox.Icon.Warning,
-            f"{verb} the note?",
+            QMessageBox.Icon.Question,
+            "Mark the note for removal?",
             line,
             QMessageBox.StandardButton.NoButton,
             self.win,
         )
-        role = QMessageBox.ButtonRole.DestructiveRole
-        one = box.addButton("Remove one copy", role) if copies > 1 else None
-        every = box.addButton(f"Remove all {copies}" if copies > 1 else verb, role)
+        role = QMessageBox.ButtonRole.AcceptRole
+        one = box.addButton("Mark one copy", role) if copies > 1 else None
+        every = box.addButton(f"Mark all {copies}" if copies > 1 else "Mark it", role)
         cancel = box.addButton(QMessageBox.StandardButton.Cancel)
         box.setDefaultButton(cancel)
         box.exec()
@@ -902,10 +969,16 @@ class EditMode(QObject):
             self.select(mark)
         if mark.state in ("new", "changed"):
             menu.addAction("Change the text", lambda: self.change_text(mark.uid))
-            menu.addAction("Remove this note (Delete)", lambda: self.remove_mark(mark))
+            what = "Undo this change" if mark.state == "changed" else "Remove this note"
+            menu.addAction(f"{what} (Delete)", lambda: self.remove_mark(mark))
             return
-        remove = menu.addAction("Remove this note", lambda: self.remove_mark(mark))
-        remove.setEnabled(not self.saving and mark.state != "removed")
+        if mark.state == "removed" or self.draft.is_removed(mark):
+            keep = menu.addAction("Keep this note (bring it back)", lambda: self.keep_mark(mark))
+            keep.setEnabled(not self.saving)
+            return
+        remove = menu.addAction("Mark for removal", lambda: self.remove_mark(mark))
+        remove.setEnabled(not self.saving)
+        remove.setToolTip("It stays in the recording until you press Write to file")
 
     def remove_selected(self) -> bool:
         if self._busy():
@@ -940,12 +1013,40 @@ class EditMode(QObject):
             self.refresh()
 
     def discard(self) -> None:
+        """Throw every unwritten change away (no question: callers that ask do it first)."""
         if self._busy():
             return
         if self.draft.dirty:
             self.draft.clear()
             self.select(None)
             self.refresh()
+
+    def discard_ask(self) -> bool:
+        """ "Discard changes…": says how many, asks once, then discards. The recording is not
+        touched either way. Returns whether the changes were discarded."""
+        if self._busy() or not self.draft.dirty:
+            return False
+        if not self.ask_discard(self.summary().counts_text()):
+            return False
+        self.discard()
+        self.win.status_message.setText("The changes were discarded. The recording is as it was.")
+        return True
+
+    def ask_discard(self, counts: str) -> bool:
+        """The question before the changes are thrown away (replaced in tests)."""
+        box = QMessageBox(
+            QMessageBox.Icon.Warning,
+            "Discard the changes?",
+            f"{counts}: these changes to the notes are not in the recording, so they would be "
+            "lost. The recording itself stays exactly as it is.",
+            QMessageBox.StandardButton.NoButton,
+            self.win,
+        )
+        discard = box.addButton("Discard changes", QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton("Keep them", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        return box.clickedButton() is discard
 
     # -- import ----------
 
@@ -1084,39 +1185,74 @@ class EditMode(QObject):
             "A saved note can be removed again, but not brought back."
         )
 
-    def ask_quick_save(self, text: str) -> bool:
-        """One line, Save or Cancel (replaced in tests)."""
-        box = QMessageBox(
-            QMessageBox.Icon.Question,
-            "Save the new notes?",
-            text,
-            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
-            self.win,
-        )
-        box.setDefaultButton(QMessageBox.StandardButton.Save)
-        box.exec()
-        return box.standardButton(box.clickedButton()) == QMessageBox.StandardButton.Save
+    # -- "Write to file": the one way notes reach the recording ----------
+
+    def summary(self):
+        """The draft as the list that "Write to file" shows (linear in the changes)."""
+        data = self.win.data
+        plan = self.draft.save_plan(data.holders_at, {})
+        where: dict[int, int] = {}
+        for index, share in plan.by_recording.items():
+            for item in list(share.session) + [
+                i for items in share.channels.values() for i in items
+            ]:
+                where[item.uid] = index
+        return wc.summarise(self.draft, where.get, self._identical_copies)
+
+    def ask_write(self, summary) -> bool:
+        """The confirmation before anything is written (replaced in tests): the counts, then
+        every change. Returns whether to write."""
+        w = self.win
+        dialog = WriteDialog(summary, self._where, w._shown, w.zone, w)
+        w.last_write_dialog = dialog
+        return dialog.exec() == 1
+
+    def show_summary(self, summary) -> None:
+        """The same list without the button that writes (replaced in tests)."""
+        w = self.win
+        dialog = WriteDialog(summary, self._where, w._shown, w.zone, w, can_write=False)
+        w.last_write_dialog = dialog
+        dialog.exec()
+
+    def _where(self, recording) -> str:
+        if recording is None:
+            return "To be chosen"
+        return self.win.recording_label(recording)
+
+    def show_changes(self) -> None:
+        """ "Show changes": what is not written yet, listed; nothing can be written from here."""
+        if self.draft.dirty:
+            self.show_summary(self.summary())
+
+    def write_to_file(self, then_off: bool = False, then_close: bool = False) -> bool:
+        """Ctrl+S and the red bar's button: list every change and ask; then write them (the
+        worker, the lock and the words are those of :meth:`save`). Returns whether a write
+        was started."""
+        if self.saving or self.stale:
+            return False
+        if not self.draft.dirty:
+            self.win.status_message.setText("There are no changes to write.")
+            return False
+        if not self.ask_write(self.summary()):
+            return False
+        return self.save(then_off, then_close)
 
     def save_key(self) -> None:
         """Ctrl+S."""
         if self.inline.is_open:  # the note being written is kept first
             self.inline.keep_now(save=True)
             return
-        if not self.draft.dirty:
-            self.win.status_message.setText("There are no new notes to save.")
-            return
-        self.save()
+        self.write_to_file()
 
     def ask_save(self, plan_for):
-        """Show what will be written and ask (replaced in tests): returns
+        """What is still needed for the write (replaced in tests): returns
         ``(choices, passwords)`` - the choices for whole-recording notes that
         fall where several recordings hold data, and the other password of
-        each protected recording - or None to stop. A save that only adds notes
-        is one line (:meth:`quick_save_text`); anything else shows the preview."""
+        each protected recording - or None to stop. The list of changes was confirmed
+        already; the preview comes only when a choice or a password is needed."""
         w = self.win
-        line = self.quick_save_text(plan_for({}))
-        if line is not None:
-            return ({}, {}) if self.ask_quick_save(line) else None
+        if self.quick_save_text(plan_for({})) is not None:
+            return ({}, {})
         dialog = SavePreview(
             plan_for, w.recording_label, w._rec_letter, w.zone, w, self.other_password_label
         )
@@ -1187,7 +1323,9 @@ class EditMode(QObject):
             )
         for stored in self.draft.removed_stored():
             copies = self._identical_copies(stored)
-            out.append(asave.StoredChange(stored, copies, copies))
+            out.append(
+                asave.StoredChange(stored, copies, min(copies, self.draft.removed_copies(stored)))
+            )
         return out
 
     def _save_stored(self, changes, then_off: bool, then_close: bool) -> bool:
@@ -1210,23 +1348,7 @@ class EditMode(QObject):
                     "A single-file recording cannot be changed: unpack it in Explore first."
                 )
                 return False
-        where = vm.join_letters(
-            [w.recording_label(i) for i in sorted({c.mark.recording for c in changes})]
-        )
-        n = len(changes)
-        line = (
-            f"Replace {timefmt.format_count(n, 'stored note')} in {where} with the changed "
-            f"{'version' if n == 1 else 'versions'}? The old "
-            f"{'wording' if n == 1 else 'wordings'} cannot be brought back."
-        )
-        twice = sum(1 for c in changes if c.copies > 1)
-        if twice:  # said, so nobody is surprised that the other copy stays as it was
-            line += (
-                f" {timefmt.format_count(twice, 'of them is', 'of them are')} stored more than "
-                "once: only one copy of each is replaced, the others stay."
-            )
-        if not self.ask_remove_stored(line, 1):
-            return False
+        # (what is replaced or removed was listed and confirmed before: "Write to file")
         more = bool(self.draft.additions())
         self._run_stored(
             changes,

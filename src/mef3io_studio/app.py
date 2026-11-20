@@ -215,6 +215,9 @@ def _build_main_window_class():
             # own thread) every viewer lets them go, so a task never meets a recording that is
             # held open (a folder cannot be renamed or removed while one of its files is).
             jobs.prologue = lambda: open_files.release_all(self.viewers)
+            # Notes changed in a viewer are NOT in the recording until "Write to file": a task
+            # that copies, joins, packs or changes recordings asks first (one mechanism).
+            jobs.guard = self._job_may_start
             self._tray = None
             for key, label, icon_name, page_title, page_text in MODULES:
                 item = QListWidgetItem(label)
@@ -618,6 +621,30 @@ def _build_main_window_class():
             self.viewers.append(window)
             window.released.connect(lambda w=window: self._viewer_closed(w))
 
+        #: Tasks that read, copy, pack or change recordings: they see the recording as it is
+        #: in the file, without notes that are only in a viewer's draft.
+        GUARDED_TASKS = frozenset(
+            {"run_batch", "join_recordings", "pack_or_unpack", "make_changes"}
+        )
+
+        def _job_may_start(self, fn) -> bool:
+            """Before a task that uses recordings starts: every viewer with notes that are not
+            written asks (Write to file / Discard changes / Stay). False = do not start."""
+            if getattr(fn, "__name__", "") not in self.GUARDED_TASKS:
+                return True
+            return all(v.edit.settle_before_task() for v in list(self.viewers))
+
+        def _viewers_may_close(self) -> bool:
+            """Quitting the app: a viewer with notes that are not written asks first."""
+            for viewer in list(self.viewers):
+                if viewer.edit.draft.dirty:
+                    viewer.raise_()
+                    viewer.activateWindow()
+                    viewer.close()  # its own question (Write to file / Discard changes / Stay)
+                    if viewer.isVisible():
+                        return False
+            return True
+
         def _keys_in_viewers(self) -> set[str]:
             """The recordings open in a signal viewer (they must not be renamed)."""
             from .model.recording import location_key
@@ -839,6 +866,9 @@ def _build_main_window_class():
         def closeEvent(self, event) -> None:  # noqa: N802
             if self._closing:
                 event.accept()
+                return
+            if not self._viewers_may_close():  # notes that are not written yet: ask first
+                event.ignore()
                 return
             if self.jobs.running_count():
                 event.ignore()

@@ -119,10 +119,15 @@ def compose(
     table = {k: i for i, k in enumerate(keys)}
     display = list(marks)
     flagged: list[int] = []  # stored positions that are drafted (taken out / replaced)
-    for mark in changed:
-        for i in stored.positions(mark):
+    used: dict[vm.Mark, int] = {}
+    for mark in changed:  # a mark given twice is two identical copies taken out or replaced
+        places = stored.positions(mark)
+        k = used.get(mark, 0)
+        if k < len(places):
+            i = places[k]
             display[i] = dataclasses.replace(marks[i], state="removed")
             flagged.append(i)
+            used[mark] = k + 1
     inserts = sorted(drafted, key=lambda m: (m.time, m.recording, m.channel or ""))
     n_new = len(inserts)
     codes, times, ends = stored.codes, stored.times, stored.ends
