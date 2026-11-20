@@ -1,6 +1,6 @@
 # User guide
 
-This guide describes the app as of version **0.1.5**. It has three pages:
+This guide describes the app as of version **0.1.6**. It has three pages:
 **Explore** (see what is in your recordings), **Anonymize** (make
 anonymized copies of them) and **Join or trim** (keep part of a recording,
 or join parts of several into one). From Explore you can also rename
@@ -13,8 +13,9 @@ Times are shown in **UTC** until you choose a time zone (see *Times and time
 zones*). The app never changes your original recordings: anonymizing, joining,
 trimming, editing details and making new recordings make a new recording and
 check it, and the viewer only looks. The exceptions are renaming (see
-*Rename recordings*) and edit mode, which can add notes and events to a
-recording after you confirm (see *Add notes and events*).
+*Rename recordings*) and edit mode in the viewer, which changes the notes and
+events of a recording only when you press **Write to file** and confirm the list
+of changes (see *Add notes and events*).
 
 ## Explore recordings
 
@@ -902,7 +903,8 @@ small note inside it to recognise it); anything else is left alone.
 ## View signals
 
 The **signal viewer** shows the traces of one recording, or of several
-recordings as if they were one. Looking never changes a recording, and only
+recordings as if they were one. Looking never changes a recording (only edit mode
+can change its notes, and only when you write them), and only
 the part you are looking at, and a few pages around it, is read, so even
 very large recordings open quickly.
 
@@ -985,7 +987,7 @@ menu turns the band off.
 2 08:00`), a date and time (`2000-01-31 14:30`), a move from the page you
 are on (`+10m`, `-90s`, `+2h`), and a recording letter (`B`, the start of that
 recording). Shift+Enter finds the previous time of day instead of the next.
-The **Day** and time boxes in the toolbar do the same, and you can also type
+The **Day** and time boxes among the controls above the signal do the same, and you can also type
 a date and time (`2000-01-31 14:30`) or just a date in the time box. Times are shown in
 the time zone you chose for the site (see *Times and time zones*).
 
@@ -1002,12 +1004,12 @@ the viewer has read where the data is, from one channel of each recording), a
 line and the date at every midnight; the first date also names the time zone
 the dates are in, as the time axis does.
 Move the pointer over it to read the time, the day, and how long a gap is.
-For a recording of days the toolbar offers **−1 day**, **−1 h**, **+1 h**,
+For a recording of days the controls offer **−1 day**, **−1 h**, **+1 h**,
 **+1 day** and **◀ Data** and **Data ▶**, which jump to the previous or next
 stretch with data and skip over a gap. The slowest timebases (0.002 mm/s and
 up) put a day or more on the screen.
 
-**Scales.** The toolbar sets the *sensitivity* (µV per millimetre; **Auto**
+**Scales.** The controls above the signal set the *sensitivity* (µV per millimetre; **Auto**
 chooses one that fits the signals), the *timebase* (millimetres per second)
 and the *spacing* between rows, in the usual clinical units. Beside the
 timebase, a grey **= 10 s** says how much time is on the screen. It follows
@@ -1023,7 +1025,7 @@ scales, colours and filters you chose for the next time.
 
 ### Montages and channels
 
-The **Montage** box in the toolbar chooses how the channels are shown:
+The **Montage** box among the controls above the signal chooses how the channels are shown:
 
 - **As recorded:** each channel as it was recorded.
 - **Referenced to a channel:** a second box lets you choose the channel that
@@ -1045,8 +1047,8 @@ shown is half ticked. Searching finds a lead by its name or by a channel in
 it. Right-clicking a trace can also hide a channel or a whole lead, or show
 only that lead.
 
-**Many channels.** When a recording has more channels than fit, the toolbar
-says which ones are on screen ("Rows 33-64 of 256") and a scroll bar appears
+**Many channels.** When a recording has more channels than fit, the controls above the signal
+say which ones are on screen ("Rows 33-64 of 256") and a scroll bar appears
 beside the traces; Page Up and Page Down show the previous or next screenful.
 In the spacing box, **Fit all rows** puts as many channels on the screen as can
 still be read (never closer than 4 mm) and you scroll to the rest; a larger
@@ -1057,12 +1059,12 @@ full name, even when the top of its lead is scrolled away). Channels that are no
 EEG (ECG, EMG, DC, SpO2 and the like) come last; a channel that belongs to a lead
 is always taken for EEG, whatever its name (a lead called HR or DC stays with the
 others). Each channel that is not EEG has a sensitivity of its own, chosen from
-the same list as the toolbar's from what it shows when the recording opens (and
+the same list as the control's from what it shows when the recording opens (and
 again when you press **Auto**, change a filter, or zoom into or out of the overview),
 then kept while you move through the recording.
-It is never more magnified than the toolbar's value, so a disconnected ECG with
+It is never more magnified than the control's value, so a disconnected ECG with
 only amplifier noise looks flat, as it is. When a row's sensitivity differs from
-the toolbar's, its name has a small second line ("500 µV/mm") and the status
+the control's, its name has a small second line ("500 µV/mm") and the status
 bar says it when the pointer is on the row.
 
 **Traces on open.** The viewer fits the sensitivity to the signals when a
@@ -1084,7 +1086,7 @@ in while a page loads; use **Auto**, or choose a larger µV/mm number, to see it
 
 ### Filters
 
-**Filters** (`F`, or the button in the toolbar, which says *No filters* until
+**Filters** (`F`, or the button among the controls above the signal, which says *No filters* until
 you use one) opens a small window:
 
 - **Slow-drift filter (high-pass)** removes very slow waves, and
@@ -1120,7 +1122,7 @@ Filtering changes only what you see. The recording is not changed.
 ### Notes and events
 
 The notes and events of the recordings appear as marks on the traces.
-**Notes and events** (`M`, or the button in the toolbar) opens a list in the
+**Notes and events** (`M`, or the button among the controls above the signal) opens a list in the
 side panel with the time, the recording, the type, where it applies (a
 channel or the whole recording) and the text. You can search it, show one
 type only, and click a row to go there. `[` and `]` step to the previous and
@@ -1153,7 +1155,7 @@ recording in Explore with that password.
 
 To decide where to trim, mark the part you want. Press `S` for its start and
 `E` for its end at the pointer, or choose **Export start** and **Export
-end** in the toolbar. Drag an edge to move it, or with an edge selected press
+end** among the controls above the signal. Drag an edge to move it, or with an edge selected press
 Left and Right to move it one sample. The **Export range** button then
 offers:
 
@@ -1179,37 +1181,38 @@ Under the field the app offers your last few texts and the types of note
 that the recording already holds: press **Alt+1**, **Alt+2** and so on, or
 click one (the up and down arrows walk through your last texts). Those texts
 are remembered only while this window is open and are never written to the
-settings, and they are offered only while the details of every recording are shown. Then press **Ctrl+S**: one line asks "Save 1 new note into
-Recording A?", and **Save** adds it to the recording. (Ctrl+S inside the text
-field keeps the note and goes straight to that question.) A quiet *3 notes not
-saved yet* in the status bar reminds you while a draft exists, and closing the
-window still asks.
+settings, and they are offered only while the details of every recording are shown. Then press **Ctrl+S** (or **Write to file…** in the red bar): a list of
+what will be written opens, and **Write 1 change to the file** adds the note to the
+recording. (Ctrl+S inside the text field keeps the note and goes straight to that
+list.) A quiet *Not written yet: 3 added* in the status bar and the red bar remind
+you while changes exist, and closing the window still asks.
 
 A note that is the same as one already stored, or already in your draft (same
 time, length, type, text and channel, in the same recording: recordings side by
-side can each hold the same note), is refused with a sentence, and a save
+side can each hold the same note), is refused with a sentence, and a write
 never stores a note twice. In your draft you can change a note's text or
 remove it: right-click the note (its chip, its row in the list, or its mark on
 the traces) and choose **Change the text** or **Remove this note**, or select
 it and press **Delete** (or Backspace) while the traces, the note marks or the
 notes list have the keyboard; **Ctrl+Z** brings it back.
 
-**Removing a note that is already stored.** Choose **Remove this note** on it (or
-select it and press **Delete**). One line asks "Remove this note from Recording A?
-This cannot be undone." and **Remove** takes it out of the recording. Only the
-notes of that recording change (the signal and the details are not touched), and
-the note cannot be brought back from the app, so keep a copy of the original if you
-may need it. A note stored **twice** says so, and you can remove one copy or both
-(for a few special kinds of note, such as seizure or epoch marks that carry details,
-only all copies can be removed together).
-**Stop** works until the notes are being put in place: before that the recording
-stays exactly as it was. A change that is already being put in place is finished
-(it takes a moment), and the app then says the note was removed. If the recording
-cannot be changed (it is password-protected and you do not have both passwords, it
-is a single-file recording, its folder is read-only, another program is changing it,
-an earlier change was left unfinished, or its notes were changed since you opened
-it) a message says why and what to do, and what was and was not removed. A
-password-protected recording asks for the second password. A recording whose notes
+**Removing a note that is already stored.** Choose **Mark for removal** on it (or
+select it and press **Delete**). The note stays where it is, struck through, and
+the red bar counts it; **nothing is removed from the recording until you press
+Write to file** and confirm the list. Delete again, **Keep this note** in the menu
+or Ctrl+Z brings it back. A note stored **twice** asks whether to mark one copy or
+all (for a few special kinds of note, such as seizure or epoch marks that carry
+details, only all copies can be removed together). When written, only the notes of
+that recording change (the signal and the details are not touched), and a removed
+note cannot be brought back from the app, so keep a copy of the original if you may
+need it. A recording that cannot be changed (single-file recording, read-only
+folder) says so when you mark the note. At the write, **Stop** works until the notes
+are being put in place: before that the recording stays exactly as it was. If the
+recording cannot be changed (it is password-protected and you do not have both
+passwords, another program is changing it, an earlier change was left unfinished, or
+its notes were changed since you opened it) a message says why and what to do, and
+what was and was not written; the changes that were not written stay in the window.
+A password-protected recording asks for the second password. A recording whose notes
 were being changed when a program stopped opens with its signal, and the notes list
 says why the notes are not shown and what to do.
 
@@ -1224,8 +1227,8 @@ recording, remove it and add a new one there. The text stays exactly as it was
 unless you change it.
 
 Edit mode is **off** every time you open the viewer. Turn it on with the
-**Edit mode** button in the toolbar (or just press `N`). A banner then reminds
-you that your changes are **a draft until you save**.
+**Edit mode** button among the controls above the signal (or just press `N`). A banner
+then shows Undo, Redo and the main keys.
 
 - **Add a note or event** at the pointer with `A`, the **Add…** button in the
   notes list, or the right-click menu (which can also add one to a single
@@ -1237,7 +1240,7 @@ you that your changes are **a draft until you save**.
   once, without text.
 - New notes are marked *(new)* in the list. **Undo** and **Redo** (Ctrl+Z,
   Ctrl+Shift+Z or Ctrl+Y) go back and forth through your changes, and
-  **Discard the draft** throws them all away.
+  **Discard changes…** in the red bar throws them all away.
 - **Import…** adds notes and events from a CSV or JSON file, after showing
   you what it found. **Export…** saves the listed notes, or all of them, as
   CSV or JSON. These files hold real dates and the text of notes, so the app
@@ -1259,11 +1262,15 @@ changes): you can write, discard, or stay. If a write is running, or writing is
 switched off because the recordings could not be read again, the bar and the
 messages say so and what to do.
 
+![The viewer in edit mode with changes not written yet: the red bar on top, a stored note struck through, a reworded one and a new one in the list.](img/screenshots/viewer-edit-mode-light.png)
+
 **Marking many notes.** In the notes list, Shift or Ctrl click and Ctrl+A select
 several notes (Ctrl+A: everything listed, so use the search or the type filter
 first); Delete (or **Take out**) marks all of them for removal as ONE step, and
 Ctrl+Z brings them all back; **Keep** brings the selected marked ones back. A note
 stored more than once has all its copies marked when several are chosen.
+
+![The list of changes that Write to file shows before anything is written: one changed, one removed, one added.](img/screenshots/viewer-write-list-light.png)
 
 Press **Ctrl+S**, or **Write to file…** in the red bar. A list shows every change
 (added, changed with old and new wording, removed, which recording, when), with
@@ -1277,23 +1284,26 @@ removed or changed stored notes, Keep editing is the pre-selected answer.
 **Show changes** opens the same list without writing; **Discard changes…** throws
 all of them away after asking.
 
-- Saving new notes **only adds**: the notes already in the recording are never
-  rewritten. A note you added can be removed again later (Delete on it); that
-  cannot be undone.
+- Writing new notes **only adds**: the notes already in the recording are never
+  rewritten, except the ones you marked for removal or changed. A note you added
+  can be removed again later; that cannot be undone.
 - If a note for the whole recording falls where two recordings both hold
   data, you choose which recording gets it.
 - For a **password-protected** recording the app needs **both** passwords
   (basic and full-access). It holds one of them from when you opened the
   recording and asks for the other here.
-- When the saving ends, the viewer reads only the notes again, so the new
-  notes show at once and the page, the view and the overview stay as they
-  are. (If it cannot be sure that the signal itself is unchanged, it opens
-  the recordings again, as before.) Anything that could not be saved stays in
-  the draft.
+- When the write ends, the viewer reads only the notes again, so the result
+  shows at once and the page, the view and the overview stay as they are. (If
+  it cannot be sure that the signal itself is unchanged, it opens the recordings
+  again, as before.) The result says exactly what is in the file now ("Written to
+  the recording: 1 added, 1 changed, 1 removed"); anything that could not be
+  written stays in the window, and the red bar says so.
 - A **single-file recording** (`.mefd.tar`) cannot get new notes; unpack the
   recording first (see *Pack into one file, or unpack*).
-- If you turn edit mode off or close the window with an unsaved draft, the
-  app asks you to choose **Save**, **Discard** or **Cancel**.
+- Turning edit mode off keeps your changes and the red bar. Closing the window,
+  quitting the app, or starting a task that copies, joins, packs or writes
+  recordings with changes not written asks you to choose **Write to file…**,
+  **Discard changes** or **Stay**.
 
 ### Settings for the viewer
 
