@@ -385,3 +385,18 @@ def test_the_matching_of_a_stopped_save_uses_the_same_rule_and_the_length():
     exact = [vm.Mark(T0, T0 + 2 * SEC, "EDFA", 0, "session", None, "same text")]
     assert ad.items_now_stored([item], before, longer) == []
     assert ad.items_now_stored([item], before, exact) == [item.uid]
+
+
+def test_a_stopped_save_matches_a_draft_note_with_its_own_recording_only():
+    """The same note drafted for recordings A and B, only A written: B's item stays."""
+    d = ad.Draft()
+    for_a = d.add(T0, None, "Note", "same words", recording=0)
+    for_b = d.add(T0, None, "Note", "same words", recording=1)
+    stored_in_a = [vm.Mark(T0, None, "Note", 0, "session", None, "same words")]
+    assert ad.items_now_stored([for_a, for_b], [], stored_in_a) == [for_a.uid]
+    stored_in_b = [vm.Mark(T0, None, "Note", 1, "session", None, "same words")]
+    assert ad.items_now_stored([for_a, for_b], [], stored_in_b) == [for_b.uid]
+    # a note that was already in A is not taken for ours; B gained it
+    assert ad.items_now_stored([for_a, for_b], stored_in_a, stored_in_a + stored_in_b) == [
+        for_b.uid
+    ]

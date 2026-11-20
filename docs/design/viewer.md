@@ -1,6 +1,6 @@
 # Design: signal viewer
 
-**Status:** specification, built in three parts. Part 1: the window (toolbars,
+**Status:** specification, built in three parts. Part 1: the window (controls,
 canvas, overview strip, keys, montages, filter panel and response plot, jump).
 Part 2: the recording band, boundary lines, banner, side panel, notes and
 events (read-only: chips, bands, types, stepping) and the export range
@@ -741,7 +741,7 @@ The honest steps for one note, from "I see something" to "it is stored":
   twice. `begin_data_change()` is inside the guarded path of both reopen routes, so a raise
   there frees the draft.
 
-**Edit mode** (switch in toolbar row 1; off on every open):
+**Edit mode** (the switch among the controls; off on every open):
 - **Draft:** a banner says "Edit mode: changes are a draft until you save".
   All edits go into an in-memory draft, with undo/redo (Ctrl+Z / Ctrl+Shift+Z).
 - **Add:**
@@ -1064,7 +1064,7 @@ sensitivity says so on screen.
   built for the platform, `keymap.build_keymap`: Alt+Shift+Right / Left one hour,
   Ctrl+Alt+Right / Left (Command+Option) one day, Alt+Up / Down for spacing), `.` / `,` the next / previous stretch with data (a jump over a
   gap; `vv.stretch_start`: the first start after the page, the last one before
-  it). The six toolbar buttons show only where they mean something (an hour
+  it). The six hour, day and stretch buttons show only where they mean something (an hour
   needs 2 h of timeline, a day 2 days, stretches two or more stretches).
 - **Timebase** goes down to 0.002 mm/s (a wide window then holds three to four
   days); the "= 1 day 6 h" label already reads in days.

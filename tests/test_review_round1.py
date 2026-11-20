@@ -383,9 +383,15 @@ def test_a_closing_window_holds_no_file_before_it_has_shut_down(qtbot, qapp, tmp
     qtbot.waitUntil(started.is_set, timeout=20_000)  # the index read is in flight
     if HAVE_FD_LIST:  # (Linux only: no list of open files elsewhere without a helper)
         qtbot.waitUntil(lambda: bool(held_signal_files(tmp_path)), timeout=10_000)
-    released = []
+    released, let_go = [], []
     win.released.connect(lambda: released.append(1))
+    real_release = data.release_files
+    data.release_files = lambda: (let_go.append(1), real_release())[1]
+    assert data.open_files > 0
     win.close()
+    # On every platform (no list of open files needed): the window asked the data to let go
+    # and to keep nothing open, before the read in flight ended and before it shut down
+    assert let_go and data.open_files == 0 and not released
     if HAVE_FD_LIST:
         assert held_signal_files(tmp_path) == []  # at once, not when the read has ended
     qtbot.wait(300)
@@ -572,21 +578,69 @@ def test_every_control_is_on_screen_at_any_width_and_font_size(
         app.setFont(old)
 
 
-def test_a_group_is_never_split_over_two_rows(make_window, tmp_path, qtbot):
+def split_members(members_of_groups, reference) -> list:
+    """The groups whose shown members do not all lie on ONE row: a member's vertical span
+    must overlap every other member's (the rows of a flow are at least a line apart)."""
     from PySide6.QtCore import QPoint
 
-    win = make_window(write(tmp_path / "a.mefd"))
-    for width in (700, 900, 1100, 1500):
+    split = []
+    for members in members_of_groups:
+        spans = []
+        for w in members:
+            top = w.mapTo(reference, QPoint(0, 0)).y()
+            spans.append((top, top + w.height()))
+        if any(a[1] <= b[0] or b[1] <= a[0] for a in spans for b in spans):
+            split.append([type(w).__name__ for w in members])
+    return split
+
+
+def test_a_group_is_never_split_over_two_rows(make_window, tmp_path, qtbot):
+    """Every real group of the controls (a label and its control, the button pairs, the
+    long-recording buttons) is one row at every width."""
+    win = make_window(write(tmp_path / "a.mefd", seconds=60 * 60 * 6))
+    qtbot.waitUntil(lambda: bool(win._stretches), timeout=20_000)
+    flow = win.controls.flow
+    groups = []
+    for i in range(flow.count()):
+        item = flow.itemAt(i).widget()
+        if item.layout() is not None:
+            groups.append(
+                [
+                    item.layout().itemAt(k).widget()
+                    for k in range(item.layout().count())
+                    if not item.layout().itemAt(k).widget().isHidden()
+                ]
+            )
+    assert len(groups) >= 8 and win.back_hour_button.isVisibleTo(win)  # real groups, long ones too
+    for width in (600, 700, 900, 1100, 1500):
         win.resize(width, 800)
         qtbot.wait(150)
-        for label_box in (win.timebase_box, win.sens_box, win.spacing_box):
-            group = label_box.parentWidget()
-            ys = {
-                child.mapTo(win, QPoint(0, 0)).y()
-                for child in group.findChildren(type(label_box).__mro__[0])
-                if child.parent() is group
-            }
-            assert len(ys) == 1, (width, ys)  # the label and its control: one row
+        assert split_members(groups, win) == [], width
+        assert win.controls.rows() >= 1
+
+
+def test_the_check_of_groups_does_fail_for_a_group_that_is_split(qtbot):
+    """The same check on controls that are separate flow items (no group): at some width the
+    label ends one row and its control starts the next, and the check says so."""
+    from PySide6.QtWidgets import QComboBox, QLabel, QPushButton, QWidget
+
+    from mef3io_studio.viewer.flow import Controls
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    box = Controls(host)
+    fillers = [QPushButton(f"Filler {i}", host) for i in range(3)]
+    label, combo = QLabel("Sensitivity", host), QComboBox(host)
+    for w in (*fillers, label, combo):
+        box.flow.addWidget(w)  # NOT a group: each is a flow item of its own
+    found = []
+    for width in range(150, 600, 7):
+        box.setGeometry(0, 0, width, box.flow.heightForWidth(width))
+        host.resize(width, 400)
+        box.flow.setGeometry(box.rect())
+        if split_members([[label, combo]], box):
+            found.append(width)
+    assert found  # a wrapped label and control are found as split: the check can fail
 
 
 def test_tab_goes_through_the_controls_in_the_order_they_are_shown(make_window, tmp_path):
@@ -616,3 +670,17 @@ def test_tab_goes_through_the_controls_in_the_order_they_are_shown(make_window, 
         if w is visual[0]:
             break
     assert chain == visual
+
+
+def test_the_flow_height_counts_each_margin_once(qtbot):
+    from PySide6.QtWidgets import QPushButton, QWidget
+
+    from mef3io_studio.viewer.flow import Controls
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    box = Controls(host)
+    button = QPushButton("One", host)
+    box.flow.addWidget(button)
+    m = box.flow.contentsMargins()
+    assert box.flow.heightForWidth(400) == button.sizeHint().height() + m.top() + m.bottom()

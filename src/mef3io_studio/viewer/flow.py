@@ -87,13 +87,13 @@ class FlowLayout(QLayout):
                 item.setGeometry(QRect(QPoint(x, y), hint))
             x += hint.width() + H_SPACING
             row_height = max(row_height, hint.height())
-        return y + row_height - rect.y() + m.top() + m.bottom()
+        return y + row_height - rect.y() + m.bottom()  # ``y`` already includes the top margin
 
 
 def group(*widgets: QWidget, parent: QWidget | None = None) -> QWidget:
-    """Widgets that stay together on one row (a label and its control): one flow item. The
-    group is shown when any of its widgets is (a group whose widgets are all hidden is
-    hidden by :func:`sync_group`, as the flow layout skips only hidden items)."""
+    """Widgets that stay together on one row (a label and its control): one flow item. A group
+    whose widgets can all be hidden (the hour and day buttons) is shown and hidden by its owner
+    (``ViewerWindow._sync_long_buttons``): the flow skips only hidden items."""
     box = QWidget(parent)
     row = QHBoxLayout(box)
     row.setContentsMargins(0, 0, 0, 0)
@@ -102,11 +102,6 @@ def group(*widgets: QWidget, parent: QWidget | None = None) -> QWidget:
         row.addWidget(w)
     box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return box
-
-
-def sync_group(box: QWidget) -> None:
-    """Show a group only while one of its widgets is shown."""
-    box.setVisible(any(not w.isHidden() for w in box.findChildren(QWidget) if w.parent() is box))
 
 
 class Controls(QWidget):
