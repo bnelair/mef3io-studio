@@ -79,6 +79,10 @@ class Display:
     max_span: int
     #: ``(key, label, how many)`` of every type among ``marks``, most first.
     counts: list[tuple[str, str, int]]
+    #: Where the draft's new notes were put among the stored ones (stored positions), and which
+    #: positions of ``marks`` are visible: what :func:`patch_removed` needs to find a note.
+    insert_at: np.ndarray = dataclasses.field(default_factory=lambda: np.empty(0, dtype=np.int64))
+    idx: np.ndarray | None = None
 
 
 def _positions(stored: Stored, inserts: Sequence[vm.Mark]) -> np.ndarray:
@@ -198,4 +202,43 @@ def compose(
         drafted_np=drafted_np,
         max_span=int((ends_v - times_v).max()) if len(idx) else 0,
         counts=ordered,
+        insert_at=insert_at,
+        idx=idx,
     )
+
+
+def patch_removed(
+    disp: Display, stored: Stored, mark: vm.Mark, old: int, new: int
+) -> list[tuple[vm.Mark, vm.Mark]] | None:
+    """Change, IN PLACE, how many identical copies of the stored note ``mark`` are shown as
+    taken out (``old`` before, ``new`` now): the work is a few lookups, whatever the number of
+    notes (what :func:`compose` would do again from scratch). Returns the ``(old object, new
+    object)`` pairs that were replaced, or None when the display is not as expected (the
+    caller composes again)."""
+    places = stored.positions(mark)
+    if max(old, new) > len(places) or disp.idx is None:
+        return None
+    pairs: list[tuple[vm.Mark, vm.Mark]] = []
+    for k in range(min(old, new), max(old, new)):
+        i = places[k]
+        at = i + int(np.searchsorted(disp.insert_at, i, side="right"))
+        current = disp.marks[at]
+        if current != stored.marks[i]:
+            return None
+        fresh = (
+            dataclasses.replace(stored.marks[i], state="removed") if new > old else stored.marks[i]
+        )
+        disp.marks[at] = fresh
+        if disp.visible is not disp.marks:
+            vp = int(np.searchsorted(disp.idx, at))
+            if vp < len(disp.idx) and disp.idx[vp] == at:
+                disp.visible[vp] = fresh
+            else:
+                vp = None
+        else:
+            vp = at
+        if vp is not None:
+            disp.drafted_np[vp] = new > old
+        pairs.append((current, fresh))
+    disp.drafted = np.flatnonzero(disp.drafted_np).tolist()
+    return pairs

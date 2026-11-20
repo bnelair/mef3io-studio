@@ -250,7 +250,11 @@ def test_an_interrupted_batch_of_new_recordings_continues_in_this_window(
     batch, dest, _work = change_batch(tmp_path, sources, output_password=PW)
     # The first one is really made (with the same choices) before the interruption.
     first = shown_window.jobs.submit(
-        "first", tasks.run_batch, replace(batch, items=batch.items[:1]), None
+        "first",
+        tasks.run_batch,
+        replace(batch, items=batch.items[:1]),
+        None,
+        changes_recordings=True,
     )
     with qtbot.waitSignal(first.finished, timeout=120_000):
         pass

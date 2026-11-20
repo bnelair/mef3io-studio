@@ -338,6 +338,8 @@ def test_removing_from_a_read_only_recording_says_so_and_changes_nothing(ed, qtb
     target = os.path.join(a, folder) if folder else str(a)
     os.chmod(target, 0o500)
     try:
+        with qtbot.waitSignal(win.edit.probed, timeout=30_000):  # asked once, on a task
+            win.edit.set_on(True)
         # said when the person marks the note (not after a long edit, when writing)
         assert win.edit.remove_mark(stored(win, note)) is False
     finally:

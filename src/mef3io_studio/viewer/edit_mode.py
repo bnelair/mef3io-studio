@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import re
 from collections import Counter
 
 from PySide6.QtCore import QObject, Signal
@@ -45,7 +46,7 @@ from .write_dialog import WriteDialog
 
 log = logging.getLogger(__name__)
 
-BANNER_TEXT = "Edit mode: changes stay in this window until you write them to the file"
+BANNER_TEXT = "Edit mode: Delete marks a note for removal, Ctrl+Z undoes the last change"
 #: How many of the last texts typed are kept for one-key reuse (this window only).
 RECENT_TEXTS = 8
 #: An import file bigger than this is refused (it is read in one go).
@@ -70,6 +71,8 @@ class SaveOutcome:
     message: str = ""
     #: The stored notes that were taken out of their recordings.
     stored: tuple = ()
+    #: Per recording: (added, changed, removed) that are now in the file because of this step.
+    counts: dict = dataclasses.field(default_factory=dict)
 
 
 class EditMode(QObject):
@@ -79,6 +82,8 @@ class EditMode(QObject):
     changed = Signal()
     #: A save (or import) task ended; for tests and the window.
     save_finished = Signal(object)
+    #: The check of which recordings can be written to has answered.
+    probed = Signal()
 
     def __init__(self, window):
         super().__init__(window)
@@ -108,7 +113,15 @@ class EditMode(QObject):
         self._types_shown: tuple = ()
         #: N turned edit mode on (it was off): Esc on its field turns it off again.
         self._on_by_n = False
-        self._writable: dict[int, bool] = {}  # recording -> its folder takes writes (asked once)
+        #: recording -> its folder takes writes (asked ONCE, on a task, when edit mode is turned
+        #: on; until the answer is there marking is allowed and the write refuses in the same
+        #: words if the folder is not writable)
+        self._writable: dict[int, bool] = {}
+        self._probing = False
+        #: What the steps of one write have put in the file so far: recording -> [added,
+        #: changed, removed]; the first step's work is said even when the second fails.
+        self._tally: dict[int, list[int]] = {}
+        self._chain = False  # a write that has a second step (additions) after the first
         self._counts_of: list | None = None  # the marks the copy counts were made from
         self._counts: Counter = Counter()
         self._pairs_of: list | None = None
@@ -121,24 +134,16 @@ class EditMode(QObject):
         row.setContentsMargins(8, 3, 8, 3)
         self.banner_label = QLabel(BANNER_TEXT, self.banner)
         self.banner_label.setObjectName("Caption")
-        self.count_label = QLabel("", self.banner)
-        self.count_label.setObjectName("Muted")
         self.undo_button = QPushButton("Undo", self.banner)
-        self.undo_button.setToolTip("Undo the last change to the draft (Ctrl+Z)")
+        self.undo_button.setToolTip("Undo the last change (Ctrl+Z)")
         self.redo_button = QPushButton("Redo", self.banner)
         self.redo_button.setToolTip("Redo (Ctrl+Shift+Z)")
-        self.save_button = QPushButton("Write to file…", self.banner)
-        self.save_button.setToolTip("See every change, then update the recording (Ctrl+S)")
-        self.discard_button = QPushButton("Discard changes…", self.banner)
-        for w in (self.banner_label, self.count_label):
-            row.addWidget(w)
+        row.addWidget(self.banner_label)
         row.addStretch(1)
-        for w in (self.undo_button, self.redo_button, self.save_button, self.discard_button):
+        for w in (self.undo_button, self.redo_button):
             row.addWidget(w)
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
-        self.save_button.clicked.connect(lambda: self.write_to_file())
-        self.discard_button.clicked.connect(self.discard_ask)
         self.style_banner(window.theme)
         self._sync_buttons()
 
@@ -189,7 +194,7 @@ class EditMode(QObject):
         """True (and the reason in the status line) while a save runs: the
         draft cannot change then."""
         if self.saving:
-            self.win.status_message.setText("Wait until the notes are saved.")
+            self.say_writing_blocks("change")
         return self.saving
 
     def set_on(self, on: bool) -> bool:
@@ -213,6 +218,8 @@ class EditMode(QObject):
                 )
                 self.win.status_message.setText(self.win.last_refusal)
                 return self.on
+        if on:
+            self.probe_writable()
         # Turning edit mode off keeps the draft: the changes stay in this window and the red bar
         # stays until they are written or discarded (they are never lost by leaving the mode).
         self._apply_mode(on)
@@ -237,9 +244,38 @@ class EditMode(QObject):
         """Save / Discard / Cancel (replaced in tests)."""
         return ask_unsaved(self.win, what)
 
+    def say_writing_blocks(self, what: str) -> None:
+        """A write is running, so ``what`` ("close", "quit", "start a task", "change") has to
+        wait: said in plain words (never a silent no)."""
+        text = {
+            "close": "The notes are being written to the recording, so this window cannot close "
+            "yet. Wait until the write has ended, then close it.",
+            "quit": "The notes are being written to a recording, so the app cannot close yet. "
+            "Wait until the write has ended, then quit.",
+            "task": "The notes are being written to a recording, so the task you started was "
+            "not started. Wait until the write has ended, then start it again.",
+        }.get(what, "The notes are being written to the recording. Wait until the write has ended.")
+        self.win.status_message.setText(text)
+        if what in ("close", "quit", "task"):
+            self.show_problem(UserMessage("The notes are being written", text))
+
+    def say_writing_is_off(self, what: str) -> None:
+        """Saving is switched off (the recordings could not be read again after a write): the
+        changes are only in this window; said with what to do."""
+        text = (
+            "Writing to the file is switched off in this window: after the last write the "
+            "recordings could not be read again, so what they hold is not known, and writing "
+            "again could add notes twice. Close this window and open the recordings again."
+        )
+        if what == "task":
+            text += " The task you started was not started; your changes are only in this window."
+        self.win.status_message.setText(text)
+        self.show_problem(UserMessage("Writing to the file is off", text))
+
     def confirm_close(self) -> bool:
-        """The window is closing: True when it may. Asks when a draft is unsaved."""
-        if self._busy():
+        """The window is closing: True when it may. Asks when changes are not written."""
+        if self.saving:
+            self.say_writing_blocks("close")
             return False
         if not self.draft.dirty:
             return True
@@ -255,11 +291,16 @@ class EditMode(QObject):
         """A task that uses the recordings is about to start: the notes that are only in this
         window would not be in what it reads. True when it may start (nothing unwritten, or the
         changes were discarded); "Write to file" starts the write and the task is not started
-        (press its start again afterwards), "Stay" leaves things as they are."""
-        if self._busy() or self.saving:
+        (press its start again afterwards), "Stay" leaves things as they are. A refusal always
+        says why."""
+        if self.saving:
+            self.say_writing_blocks("task")
             return False
         if not self.draft.dirty:
             return True
+        if self.stale:
+            self.say_writing_is_off("task")
+            return False
         self.win.raise_()
         answer = self.ask_unsaved("task")
         if answer == "discard":
@@ -281,6 +322,15 @@ class EditMode(QObject):
         self._sync_buttons()
         self.changed.emit()
 
+    def _blocked_reason(self) -> str:
+        """Why "Write to file" cannot be used now ("" = it can)."""
+        if self.stale:
+            return (
+                "Writing is off: the recordings could not be read again after the last write. "
+                "Close this window and open the recordings again."
+            )
+        return ""
+
     def _sync_buttons(self) -> None:
         d = self.draft
         w = self.win
@@ -288,38 +338,22 @@ class EditMode(QObject):
             w.notes_tab.add_button,
             w.notes_tab.edit_button,
             w.notes_tab.remove_button,
+            w.notes_tab.keep_button,
             w.notes_tab.import_button,
         ):
             b.setEnabled(not self.saving)
         self.undo_button.setEnabled(d.can_undo and not self.saving)
         self.redo_button.setEnabled(d.can_redo and not self.saving)
-        self.save_button.setEnabled(d.dirty and not self.saving and not self.stale)
-        self.discard_button.setEnabled(d.dirty and not self.saving)
+        counts = (len(d.additions()), len(d.changed_stored()), d.removed_total())
         bar = getattr(w, "write_bar", None)  # not built yet at construction
         if bar is not None:
-            bar.show_counts(len(d.additions()), len(d.changed_stored()), d.removed_total())
+            bar.show_counts(*counts, blocked=self._blocked_reason())
             bar.setEnabled(not self.saving)
-        n_add = len(d.additions())
-        n_copy = d.stored_changes
-        parts = []
-        if n_add:
-            parts.append(
-                f"{timefmt.format_count(n_add, 'new note or event', 'new notes and events')}"
-            )
-        if n_copy:
-            parts.append(f"{timefmt.format_count(n_copy, 'change')} to stored notes")
-        text = ", ".join(parts) if parts else "No changes yet"
-        if self.stale:
-            text += ". Saving is off: open the recordings again."
-        self.count_label.setText(text)
-        # the quiet reminder in the status bar: what is not in the recordings yet
-        n_all = n_add + n_copy
+        # the quiet reminder in the status bar: ONE phrasing of the counts, everywhere
         label = getattr(self.win, "status_draft", None)  # not built yet at construction
         if label is not None:
-            label.setText(
-                f"{timefmt.format_count(n_all, 'note', 'notes')} not saved yet" if n_all else ""
-            )
-            label.setVisible(bool(n_all))
+            label.setText(f"Not written yet: {wc.counts_text(*counts)}" if any(counts) else "")
+            label.setVisible(any(counts))
 
     def select(self, mark) -> None:
         self.selected = mark
@@ -692,11 +726,15 @@ class EditMode(QObject):
         return item
 
     def remove_note(self) -> bool:
-        """The key Delete and the menu entry: a note of the DRAFT leaves it (Ctrl+Z brings
-        it back). A STORED note is taken out of its recording after one plain line asks
-        (:meth:`_remove_stored`); that cannot be undone."""
+        """The key Delete and the menu entry. Several notes selected in the list: all of them
+        in ONE step (:meth:`mark_many`). One note: a note of the DRAFT leaves it (Ctrl+Z brings
+        it back); a STORED note is MARKED for removal (it stays in the recording until "Write to
+        file"); a marked note is brought back."""
         if self._busy():
             return False
+        chosen = self.win.notes_tab.selected_marks()
+        if len(chosen) > 1:
+            return self.mark_many(chosen)
         m = self._target()
         if m is None:
             return False
@@ -729,12 +767,93 @@ class EditMode(QObject):
         item = self.draft.changed_version(m)
         if item is not None:
             self.draft.remove(item.uid)
-        elif not self.draft.keep(m):
-            return False
-        self.select(None)
-        self.refresh()
+            self.select(None)
+            self.refresh()
+        else:
+            old = self.draft.removed_copies(m)
+            before = self.draft.version
+            if not self.draft.keep(m):
+                return False
+            self._marked_changed([(m, old, 0)], before)
         self.win.status_message.setText("The note stays as it is in the recording.")
         return True
+
+    def _marked_changed(self, changes, before: int, keep_selection: bool = False) -> None:
+        """The marks for removal changed (``changes``: ``(stored mark, copies before, copies
+        now)``): the notes shown are patched in place, so this costs the same whatever the
+        number of notes; anything else is shown again as a whole."""
+        if self.draft.items_touched or not self.win.patch_note_states(changes, before):
+            if not keep_selection:
+                self.select(None)
+            self.refresh()
+            return
+        if not keep_selection:
+            self.select(None)
+        self._sync_buttons()
+        self.changed.emit()
+
+    def mark_many(self, marks, keep: bool = False) -> bool:
+        """Mark all of ``marks`` for removal (or, with ``keep``, bring the marked ones back) as
+        ONE undo step. A note stored more than once has ALL its copies marked (one question per
+        note would be no help with a long list); a note of the draft leaves it. When every note
+        chosen is already marked, Delete brings them back."""
+        if self._busy():
+            return False
+        d = self.draft
+        w = self.win
+        stored = [m for m in marks if m.state not in ("new", "changed")]
+        marked = [m for m in stored if m.state == "removed" or d.is_removed(m)]
+        if keep or (stored and len(marked) == len(marks)):
+            before = d.version
+            old = {m: d.removed_copies(m) for m in marked}
+            if not d.keep_many(marked):
+                return False
+            self._marked_changed([(m, c, 0) for m, c in old.items()], before, True)
+            w.status_message.setText(
+                f"{timefmt.format_count(len(marked), 'note stays', 'notes stay')} as in the "
+                "recording."
+            )
+            return True
+        todo, drop, several = [], [], 0
+        refused: set[int] = set()
+        for m in marks:
+            if m.state in ("new", "changed"):
+                drop.append(m.uid)
+            elif m in marked:
+                continue
+            elif m.recording in refused or self._refuse_stored(m):
+                refused.add(m.recording)
+            else:
+                n = self._identical_copies(m)
+                several += n > 1
+                todo.append((m, n))
+        before = d.version
+        old = {m: d.removed_copies(m) for m, _ in todo}
+        if not d.change_many(mark=todo, drop=drop):
+            return False
+        self._marked_changed(
+            [(m, old[m], d.removed_copies(m)) for m, _ in todo if old[m] != d.removed_copies(m)],
+            before,
+            True,
+        )
+        said = f"{timefmt.format_count(len(todo) + len(drop), 'note')} marked for removal"
+        if several:
+            said += f" ({several} stored more than once: all their copies)"
+        w.status_message.setText(
+            said + ". Ctrl+Z undoes it; nothing is written until Write to file."
+        )
+        return True
+
+    def keep_selected(self) -> bool:
+        """The notes list's Keep button: bring back the selected notes marked for removal."""
+        if self._busy():
+            return False
+        chosen = self.win.notes_tab.selected_marks() or ([self.selected] if self.selected else [])
+        marked = [m for m in chosen if m.state == "removed" or self.draft.is_removed(m)]
+        if not marked:
+            self.win.status_message.setText("None of the selected notes is marked for removal.")
+            return False
+        return self.mark_many(marked, keep=True)
 
     # -- marking a STORED note for removal: nothing is written until "Write to file" ----------
 
@@ -756,19 +875,54 @@ class EditMode(QObject):
         self.win.status_message.setText(text)
         return False
 
+    def probe_writable(self) -> None:
+        """Ask the file system, ONCE and on a task (it can be slow on a network drive), whether
+        each recording's folders take writes. Until the answer is there marking is allowed: the
+        write refuses with the same words if a folder cannot be written to."""
+        w = self.win
+        todo = {
+            i: w.data.location_of(i)
+            for i in range(len(w.data.recordings))
+            if i not in self._writable and not w.data.is_archive(i)
+        }
+        if self._probing or not todo:
+            return
+        self._probing = True
+        data = w.data
+
+        def done(found) -> None:
+            self._probing = False
+            if data is w.data:
+                self._writable.update(found)
+            self.probed.emit()
+
+        def failed(_m=None) -> None:
+            self._probing = False
+
+        try:
+            handle = self.jobs.submit(
+                "Checking whether the recordings can be changed",
+                lambda ctx: asave.folders_writable(todo),
+                changes_recordings=False,  # asks the file system about folders only
+            )
+        except Exception:  # noqa: BLE001 - the write itself refuses with the same words
+            self._probing = False
+            return
+        handle.succeeded.connect(done)
+        handle.failed.connect(failed)
+        handle.cancelled.connect(failed)
+
     def _refuse_stored(self, m) -> bool:
         """Why a stored note of this recording cannot be changed at all, said when the person
         tries (not when writing): a single-file recording, a folder that cannot be written
-        to. Returns True when it is refused."""
+        to (known once :meth:`probe_writable` has answered). Returns True when it is refused."""
         w = self.win
         if w.data.is_archive(m.recording):
             self._refuse_here(
                 "A single-file recording cannot be changed: unpack it in Explore first."
             )
             return True
-        if m.recording not in self._writable:
-            self._writable[m.recording] = not asave._not_writable(w.data.location_of(m.recording))
-        if not self._writable[m.recording]:
+        if self._writable.get(m.recording) is False:
             self._refuse_here(
                 f"{w.recording_label(m.recording)} cannot be written to: its folder is read-only, "
                 "or you do not have permission to change it. Its notes can be read but not "
@@ -804,9 +958,10 @@ class EditMode(QObject):
             if not answer or (answer == "one" and not one_by_one):
                 return False
             n = 1 if answer == "one" else copies
+        before = self.draft.version
+        old = self.draft.removed_copies(m)
         self.draft.remove(m, n)
-        self.select(None)
-        self.refresh()
+        self._marked_changed([(m, old, self.draft.removed_copies(m))], before)
         w.status_message.setText(
             "Marked for removal: it stays in the recording until you press Write to file."
         )
@@ -874,7 +1029,10 @@ class EditMode(QObject):
         if data.facts_loaded:
             ready()
             return
-        handle = self.jobs.submit("Checking the recordings", lambda ctx: data.read_facts())
+        # changes_recordings=False: the viewer's own read of facts
+        handle = self.jobs.submit(
+            "Checking the recordings", lambda ctx: data.read_facts(), changes_recordings=False
+        )
         handle.succeeded.connect(lambda _r: ready())
         handle.failed.connect(self._prepare_failed)
         handle.cancelled.connect(lambda: self._prepare_failed(None))
@@ -914,11 +1072,14 @@ class EditMode(QObject):
                     again = True
             return SaveOutcome(
                 result.written, result.uids, records, locked, result.error, result.stopped,
-                again, message if result.error is None else "", tuple(result.marks),
+                again or result.unsure, message if result.error is None else "",
+                tuple(result.marks), dict(result.counts),
             )  # fmt: skip
 
         try:
-            handle = self.jobs.submit("Taking out notes", work)
+            # changes_recordings=False: the viewer's own task (reading, writing or re-reading ITS
+            #   notes): it must not ask itself
+            handle = self.jobs.submit("Taking out notes", work, changes_recordings=False)
         except Exception:  # noqa: BLE001 - the draft must never stay locked
             log.exception("the removal could not be started")
             self._prepare_ended()
@@ -938,6 +1099,8 @@ class EditMode(QObject):
 
     def _stored_done(self, out: SaveOutcome, then_off, then_close, continue_with) -> None:
         w = self.win
+        self._note_written(out.counts)
+        self._chain = continue_with is not None and out.error is None
         if out.uids:
             self.draft.written(out.uids)  # the changes that were stored leave the draft
         self.draft.stored_done(out.stored)
@@ -954,6 +1117,83 @@ class EditMode(QObject):
             return
         self._after_save(out, then_off, then_close)
 
+    # -- saying exactly what is in the file now, and what is still only in the window ----------
+
+    def _note_written(self, counts: dict) -> None:
+        for recording, (added, changed, removed) in counts.items():
+            t = self._tally.setdefault(recording, [0, 0, 0])
+            t[0] += added
+            t[1] += changed
+            t[2] += removed
+
+    def _written_text(self) -> str:
+        """What this write has put into the file, per recording when there are several:
+        "1 added, 1 changed, 1 removed"."""
+        if not self._tally:
+            return ""
+        if len(self._tally) == 1:
+            return wc.counts_text(*next(iter(self._tally.values())))
+        return "; ".join(
+            f"{self._where(r)}: {wc.counts_text(*v)}" for r, v in sorted(self._tally.items())
+        )
+
+    def _still_text(self) -> str:
+        d = self.draft
+        return wc.counts_text(len(d.additions()), len(d.changed_stored()), d.removed_total())
+
+    _CLAIMS = re.compile(
+        r"(?i)not changed|nothing was|nothing had|nothing is|not written|were not|was not|"
+        r"originals|"
+        r"your recordings"
+    )
+
+    def _honest(self, message: UserMessage | None) -> UserMessage:
+        """A failure or stop AFTER part of the changes were written: the text the library layer
+        wrote says "nothing was changed / added" about the step that failed, which is not the
+        whole truth now. Its claims about what became of the files are replaced by what is in
+        the file and what is still only in this window."""
+        written = self._written_text()
+        still = self._still_text()
+        if not written:
+            return message or UserMessage("The write was stopped", "Nothing was written.")
+        said = [
+            "Part of your changes were written before this stopped, and that cannot be undone: "
+            f"{written}.",
+            f"Still only in this window (the red bar shows them): {still}."
+            if still
+            else "Nothing is left in this window.",
+        ]
+        title = message.title if message else "The write was stopped"
+        advice = ""
+        if message is not None:
+            kept = [
+                x.strip()
+                for x in re.split(r"(?<=[.!?])\s+", message.text)
+                if x.strip() and not self._CLAIMS.search(x)
+            ]
+            advice = " ".join(kept)
+        text = " ".join(said + ([advice] if advice else []))
+        return UserMessage(
+            title, text, message.detail if message else "", getattr(message, "code", "")
+        )
+
+    def _say(self, message: UserMessage | None) -> None:
+        """Show a problem of the save chain (made honest when part of it was written); the
+        tally of the write ends here."""
+        if self._chain or self._tally:
+            if self._chain and self._tally:
+                message = self._honest(message)
+            self._chain = False
+            self._tally = {}
+        if message is not None:
+            self.show_problem(message)
+
+    def _chain_ended_quietly(self) -> None:
+        """The second step did not start (stopped, or a question answered no) after the first
+        one wrote: say what is in the file and what is not."""
+        if self._tally:
+            self._say(None)
+
     def _stored_unknown(self, message) -> None:
         """The task ended without an outcome: what the recording holds is not known, so the
         recordings are read again and the notes shown are what they hold now."""
@@ -965,6 +1205,18 @@ class EditMode(QObject):
     def note_menu(self, menu, mark) -> None:
         """The entries of the menu on a note (right-click on its chip, its row in the
         list, or its mark on the traces)."""
+        chosen = self.win.notes_tab.selected_marks()
+        if len(chosen) > 1 and mark in chosen:  # several rows selected: the entries act on all
+            n = len(chosen)
+            marked = [m for m in chosen if m.state == "removed" or self.draft.is_removed(m)]
+            take = menu.addAction(f"Mark the {n} selected notes for removal", self.remove_note)
+            take.setEnabled(not self.saving and len(marked) < n)
+            keep = menu.addAction(
+                "Keep the selected notes (bring them back)",
+                lambda: self.mark_many(marked, keep=True),
+            )
+            keep.setEnabled(not self.saving and bool(marked))
+            return
         if self.on and not self.saving:
             self.select(mark)
         if mark.state in ("new", "changed"):
@@ -981,20 +1233,8 @@ class EditMode(QObject):
         remove.setToolTip("It stays in the recording until you press Write to file")
 
     def remove_selected(self) -> bool:
-        if self._busy():
-            return False
-        m = self._target()
-        if m is None:
-            return False
-        if m.state in ("new", "changed"):
-            self.draft.remove(m.uid)
-            self.select(None)
-            self.refresh()
-            return True
-        if m.state == "removed":
-            self.win.status_message.setText("This note is already taken out.")
-            return False
-        return self._remove_stored(m)
+        """The notes list's Take out button: every selected note (one step)."""
+        return self.remove_note()
 
     # -- undo / redo / discard ----------
 
@@ -1077,7 +1317,11 @@ class EditMode(QObject):
             ctx.report(0, None, "Checking where the rows fall")
             return ad.preview_import(result, holders)
 
-        handle = self.jobs.submit("Reading a file of notes and events", work)
+        # changes_recordings=False: the viewer's own task (reading, writing or re-reading ITS
+        #   notes): it must not ask itself
+        handle = self.jobs.submit(
+            "Reading a file of notes and events", work, changes_recordings=False
+        )
         self.last_job = handle
         handle.succeeded.connect(self._import_read)
         handle.failed.connect(self._job_failed)
@@ -1225,15 +1469,81 @@ class EditMode(QObject):
             self.show_summary(self.summary())
 
     def write_to_file(self, then_off: bool = False, then_close: bool = False) -> bool:
-        """Ctrl+S and the red bar's button: list every change and ask; then write them (the
-        worker, the lock and the words are those of :meth:`save`). Returns whether a write
-        was started."""
-        if self.saving or self.stale:
+        """Ctrl+S and the red bar's button: look at the recording (when stored notes are marked
+        or changed), list every change and ask; then write them (the worker, the lock and the
+        words are those of :meth:`save`). Returns whether the process started: with stored notes
+        the list opens after the look (``save_finished`` is emitted when it ends either way)."""
+        if self.saving:
+            self.say_writing_blocks("change")
+            return False
+        if self.stale:
+            self.say_writing_is_off("write")
             return False
         if not self.draft.dirty:
             self.win.status_message.setText("There are no changes to write.")
             return False
-        if not self.ask_write(self.summary()):
+        summary = self.summary()
+        stored = list(self.draft.removed_stored()) + [s for s, _ in self.draft.changed_stored()]
+        if not stored:  # only new notes: nothing in the recording to look at first
+            return self._confirm_and_write(summary, then_off, then_close)
+        data = self.win.data
+        self.saving = True  # the draft is locked while the recording is looked at
+        self._sync_buttons()
+        self.win.status_message.setText("Looking at the recording before listing the changes…")
+
+        def found(seen) -> None:
+            self.saving = False
+            self._sync_buttons()
+            if data is not self.win.data:
+                return
+            summary.warnings = self._changed_since_marked(seen)
+            self._confirm_and_write(summary, then_off, then_close)
+
+        def failed(message=None) -> None:
+            self.saving = False
+            self._sync_buttons()
+            self.show_problem(
+                message
+                or UserMessage(
+                    "The recording could not be looked at",
+                    "The recording could not be read to check the notes you marked, so nothing "
+                    "was written. Your changes are still in this window. Try again.",
+                )
+            )
+            self.save_finished.emit(None)
+
+        try:
+            handle = self.jobs.submit(
+                "Looking at the notes before writing",
+                lambda ctx: asave.look_at_notes(data, stored),
+                changes_recordings=False,  # reads the notes of recordings that are open here
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("the look at the notes could not be started")
+            failed()
+            return False
+        handle.succeeded.connect(found)
+        handle.failed.connect(failed)
+        handle.cancelled.connect(lambda: failed(None))
+        return True
+
+    def _changed_since_marked(self, seen: dict) -> list[str]:
+        """Sentences about the stored notes whose copies in the file are not what the window
+        counted when they were marked (another program changed the recording)."""
+        bad = [m for m, found in seen.items() if found != self._identical_copies(m)]
+        if not bad:
+            return []
+        n = len(bad)
+        return [
+            f"{timefmt.format_count(n, 'note', 'notes')} you marked or changed "
+            f"{'is' if n == 1 else 'are'} no longer in the recording as it was shown: another "
+            "program changed it. Nothing can be written until you close this window and open the "
+            "recording again."
+        ]
+
+    def _confirm_and_write(self, summary, then_off: bool, then_close: bool) -> bool:
+        if not self.ask_write(summary) or summary.warnings:
+            self.save_finished.emit(None)
             return False
         return self.save(then_off, then_close)
 
@@ -1295,7 +1605,10 @@ class EditMode(QObject):
             # once, on a task thread: opening and paging never inspect.
             self.saving = True  # the draft is locked from here (reading the facts, the preview)
             self._sync_buttons()
-            handle = self.jobs.submit("Checking the recordings", lambda ctx: data.read_facts())
+            # changes_recordings=False: the viewer's own read of facts
+            handle = self.jobs.submit(
+                "Checking the recordings", lambda ctx: data.read_facts(), changes_recordings=False
+            )
             handle.succeeded.connect(
                 lambda _r: self._ask_then_save(data, plan_for, then_off, then_close)
             )
@@ -1371,18 +1684,22 @@ class EditMode(QObject):
             f"{'it was' if n == 1 else 'they were'} not added again."
         )
 
-    def _prepare_ended(self) -> None:
-        """The save did not start (stopped, refused, failed): the draft is
-        free again and the buttons say so. Same outcome as a cancelled
-        preview always had: nothing is saved, the mode stays as it was and
-        the window stays open (``then_off`` / ``then_close`` do not happen)."""
+    def _prepare_ended(self, say: bool = True) -> None:
+        """The save did not start (stopped, refused, failed): the draft is free again and the
+        buttons say so. Nothing more is saved, the mode stays as it was and the window stays open
+        (``then_off`` / ``then_close`` do not happen). When the first step of a write had already
+        written, that is said (what is in the file, what is not)."""
         self.saving = False
         self._sync_buttons()
+        if say:
+            self._chain_ended_quietly()
+        self._tally, self._chain = {}, False
 
     def _prepare_failed(self, message) -> None:
-        self._prepare_ended()
-        if message is not None:
-            self.show_problem(message)
+        self._prepare_ended(say=False)
+        if message is not None or self._tally:
+            self._say(message)
+        self._tally, self._chain = {}, False
 
     def _ask_then_save(self, data, plan_for, then_off: bool, then_close: bool) -> bool:
         if data is not self.win.data:  # the window moved on
@@ -1393,12 +1710,12 @@ class EditMode(QObject):
             plan = plan_for(answer[0]) if answer is not None else None
         except Exception:  # noqa: BLE001 - the draft must never stay locked
             log.exception("the save preview failed")
-            self._prepare_ended()
-            self.show_problem(
+            self._prepare_ended(say=False)
+            self._say(
                 UserMessage(
-                    "The notes could not be saved",
-                    "Something went wrong before anything was added. Nothing was saved, and "
-                    "the changes stay in the draft.",
+                    "The notes could not be written",
+                    "Something went wrong before anything was added. Nothing was written, and "
+                    "the changes stay in this window.",
                 )
             )
             return False
@@ -1431,12 +1748,12 @@ class EditMode(QObject):
                     register_identity,
                 )
                 records, locked, again = None, (), False
+                appended = {
+                    i: sum(1 for it in share.items if it.uid in result.uids)
+                    for i, share in plan.by_recording.items()
+                }
                 if result.uids:
                     ctx.report(0, None, "Reading the notes again")
-                    appended = {
-                        i: sum(1 for it in share.items if it.uid in result.uids)
-                        for i, share in plan.by_recording.items()
-                    }
                     try:
                         # the signal did not change: only the notes are read again, and the
                         # page on screen, the tile cache and the strip stay as they are
@@ -1450,18 +1767,20 @@ class EditMode(QObject):
                         again = True
                 return SaveOutcome(
                     result.written, result.uids, records, locked, result.error, result.stopped,
-                    again,
+                    again, counts={i: (n, 0, 0) for i, n in appended.items() if n},
                 )  # fmt: skip
 
-            handle = self.jobs.submit("Adding notes and events", work)
+            # changes_recordings=False: the viewer's own task (reading, writing or re-reading ITS
+            #   notes): it must not ask itself
+            handle = self.jobs.submit("Adding notes and events", work, changes_recordings=False)
         except Exception:  # noqa: BLE001 - the draft must never stay locked
             log.exception("the save could not be started")
             self._save_ended(None, False, started=False)
-            self.show_problem(
+            self._say(
                 UserMessage(
-                    "The notes could not be saved",
-                    "Something went wrong before anything was added. Nothing was saved, and "
-                    "the changes stay in the draft.",
+                    "The notes could not be written",
+                    "Something went wrong before anything was added. Nothing was written, and "
+                    "the changes stay in this window.",
                 )
             )
             return
@@ -1473,6 +1792,7 @@ class EditMode(QObject):
 
     def _saved(self, out: SaveOutcome, plan, then_off: bool, then_close: bool) -> None:
         w = self.win
+        self._note_written(out.counts)
         if plan.duplicates:  # the same as a stored note: never written, and no longer a draft
             self.draft.written({i.uid for i in plan.duplicates})
         if out.uids:
@@ -1491,17 +1811,24 @@ class EditMode(QObject):
         self.select(None)
         self.refresh()
         if out.error is not None:
-            self.show_problem(out.error)
+            self._say(out.error)
         else:
-            w.status_message.setText(
-                out.message
-                or f"{timefmt.format_count(len(out.uids), 'note or event', 'notes and events')} "
-                "added."
-            )
+            written = self._written_text()
+            if written:
+                where = "recording" if len(self._tally) == 1 else "recordings"
+                still = self._still_text()
+                w.status_message.setText(
+                    f"Written to the {where}: {written}."
+                    + (f" Still only in this window: {still}." if still else "")
+                )
+            else:
+                w.status_message.setText(out.message or "Nothing was written.")
+            self._tally, self._chain = {}, False
             if then_off:
                 self._apply_mode(False)
             if then_close:
                 w.close()
+        self._tally, self._chain = {}, False
         self.save_finished.emit(out)
 
     def _reopen_after_save(self, out: SaveOutcome, then_off: bool, then_close: bool) -> None:
@@ -1538,7 +1865,11 @@ class EditMode(QObject):
 
         try:
             w.begin_data_change()
-            handle = self.jobs.submit("Reading the recordings again", work)
+            # changes_recordings=False: the viewer's own task (reading, writing or re-reading ITS
+            #   notes): it must not ask itself
+            handle = self.jobs.submit(
+                "Reading the recordings again", work, changes_recordings=False
+            )
         except Exception:  # noqa: BLE001
             log.exception("the recordings could not be read again")
             failed()
@@ -1561,9 +1892,13 @@ class EditMode(QObject):
         self.saving = False
         self._sync_buttons()
         if stopped and message is None and started:
-            self.win.status_message.setText("The save was stopped. Nothing was added.")
-        if message is not None:
-            self.show_problem(message)
+            if self._tally:
+                self._say(None)
+            else:
+                self.win.status_message.setText("The write was stopped. Nothing was added.")
+        elif message is not None or self._tally:
+            self._say(message)
+        self._tally, self._chain = {}, False
         self.save_finished.emit(None)
 
     def _look_again(self, message, stopped: bool) -> None:
@@ -1584,7 +1919,11 @@ class EditMode(QObject):
 
         try:
             w.begin_data_change()  # they are opened again
-            handle = self.jobs.submit("Reading the recordings again", work)
+            # changes_recordings=False: the viewer's own task (reading, writing or re-reading ITS
+            #   notes): it must not ask itself
+            handle = self.jobs.submit(
+                "Reading the recordings again", work, changes_recordings=False
+            )
         except Exception:  # noqa: BLE001 - the window must say what is left to do
             log.exception("the recordings could not be read again")
             self._not_looked(stopped)
@@ -1612,9 +1951,9 @@ class EditMode(QObject):
             else "Nothing had been added to the recordings."
         )
         rest = " The others stay in the draft." if self.draft.dirty else ""
-        self.show_problem(
+        self._say(
             UserMessage(
-                "The save was stopped" if stopped else "The save ended in an unexpected place",
+                "The write was stopped" if stopped else "The write ended in an unexpected place",
                 said + rest,
             )
         )
@@ -1626,11 +1965,11 @@ class EditMode(QObject):
         self.stale = True
         self.win.end_data_change(None, (), reopened=False)
         self._sync_buttons()
-        self.show_problem(
+        self._say(
             UserMessage(
-                "The save was stopped" if stopped else "The save ended in an unexpected place",
+                "The write was stopped" if stopped else "The write ended in an unexpected place",
                 "Some notes and events may already have been added to the recordings, and the "
-                "viewer could not read them again to see. Saving is switched off so that "
+                "viewer could not read them again to see. Writing is switched off so that "
                 "nothing is added twice. Close this window and open the recordings again.",
             )
         )

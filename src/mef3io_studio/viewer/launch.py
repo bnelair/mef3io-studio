@@ -42,7 +42,15 @@ def launch(
     paths = [e.location for e in entries]
     passwords = [e.password for e in entries]
     by_key = {location_key(e.location): e for e in entries}
-    handle = jobs.submit("Opening the signal viewer", tasks.open_viewer, source, paths, passwords)
+    # changes_recordings=False: opens the viewer for reading
+    handle = jobs.submit(
+        "Opening the signal viewer",
+        tasks.open_viewer,
+        source,
+        paths,
+        passwords,
+        changes_recordings=False,
+    )
 
     def opened(data) -> None:
         def reveal(i: int) -> bool:

@@ -169,7 +169,7 @@ class NoteEditor(QDialog):
 
 
 class SavePreview(QDialog):
-    """What Save will write, per recording, before anything is written."""
+    """What the new notes need before they are written: where they go, a password."""
 
     def __init__(
         self,
@@ -181,7 +181,7 @@ class SavePreview(QDialog):
         other_password_of: Callable[[int], str | None] | None = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Save the new notes and events?")
+        self.setWindowTitle("Where do the new notes go?")
         self._other_password_of = other_password_of or (lambda _i: None)
         self._plan_for = plan_for
         self._label_of = label_of
@@ -332,13 +332,13 @@ class SavePreview(QDialog):
                 "and cannot be added. Take them out of the draft or move them first."
             )
         if plan.ambiguous:
-            problems.append("Choose where the notes above go before saving.")
+            problems.append("Choose where the notes above go before writing.")
         self.problems.setText("\n".join(problems))
         self.problems.setVisible(bool(problems))
         n = plan.needs_copy
         self.copy_note.setText(
             f"{n} {'change to a stored note is' if n == 1 else 'changes to stored notes are'} "
-            "saved first: the old note is replaced by the changed one, and that cannot be "
+            "written first: the old note is replaced by the changed one, and that cannot be "
             "undone."
             if n
             else ""
@@ -397,7 +397,7 @@ class ImportPreview(QDialog):
         if p.ambiguous:
             lines.append(
                 f"{p.ambiguous} of them fall where several recordings hold data. You choose "
-                "where they go when you save."
+                "where they go when you write them."
             )
         if p.outside:
             lines.append(
@@ -414,12 +414,12 @@ class ImportPreview(QDialog):
             lines += [f"  Row {n}: {why}" for n, why in p.invalid[: ImportPreview.MAX_LISTED]]
             if len(p.invalid) > ImportPreview.MAX_LISTED:
                 lines.append(f"  and {len(p.invalid) - ImportPreview.MAX_LISTED} more")
-        lines.append("Nothing is written to a recording until you save.")
+        lines.append("Nothing is written to a recording until you press Write to file.")
         return "\n".join(lines)
 
 
 def ask_unsaved(parent, what: str = "leave") -> str:
-    """Save / Discard / Cancel with unsaved changes. Returns "save",
+    """Write to file / Discard changes / Stay. Returns "save" (= write),
     "discard" or "stay". (Qt's own standard buttons.)"""
     if what == "task":
         tail = (

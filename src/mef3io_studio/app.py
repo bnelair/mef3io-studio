@@ -621,22 +621,22 @@ def _build_main_window_class():
             self.viewers.append(window)
             window.released.connect(lambda w=window: self._viewer_closed(w))
 
-        #: Tasks that read, copy, pack or change recordings: they see the recording as it is
-        #: in the file, without notes that are only in a viewer's draft.
-        GUARDED_TASKS = frozenset(
-            {"run_batch", "join_recordings", "pack_or_unpack", "make_changes"}
-        )
-
-        def _job_may_start(self, fn) -> bool:
-            """Before a task that uses recordings starts: every viewer with notes that are not
+        def _job_may_start(self, changes_recordings: bool) -> bool:
+            """Before a task that copies, joins, packs or writes recordings starts (it said so
+            when it was started: ``changes_recordings``): every viewer with notes that are not
             written asks (Write to file / Discard changes / Stay). False = do not start."""
-            if getattr(fn, "__name__", "") not in self.GUARDED_TASKS:
+            if not changes_recordings:
                 return True
             return all(v.edit.settle_before_task() for v in list(self.viewers))
 
         def _viewers_may_close(self) -> bool:
-            """Quitting the app: a viewer with notes that are not written asks first."""
+            """Quitting the app: a viewer with notes that are not written asks first, and a
+            viewer that is writing says so (the app stays open until it has finished)."""
             for viewer in list(self.viewers):
+                if viewer.edit.saving:
+                    viewer.raise_()
+                    viewer.edit.say_writing_blocks("quit")
+                    return False
                 if viewer.edit.draft.dirty:
                     viewer.raise_()
                     viewer.activateWindow()
@@ -742,7 +742,10 @@ def _build_main_window_class():
             self.activity_dock.setVisible(not self.activity_dock.isVisible())
 
         def run_self_check(self):
-            handle = self.jobs.submit("Checking this installation", self_check)
+            # changes_recordings=False: checks the installation; touches no recording
+            handle = self.jobs.submit(
+                "Checking this installation", self_check, changes_recordings=False
+            )
             record = handle.record  # captured instead of the handle: no cycle
 
             def done(result):

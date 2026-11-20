@@ -190,7 +190,7 @@ Code (app shell, #2/#3):
   Picker rules in `model/channels.py` (electrode grouping strips EEG/POL,
   -Ref/-AVG, bipolar pairs, case; ranges only over rows on screen; group box
   = shown members while filtering; batch change carries exclusions by name).
-  Tasks: `workers.tasks.anonymize_recordings` (publishes `Leftover` when a
+  Tasks: `workers.tasks.run_batch` (publishes `Leftover` when a
   `.partial` survives) / `check_copy_names`. The date key is shown on screen
   and saved only on opt-in; never logged, never in settings. Passwords: the
   form clears on start/restart/hide; only the copies' full-access password is
@@ -368,7 +368,10 @@ Code (app shell, #2/#3):
   `viewer/write_dialog.py` (`ask_write`, default Keep editing when anything is removed/changed)
   then `save`; close asks (`ask_unsaved`: write / discard / stay), quit
   (`App._viewers_may_close`) and guarded tasks (`JobManager.guard` -> `App._job_may_start`,
-  `GUARDED_TASKS`, `EditMode.settle_before_task`) ask too. A STORED note is taken out (and a
+  EVERY `jobs.submit` passes `changes_recordings=True/False` (a start without it raises while the
+  app's manager has a guard; `tests/test_viewer_write_to_file.py` enumerates the starts by AST),
+  `EditMode.settle_before_task`) ask too. Marks are patched in place (`patch_removed`), undo is
+  a delta per step, the writable check runs once on a task (`probe_writable`). A STORED note is taken out (and a
   changed one replaced) IN PLACE
   with mef3io 2.4 `remove_annotations`, called in ONE place (`annotation_save.remove_stored_notes`,
   `StoredChange`): marking asks only for a note stored more than once (one copy = remove with

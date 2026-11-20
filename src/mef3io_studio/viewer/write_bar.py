@@ -85,11 +85,19 @@ class WriteBar(QFrame):
             "#WriteBar QPushButton#WriteBarPrimary:focus { background: #ffe9e7; }"
         )
 
-    def show_counts(self, added: int, changed: int, removed: int) -> None:
-        """Show the bar with these counts, or hide it when there is nothing to write."""
+    def show_counts(self, added: int, changed: int, removed: int, blocked: str = "") -> None:
+        """Show the bar with these counts, or hide it when there is nothing to write.
+        ``blocked``: why "Write to file" cannot be used now (it is then switched off and the
+        bar says why, with what to do)."""
         self.counts = (added, changed, removed)
         total = added + changed + removed
+        self.write_button.setEnabled(not blocked)
+        self.write_button.setToolTip(
+            blocked or "See every change, then update the recording (Ctrl+S)"
+        )
         if total:
-            self.text.setText(bar_text(added, changed, removed))
+            self.text.setText(
+                bar_text(added, changed, removed) + (f" {blocked}" if blocked else "")
+            )
             self.text.setAccessibleName("Changes not written to the recording")
         self.setVisible(bool(total))

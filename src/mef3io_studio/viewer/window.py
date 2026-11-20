@@ -275,6 +275,7 @@ class ViewerWindow(QMainWindow):
         self._stored_for = None  # the marks _stored was made from
         self._stored_flags: tuple = ()
         self._shape: tuple | None = None
+        self._crowded_view = False  # the marks on screen are merged ticks (see _crowded_marks)
         self._hay: dict[vm.Mark, str] = {}  # folded search text per note (see _haystack)
         self._hay_flags: tuple = ()
         self._privacy_sig: tuple | None = None
@@ -655,6 +656,7 @@ class ViewerWindow(QMainWindow):
         self.notes_tab.add_requested.connect(self.edit.add_here)
         self.notes_tab.edit_requested.connect(self.edit.edit_selected)
         self.notes_tab.remove_requested.connect(self.edit.remove_selected)
+        self.notes_tab.keep_requested.connect(self.edit.keep_selected)
         self.notes_tab.import_requested.connect(self.edit.import_file)
         self.notes_tab.export_requested.connect(
             lambda kind, scope: self.edit.export_marks(kind, scope)
@@ -1805,6 +1807,64 @@ class ViewerWindow(QMainWindow):
             self._shape = (stamp, vd.compose(self._stored, drafts, changed, hidden, self._shown))
         return self._shape[1]
 
+    def patch_note_states(self, changes, version_before: int) -> bool:
+        """Notes marked for removal (or brought back) change how they are SHOWN, nothing else:
+        the notes as shown are patched in place, and only the chips, marks and list rows of
+        these notes are redrawn, so one more mark costs the same with 50,000 notes as with 50.
+        ``changes``: ``(stored mark, copies marked before, copies marked now)``. False = could
+        not be done in place (the caller refreshes everything)."""
+        shape = self._shape
+        flags = tuple(bool(self._shown(r.index)) for r in self.data.recordings)
+        d = self.edit.draft
+        if (
+            shape is None
+            or shape[0] != (version_before, self.hidden_kinds)
+            or self._stored_for is not self.marks
+            or self._stored_flags != flags
+        ):
+            return False
+        pairs: list[tuple[vm.Mark, vm.Mark]] = []
+        for mark, old, new in changes:
+            found = vd.patch_removed(shape[1], self._stored, mark, old, new)
+            if found is None:
+                return False
+            pairs += found
+        self._shape = ((d.version, self.hidden_kinds), shape[1])
+        self._set_visible()
+        if not pairs:
+            return True
+        if self._crowded_view:  # merged ticks stand for many notes: drawn again (bounded)
+            self._update_marks_view()
+        else:
+            self._restyle_view(dict((id(old), new) for old, new in pairs))
+        if not self.notes_tab.restyle(pairs, self._shown, self._rec_letter, self.zone):
+            self._refresh_note_list()
+        return True
+
+    def _restyle_view(self, new_of: dict) -> None:
+        """Swap, in the chips and marks on screen, the notes whose state changed."""
+        pal = self.canvas.palette_
+        dark = pal.dark
+        built: dict[int, tuple[CanvasMark, Chip]] = {}
+
+        def made(m):
+            if id(m) not in built:
+                built[id(m)] = self._mark_and_chip(m, pal, dark)
+            return built[id(m)]
+
+        self.canvas.marks = [
+            made(new_of[id(c.source)])[0] if id(c.source) in new_of else c
+            for c in self.canvas.marks
+        ]
+        self.canvas.update()
+        row = self.chips
+        row.chips = [made(new_of[id(c.mark)])[1] if id(c.mark) in new_of else c for c in row.chips]
+        row.drawn = [
+            (rect, made(new_of[id(c.mark)])[1], lab) if id(c.mark) in new_of else (rect, c, lab)
+            for rect, c, lab in row.drawn
+        ]
+        row.update()
+
     def _display_marks(self) -> list[vm.Mark]:
         """What is shown: the stored notes and events, with the draft's
         changes on top (a taken-out or changed stored note stays, marked; a
@@ -1895,6 +1955,9 @@ class ViewerWindow(QMainWindow):
                 mark, chip = self._mark_and_chip(self._visible[i], pal, dark)
                 canvas_marks.append(mark)
                 chips.append(chip)
+        self._crowded_view = hi - start + len(left) > max(
+            DENSE_MIN_MARKS, width // DENSE_PX_PER_MARK
+        )
         self.canvas.marks = canvas_marks
         self.canvas.update()
         self.chips.setVisible(bool(self._visible))

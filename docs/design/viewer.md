@@ -682,9 +682,18 @@ The honest steps for one note, from "I see something" to "it is stored":
   Keep editing as the default when anything stored is removed or changed; `Show changes` is
   the same list without the write button, `Discard changes...` asks and clears. Closing the
   window asks (write / discard / stay), so does quitting the app and any task of
-  `App.GUARDED_TASKS` (`JobManager.guard`); a refusal (single-file recording, read-only
-  folder) is said at marking time. A failed write keeps the remaining changes and the bar.
-  The write itself is the flow below, split in at most two library calls per recording.
+  a job started with `changes_recordings=True` (`JobManager.guard`); a refusal (single-file recording, read-only
+  folder, known after ONE check on a task when edit mode is turned on) is said at marking
+  time. A failed write keeps the remaining changes and the bar. The write itself is the flow
+  below, in at most two steps per recording: `remove_annotations` (removals and replacements,
+  atomic per recording) then a Writer append for new notes. The new notes are NOT put into
+  the `remove_annotations(add=)` call: they need a recording and level chosen (several
+  recordings may hold data, a channel may have no notes yet, a password may be asked), which
+  is decided in the dialog of the second step after the first one is known to have worked.
+  Every ending says per recording what is in the file and what is still only in the window
+  (`_tally`, `_honest`). Marking patches the displayed notes IN PLACE (`viewer_display.
+  patch_removed`, the chips, marks and list rows of those notes only; the undo history is a
+  delta per step, not a copy), so a mark costs about the same at 50,000 notes as at 50.
   **Removing and changing a STORED note (mef3io 2.4 `remove_annotations`).** *Remove this
   note*, Delete and the notes list's Take out on a stored note MARK it (a note stored
   more than once asks one copy or all) and at Write run ONE task

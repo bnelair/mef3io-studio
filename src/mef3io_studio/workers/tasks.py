@@ -350,61 +350,6 @@ def check_copy_names(ctx: JobContext, requests: list[anonymize.CopyRequest]) -> 
     return verdicts
 
 
-def anonymize_recordings(
-    ctx: JobContext, requests: list[anonymize.CopyRequest]
-) -> list[anonymize.CopyResult]:
-    """Make each anonymized copy in turn, in a helper process, with mef3io's
-    byte progress. A refusal or failure of one copy is reported for that copy
-    and the batch goes on; Stop ends the batch (mef3io removes the unfinished
-    copy; the cleanup below catches what a helper ended after the grace
-    could leave). Each result is published as soon as it is known."""
-    _register_copy_identity(requests)
-    total = len(requests)
-    results: list[anonymize.CopyResult] = []
-    for i, request in enumerate(requests):
-        ctx.check_cancelled()
-        phase = f"Making anonymized copy {i + 1} of {total}"
-        ctx.report(i, total, phase)
-        if not os.path.lexists(request.destination + ".partial"):
-            destination = request.destination
-            ctx.add_cleanup(lambda d=destination: anonymize.remove_unfinished(d))
-
-        def got(message, i=i, phase=phase) -> None:
-            if isinstance(message, ByteProgress):
-                ctx.report(i + message.fraction, total, phase)
-
-        try:
-            result = ctx.run_isolated(
-                anonymize.make_copy, request, on_message=got, stop_grace=STOP_GRACE_SECONDS
-            )
-        except Exception as exc:
-            if not (isinstance(exc, JobCancelled) or is_stop(exc)):
-                raise_stop = False
-            else:
-                raise_stop = True
-            # Stopped, or the helper itself failed (a crash): make sure the
-            # unfinished copy is gone, and say so if it is not.
-            if not anonymize.remove_unfinished(request.destination):
-                ctx.publish(anonymize.Leftover(request.key, request.destination + ".partial"))
-                log.warning("job %d: an unfinished copy could not be removed", ctx.job_id)
-            if raise_stop:
-                raise
-            result = anonymize.CopyResult(
-                request.key,
-                request.destination,
-                ok=False,
-                message=anonymize.describe_copy_error(exc, request),
-            )
-        if result.message is not None:
-            result = replace(result, message=scrubbed(result.message))
-        results.append(result)
-        ctx.publish(result)
-        ctx.report(i + 1, total, phase)
-    saved = sum(1 for r in results if r.ok)
-    log.info("job %d: %d of %d anonymized copies saved and checked", ctx.job_id, saved, total)
-    return results
-
-
 def _register_join_identity(request: join.JoinRequest) -> None:
     """Everything a join request carries that identifies or unlocks: the
     originals' names and passwords, the new name and passwords."""

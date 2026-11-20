@@ -1248,18 +1248,31 @@ you that your changes are **a draft until you save**.
   for removal (struck through); it stays in the recording until you write to the
   file. Delete on a marked note brings it back.
 
-**Nothing is saved until you press Write to file.** Every change to the notes
+**Nothing is written until you press Write to file.** Every change to the notes
 (added, changed, removed) stays in this window only. While there are changes, a
 **red bar at the top of the viewer** says that they are NOT SAVED and how many
-there are. It stays when you leave edit mode, and it asks again when you close the
-window, quit the app, or start a task that uses the recording (join, copy, pack,
-make new): you can write, discard, or stay.
+there are; it is the one place to write or discard (the edit-mode banner only
+holds Undo and Redo). It stays when you leave edit mode, and it asks again when
+you close the window, quit the app, or start a task that copies, joins, packs or
+writes recordings (the batch runs, join, pack, saving a new recording with
+changes): you can write, discard, or stay. If a write is running, or writing is
+switched off because the recordings could not be read again, the bar and the
+messages say so and what to do.
+
+**Marking many notes.** In the notes list, Shift or Ctrl click and Ctrl+A select
+several notes (Ctrl+A: everything listed, so use the search or the type filter
+first); Delete (or **Take out**) marks all of them for removal as ONE step, and
+Ctrl+Z brings them all back; **Keep** brings the selected marked ones back. A note
+stored more than once has all its copies marked when several are chosen.
 
 Press **Ctrl+S**, or **Write to file…** in the red bar. A list shows every change
 (added, changed with old and new wording, removed, which recording, when), with
 the counts, per recording when there are several. A note that is stored more than
 once says whether one copy or all go. Nothing is written until you choose **Write
-N changes to the file**; **Keep editing** leaves everything as it is. When you
+N changes to the file**; **Keep editing** leaves everything as it is. Before the
+list opens, the app looks at the recording again: if another program changed a
+note you marked or changed, the list says so and nothing can be written until you
+open the recording again. When you
 removed or changed stored notes, Keep editing is the pre-selected answer.
 **Show changes** opens the same list without writing; **Discard changes…** throws
 all of them away after asking.

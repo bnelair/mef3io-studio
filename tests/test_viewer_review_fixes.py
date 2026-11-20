@@ -315,9 +315,9 @@ def test_a_failed_reopen_after_a_notes_only_save_keeps_saving_off(ed, qtbot, mon
     assert win.edit.stale and not win.edit.saving
     # the notes on screen are the old ones: the same note added again must not be stored twice
     win.edit.add(T0 + 30 * SEC, None, "Spike", "stored anyway")
-    assert win.edit.draft.dirty and not win.edit.save_button.isEnabled()
+    assert win.edit.draft.dirty and not win.write_bar.write_button.isEnabled()
     assert win.edit.save() is False
-    assert "Saving is off" in win.edit.count_label.text()
+    assert "Writing is off" in win.write_bar.text.text()
 
 
 def test_a_raise_while_the_reopen_starts_frees_the_draft(ed, qtbot, monkeypatch):
@@ -357,7 +357,7 @@ def test_a_raise_while_looking_again_frees_the_draft(ed, qtbot, monkeypatch):
     win.edit.save()
     qtbot.waitUntil(lambda: bool(spy.problems), timeout=30_000)
     qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
-    assert win.edit.stale and not win.edit.save_button.isEnabled()
+    assert win.edit.stale and not win.write_bar.write_button.isEnabled()
     assert "open the recordings again" in spy.problems[0].text
 
 

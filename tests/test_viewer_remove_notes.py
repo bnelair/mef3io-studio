@@ -99,7 +99,7 @@ def test_a_stored_note_is_only_marked_until_write_to_file(ed, qtbot):
     win, spy, (a, b) = ed
     ask = Asked(win)
     epoch = win.data.epoch
-    before_all, before_b = tree_hash(a), tree_hash(b)
+    before_all, before_b, before_signal = tree_hash(a), tree_hash(b), signal_hash(a)
     mark = stored(win, "Alpha plain note")
     assert win.edit.remove_mark(mark) is True
     # marked: struck through, the red bar says so, and NOTHING is written
@@ -117,6 +117,7 @@ def test_a_stored_note_is_only_marked_until_write_to_file(ed, qtbot):
     assert (shown.added, shown.changed, shown.removed) == (0, 0, 1)
     assert not spy.problems and not win.write_bar.isVisible()
     assert "Alpha plain note" not in texts(a) and len(texts(a)) == 2  # the others stay
+    assert signal_hash(a) == before_signal  # the signal files: same bytes, same times
     assert tree_hash(b) == before_b  # another recording is not touched
     assert all(m.text != "Alpha plain note" for m in win.notes_tab.rows)
     assert win.data.epoch == epoch  # the notes were read again, nothing was reopened
@@ -129,7 +130,8 @@ def test_keep_editing_in_the_list_writes_nothing_and_keeps_the_mark(ed, qtbot):
     spy.write_confirmed = False  # "Keep editing"
     snap = tree_hash(a)
     win.edit.remove_mark(stored(win, "Alpha plain note"))
-    assert win.edit.write_to_file() is False
+    with qtbot.waitSignal(win.edit.save_finished, timeout=30_000):
+        win.edit.write_to_file()  # (the recording is looked at first, then the list is shown)
     assert tree_hash(a) == snap and win.edit.draft.dirty and win.write_bar.isVisible()
     assert not win.edit.saving and not spy.problems
 
@@ -328,10 +330,13 @@ def test_a_note_that_changed_underneath_is_refused_and_nothing_changes(ed, qtbot
         str(a), remove=[dict(r) for r in records(a) if r["text"] == NOTE["text"]]
     )
     snap = tree_hash(a)
-    mark_then_write(win, stored(win, "Alpha plain note"))
-    qtbot.waitUntil(lambda: not win.edit.saving and bool(spy.problems), timeout=30_000)
-    assert len(spy.problems) == 1 and "Nothing was" in spy.problems[0].text
-    assert tree_hash(a) == snap
+    win.edit.remove_mark(stored(win, "Alpha plain note"))
+    with qtbot.waitSignal(win.edit.save_finished, timeout=30_000):
+        win.edit.write_to_file()
+    # the list says, before anything can be written, that the recording is not as it was shown
+    (shown,) = spy.summaries
+    assert shown.warnings and "another program changed it" in shown.warnings[0]
+    assert tree_hash(a) == snap and win.edit.draft.dirty and not win.edit.saving
 
 
 def test_the_library_refusing_is_shown_with_its_words(ed, qtbot, monkeypatch):

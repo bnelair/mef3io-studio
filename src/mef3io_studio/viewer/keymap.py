@@ -107,7 +107,7 @@ def _entries(spacing, hour, day):
         KeyEntry(
             "save_notes",
             ("Ctrl+S",),
-            "Save the new notes into the recordings (edit mode only)",
+            "Write the changes to the notes to the recordings (edit mode only)",
             False,
             "edit",
         ),

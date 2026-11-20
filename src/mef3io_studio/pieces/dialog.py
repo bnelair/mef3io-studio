@@ -458,7 +458,10 @@ class PiecesDialog(BatchRunMixin, QDialog):
         self.runs = None
         self.runs_problem = ""
         item = RecordingInput(entry.key, entry.name, entry.details)
-        handle = self.jobs.submit("Finding where the recording has data", data_stretches, item)
+        # changes_recordings=False: reads where the signal has data; notes are not involved
+        handle = self.jobs.submit(
+            "Finding where the recording has data", data_stretches, item, changes_recordings=False
+        )
         self._runs_handle = handle
         key = entry.key
 

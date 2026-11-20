@@ -43,6 +43,9 @@ class ChangeSummary:
     removed: int = 0
     #: recording -> (added, changed, removed); None = not decided yet
     per_recording: dict = field(default_factory=dict)
+    #: Plain sentences about what is NOT as it was when the notes were marked (another program
+    #: changed the recording): the confirmation says them before anything can be written.
+    warnings: list = field(default_factory=list)
 
     @property
     def total(self) -> int:

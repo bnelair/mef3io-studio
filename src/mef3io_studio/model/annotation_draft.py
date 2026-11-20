@@ -228,9 +228,14 @@ def items_now_stored(items: Sequence[DraftItem], before, after) -> list[int]:
 
 
 @dataclass(frozen=True)
-class _Snapshot:
-    items: tuple[DraftItem, ...]
-    removed: frozenset  # of (stored mark, copies)
+class _Step:
+    """One undo or redo step as a DELTA: the draft's own items (None = they did not change in
+    this step) and, only for the stored notes this step touched, how many copies were marked
+    before it (0 = not marked). Its size does not depend on how many notes are marked, so
+    marking the thousandth note costs what marking the first did."""
+
+    items: tuple[DraftItem, ...] | None
+    marks: tuple  # of (stored mark, copies marked)
 
 
 class Draft:
@@ -241,8 +246,10 @@ class Draft:
         self._items: dict[int, DraftItem] = {}
         #: stored note -> how many of its identical copies are marked for removal
         self._removed: dict = {}
-        self._undo: list[_Snapshot] = []
-        self._redo: list[_Snapshot] = []
+        self._undo: list[_Step] = []
+        self._redo: list[_Step] = []
+        self._removed_total = 0
+        self.items_touched = True
         self._next = 1
         #: Bumped by every change (a view of the draft is rebuilt only when it moved).
         self.version = 0
@@ -257,16 +264,32 @@ class Draft:
 
     # -- state ----------
 
-    def _snap(self) -> _Snapshot:
-        return _Snapshot(tuple(self._items.values()), frozenset(self._removed.items()))
+    def _set_removed(self, mark, copies: int) -> None:
+        """Mark ``copies`` of the stored note for removal (0 = not marked), keeping the count."""
+        self._removed_total -= self._removed.pop(mark, 0)
+        if copies:
+            self._removed[mark] = copies
+            self._removed_total += copies
 
-    def _restore(self, snap: _Snapshot) -> None:
-        self._items = {i.uid: i for i in snap.items}
-        self._removed = dict(snap.removed)
+    def _step(self, marks=(), items: bool = True) -> _Step:
+        """The delta that undoes what is about to happen to ``marks`` (and the items)."""
+        return _Step(
+            tuple(self._items.values()) if items else None,
+            tuple((m, self._removed.get(m, 0)) for m in marks),
+        )
 
-    def _push(self) -> None:
+    def _apply(self, step: _Step) -> None:
+        if step.items is not None:
+            self._items = {i.uid: i for i in step.items}
+        for mark, copies in step.marks:
+            self._set_removed(mark, copies)
+
+    def _push(self, marks=(), items: bool = True) -> None:
         self.version += 1
-        self._undo.append(self._snap())
+        #: Whether the last step changed the draft's own items (not only which stored notes are
+        #: marked): a view of the notes can then be patched instead of made again.
+        self.items_touched = items
+        self._undo.append(self._step(marks, items))
         self._redo.clear()
 
     @property
@@ -285,16 +308,20 @@ class Draft:
         if not self._undo:
             return False
         self.version += 1
-        self._redo.append(self._snap())
-        self._restore(self._undo.pop())
+        step = self._undo.pop()
+        self._redo.append(self._step([m for m, _ in step.marks], step.items is not None))
+        self.items_touched = step.items is not None
+        self._apply(step)
         return True
 
     def redo(self) -> bool:
         if not self._redo:
             return False
         self.version += 1
-        self._undo.append(self._snap())
-        self._restore(self._redo.pop())
+        step = self._redo.pop()
+        self._undo.append(self._step([m for m, _ in step.marks], step.items is not None))
+        self.items_touched = step.items is not None
+        self._apply(step)
         return True
 
     def written(self, uids: Iterable[int]) -> None:
@@ -314,7 +341,7 @@ class Draft:
             return
         self.version += 1
         for mark in gone:
-            self._removed.pop(mark, None)
+            self._set_removed(mark, 0)
         self._undo.clear()
         self._redo.clear()
 
@@ -323,6 +350,7 @@ class Draft:
         self.version += 1
         self._items.clear()
         self._removed.clear()
+        self._removed_total = 0
         self._undo.clear()
         self._redo.clear()
 
@@ -350,7 +378,7 @@ class Draft:
 
     def removed_total(self) -> int:
         """How many stored notes are marked for removal, copies counted."""
-        return sum(self._removed.values())
+        return self._removed_total
 
     def is_removed(self, stored) -> bool:
         return stored in self._removed
@@ -479,11 +507,11 @@ class Draft:
         end = base["end"]
         if end is not None and end <= base["time"]:
             base["end"] = None
-        self._push()
+        self._push((stored,))
         item = DraftItem(self._next, replaces=stored, **base)
         self._next += 1
         self._items[item.uid] = item
-        self._removed.pop(stored, None)
+        self._set_removed(stored, 0)
         return item
 
     def remove(self, target, copies: int = 1) -> None:
@@ -499,18 +527,48 @@ class Draft:
         copies = max(1, int(copies))
         if self._removed.get(target) == copies:
             return
-        self._push()
-        for uid in [u for u, i in self._items.items() if i.replaces == target]:
+        replaced = [u for u, i in self._items.items() if i.replaces == target]
+        self._push((target,), items=bool(replaced))
+        for uid in replaced:
             del self._items[uid]
-        self._removed[target] = copies
+        self._set_removed(target, copies)
+
+    def change_many(
+        self, mark: Iterable = (), drop: Iterable[int] = (), keep: Iterable = ()
+    ) -> int:
+        """Several changes as ONE undo step: stored notes to mark for removal (``Mark`` or
+        ``(Mark, copies)``), draft items to take out (uids), marked notes to bring back.
+        Returns how many notes changed state."""
+        wanted: dict = {}
+        for t in mark:
+            m, copies = t if isinstance(t, tuple) else (t, 1)
+            if self._removed.get(m) != max(1, int(copies)):
+                wanted[m] = max(1, int(copies))
+        back = [m for m in dict.fromkeys(keep) if m in self._removed and m not in wanted]
+        gone = {u for u in drop if u in self._items}
+        gone |= {u for u, i in self._items.items() if i.replaces in wanted}
+        if not (wanted or back or gone):
+            return 0
+        self._push(tuple(wanted) + tuple(back), items=bool(gone))
+        for u in gone:
+            del self._items[u]
+        for m, copies in wanted.items():
+            self._set_removed(m, copies)
+        for m in back:
+            self._set_removed(m, 0)
+        return len(wanted) + len(back) + len(gone)
+
+    def remove_many(self, targets: Iterable) -> int:
+        """Mark several stored notes for removal as ONE undo step."""
+        return self.change_many(mark=targets)
 
     def keep(self, stored) -> bool:
         """Bring back a stored note that was marked for removal (an undo of just that)."""
-        if stored not in self._removed:
-            return False
-        self._push()
-        del self._removed[stored]
-        return True
+        return bool(self.change_many(keep=[stored]))
+
+    def keep_many(self, stored: Iterable) -> int:
+        """Bring several marked notes back as ONE undo step; returns how many."""
+        return self.change_many(keep=stored)
 
     # -- where it goes ----------
 
