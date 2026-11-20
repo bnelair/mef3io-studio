@@ -1,5 +1,5 @@
-"""The signal viewer window: two toolbar rows, the overview strip, the traces
-and a status line (docs/design/viewer.md, "Layout").
+"""The signal viewer window: the controls (one wrapping flow, ``flow.py``), the overview
+band and strip, the traces and a status line (docs/design/viewer.md, "Layout").
 
 Part 1 built the window, the data flow and the navigation; part 2 adds which
 recording is which (band, boundaries, banner, side panel), notes and events

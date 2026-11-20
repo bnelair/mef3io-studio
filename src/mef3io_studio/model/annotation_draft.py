@@ -203,19 +203,27 @@ def items_now_stored(items: Sequence[DraftItem], before, after) -> list[int]:
     held ``before`` (the marks of the stored notes then) and ``after`` (now), so
     a note that was already there is not taken for ours, and equal items are
     taken only as often as the recordings gained them."""
+    # Counted per (recording, note): the same note stored in recording A says nothing about
+    # the same draft note meant for recording B.
     gained: dict[tuple, int] = {}
     for m in after:
-        k = mark_key(m)
+        k = (m.recording, mark_key(m))
         gained[k] = gained.get(k, 0) + 1
     for m in before:
-        k = mark_key(m)
+        k = (m.recording, mark_key(m))
         gained[k] = gained.get(k, 0) - 1
     out = []
     for it in items:
-        k = item_key(it)
-        if gained.get(k, 0) > 0:
-            gained[k] -= 1
-            out.append(it.uid)
+        key = item_key(it)
+        if it.recording is not None:
+            where = [it.recording]
+        else:  # not routed yet: any recording that gained it (the first, in letter order)
+            where = sorted(r for (r, k), n in gained.items() if k == key and n > 0)
+        for r in where:
+            if gained.get((r, key), 0) > 0:
+                gained[(r, key)] -= 1
+                out.append(it.uid)
+                break
     return out
 
 
