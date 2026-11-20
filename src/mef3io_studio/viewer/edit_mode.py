@@ -827,6 +827,7 @@ class EditMode(QObject):
                 n = self._identical_copies(m)
                 several += n > 1
                 todo.append((m, n))
+        todo = list(dict(todo).items())  # identical copies are ONE note: one change per note
         before = d.version
         old = {m: d.removed_copies(m) for m, _ in todo}
         if not d.change_many(mark=todo, drop=drop):
@@ -1187,6 +1188,21 @@ class EditMode(QObject):
             self._tally = {}
         if message is not None:
             self.show_problem(message)
+
+    def _end_chain(self, extra: str = "") -> None:
+        """The second step found nothing to write (everything left was already stored): the
+        first step's work is said, with ``extra``, and the tally ends."""
+        if not self._tally:
+            return
+        where = "recording" if len(self._tally) == 1 else "recordings"
+        still = self._still_text()
+        self.win.status_message.setText(
+            f"Written to the {where}: {self._written_text()}."
+            + (f" Still only in this window: {still}." if still else "")
+            + (f" {extra}" if extra else "")
+        )
+        self._tally, self._chain = {}, False
+        self.save_finished.emit(None)
 
     def _chain_ended_quietly(self) -> None:
         """The second step did not start (stopped, or a question answered no) after the first
@@ -1583,6 +1599,8 @@ class EditMode(QObject):
         w = self.win
         if self.saving or self.stale or not self.draft.dirty:
             return False
+        if not self._chain:  # a first step: what an earlier write tallied never carries over
+            self._tally = {}
         data = w.data
 
         def plan_for(choices):
@@ -1597,8 +1615,10 @@ class EditMode(QObject):
         if first.count == 0 and first.duplicates and not first.ambiguous and not first.refused:
             # Everything new is already stored: nothing to write, and nothing twice.
             self._drop_duplicates(first)
+            self._end_chain(w.status_message.text())
             return False
         if first.count == 0 and not first.ambiguous and not first.refused:
+            self._end_chain()
             return False  # nothing left to write
         if not data.facts_loaded:
             # What the preview needs (which recordings are protected) is read

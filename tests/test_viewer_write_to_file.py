@@ -576,9 +576,19 @@ def test_every_job_start_in_the_app_says_whether_it_changes_recordings():
     assert len(starts) >= 25  # the enumeration really finds the app's job starts
     missing = [(f, line) for f, line, _fn, kw in starts if kw is None]
     assert not missing, f"job starts without changes_recordings=: {missing}"
-    declared_true = {fn for _f, _l, fn, kw in starts if getattr(kw, "value", None) is True}
-    # anything that copies, joins, packs or writes recordings from the originals asks first
-    assert declared_true == {"run_batch", "join_recordings", "pack_or_unpack", "make_changes"}
+    # per call site (file + function + declared value): flipping ONE start of a function that
+    # another file declares True still fails
+    declared = {(f, fn): getattr(kw, "value", None) for f, _l, fn, kw in starts}
+    writes = {
+        ("page.py", "run_batch"),  # the Anonymizer's batch
+        ("run.py", "run_batch"),  # New recording
+        ("page.py", "join_recordings"),
+        ("page.py", "pack_or_unpack"),
+        ("edit_details.py", "make_changes"),
+    }
+    for f, fn, value in {(f, fn, getattr(kw, "value", None)) for f, _l, fn, kw in starts}:
+        assert value is ((f, fn) in writes), (f, fn, value)
+    assert writes <= set(declared), "a start named above is gone: update this list"
 
 
 def test_the_apps_job_manager_refuses_an_undeclared_start(window):
@@ -648,3 +658,129 @@ def test_quit_and_the_job_guard_leave_the_recordings_alone_on_stay(ed, window, q
     assert stopped.token.cancelled and spy.asked.count("task") == 1
     assert tree_hash(a) == snap and tree_hash(b) == snap_b and win.edit.draft.dirty
     window.viewers.remove(win)
+
+
+# --- review round 2 -------------------------------------------------------------------------------
+
+
+def test_a_second_step_with_only_duplicates_still_says_what_the_first_wrote(ed, qtbot):
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    stored_note = stored(win, "Alpha Cz note")
+    win.edit.remove_mark(stored(win, "Alpha plain note"))
+    # an addition that equals a stored note: it is dropped as a duplicate in the second step
+    win.edit.draft.stored_keys = lambda: frozenset()  # (let the draft take it; the plan drops it)
+    win.edit.draft.stored_pairs = lambda: frozenset()
+    label, text = ad.split_text(stored_note.text)
+    win.edit.draft.add(stored_note.time, None, label, text, "Cz", 0)
+    win.edit.draft.stored_keys = win.edit._stored_keys
+    win.edit.draft.stored_pairs = win.edit._stored_pairs
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        win.edit.write_to_file()
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    said = win.status_message.text()
+    assert "Written to the recording: 1 removed" in said and "already stored" in said
+    assert "Alpha plain note" not in texts(a) and not win.edit.draft.dirty
+    assert win.edit._tally == {} and not win.edit._chain
+    # the next write counts only its own changes
+    win.edit.add(T0 + 40 * SEC, None, "Spike", "brand new")
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        win.edit.write_to_file()
+    qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
+    assert win.status_message.text() == "Written to the recording: 1 added."
+
+
+def test_identical_copies_selected_together_patch_the_display_once(make_window, tmp_path, qtbot):
+    from test_viewer_remove_notes import NOTE
+
+    p = write(
+        tmp_path / "Copies.mefd",
+        notes=[
+            NOTE,
+            dict(NOTE),
+            dict(NOTE),
+            {"time": T0 + 10 * SEC, "type": "Note", "text": "Other"},
+        ],
+    )
+    win = make_window(p, reveal=lambda i: True)
+    wait_marks(qtbot, win)
+    Spy(win)
+    turn_on(win)
+    win.side_panel.setCurrentWidget(win.notes_tab)
+    table = win.notes_tab.table
+    qtbot.waitUntil(lambda: table.rowCount() == 4)
+    copies = [i for i, m in enumerate(win.notes_tab.rows) if m.text == NOTE["text"]]
+    assert len(copies) == 3
+    table.clearSelection()
+    for i in copies[:2]:
+        table.selectRow(i) if i == copies[0] else table.selectionModel().select(
+            table.model().index(i, 0),
+            table.selectionModel().SelectionFlag.Select | table.selectionModel().SelectionFlag.Rows,
+        )
+    assert len(win.notes_tab.selected_marks()) == 2
+    assert [c for c in win.chips.chips if c.mark is not None and c.mark.text == NOTE["text"]]
+    assert any(c.source is not None and c.source.text == NOTE["text"] for c in win.canvas.marks)
+    assert win.edit.mark_many(win.notes_tab.selected_marks())
+    assert win.edit.draft.removed_total() == 3  # all identical copies go
+    win.edit.remove_mark(win.notes_tab.rows[copies[2]])  # Delete on the third row: keep
+    assert not win.edit.draft.dirty
+    assert all(c.state != "removed" for c in win.chips.chips)
+    assert all(m.state == "" for m in win.notes_tab.rows)
+    assert all(c.style != "removed" for c in win.canvas.marks)
+
+
+def display_state(win):
+    d = win._shaped()
+    return (
+        [(m, m.state) for m in d.marks],
+        [(m, m.state) for m in d.visible],
+        d.drafted_np.tolist(),
+        d.drafted,
+    )
+
+
+def test_patched_display_equals_a_full_rebuild_after_every_operation(make_window, tmp_path, qtbot):
+    import random
+
+    from test_viewer_remove_notes import NOTE
+
+    notes = []
+    for i in range(12):  # identical copies of 1, 2 and 3, some of another kind
+        for _ in range(1 + i % 3):
+            notes.append({"time": T0 + i * 4 * SEC, "type": "Note", "text": f"n{i}"})
+    notes += [{"time": T0 + 5 * SEC, "type": "SyLg", "text": "s"} for _ in range(2)]
+    p = write(tmp_path / "Fuzz.mefd", notes=notes + [NOTE])
+    win = make_window(p, reveal=lambda i: True)
+    wait_marks(qtbot, win)
+    spy = Spy(win)
+    turn_on(win)
+    rng = random.Random(20260)
+    kinds = sorted({k for k, _l, _n in win._shaped().counts})
+    for step in range(300):
+        marks = list(win.marks)
+        op = rng.choice(["mark", "mark", "keep", "many", "undo", "redo", "filter"])
+        spy.stored_answer = rng.choice(["one", "all"])
+        if op == "mark":
+            win.edit.remove_mark(rng.choice(marks))
+        elif op == "keep":
+            gone = [m for m in win._shaped().marks if m.state == "removed"]
+            if gone:
+                win.edit.keep_mark(rng.choice(gone))
+        elif op == "many":
+            win.edit.mark_many(rng.sample(marks, k=min(len(marks), rng.randint(2, 6))))
+        elif op == "undo":
+            win.edit.undo()
+        elif op == "redo":
+            win.edit.redo()
+        else:
+            win._types_chosen(frozenset(rng.sample(kinds, k=rng.randint(0, len(kinds) - 1))))
+        patched, shape = display_state(win), win._shape
+        win._shape = None  # a full rebuild from the stored notes and the draft
+        assert display_state(win) == patched, (step, op)
+        win._shape = shape  # and the patched display carries on
+        shown = {id(m) for m in win._shaped().visible}
+        assert all(id(c.mark) in shown for c in win.chips.chips if c.mark is not None), (step, op)
+        assert all(id(c.source) in shown for c in win.canvas.marks if c.source is not None), (
+            step,
+            op,
+        )
