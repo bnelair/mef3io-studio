@@ -556,7 +556,7 @@ def job_starts():
     root = pathlib.Path(mef3io_studio.__file__).parent
     found = []
     for f in sorted(root.rglob("*.py")):
-        tree = ast.parse(f.read_text())
+        tree = ast.parse(f.read_text(encoding="utf-8"))
         for n in ast.walk(tree):
             if (
                 isinstance(n, ast.Call)
