@@ -190,7 +190,7 @@ Code (app shell, #2/#3):
   Picker rules in `model/channels.py` (electrode grouping strips EEG/POL,
   -Ref/-AVG, bipolar pairs, case; ranges only over rows on screen; group box
   = shown members while filtering; batch change carries exclusions by name).
-  Tasks: `workers.tasks.anonymize_recordings` (publishes `Leftover` when a
+  Tasks: `workers.tasks.run_batch` (publishes `Leftover` when a
   `.partial` survives) / `check_copy_names`. The date key is shown on screen
   and saved only on opt-in; never logged, never in settings. Passwords: the
   form clears on start/restart/hide; only the copies' full-access password is
@@ -361,11 +361,21 @@ Code (app shell, #2/#3):
   `items_now_stored`); a notes-only save calls `ViewerData.refresh_notes` (inspect once per
   written recording + exact read-back count; else the old reopen) and keeps the page, tile
   cache and strip; `model/viewer_display.py` keeps a 60,000-note list quick; draft notes are
-  removed with Delete/menu. A STORED note is taken out (and a changed one replaced) IN PLACE
+  removed with Delete/menu. NOTHING IS WRITTEN UNTIL "WRITE TO FILE" (owner decision): every
+  change (add, change, remove of a stored note) stays in the `Draft` (`_removed` = stored Mark ->
+  copies to remove); the red `viewer/write_bar.py` (top of the window) shows the counts, stays
+  after leaving edit mode; `EditMode.write_to_file` = `model/write_changes.summarise` list in
+  `viewer/write_dialog.py` (`ask_write`, default Keep editing when anything is removed/changed)
+  then `save`; close asks (`ask_unsaved`: write / discard / stay), quit
+  (`App._viewers_may_close`) and guarded tasks (`JobManager.guard` -> `App._job_may_start`,
+  EVERY `jobs.submit` passes `changes_recordings=True/False` (a start without it raises while the
+  app's manager has a guard; `tests/test_viewer_write_to_file.py` enumerates the starts by AST),
+  `EditMode.settle_before_task`) ask too. Marks are patched in place (`patch_removed`), undo is
+  a delta per step, the writable check runs once on a task (`probe_writable`). A STORED note is taken out (and a
+  changed one replaced) IN PLACE
   with mef3io 2.4 `remove_annotations`, called in ONE place (`annotation_save.remove_stored_notes`,
-  `StoredChange`): Delete/menu/Take out ask ONE line ("cannot be undone"; a note stored twice
-  says so: one copy = remove with `expect=copies` + add the others back in the same call, or
-  all), then ONE task under the same save lock (`EditMode.saving`, `_run_stored`): facts read on
+  `StoredChange`): marking asks only for a note stored more than once (one copy = remove with
+  `expect=copies` + add the others back in the same call, or all), then at Write ONE task under the same save lock (`EditMode.saving`, `_run_stored`): facts read on
   a task, the other password asked (`ask_other_password`), `prepare(for_removal=True)`, the
   stored records matched by content from `data.annotations()`, `data.release_files()`, the
   signal-file snapshot, one library call per recording, then `refresh_notes` with the NET

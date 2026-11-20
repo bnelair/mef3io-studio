@@ -320,13 +320,37 @@ class JobManager(QObject):
         #: open between reads, so no job meets a recording that is held open (a rename, a
         #: removal or a replaced file fails on Windows while a file is open).
         self.prologue: Callable[[], None] | None = None
+        #: Called on the GUI thread with ``changes_recordings`` before the job is queued; False =
+        #: the job is not to run (it ends as stopped at once). The app uses it to ask about notes
+        #: that are not written yet before a task that copies, moves or writes recordings
+        #: starts. While it is set, EVERY start must say whether the job does (see ``submit``).
+        self.guard: Callable[[bool], bool] | None = None
         self._timer = QTimer(self)
         self._timer.setInterval(1000 // UI_UPDATES_PER_SECOND)
         self._timer.timeout.connect(self._pull_progress)
 
-    def submit(self, title: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> JobHandle:
+    def submit(
+        self,
+        title: str,
+        fn: Callable[..., Any],
+        *args: Any,
+        changes_recordings: bool | None = None,
+        **kwargs: Any,
+    ) -> JobHandle:
         """Run ``fn(ctx, *args, **kwargs)`` in the background. ``title`` is
-        shown to the user; it must not contain patient details."""
+        shown to the user; it must not contain patient details.
+
+        ``changes_recordings`` must be given at every start in the app: True when the job reads
+        recordings to copy, join, pack or write them or moves or changes them (it then sees the
+        files, not notes that are only in a viewer's window, so the viewer asks first); False
+        for a check, a preview, a read, or work that never involves notes of an open viewer.
+        Leaving it out is an error where a guard is set."""
+        if self.guard is not None:
+            if changes_recordings is None:
+                raise TypeError(
+                    "every task start must say whether it changes recordings "
+                    "(changes_recordings=True or False)"
+                )
         record = JobRecord(title=title)
         token = CancelToken()
         handle = JobHandle(record, token, self)
@@ -340,6 +364,8 @@ class JobManager(QObject):
         self.running_changed.emit(self.running_count())
         if not self._timer.isActive():
             self._timer.start()
+        if self.guard is not None and not self.guard(bool(changes_recordings)):
+            token.cancel()  # the job starts and ends as stopped, so its page reacts as to a Stop
         self.pool.start(
             _Runnable(
                 fn,

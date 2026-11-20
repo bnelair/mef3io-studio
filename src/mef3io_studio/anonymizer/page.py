@@ -2019,7 +2019,10 @@ class AnonymizerPage(QWidget):
             self.go(STEP_PASSWORDS)
             return None
         self._names_passed = None
-        handle = self.jobs.submit("Checking the names of the copies", check_copy_names, requests)
+        # changes_recordings=False: only checks the names of the copies; reads no notes
+        handle = self.jobs.submit(
+            "Checking the names of the copies", check_copy_names, requests, changes_recordings=False
+        )
         self.names_handle = handle
         # Locked while mef3io looks: a verdict always answers the names shown.
         self.identity.table.setEnabled(False)
@@ -2115,7 +2118,10 @@ class AnonymizerPage(QWidget):
         # until step 2 really starts writing: Stop or a refusal in step 1 must
         # not take away the only way to reverse the move of the dates.
         self.handle = None
-        handle = self.jobs.submit("Checking everything before starting", preflight_batch, batch)
+        # changes_recordings=False: a read-only check before the batch; writes nothing
+        handle = self.jobs.submit(
+            "Checking everything before starting", preflight_batch, batch, changes_recordings=False
+        )
         self.preflight_handle = handle
         handle.succeeded.connect(lambda verdict: self._preflight_done(batch, verdict))
         handle.failed.connect(self._preflight_failed)
@@ -2162,6 +2168,7 @@ class AnonymizerPage(QWidget):
         self.restart()
         self.batch = batch
         self._journal = journal
+        # changes_recordings=False: a read-only check before the batch; writes nothing
         handle = self.jobs.submit(
             "Checking everything before continuing",
             preflight_batch,
@@ -2169,6 +2176,7 @@ class AnonymizerPage(QWidget):
             list(journal.states),
             output_password[1] if output_password else "",
             journal,
+            changes_recordings=False,
         )
         self.preflight_handle = handle
 
@@ -2252,7 +2260,9 @@ class AnonymizerPage(QWidget):
         self._date_key_saved = False  # the new copies have a key of their own
         n = len(batch.items)
         title = "Making an anonymized copy" if n == 1 else f"Making {n} anonymized copies"
-        handle = self.jobs.submit(title, run_batch, batch, journal)
+        # changes_recordings=True: copies or anonymizes recordings: a viewer's unwritten notes would
+        #   be missing
+        handle = self.jobs.submit(title, run_batch, batch, journal, changes_recordings=True)
         self.handle = handle
         handle.published.connect(self._on_results)
         handle.cancelled.connect(self._on_stopped)
@@ -2372,7 +2382,10 @@ class AnonymizerPage(QWidget):
         journal = state.journal if state is not None else self._journal
         if journal is None:
             return None
-        handle = self.jobs.submit("Finishing the batch archive", finish_bundle_now, journal)
+        # changes_recordings=False: packs the batch's own finished output; never reads the sources
+        handle = self.jobs.submit(
+            "Finishing the batch archive", finish_bundle_now, journal, changes_recordings=False
+        )
 
         def done(outcome) -> None:
             self.bundle_outcome = outcome

@@ -69,7 +69,7 @@ def make_batch(tmp_path, output, sources, names=None, exclude=("a3",), bundle_na
 
 
 def run(qtbot, jobs, batch, journal_=None, timeout=180_000):
-    handle = jobs.submit("batch", tasks.run_batch, batch, journal_)
+    handle = jobs.submit("batch", tasks.run_batch, batch, journal_, changes_recordings=True)
     published = []
     handle.published.connect(published.extend)
     with qtbot.waitSignal(handle.finished, timeout=timeout):

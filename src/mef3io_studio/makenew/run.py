@@ -105,7 +105,10 @@ class BatchRunMixin:
         self._hide_last_view()
         self._set_busy(True)
         self.go(self.STEP_RUN)
-        handle = self.jobs.submit("Checking everything before starting", preflight_batch, batch)
+        # changes_recordings=False: a read-only check before the batch; writes nothing
+        handle = self.jobs.submit(
+            "Checking everything before starting", preflight_batch, batch, changes_recordings=False
+        )
         self.handle = handle
         handle.succeeded.connect(lambda verdict: self._checked_if_current(batch, verdict))
         handle.failed.connect(self._check_failed)
@@ -245,7 +248,9 @@ class BatchRunMixin:
         n = len(batch.items)
         title = f"Making {self.ONE}" if n == 1 else f"Making {n} {self.NOUN}"
         self.run_heading.setText(f"Step 2 of 2: {title[0].lower()}{title[1:]}")
-        handle = self.jobs.submit(title, run_batch, batch, journal)
+        # changes_recordings=True: copies or anonymizes recordings: a viewer's unwritten notes would
+        #   be missing
+        handle = self.jobs.submit(title, run_batch, batch, journal, changes_recordings=True)
         self.handle = handle
         handle.published.connect(self._published)
         handle.cancelled.connect(lambda: setattr(self, "stopped", True))
@@ -273,6 +278,7 @@ class BatchRunMixin:
         self._reset_run()
         self._set_busy(True)
         self.go(self.STEP_RUN)
+        # changes_recordings=False: a read-only check before the batch; writes nothing
         handle = self.jobs.submit(
             "Checking everything before continuing",
             preflight_batch,
@@ -280,6 +286,7 @@ class BatchRunMixin:
             list(journal.states),
             output_password[1] if output_password else "",
             journal,
+            changes_recordings=False,
         )
         self.handle = handle
 

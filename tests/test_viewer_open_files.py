@@ -285,7 +285,7 @@ def test_starting_any_task_in_the_app_lets_the_viewers_go_of_their_files(window,
         names = list(data.channels)
         data.read_tile(names, data.rate(names[0]), 0)
         assert held_signal_files(tmp_path)
-        handle = window.jobs.submit("Some task", lambda ctx: 1)
+        handle = window.jobs.submit("Some task", lambda ctx: 1, changes_recordings=False)
         with qtbot.waitSignal(handle.finished, timeout=20_000):
             pass
         assert held_signal_files(tmp_path) == []

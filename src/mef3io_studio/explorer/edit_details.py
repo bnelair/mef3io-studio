@@ -508,7 +508,10 @@ class EditDetailsDialog(QDialog):
         self.result_label.setText("")
         self._set_busy(True)
         self.handle = None
-        handle = self.jobs.submit("Checking before saving", check_changes, self._pending)
+        # changes_recordings=False: a read-only check of a change; writes nothing
+        handle = self.jobs.submit(
+            "Checking before saving", check_changes, self._pending, changes_recordings=False
+        )
         self._check_handle = handle
         generation = self._generation
         # Step 1 of the one button: what it does, how long, and Stop.
@@ -573,7 +576,11 @@ class EditDetailsDialog(QDialog):
         self.result = None
         self._stopped = False
         self._failure = None
-        handle = self.jobs.submit("Saving a new recording with changes", make_changes, request)
+        # changes_recordings=True: writes a new recording from the original: unwritten notes would
+        #   be missing
+        handle = self.jobs.submit(
+            "Saving a new recording with changes", make_changes, request, changes_recordings=True
+        )
         self.handle = handle
         handle.succeeded.connect(lambda result: setattr(self, "result", result))
         handle.cancelled.connect(lambda: setattr(self, "_stopped", True))

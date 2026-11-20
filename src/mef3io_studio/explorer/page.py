@@ -918,8 +918,16 @@ class ExplorerPage(QWidget):
             path = self.choose_export_path(level)
             if not path:
                 return None
+        # changes_recordings=False: reads start times and writes a table elsewhere; notes are not
+        #   involved
         handle = self.jobs.submit(
-            "Saving the times of recordings as a table", export_times, items, self.zone, level, path
+            "Saving the times of recordings as a table",
+            export_times,
+            items,
+            self.zone,
+            level,
+            path,
+            changes_recordings=False,
         )
 
         def done(rows: int) -> None:
@@ -1010,7 +1018,10 @@ class ExplorerPage(QWidget):
     def _submit_open(self, entries: list[RecordingEntry], prompt: bool):
         requests = [(e.location, e.password) for e in entries]
         title = "Opening a recording" if len(entries) == 1 else f"Opening {len(entries)} recordings"
-        handle = self.jobs.submit(title, open_recordings, self.source, requests)
+        # changes_recordings=False: opens recordings for reading only
+        handle = self.jobs.submit(
+            title, open_recordings, self.source, requests, changes_recordings=False
+        )
         job = handle.record.id
         for entry in entries:
             # This task now owns the entry: an older task for the same
@@ -1024,8 +1035,14 @@ class ExplorerPage(QWidget):
 
     def scan_folder(self, folder: str):
         known = frozenset(e.key for e in self.model.entries)
+        # changes_recordings=False: looks for recordings and opens them for reading only
         handle = self.jobs.submit(
-            "Looking for recordings in a folder", scan_and_open, self.source, folder, known
+            "Looking for recordings in a folder",
+            scan_and_open,
+            self.source,
+            folder,
+            known,
+            changes_recordings=False,
         )
         handle.published.connect(lambda items: self._on_outcomes(items, False, create=True))
         handle.succeeded.connect(self._scan_done)
@@ -1170,6 +1187,7 @@ class ExplorerPage(QWidget):
         entry.check = None
         entry.check_error = None
         self._entry_changed(entry)
+        # changes_recordings=False: a read-only check of a recording
         handle = self.jobs.submit(
             "Checking a recording for problems",
             check_recording,
@@ -1178,6 +1196,7 @@ class ExplorerPage(QWidget):
             entry.password,
             quick,
             read_back,
+            changes_recordings=False,
         )
         progress = JobProgressWidget(
             handle,
@@ -1298,6 +1317,8 @@ class ExplorerPage(QWidget):
             title = "Packing a recording into one file"
         else:
             title = "Unpacking a recording into a folder"
+        # changes_recordings=True: packs or unpacks a recording: a viewer's unwritten notes would be
+        #   lost or missing
         handle = self.jobs.submit(
             title,
             pack_or_unpack,
@@ -1305,6 +1326,7 @@ class ExplorerPage(QWidget):
             destination_folder,
             entry.outcome.size_bytes,
             entry.password,
+            changes_recordings=True,
         )
         record = handle.record
 

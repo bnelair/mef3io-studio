@@ -73,74 +73,116 @@ def stored(win, text):
     return next(m for m in win.notes_tab.rows if m.text == text)
 
 
+def win_texts(spy) -> int:
+    """How many removed notes the last confirmed list named."""
+    return spy.summaries[-1].removed
+
+
+def mark_then_write(win, mark):
+    """Mark a stored note for removal and press "Write to file" (the list is confirmed)."""
+    win.edit.remove_mark(mark)
+    win.edit.write_to_file()
+
+
 def remove(qtbot, win, mark):
+    assert win.edit.remove_mark(mark) is True
     with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
-        assert win.edit.remove_mark(mark) is True
+        assert win.edit.write_to_file()
     qtbot.waitUntil(lambda: not win.edit.saving)
     settle(qtbot, win)
 
 
-# --- one stored note ---------------------------------------------------------------------------
+# --- one stored note: marked first, removed when written ----------------------------------------
 
 
-def test_a_stored_note_is_removed_after_one_plain_line(ed, qtbot):
+def test_a_stored_note_is_only_marked_until_write_to_file(ed, qtbot):
     win, spy, (a, b) = ed
     ask = Asked(win)
     epoch = win.data.epoch
-    before_signal, before_b = signal_hash(a), tree_hash(b)
+    before_all, before_b, before_signal = tree_hash(a), tree_hash(b), signal_hash(a)
     mark = stored(win, "Alpha plain note")
-    remove(qtbot, win, mark)
-    assert not spy.problems
-    assert len(ask.lines) == 1 and ask.lines[0][1] == 1
-    line = ask.lines[0][0]
-    assert "cannot be undone" in line and "Recording A" in line
-    assert "Alpha plain note" not in line  # the text of a note never goes into a line
-    assert not BANNED_RE.search(line)
+    assert win.edit.remove_mark(mark) is True
+    # marked: struck through, the red bar says so, and NOTHING is written
+    assert tree_hash(a) == before_all and tree_hash(b) == before_b
+    assert win.write_bar.isVisible() and win.write_bar.counts == (0, 0, 1)
+    assert "1 removed" in win.write_bar.text.text()
+    assert [m.text for m in win.notes_tab.rows if m.state == "removed"] == ["Alpha plain note"]
+    assert ask.lines == []  # no question for one note: it is listed before it is written
+    # write: the list was shown, and then the note is gone from the file only
+    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
+        assert win.edit.write_to_file()
+    qtbot.waitUntil(lambda: not win.edit.saving)
+    settle(qtbot, win)
+    (shown,) = spy.summaries
+    assert (shown.added, shown.changed, shown.removed) == (0, 0, 1)
+    assert not spy.problems and not win.write_bar.isVisible()
     assert "Alpha plain note" not in texts(a) and len(texts(a)) == 2  # the others stay
     assert signal_hash(a) == before_signal  # the signal files: same bytes, same times
     assert tree_hash(b) == before_b  # another recording is not touched
-    assert all(m.text != "Alpha plain note" for m in win.notes_tab.rows)  # the window shows it
+    assert all(m.text != "Alpha plain note" for m in win.notes_tab.rows)
     assert win.data.epoch == epoch  # the notes were read again, nothing was reopened
     assert win.marks_loaded
 
 
-def test_a_no_leaves_everything_as_it_was(ed, qtbot):
+def test_keep_editing_in_the_list_writes_nothing_and_keeps_the_mark(ed, qtbot):
     win, spy, (a, _b) = ed
-    Asked(win, answer=None)
+    Asked(win)
+    spy.write_confirmed = False  # "Keep editing"
     snap = tree_hash(a)
-    assert win.edit.remove_mark(stored(win, "Alpha plain note")) is False
-    assert tree_hash(a) == snap and not win.edit.saving and not spy.problems
+    win.edit.remove_mark(stored(win, "Alpha plain note"))
+    with qtbot.waitSignal(win.edit.save_finished, timeout=30_000):
+        win.edit.write_to_file()  # (the recording is looked at first, then the list is shown)
+    assert tree_hash(a) == snap and win.edit.draft.dirty and win.write_bar.isVisible()
+    assert not win.edit.saving and not spy.problems
 
 
-def test_delete_on_a_selected_stored_note_removes_it(ed, qtbot):
+def test_delete_marks_and_delete_again_brings_the_note_back(ed, qtbot):
     win, spy, (a, _b) = ed
     Asked(win)
     turn_on(win)
-    win.edit.select(stored(win, "Alpha Cz note"))
-    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
-        key(win, Qt.Key.Key_Delete)
-    qtbot.waitUntil(lambda: not win.edit.saving)
-    assert "Alpha Cz note" not in texts(a) and not spy.problems  # a channel note too
+    snap = tree_hash(a)
+    note = stored(win, "Alpha Cz note")  # a channel note too
+    win.edit.select(note)
+    key(win, Qt.Key.Key_Delete)
+    assert win.write_bar.isVisible() and tree_hash(a) == snap
+    gone = next(m for m in win.notes_tab.rows if m.text == "Alpha Cz note")
+    assert gone.state == "removed"
+    win.edit.select(gone)
+    key(win, Qt.Key.Key_Delete)  # one key: it stays as it is
+    assert not win.write_bar.isVisible() and not win.edit.draft.dirty
+    assert tree_hash(a) == snap
+    # Ctrl+Z brings back a mark as well
+    win.edit.remove_mark(stored(win, "Alpha Cz note"))
+    assert win.write_bar.isVisible()
+    key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert not win.write_bar.isVisible()
 
 
-def test_the_menu_entry_is_enabled_and_the_reason_line_is_gone(ed):
+def test_the_menu_offers_mark_and_keep(ed):
     from PySide6.QtWidgets import QMenu
 
     win, _spy, _ = ed
     menu = QMenu()
     win.edit.note_menu(menu, stored(win, "Alpha plain note"))
     found = entries(menu)
-    assert found["Remove this note"].isEnabled() and len(found) == 1
+    assert found["Mark for removal"].isEnabled() and len(found) == 1
+    win.edit.remove_mark(stored(win, "Alpha plain note"))
+    gone = next(m for m in win.notes_tab.rows if m.state == "removed")
+    menu = QMenu()
+    win.edit.note_menu(menu, gone)
+    assert list(entries(menu)) == ["Keep this note (bring it back)"]
+    entries(menu)["Keep this note (bring it back)"].trigger()
+    assert not win.edit.draft.dirty
 
 
-def test_the_notes_tab_remove_button_removes_a_stored_note_too(ed, qtbot):
+def test_the_notes_tab_take_out_button_marks_a_stored_note(ed, qtbot):
     win, spy, (a, _b) = ed
     Asked(win)
     turn_on(win)
+    snap = tree_hash(a)
     win.edit.select(stored(win, "Beta plain note"))
-    with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
-        assert win.edit.remove_selected()
-    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert win.edit.remove_selected()
+    assert win.edit.draft.removed_total() == 1 and tree_hash(a) == snap
     assert not spy.problems
 
 
@@ -166,7 +208,8 @@ def test_a_note_stored_twice_is_said_and_one_copy_can_go(twice, qtbot):
     win, spy, p = twice
     ask = Asked(win, answer="one")
     remove(qtbot, win, stored(win, "Alpha plain note"))
-    assert ask.lines[0][1] == 2 and "twice" in ask.lines[0][0]
+    assert ask.lines[0][1] == 2  # asked when marking: one copy or both
+    assert win_texts(spy) == 1  # the list says "1 of 2 identical copies"
     assert texts(p) == ["Alpha plain note", "Once"]  # exactly one copy is left
     assert not spy.problems
 
@@ -288,9 +331,12 @@ def test_a_note_that_changed_underneath_is_refused_and_nothing_changes(ed, qtbot
     )
     snap = tree_hash(a)
     win.edit.remove_mark(stored(win, "Alpha plain note"))
-    qtbot.waitUntil(lambda: not win.edit.saving and bool(spy.problems), timeout=30_000)
-    assert len(spy.problems) == 1 and "Nothing was" in spy.problems[0].text
-    assert tree_hash(a) == snap
+    with qtbot.waitSignal(win.edit.save_finished, timeout=30_000):
+        win.edit.write_to_file()
+    # the list says, before anything can be written, that the recording is not as it was shown
+    (shown,) = spy.summaries
+    assert shown.warnings and "another program changed it" in shown.warnings[0]
+    assert tree_hash(a) == snap and win.edit.draft.dirty and not win.edit.saving
 
 
 def test_the_library_refusing_is_shown_with_its_words(ed, qtbot, monkeypatch):
@@ -304,9 +350,10 @@ def test_the_library_refusing_is_shown_with_its_words(ed, qtbot, monkeypatch):
 
     monkeypatch.setattr(mef3io, "remove_annotations", refuse)
     snap = tree_hash(a)
-    win.edit.remove_mark(stored(win, "Alpha plain note"))
+    mark_then_write(win, stored(win, "Alpha plain note"))
     qtbot.waitUntil(lambda: not win.edit.saving and bool(spy.problems), timeout=30_000)
     assert spy.problems[0].code == "records-changed"
+    assert win.edit.draft.dirty and win.write_bar.isVisible()  # the change is kept, the bar stays
     assert "/" not in spy.problems[0].text  # no path
     assert tree_hash(a) == snap and not win.edit.saving
 
@@ -344,7 +391,7 @@ def test_a_protected_recording_without_the_right_password_is_refused_untouched(
     win, spy, p = locked(make_window, tmp_path, qtbot, "b")
     Asked(win, other_password=typed)
     snap = tree_hash(p)
-    win.edit.remove_mark(stored(win, "Alpha plain note"))
+    mark_then_write(win, stored(win, "Alpha plain note"))
     qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
     if typed is None or typed == "":
         assert not spy.problems  # the person did not give one: nothing was started
@@ -387,7 +434,7 @@ def test_stop_leaves_the_recording_as_it_was(ed, qtbot, monkeypatch):
 
     monkeypatch.setattr(mef3io, "remove_annotations", slow)
     snap = tree_hash(a)
-    win.edit.remove_mark(stored(win, "Alpha plain note"))
+    mark_then_write(win, stored(win, "Alpha plain note"))
     qtbot.waitUntil(started.is_set, timeout=20_000)
     win.edit.last_job.cancel()
     qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)

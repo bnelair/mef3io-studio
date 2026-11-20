@@ -400,3 +400,21 @@ def test_a_stopped_save_matches_a_draft_note_with_its_own_recording_only():
     assert ad.items_now_stored([for_a, for_b], stored_in_a, stored_in_a + stored_in_b) == [
         for_b.uid
     ]
+
+
+def test_a_draft_note_without_a_recording_takes_the_lowest_one_that_gained_it():
+    """An item not routed yet (recording None) matches the lowest-numbered recording that
+    gained the same note, and each gained note is taken once."""
+    d = ad.Draft()
+    first = d.add(T0, None, "Note", "same words")  # recording None
+    second = d.add(T0, None, "Note", "other words")
+    twin = [vm.Mark(T0, None, "Note", r, "session", None, "same words") for r in (1, 0)]
+    assert first.recording is None
+    assert ad.items_now_stored([first], [], twin) == [first.uid]
+    # two items, one gained note: only one of them is taken
+    same_again = ad.Draft().add(T0, None, "Note", "same words")
+    assert ad.items_now_stored([first, same_again], [], twin[:1]) == [first.uid]
+    # ... and two gained copies (recordings 1 and 0) serve two such items, one each
+    assert ad.items_now_stored([first, same_again], [], twin) == [first.uid, same_again.uid]
+    # a note of other words that nobody gained is left
+    assert ad.items_now_stored([second], [], twin) == []

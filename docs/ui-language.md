@@ -42,6 +42,7 @@ shown inside a technical-details panel.
 | time shift, `shift_us` | **move the dates** ("Moved 3,712 days later; time of day (UTC) kept"); "shift" only as an everyday word ("one shift for all") |
 | key file, shift mapping | **date key** (the original and new dates of every recording) |
 | verify, verification | **check** ("Saved and checked") |
+| save (the notes of the viewer) | **write** ("Write to file", "Written to the recording: 1 added, 1 changed, 1 removed"); "save" stays for exports (a CSV) and for a new recording |
 | journal, sealed state | never in the main UI; the offer says "Continue the batch: 4 of 7 done" |
 
 ## How to write a message

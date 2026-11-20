@@ -11,9 +11,10 @@ from collections.abc import Callable, Sequence
 from datetime import tzinfo
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -103,6 +104,8 @@ class NotesTab(QWidget):
     add_requested = Signal()
     edit_requested = Signal()
     remove_requested = Signal()
+    #: Bring back the selected notes that are marked for removal.
+    keep_requested = Signal()
     import_requested = Signal()
     export_requested = Signal(str, str)  # kind ("csv" | "json"), scope ("listed" | "all")
     #: Right-click on a row: (the Mark, global position).
@@ -143,10 +146,23 @@ class NotesTab(QWidget):
         self.edit_button = QPushButton("Change…", self.edit_bar)
         self.edit_button.setToolTip("Change the selected note or event")
         self.remove_button = QPushButton("Take out", self.edit_bar)
-        self.remove_button.setToolTip("Take the selected note or event out of the draft")
+        self.remove_button.setToolTip(
+            "Mark the selected notes for removal (Delete). They stay in the recording until "
+            "you write to the file."
+        )
+        self.keep_button = QPushButton("Keep", self.edit_bar)
+        self.keep_button.setToolTip(
+            "Bring back the selected notes that are marked for removal (Delete on them too)"
+        )
         self.import_button = QPushButton("Import…", self.edit_bar)
         self.import_button.setToolTip("Add notes and events from a CSV or JSON file")
-        for b in (self.add_button, self.edit_button, self.remove_button, self.import_button):
+        for b in (
+            self.add_button,
+            self.edit_button,
+            self.remove_button,
+            self.keep_button,
+            self.import_button,
+        ):
             bar.addWidget(b)
         bar.addStretch(1)
         self.edit_bar.setVisible(False)
@@ -189,6 +205,10 @@ class NotesTab(QWidget):
         self.add_button.clicked.connect(self.add_requested)
         self.edit_button.clicked.connect(self.edit_requested)
         self.remove_button.clicked.connect(self.remove_requested)
+        self.keep_button.clicked.connect(self.keep_requested)
+        # Shift/Ctrl click and Ctrl+A select several notes (within what is listed now)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._row_of: dict[int, int] | None = None
         self.import_button.clicked.connect(self.import_requested)
         self.selected_mark = None
 
@@ -198,6 +218,9 @@ class NotesTab(QWidget):
     def select_mark(self, mark) -> None:
         """Highlight the row of ``mark`` (edit mode), or none."""
         self.selected_mark = mark
+        rows = {i.row() for i in self.table.selectionModel().selectedRows()}
+        if mark is not None and len(rows) > 1:
+            return  # several notes are selected: the window follows them, nothing re-selects
         self.table.clearSelection()
         for row, m in enumerate(self.rows):
             if mark is not None and m == mark and m.state == mark.state and m.uid == mark.uid:
@@ -206,6 +229,11 @@ class NotesTab(QWidget):
                 if item is not None:  # a note just added is brought into view
                     self.table.scrollToItem(item)
                 return
+
+    def selected_marks(self) -> list[vm.Mark]:
+        """The notes whose rows are selected, in list order."""
+        rows = sorted(i.row() for i in self.table.selectionModel().selectedRows())
+        return [self.rows[r] for r in rows if 0 <= r < len(self.rows)]
 
     def selected_type(self) -> str | None:
         return self.type_box.currentData()
@@ -279,6 +307,7 @@ class NotesTab(QWidget):
         ``note`` replaces the count line (a list cut short says so from the
         first row on, not only when it is full)."""
         self.rows = list(marks)
+        self._row_of = None
         self.table.setRowCount(len(marks))
         self.count.setText(note or (f"{len(marks)} listed" if marks else "Nothing to list."))
         for row, m in enumerate(marks):
@@ -298,19 +327,51 @@ class NotesTab(QWidget):
             )
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
-                if col == 4 and not ok:
-                    item.setForeground(QBrush(QColor("#6b7280")))
-                if m.state:  # edit mode: a draft row is italic, a taken-out one struck through
-                    font = item.font()
-                    font.setItalic(True)
-                    font.setStrikeOut(m.state == "removed")
-                    item.setFont(font)
-                    if m.state == "removed":
-                        item.setForeground(QBrush(QColor("#6b7280")))
-                    if col == 0 and m.state != "removed":
-                        item.setText(text + ("  (new)" if m.state == "new" else "  (changed)"))
+                self._style(item, m, ok, col, text)
                 self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
+
+    @staticmethod
+    def _style(item: QTableWidgetItem, m: vm.Mark, ok: bool, col: int, text: str) -> None:
+        """One cell of a row: hidden text is muted; edit mode: a draft row is italic, a taken-out
+        one struck through."""
+        font = QFont(item.font())
+        font.setItalic(bool(m.state))
+        font.setStrikeOut(m.state == "removed")
+        item.setFont(font)
+        muted = (col == 4 and not ok) or m.state == "removed"
+        item.setForeground(QBrush(QColor("#6b7280")) if muted else QBrush())
+        suffix = "  (new)" if m.state == "new" else "  (changed)" if m.state == "changed" else ""
+        item.setText(text + suffix if col == 0 else text)
+
+    def restyle(self, pairs, shown, letter_of, zone: tzinfo) -> bool:
+        """Notes whose state changed in place: only their rows are redrawn (``pairs`` =
+        ``(old object, new Mark)``; a note that is not listed costs nothing). False when a
+        listed row is not what was expected (the caller fills the list again)."""
+        if self._row_of is None:
+            self._row_of = {id(m): r for r, m in enumerate(self.rows)}
+        for old, new in pairs:
+            row = self._row_of.pop(id(old), None)
+            if row is None:
+                continue
+            if row >= len(self.rows) or self.rows[row] is not old:
+                return False
+            self.rows[row] = new
+            self._row_of[id(new)] = row
+            ok = shown(new.recording)
+            _, label = vm.kind_for(new, ok)
+            cells = (
+                timefmt.format_time(new.time, zone, 3),
+                letter_of(new.recording),
+                label,
+                new.channel if new.channel else "Whole recording",
+                vm.display_text(new, ok),
+            )
+            for col, text in enumerate(cells):
+                item = self.table.item(row, col)
+                if item is not None:
+                    self._style(item, new, ok, col, text)
+        return True
 
     def cell_text(self, row: int, col: int) -> str:
         item = self.table.item(row, col)
@@ -322,6 +383,10 @@ class NotesTab(QWidget):
             self.menu_requested.emit(self.rows[row], self.table.viewport().mapToGlobal(pos))
 
     def _clicked(self, row: int, _col: int) -> None:
+        if QApplication.keyboardModifiers() & (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        ):
+            return  # choosing several: the page does not jump and nothing is re-selected
         if 0 <= row < len(self.rows):
             m = self.rows[row]
             self.picked.emit(m)

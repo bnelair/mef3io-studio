@@ -250,11 +250,17 @@ class RenameDialog(QDialog):
         requests = [
             ops.StateRequest(r.entry.key, r.entry.location, r.packed, {}) for r in self.rows
         ]
-        state = self.jobs.submit("Looking at the recordings", check_rename_state, requests)
+        # changes_recordings=False: a read-only look before renaming
+        state = self.jobs.submit(
+            "Looking at the recordings", check_rename_state, requests, changes_recordings=False
+        )
         state.succeeded.connect(self._got_state)
         state.failed.connect(self._load_failed)
         times = [(r.entry.key, r.entry.location, r.entry.password) for r in self.rows]
-        found = self.jobs.submit("Reading the start times", read_recording_times, times)
+        # changes_recordings=False: reads start times only
+        found = self.jobs.submit(
+            "Reading the start times", read_recording_times, times, changes_recordings=False
+        )
         found.succeeded.connect(self._got_times)
         found.failed.connect(self._load_failed)
         self._handles += [state, found]
@@ -521,7 +527,11 @@ class RenameDialog(QDialog):
         self.busy = "renaming"
         self._enable()
         self.status.setText("Renaming…")
-        handle = self.jobs.submit("Renaming recordings", rename_recordings, jobs)
+        # changes_recordings=False: Rename already refuses a recording open in a viewer
+        #   (in_use_keys), so no unwritten notes exist for it
+        handle = self.jobs.submit(
+            "Renaming recordings", rename_recordings, jobs, changes_recordings=False
+        )
         handle.succeeded.connect(self._renamed)
         handle.failed.connect(self._failed)
         self._handles.append(handle)
@@ -646,7 +656,10 @@ class RenameDialog(QDialog):
         self.busy = "looking"
         self._enable()
         self.status.setText("Looking at the recordings…")
-        handle = self.jobs.submit("Looking at the recordings", check_rename_state, requests)
+        # changes_recordings=False: a read-only look before renaming
+        handle = self.jobs.submit(
+            "Looking at the recordings", check_rename_state, requests, changes_recordings=False
+        )
         handle.succeeded.connect(self._undo_looked)
         handle.failed.connect(self._failed)
         self._handles.append(handle)
@@ -692,7 +705,10 @@ class RenameDialog(QDialog):
         self.busy = "undoing"
         self._enable()
         self.status.setText("Undoing…")
-        handle = self.jobs.submit("Undoing the rename", undo_renames, todo)
+        # changes_recordings=False: same as rename: a recording open in a viewer is refused
+        handle = self.jobs.submit(
+            "Undoing the rename", undo_renames, todo, changes_recordings=False
+        )
         handle.succeeded.connect(self._undone)
         handle.failed.connect(self._failed)
         self._handles.append(handle)

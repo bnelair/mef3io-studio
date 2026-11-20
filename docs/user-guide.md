@@ -1215,8 +1215,8 @@ says why the notes are not shown and what to do.
 
 To **change the text** of a stored note, use **Change the text** or the Edit button
 of the notes list: the new wording appears next to the old one (struck through),
-and **Save** replaces the old note by the new one, after one line that says the old
-wording cannot be brought back. Only plain notes and events with a length can be
+and **Write to file** replaces the old note by the new one, after a list that shows
+the old and the new wording and says the old one cannot be brought back. Only plain notes and events with a length can be
 changed; other kinds of note can be removed but not changed, because the change
 would turn them into plain notes. The note stays in its own recording, so its time
 must be one at which that recording holds data: to move a note into another
@@ -1244,16 +1244,38 @@ you that your changes are **a draft until you save**.
   reminds you to store and share them with care.
 - **Change…** works on notes in the draft and on notes **already stored** in a
   recording (the new wording is saved in place of the old one, see above).
-  **Take out** removes a note from the draft, or, for a stored note, removes it
-  from the recording after one line that asks first.
+  **Take out** removes a note from the draft, or, for a stored note, marks it
+  for removal (struck through); it stays in the recording until you write to the
+  file. Delete on a marked note brings it back.
 
-**Save.** Press **Ctrl+S**, or choose **Save…** in the banner. When you only
-added notes, one line asks whether to save them (how many, and into which
-recording). In every other case (a choice of recording, a note outside every
-recording, a password to type, or changes to stored notes) the app shows how
-many notes and events will be added to each recording, and from when to when.
-Nothing is written until you choose **Save** (or **Add them to the
-recordings**).
+**Nothing is written until you press Write to file.** Every change to the notes
+(added, changed, removed) stays in this window only. While there are changes, a
+**red bar at the top of the viewer** says that they are NOT SAVED and how many
+there are; it is the one place to write or discard (the edit-mode banner only
+holds Undo and Redo). It stays when you leave edit mode, and it asks again when
+you close the window, quit the app, or start a task that copies, joins, packs or
+writes recordings (the batch runs, join, pack, saving a new recording with
+changes): you can write, discard, or stay. If a write is running, or writing is
+switched off because the recordings could not be read again, the bar and the
+messages say so and what to do.
+
+**Marking many notes.** In the notes list, Shift or Ctrl click and Ctrl+A select
+several notes (Ctrl+A: everything listed, so use the search or the type filter
+first); Delete (or **Take out**) marks all of them for removal as ONE step, and
+Ctrl+Z brings them all back; **Keep** brings the selected marked ones back. A note
+stored more than once has all its copies marked when several are chosen.
+
+Press **Ctrl+S**, or **Write to file…** in the red bar. A list shows every change
+(added, changed with old and new wording, removed, which recording, when), with
+the counts, per recording when there are several. A note that is stored more than
+once says whether one copy or all go. Nothing is written until you choose **Write
+N changes to the file**; **Keep editing** leaves everything as it is. Before the
+list opens, the app looks at the recording again: if another program changed a
+note you marked or changed, the list says so and nothing can be written until you
+open the recording again. When you
+removed or changed stored notes, Keep editing is the pre-selected answer.
+**Show changes** opens the same list without writing; **Discard changes…** throws
+all of them away after asking.
 
 - Saving new notes **only adds**: the notes already in the recording are never
   rewritten. A note you added can be removed again later (Delete on it); that

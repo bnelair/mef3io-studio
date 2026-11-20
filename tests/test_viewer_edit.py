@@ -92,6 +92,16 @@ class Spy:
             self.stored_answer,
         )[1]
         win.edit.ask_other_password = lambda label, letter: self.extra.get(0)
+        #: "Write to file": the list that was shown (default: confirmed), "Show changes" and the
+        #: question before changes are discarded (default: yes).
+        self.summaries: list = []
+        self.write_confirmed = True
+        win.edit.ask_write = lambda summary: (self.summaries.append(summary), self.write_confirmed)[
+            1
+        ]
+        win.edit.show_summary = self.summaries.append
+        self.discard_asked: list[str] = []
+        win.edit.ask_discard = lambda counts: (self.discard_asked.append(counts), True)[1]
         win.confirm = lambda *a: True
         win.ask_show = lambda indices: True
 
@@ -155,7 +165,9 @@ def test_the_switch_shows_the_banner_and_keys_work_only_inside(ed):
     win, _spy, _ = ed
     turn_on(win)
     assert win.edit.banner.isVisible() and win.edit.banner_label.text() == BANNER_TEXT
-    assert BANNER_TEXT == "Edit mode: changes are a draft until you save"
+    assert (
+        BANNER_TEXT == "Edit mode: Delete marks a note for removal, Ctrl+Z undoes the last change"
+    )
     assert "edit" in win.features and not win.notes_tab.edit_bar.isHidden()
     win.edit_button.click()
     assert not win.edit.on and not win.edit.banner.isVisible()
@@ -204,7 +216,7 @@ def test_add_a_point_and_a_span_by_keys_and_dialog_with_undo_and_redo(ed):
     states = [m.state for m in win.notes_tab.rows if m.state]
     assert states == ["new", "new", "new"]
     assert any(c.state == "new" for c in win.chips.chips)
-    assert "3 new notes and events" in win.edit.count_label.text()
+    assert "3 added" in win.write_bar.text.text()
     key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert len(win.edit.draft.items) == 2
     key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
@@ -288,7 +300,8 @@ def test_save_appends_and_leaves_the_old_notes_untouched(ed, qtbot):
     assert not win.edit.draft.dirty and not win.edit.draft.can_undo
     assert len(win.marks) == len(comparable(after_a)) + len(comparable(after_b))
     assert not [m for m in win.notes_tab.rows if m.state]
-    assert "3 notes and events added" in win.status_message.text()
+    assert "Written to the recordings" in win.status_message.text()
+    assert "2 added" in win.status_message.text() and "1 added" in win.status_message.text()
 
 
 def test_saving_twice_does_not_duplicate(ed, qtbot):
@@ -297,7 +310,7 @@ def test_saving_twice_does_not_duplicate(ed, qtbot):
     win.edit.add(T0 + 30 * SEC, None, "Spike", "once")
     finish_save(qtbot, win)
     n = len(records(a))
-    assert win.edit.save() is False and not win.edit.save_button.isEnabled()
+    assert win.edit.save() is False and not win.write_bar.isVisible()
     assert len(records(a)) == n and not spy.problems
 
 
@@ -319,7 +332,7 @@ def test_the_save_preview_lists_each_recording_the_warning_and_the_copy_sentence
     assert "Recording A: Alpha_case: 2 notes and events, 2000-01-01 00:00:30.000 UTC to" in text
     assert "Recording B: Beta_case: 1 note or event, 2000-01-01 00:02:00.000 UTC" in text
     assert "cannot be undone in place" in dialog.warning.text()
-    assert "1 change to a stored note is saved first" in dialog.copy_note.text()
+    assert "1 change to a stored note is written first" in dialog.copy_note.text()
     assert "cannot be undone" in dialog.copy_note.text()
     assert dialog.ok.isEnabled() and dialog.ok.text() == "Add them to the recordings"
     assert not BANNED_RE.search(" ".join([text, dialog.warning.text(), dialog.copy_note.text()]))
@@ -399,17 +412,17 @@ def test_a_stored_note_taken_out_in_the_draft_is_shown_and_saved_after_one_quest
     assert [c.state for c in win.chips.chips if c.state] == ["removed"]
     assert [m.style for m in win.canvas.marks if m.style] == ["removed"]
     assert win.edit.draft.stored_changes == 1
-    assert "1 change to stored notes" in win.edit.count_label.text()
+    assert "1 removed" in win.write_bar.text.text()
     # undo brings the note back, nothing was asked or written
     snap = tree_hash(a)
     key(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert not [m for m in win.notes_tab.rows if m.state] and not spy.stored_lines
     assert tree_hash(a) == snap
-    # Save removes it, after one plain line
+    # Save removes it (the list was confirmed before: no question per action)
     win.edit.draft.remove(stored)
     win.edit.refresh()
     finish_save(qtbot, win)
-    assert len(spy.stored_lines) == 1 and "cannot be brought back" in spy.stored_lines[0]
+    assert not spy.stored_lines
     assert "Alpha plain note" not in [c[4] for c in comparable(records(a))]
     assert not win.edit.draft.dirty and not spy.problems
 
@@ -426,11 +439,13 @@ def test_changing_a_stored_note_keeps_both_visible_and_a_mixed_save_replaces_the
     states = sorted(m.state for m in win.notes_tab.rows if m.state)
     assert states == ["changed", "removed"]  # the new wording and the struck-through original
     win.edit.add(T0 + 40 * SEC, None, "Spike", "new one")
+    before = comparable(records(a))
+    assert "Alpha plain note" in [c[4] for c in before]  # nothing is written yet
     finish_save(qtbot, win)
     got = [c[4] for c in comparable(records(a))]
     assert "Artifact: reworded" in got and "Alpha plain note" not in got  # replaced
     assert "Spike: new one" in got  # and the new note was added after it
-    assert len(spy.stored_lines) == 1 and spy.stored_lines[0].startswith("Replace 1 stored note")
+    assert not spy.stored_lines  # no question per action: the list was confirmed before
     assert not win.edit.draft.dirty and not spy.problems
 
 
@@ -532,29 +547,21 @@ def test_leaving_edit_mode_or_closing_with_a_draft_asks(ed, qtbot):
     win, spy, (a, _b) = ed
     turn_on(win)
     win.edit.add(T0 + 30 * SEC, None, "Spike", "keep me")
+    # leaving edit mode keeps the draft and asks nothing: the red bar stays until it is written
+    win.edit_button.click()
+    assert not win.edit.on and win.edit.draft.dirty and spy.asked == []
+    assert win.write_bar.isVisible()
+    # closing asks (Write to file / Discard changes / Stay)
     spy.answer = "stay"
-    win.edit_button.click()
-    assert win.edit.on and win.edit_button.isChecked() and spy.asked == ["leave"]
     win.close()
-    assert not win._closed and spy.asked == ["leave", "close"] and win.isVisible()
-    spy.answer = "discard"
-    win.edit_button.click()
-    assert not win.edit.on and not win.edit.draft.dirty
-    # leaving with "save" writes first, then leaves
-    turn_on(win)
-    win.edit.add(T0 + 31 * SEC, None, "Spike", "saved on leaving")
+    assert not win._closed and spy.asked == ["close"] and win.isVisible()
+    # closing with "write" writes first (after the list), then the window closes
     spy.answer = "save"
     with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
-        win.edit_button.click()
-    qtbot.waitUntil(lambda: not win.edit.on, timeout=10_000)
-    assert any(c[4] == "Spike: saved on leaving" for c in comparable(records(a)))
-    # closing with "discard" closes
-    turn_on(win)
-    win.edit.add(T0 + 32 * SEC, None, "Spike", "dropped")
-    spy.answer = "discard"
-    win.close()
-    assert win._closed
-    assert not any(c[4] == "Spike: dropped" for c in comparable(records(a)))
+        win.close()
+    qtbot.waitUntil(lambda: win._closed, timeout=10_000)
+    assert any(c[4] == "Spike: keep me" for c in comparable(records(a)))
+    assert spy.summaries and spy.summaries[0].added == 1  # the list was shown first
 
 
 # --- failures in plain words ------------------------------------------------------------------
@@ -1009,7 +1016,7 @@ def test_opening_and_paging_never_inspect_but_a_save_does_on_a_task_thread(
 
 def _unlocked(win):
     assert not win.edit.saving
-    assert win.edit.save_button.isEnabled() and win.edit.draft.dirty
+    assert win.write_bar.write_button.isEnabled() and win.edit.draft.dirty
     assert win.edit.set_on(True) is True
 
 
@@ -1075,7 +1082,7 @@ def test_a_window_that_moved_on_unlocks_the_draft(ed, qtbot):
 
 def _wait_saved(qtbot, win):
     qtbot.waitUntil(lambda: not win.edit.saving, timeout=10_000)
-    assert win.edit.save_button.isEnabled() and win.edit.draft.dirty
+    assert win.write_bar.write_button.isEnabled() and win.edit.draft.dirty
 
 
 def test_a_save_task_that_is_stopped_frees_the_draft_and_the_window(ed, qtbot, monkeypatch):
@@ -1096,7 +1103,7 @@ def test_a_save_task_that_is_stopped_frees_the_draft_and_the_window(ed, qtbot, m
     monkeypatch.setattr(edit_mode.asave, "write_plan", stopped)
     win.edit.save()
     _wait_saved(qtbot, win)
-    assert win.edit.discard_button.isEnabled()
+    assert win.write_bar.discard_button.isEnabled()
     assert win.edit.set_on(True) is True
 
 
@@ -1120,7 +1127,7 @@ def test_a_stop_after_the_first_write_began_reads_the_recordings_again(ed, qtbot
     assert len(spy.problems) == 1
     # the recordings were read again: nothing was stored, so the item is still the draft's
     assert "Nothing had been added" in spy.problems[0].text
-    assert win.edit.draft.dirty and win.edit.save_button.isEnabled()
+    assert win.edit.draft.dirty and win.write_bar.write_button.isEnabled()
 
 
 def test_a_failure_starting_the_save_frees_the_draft(ed, qtbot, monkeypatch):
@@ -1143,7 +1150,7 @@ def test_a_failure_starting_the_save_frees_the_draft(ed, qtbot, monkeypatch):
     win.edit.save()
     assert calls
     _wait_saved(qtbot, win)
-    assert len(spy.problems) == 1 and "Nothing was saved" in spy.problems[0].text
+    assert len(spy.problems) == 1 and "Nothing was written" in spy.problems[0].text
 
 
 def test_a_save_of_notes_does_not_read_the_strip_again_nor_interrupt_a_read(ed, qtbot):
@@ -1241,10 +1248,10 @@ def test_a_save_whose_recordings_cannot_be_read_again_stays_off(ed, qtbot, monke
     qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
     assert "open the recordings again" in spy.problems[0].text
     assert BANNED_RE.search(spy.problems[0].text) is None
-    assert win.edit.draft.dirty and not win.edit.save_button.isEnabled()  # saving is off
+    assert win.edit.draft.dirty and not win.write_bar.write_button.isEnabled()  # saving is off
     assert win.edit.save() is False
-    assert "Saving is off" in win.edit.count_label.text()
-    assert win.edit.discard_button.isEnabled()  # the window can still be left
+    assert "Writing is off" in win.write_bar.text.text()
+    assert win.write_bar.discard_button.isEnabled()  # the window can still be left
 
 
 def test_a_stop_before_any_write_is_not_taken_for_a_stop_after_one(ed, qtbot, monkeypatch):
@@ -1268,8 +1275,8 @@ def test_a_stop_before_any_write_is_not_taken_for_a_stop_after_one(ed, qtbot, mo
     win.edit.last_job.cancel()
     qtbot.waitUntil(lambda: not win.edit.saving, timeout=30_000)
     assert len(records(a)) == before
-    assert win.edit.draft.dirty and win.edit.save_button.isEnabled() and not win.edit.stale
-    assert win.status_message.text() == "The save was stopped. Nothing was added."
+    assert win.edit.draft.dirty and win.write_bar.write_button.isEnabled() and not win.edit.stale
+    assert win.status_message.text() == "The write was stopped. Nothing was added."
     assert not spy.problems
 
 
@@ -1347,7 +1354,7 @@ def test_n_adds_a_note_at_the_pointer_without_first_choosing_a_mode(ed, qtbot):
     assert (item.label, item.text) == ("Note", "eyes closed")
     # a draft: marked as not stored in the list and on the traces, and nothing is written yet
     assert [m.state for m in win.notes_tab.rows if m.state == "new"] == ["new"]
-    assert "1 new note or event" in win.edit.count_label.text()
+    assert "1 added" in win.write_bar.text.text()
     assert "not in the recording yet" in win.status_message.text()
     assert win.canvas.hasFocus()
 
@@ -1478,13 +1485,13 @@ def test_n_is_in_the_key_table_and_the_help(ed):
 
 
 class Line:
-    """Answers the one-line question of a save and records what it said."""
+    """Answers the confirmation of "Write to file" (the counts) and records what it said."""
 
     def __init__(self, win, answer=True):
         self.said: list[str] = []
         self.answer = answer
         del win.edit.ask_save  # the real one (the Spy replaced it)
-        win.edit.ask_quick_save = self.ask
+        win.edit.ask_write = self.ask
 
         def no_preview(*a, **k):
             raise AssertionError("the full preview must not open for a save that only adds")
@@ -1492,8 +1499,8 @@ class Line:
         self._real = edit_mode.SavePreview
         edit_mode.SavePreview = no_preview
 
-    def ask(self, text):
-        self.said.append(text)
+    def ask(self, summary):
+        self.said.append(summary.counts_text())
         return self.answer
 
     def restore(self):
@@ -1516,13 +1523,12 @@ def test_ctrl_s_saves_a_draft_that_only_adds_with_one_line(line, qtbot):
     type_in(win, "Spike: one")
     press(win, Qt.Key.Key_Return)
     win.edit.add(T0 + 14 * SEC, None, "Note", "two")
-    assert win.status_draft.isVisible() and win.status_draft.text() == "2 notes not saved yet"
+    assert win.status_draft.isVisible() and win.status_draft.text() == "Not written yet: 2 added"
     with qtbot.waitSignal(win.edit.save_finished, timeout=60_000):
         key(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
     qtbot.waitUntil(lambda: not win.edit.saving)
     (said,) = asked.said
-    assert said.startswith("Save 2 new notes into Recording A: Alpha_case?")
-    assert "\n" not in said
+    assert said == "2 added"
     assert not spy.problems and not win.edit.draft.dirty
     assert len(records(a)) == before + 2
     assert not win.status_draft.isVisible()  # nothing is waiting any more
@@ -1534,9 +1540,9 @@ def test_stopping_the_one_line_stores_nothing_and_keeps_the_draft(line, qtbot):
     win.edit.set_on(True)
     win.edit.add(T0 + 14 * SEC, None, "Note", "two")
     snap = tree_hash(a)
-    assert win.edit.save() is True
-    qtbot.waitUntil(lambda: not win.edit.saving)
+    assert win.edit.write_to_file() is False  # "Keep editing": nothing starts
     assert len(asked.said) == 1 and tree_hash(a) == snap and win.edit.draft.dirty
+    assert not win.edit.saving
 
 
 def test_ctrl_s_in_the_text_field_keeps_the_note_and_saves_it(line, qtbot):
@@ -1555,7 +1561,7 @@ def test_ctrl_s_without_a_draft_says_so(ed):
     win, spy, _ = ed
     turn_on(win)
     key(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
-    assert win.status_message.text() == "There are no new notes to save."
+    assert win.status_message.text() == "There are no changes to write."
 
 
 def test_the_line_names_the_recordings_by_letter_while_hidden(make_window, pair, qtbot):
@@ -1568,10 +1574,17 @@ def test_the_line_names_the_recordings_by_letter_while_hidden(make_window, pair,
         win.edit.set_on(True)
         win.edit.add(T0 + 14 * SEC, None, "Note", "two")
         win.edit.add(T0 + 120 * SEC, None, "Note", "three")
-        win.edit.save()
+        from mef3io_studio.viewer.write_dialog import WriteDialog
+
+        dialog = WriteDialog(win.edit.summary(), win.edit._where, win._shown, win.zone, win)
+        qtbot.addWidget(dialog)
+        shown = " ".join(" ".join(row) for row in dialog.rows_text()) + dialog.per_recording.text()
+        assert "Recording A" in shown and "Recording B" in shown  # by letter
+        assert "Alpha" not in shown and "Beta" not in shown  # no name
+        assert "two" not in shown and "three" not in shown  # no hidden text
+        win.edit.write_to_file()
         qtbot.waitUntil(lambda: not win.edit.saving)
-        assert made.said[0].startswith("Save 2 new notes into Recording A and Recording B? ")
-        assert "Alpha" not in made.said[0] and "Beta" not in made.said[0]
+        assert made.said[0] == "2 added"
         assert not spy.problems
     finally:
         made.restore()
@@ -1606,7 +1619,7 @@ def test_the_refusals_of_a_save_still_stand_after_the_one_line(line, qtbot):
     moved = Path(a).with_name("Renamed.mefd")
     win.data.release_files()  # (Windows: no rename while the viewer holds a file open)
     Path(a).rename(moved)
-    assert win.edit.save()
+    assert win.edit.write_to_file()
     qtbot.waitUntil(lambda: not win.edit.saving)
     assert len(asked.said) == 1
     assert "not where it was opened" in spy.problems[-1].title
@@ -1618,7 +1631,7 @@ def test_the_one_line_has_plain_words_and_the_indicator_follows_the_draft(ed):
     turn_on(win)
     assert not win.status_draft.isVisible()
     win.edit.add(T0 + 14 * SEC, None, "Note", "two")
-    assert win.status_draft.text() == "1 note not saved yet"
+    assert win.status_draft.text() == "Not written yet: 1 added"
     win.edit.undo()
     assert not win.status_draft.isVisible()
     win.edit.add(T0 + 14 * SEC, None, "Note", "two")
@@ -1887,7 +1900,7 @@ def test_a_right_click_on_a_chip_and_on_a_list_row_opens_that_menu(ed, qtbot):
     table = win.notes_tab.table
     pos = table.visualItemRect(table.item(row, 0)).center()
     win.notes_tab._row_menu(QPoint(pos.x(), pos.y()))
-    assert entries(win._menu)["Remove this note"].isEnabled()  # (mef3io 2.4 can take it out)
+    assert entries(win._menu)["Mark for removal"].isEnabled()  # (nothing is written until Write)
     win._menu.close()
     # on the traces: right-click on the drawn mark of a stored note
     from PySide6.QtCore import QPointF
@@ -1897,7 +1910,7 @@ def test_a_right_click_on_a_chip_and_on_a_list_row_opens_that_menu(ed, qtbot):
     )
     win.canvas._pointer = QPointF(win.canvas.x_of(mark.time), win.canvas.plot_rect().top() + 5)
     win._context_menu(0, mark.time, win.canvas.mapToGlobal(QPoint(5, 5)), False)
-    assert "Remove this note" in entries(win._menu)
+    assert "Mark for removal" in entries(win._menu)
     win._menu.close()
 
 
@@ -1913,3 +1926,24 @@ def test_the_only_calls_that_change_a_recordings_notes_are_in_one_module():
     assert source.count("mef3io.remove_annotations(") == 1
     for word in ("unlink", "os.remove", "shutil", "truncate", "os.rename", "os.replace"):
         assert word not in source
+
+
+def test_closing_or_discarding_with_changes_leaves_the_recording_as_it_was(ed, qtbot):
+    win, spy, (a, _b) = ed
+    turn_on(win)
+    snap = tree_hash(a)
+    win.edit.add(T0 + 30 * SEC, None, "Spike", "dropped")
+    win.edit.remove_mark(next(m for m in win.notes_tab.rows if m.text == "Alpha plain note"))
+    # leaving edit mode and then discarding from the red bar (the question is the real one's
+    # stand-in: "Discard changes" answered yes)
+    win.edit_button.click()
+    assert not win.edit.on and win.write_bar.isVisible()
+    assert win.edit.discard_ask() is True
+    assert spy.discard_asked and not win.edit.draft.dirty and not win.write_bar.isVisible()
+    assert tree_hash(a) == snap
+    # closing with "Discard changes" closes without touching the recording
+    turn_on(win)
+    win.edit.add(T0 + 31 * SEC, None, "Spike", "dropped too")
+    spy.answer = "discard"
+    win.close()
+    assert win._closed and tree_hash(a) == snap

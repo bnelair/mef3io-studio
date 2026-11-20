@@ -123,7 +123,7 @@ def _slow(ctx):
 def test_close_with_running_job_asks_and_can_keep_working(window, qtbot, monkeypatch):
     window.show()
     monkeypatch.setattr(window, "confirm_stop_running", lambda: False)
-    handle = window.jobs.submit("Long", _slow)
+    handle = window.jobs.submit("Long", _slow, changes_recordings=False)
     qtbot.waitUntil(lambda: handle.record.status is JobStatus.RUNNING, timeout=5000)
     assert window.close() is False
     assert window.isVisible()
@@ -137,7 +137,7 @@ def test_close_with_running_job_stops_it_without_blocking(window, qtbot, monkeyp
 
     window.show()
     monkeypatch.setattr(window, "confirm_stop_running", lambda: True)
-    handle = window.jobs.submit("Long", _slow)
+    handle = window.jobs.submit("Long", _slow, changes_recordings=False)
     qtbot.waitUntil(lambda: handle.record.status is JobStatus.RUNNING, timeout=5000)
     start = time.monotonic()
     window.close()  # returns at once; the window stays while the task stops

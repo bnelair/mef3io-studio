@@ -364,6 +364,10 @@ class StoredResult:
     stopped: bool = False
     #: Per rewritten recording: its signal files are exactly as they were just before.
     signals_same: dict[int, bool] = field(default_factory=dict)
+    #: Per rewritten recording: (added, changed, removed) that are now in its file.
+    counts: dict[int, tuple[int, int, int]] = field(default_factory=dict)
+    #: The file held another number of notes than asked: what it holds is to be read again.
+    unsure: bool = False
 
 
 #: Types the library's ``add`` can store COMPLETELY from what the app holds (time, text,
@@ -625,6 +629,23 @@ def _outcome(name: str, done: Sequence[str]) -> str:
     )
 
 
+def folders_writable(paths: dict[int, str]) -> dict[int, bool]:
+    """Recording index -> whether its folders take writes (a task's work: it asks the file
+    system once per folder, which can be slow on a network drive)."""
+    return {i: not _not_writable(p) for i, p in paths.items()}
+
+
+def look_at_notes(data, marks) -> dict:
+    """Read the notes as the files hold them NOW (a task) and say, for each stored note in
+    ``marks`` (a ``Mark``), how many identical copies there are in its recording: the window
+    compares this with what it counted when the note was marked. Returns ``{mark: copies}``."""
+    seen: dict[tuple, int] = {}
+    for rec in data.fresh_annotations():
+        k = record_key(rec)
+        seen[k] = seen.get(k, 0) + 1
+    return {m: seen.get(mark_key(m), 0) for m in marks}
+
+
 def _not_writable(path: str | None) -> bool:
     """Whether the recording's folder, or a folder directly in it (a channel's), cannot be
     written to: asked of the folders themselves, never concluded from an error text."""
@@ -840,13 +861,26 @@ def remove_stored_notes(
                 result.signals_same[index] = same
         gone = sum(c.copies for c in by_recording[index])
         if report_.removed != gone:  # the library did something else than was asked: say so
+            # What the file holds is not what was asked, so these changes may already be in it:
+            # they leave the draft (never kept as marks that could be applied twice) and the
+            # window reads the notes again.
             result.error = UserMessage(
                 "The notes were not what was expected",
-                f"{name} now holds a different number of notes than expected. Close this "
-                "window and open the recording again to see what it holds.",
+                f"{name} now holds a different number of notes than expected, so the changes to "
+                "it may already be written. They were taken out of the window's list of changes, "
+                "and the notes shown are read again from the file: check them there. The "
+                "changes to the other recordings are listed separately.",
             )
             result.written.append(index)
             result.net[index] = report_.added - report_.removed
+            result.uids.update(c.uid for c in by_recording[index] if c.uid is not None)
+            result.marks.extend(c.mark for c in by_recording[index])
+            result.counts[index] = (
+                0,
+                sum(1 for c in by_recording[index] if c.replacement is not None),
+                sum(c.remove for c in by_recording[index] if c.replacement is None),
+            )
+            result.unsure = True
             return result
         result.written.append(index)
         result.removed += sum(c.remove for c in by_recording[index])
@@ -854,6 +888,11 @@ def remove_stored_notes(
         result.net[index] = report_.added - report_.removed
         result.uids.update(c.uid for c in by_recording[index] if c.uid is not None)
         result.marks.extend(c.mark for c in by_recording[index])
+        result.counts[index] = (
+            0,
+            sum(1 for c in by_recording[index] if c.replacement is not None),
+            sum(c.remove for c in by_recording[index] if c.replacement is None),
+        )
         done += 1
         report(done, total)
     return result

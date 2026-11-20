@@ -1805,7 +1805,10 @@ class JoinerPage(QWidget):
     def _check_then_start(self, request: JoinRequest):
         """Step 1 for ``request``; it is made again, with the recordings
         opened afresh, when one changed since Explore read it."""
-        handle = self.jobs.submit("Checking before joining", check_join, request)
+        # changes_recordings=False: a read-only check before the join
+        handle = self.jobs.submit(
+            "Checking before joining", check_join, request, changes_recordings=False
+        )
         self.check_handle = handle
         self.go(STEP_RUN)
         self.run_step.begin_check(handle, len(request.sources) > 1)
@@ -1862,7 +1865,9 @@ class JoinerPage(QWidget):
         title = "Joining recordings" if several else "Saving part of a recording"
         if request.anonymous is not None:
             title = "Making an anonymous recording"
-        handle = self.jobs.submit(title, join_recordings, request)
+        # changes_recordings=True: writes a joined recording from the originals: unwritten notes
+        #   would be missing
+        handle = self.jobs.submit(title, join_recordings, request, changes_recordings=True)
         self.handle = handle
         handle.succeeded.connect(self._on_result)
         handle.cancelled.connect(self._on_stopped)

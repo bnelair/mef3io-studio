@@ -432,6 +432,25 @@ class ViewerData:
         with self._notes_lock:
             return self._annotations_locked()
 
+    def fresh_annotations(self) -> list[Annotation]:
+        """The records as the files hold them NOW, read through new readers (the cached notes of
+        the window are not touched): what "Write to file" compares the window's view with. A task
+        thread's call, never the GUI thread."""
+        import mef3io
+
+        out: list[Annotation] = []
+        for i, path in enumerate(self._paths):
+            try:
+                reader = mef3io.Reader(str(path), self._passwords[i])
+                records = reader.records(level="all")
+            except mef3io.PasswordError:
+                continue
+            for rec in records:
+                item = Annotation(rec)
+                item["recording"] = i
+                out.append(item)
+        return out
+
     def _annotations_locked(self) -> list[Annotation]:
         import mef3io
 

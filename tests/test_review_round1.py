@@ -338,25 +338,28 @@ def test_removing_from_a_read_only_recording_says_so_and_changes_nothing(ed, qtb
     target = os.path.join(a, folder) if folder else str(a)
     os.chmod(target, 0o500)
     try:
-        win.edit.remove_mark(stored(win, note))
-        qtbot.waitUntil(lambda: not win.edit.saving and bool(spy.problems), timeout=30_000)
+        with qtbot.waitSignal(win.edit.probed, timeout=30_000):  # asked once, on a task
+            win.edit.set_on(True)
+        # said when the person marks the note (not after a long edit, when writing)
+        assert win.edit.remove_mark(stored(win, note)) is False
     finally:
         os.chmod(target, 0o700)
-    assert tree_hash(a) == before
-    assert "read-only" in spy.problems[0].text and "Windows" not in spy.problems[0].text
+    assert tree_hash(a) == before and not win.edit.draft.dirty and not win.write_bar.isVisible()
+    assert "read-only" in win.last_refusal and "Windows" not in win.last_refusal
 
 
 def test_the_line_before_changing_one_of_two_identical_copies_says_so(make_window, tmp_path, qtbot):
     p = write(tmp_path / "Two.mefd", notes=[NOTE, dict(NOTE)])
     win = make_window(p, reveal=lambda i: True)
     wait_marks(qtbot, win)
-    spy = Spy(win)
+    Spy(win)
     turn_on(win)
     mark = stored(win, "Alpha plain note")
     win.edit.draft.edit_stored(mark, text="Alpha changed")
+    summary = win.edit.summary()  # what the confirmation lists before writing
+    assert summary.changed == 1 and summary.removed == 0
     finish_save(qtbot, win)
-    assert "stored more than once" in spy.stored_lines[0]
-    assert sorted(texts(p)) == ["Alpha changed", "Alpha plain note"]
+    assert sorted(texts(p)) == ["Alpha changed", "Alpha plain note"]  # only one copy changed
 
 
 # --- merge review 1: a closed window lets go at once, and stays counted until it has ----------
